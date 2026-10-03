@@ -87,7 +87,7 @@ print(state["equity"], state["position"])      # account value and position at t
 
 A frame carrying a real (datetime) index must be sorted ascending and unique; a plain `RangeIndex` holds no timestamps, so it is exempt. A missing column, a wrong shape, or an unsorted index raises `ValueError`, and an unsupported type raises `TypeError`.
 
-**Every row has to be a bar**: `low <= open <= high` and `low <= close <= high`, checked per row alongside finiteness ([ADR 0096](Decisions.md)). The fill model bounds a taker to what the bar traded, and on an unordered row that bound moves the fill toward the account instead, so a dead flat market pays out. The realistic cause is a positional slice of a feed that ships its columns in another order, which is why the message names the order it wants: a venue returning `low, high, open, close` satisfies `high >= low` on every row and still mints money. A bar that never moved, every price equal, is a bar. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
+**Every row has to be a bar**: `low <= open <= high` and `low <= close <= high`, checked per row alongside finiteness ([ADR 0025](Decisions.md)). The fill model bounds a taker to what the bar traded, and on an unordered row that bound moves the fill toward the account instead, so a dead flat market pays out. The realistic cause is a positional slice of a feed that ships its columns in another order, which is why the message names the order it wants: a venue returning `low, high, open, close` satisfies `high >= low` on every row and still mints money. A bar that never moved, every price equal, is a bar. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
 
 The wrappers call it for you, so a DataFrame can go straight into `Backtester` or `VectorEnv`. Handing the `Backtester` a datetime index is also what stamps each trade with `entry_time` and `exit_time` ([Trades](#trades)).
 
@@ -116,7 +116,7 @@ env = binance.env(candles, num_envs=4096, window=60)
 engine = binance.engine(candles)          # takes a frame like its siblings
 ```
 
-Each method takes only the arguments that are **not** the venue, so a knob cannot be passed twice and no rule about which copy wins is needed: there is only ever one copy. Passing one anyway is refused rather than merged ([ADR 0053](Decisions.md)).
+Each method takes only the arguments that are **not** the venue, so a knob cannot be passed twice and no rule about which copy wins is needed: there is only ever one copy. Passing one anyway is refused rather than merged ([ADR 0048](Decisions.md)).
 
 | Call | Gives |
 | :--- | :--- |
@@ -181,16 +181,16 @@ eng = Engine(
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
 | `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
 | `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order: cancel it and rest a replacement with the same side, type and flags. `None`, and nothing placed, if it is no longer resting. |
-| `is_bust()` | bool | True when the account died: a perp liquidation, or equity reaching zero ([ADR 0019](Decisions.md)). The engine does not stop on it. |
+| `is_bust()` | bool | True when the account died: a perp liquidation, or equity reaching zero ([ADR 0029](Decisions.md)). The engine does not stop on it. |
 | `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
 | `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
 | `qty_from_quote(cash)` | float | Base size for a `cash` amount in quote, at the current close. |
 
-`order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` rejects a limit that would cross rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` unless you ask for `FOK`, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers ([ADR 0016](Decisions.md)). `FOK` is all or nothing against every clamp, not only the bar's liquidity, so a `FOK` the spot cash balance or the margin cap could only fill in part books nothing ([ADR 0025](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`, and a non-finite price or trigger is a `ValueError` too ([ADR 0027](Decisions.md)).
+`order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` rejects a limit that would cross rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` unless you ask for `FOK`, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers ([ADR 0007](Decisions.md)). `FOK` is all or nothing against every clamp, not only the bar's liquidity, so a `FOK` the spot cash balance or the margin cap could only fill in part books nothing ([ADR 0008](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`, and a non-finite price or trigger is a `ValueError` too ([ADR 0023](Decisions.md)).
 
-**A bar that reaches both a stop and a target books the stop.** The engine cannot see the path inside a bar, so it cannot know which the price touched first, and it used to answer with book-slot order: place the stop before the target and every ambiguous bar booked a loss, swap the two lines and every one booked a win. Exits from one position are now applied worst first, so the result is a rule rather than a property of how the strategy was typed ([ADR 0056](Decisions.md)). Pessimism is the right direction because an optimistic guess about an unobservable ordering flatters a backtest. A bar that reaches only one leg is unaffected.
+**A bar that reaches both a stop and a target books the stop.** The engine cannot see the path inside a bar, so it cannot know which the price touched first, and it used to answer with book-slot order: place the stop before the target and every ambiguous bar booked a loss, swap the two lines and every one booked a win. Exits from one position are now applied worst first, so the result is a rule rather than a property of how the strategy was typed ([ADR 0019](Decisions.md)). Pessimism is the right direction because an optimistic guess about an unobservable ordering flatters a backtest. A bar that reaches only one leg is unaffected.
 
-Three things about resting orders that are easy to get wrong. Nothing links them into an OCO group, so **re-placing a trailing stop with `stop()` each bar rests a new order every time**; the one that fills leaves its siblings live, and on a perp those open a position on the other side. Use `replace`, which cannot leave two alive and quietly does nothing once the order has filled ([ADR 0032](Decisions.md)). Pass `reduce_only=True` as well, so even a leaked stop can only shrink the position ([ADR 0028](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the volume cap can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
+Three things about resting orders that are easy to get wrong. Nothing links them into an OCO group, so **re-placing a trailing stop with `stop()` each bar rests a new order every time**; the one that fills leaves its siblings live, and on a perp those open a position on the other side. Use `replace`, which cannot leave two alive and quietly does nothing once the order has filled ([ADR 0015](Decisions.md)). Pass `reduce_only=True` as well, so even a leaked stop can only shrink the position ([ADR 0014](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the volume cap can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
 
 ```python
 #  a trailing stop that stays one order and can only ever shrink the position
@@ -215,9 +215,9 @@ You decide on a bar and the order fills on the next one; there is no same-bar lo
 
 <br>
 
-A market order crosses the spread and fills at the next open; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better. A limit that is already through the market when the bar opens is marketable, so it pays the taker fee even though it fills at your price; one that the bar has to come to pays the maker fee. A `post_only` limit that would cross is rejected rather than turned into a taker. Fills are volume-capped by `max_fill_fraction`, so one order cannot take more than that slice of a bar. Resting orders and the market orders waiting for the next bar each use `max_open_orders` slots, and beyond either cap a new order is rejected; the market queue empties every bar. The cap is per order, so several orders resolving against one bar each get their own slice ([ADR 0005](Decisions.md)), which is why the queue is bounded at all.
+A market order crosses the spread and fills at the next open; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better. A limit that is already through the market when the bar opens is marketable, so it pays the taker fee even though it fills at your price; one that the bar has to come to pays the maker fee. A `post_only` limit that would cross is rejected rather than turned into a taker. Fills are volume-capped by `max_fill_fraction`, so one order cannot take more than that slice of a bar. Resting orders and the market orders waiting for the next bar each use `max_open_orders` slots, and beyond either cap a new order is rejected; the market queue empties every bar. The cap is per order, so several orders resolving against one bar each get their own slice ([ADR 0003](Decisions.md)), which is why the queue is bounded at all.
 
-The position is netted: net long, net short, or flat, never both. Adding on the same side averages the entries; reducing or closing books the realized PnL on the part closed; flipping through zero closes the old side and reopens the rest at the new fill. On spot the position cannot go below zero: a sell is clamped to the current long, since shorting base needs a borrow this tier does not model, so a short and a flip through zero are perp behaviors ([ADR 0015](Decisions.md)).
+The position is netted: net long, net short, or flat, never both. Adding on the same side averages the entries; reducing or closing books the realized PnL on the part closed; flipping through zero closes the old side and reopens the rest at the new fill. On spot the position cannot go below zero: a sell is clamped to the current long, since shorting base needs a borrow this tier does not model, so a short and a flip through zero are perp behaviors ([ADR 0022](Decisions.md)).
 
 ### The state
 
@@ -243,7 +243,7 @@ Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `st
 
 ### Observations
 
-`observation(lookback)` returns a read-only numpy `(rows, 5)` view of the `lookback` bars ending at the current bar, straight onto the shared candle buffer with no copy. It is `rows = lookback`, or fewer early in the series. The array is read-only, and because the candle buffer is never mutated a view held across a `step()` stays a snapshot of that tick's window rather than going stale; it stays valid for the whole life of the engine (numpy keeps the engine alive as the array's base), so you never need to copy it ([ADR 0008](Decisions.md)).
+`observation(lookback)` returns a read-only numpy `(rows, 5)` view of the `lookback` bars ending at the current bar, straight onto the shared candle buffer with no copy. It is `rows = lookback`, or fewer early in the series. The array is read-only, and because the candle buffer is never mutated a view held across a `step()` stays a snapshot of that tick's window rather than going stale; it stays valid for the whole life of the engine (numpy keeps the engine alive as the array's base), so you never need to copy it ([ADR 0062](Decisions.md)).
 
 `eng.data` is the same kind of read-only, zero-copy view over the whole `(T, 5)` series rather than a window (columns are OHLCV by position). It is the full-series companion to `observation`, cursor-independent.
 
@@ -253,7 +253,7 @@ Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `st
 
 `run(strategy)` resets, calls `strategy.init(engine)` if it exists, then for each bar calls `strategy.next(state, engine)` and steps, returning the final state. The strategy places orders through the engine, so it can use any order type. It should not call `step` itself; the driver does.
 
-If the strategy carries a `warmup`, read once after `init` so it can be computed there, `next` is not called until that many bars exist. The bars before it still advance and still fill whatever is resting; only the decision is skipped. It replaces the `if i < self.slow: return` a strategy would otherwise open with, and it closes what that guard is really for: on an early bar `close[i - 50]` is a **negative** index, numpy resolves it from the end of the array, and the rule reads prices from the future, reports a wonderful result, and raises nothing ([ADR 0050](Decisions.md)).
+If the strategy carries a `warmup`, read once after `init` so it can be computed there, `next` is not called until that many bars exist. The bars before it still advance and still fill whatever is resting; only the decision is skipped. It replaces the `if i < self.slow: return` a strategy would otherwise open with, and it closes what that guard is really for: on an early bar `close[i - 50]` is a **negative** index, numpy resolves it from the end of the array, and the rule reads prices from the future, reports a wonderful result, and raises nothing ([ADR 0049](Decisions.md)).
 
 ```python
 class BuyAndHold:
@@ -273,7 +273,7 @@ With `report=True`, three accessors read the recorded run (each returns `None` w
 - `equity_curve()` returns a numpy array, one equity value per step.
 - `trades()` returns a list of [trade dicts](#trades).
 
-`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. `Engine.stats` is the raw call and takes it as a number, so state it. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0048](Decisions.md)).
+`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. `Engine.stats` is the raw call and takes it as a number, so state it. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0044](Decisions.md)).
 
 <br>
 
@@ -300,7 +300,7 @@ states = b.step_all(actions)                 # positive buys, negative sells, ze
 
 Because the envs are independent, batched stepping is bit-identical to stepping each in a loop. The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`emsl.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
 
-Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0014](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
+Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0066](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
 
 <br>
 
@@ -358,7 +358,7 @@ print(result.equity_curve[-1], len(result.trades))
 
 `Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the trade log cannot always say: a forced close books a row carrying `liquidated`, but an account drained by fees or funding books nothing at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
 
-**`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it takes the median gap between bars, so hourly candles annualize at 8760 without being told and a run whose feed is missing a day is still hourly. It snaps to a real interval only when already within one percent of one, and says so when the spacing matches none: a series typically five hours apart is a mixed or decimated feed, not four-hour candles. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0048](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
+**`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it takes the median gap between bars, so hourly candles annualize at 8760 without being told and a run whose feed is missing a day is still hourly. It snaps to a real interval only when already within one percent of one, and says so when the spacing matches none: a series typically five hours apart is a mixed or decimated feed, not four-hour candles. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0044](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
 
 A strategy uses any order type, the sizing helpers, and the state's `open_orders` to manage risk. This one sizes each entry to half of equity and rests a reduce-only stop-loss under the position:
 
@@ -395,18 +395,18 @@ The stop rests only once a position is held (orders fill on the next bar, so the
 | Key | Unit | Meaning |
 | :--- | :--- | :--- |
 | `total_return_pct`, `net_profit_pct`, `cagr_pct` | percent | Total return (net of fees; both names give the same figure) and annualized return. |
-| `sharpe`, `sortino`, `calmar` | ratio | Risk-adjusted return; annualized. Each is `inf` when it earned something against no measured risk at all, so the set stays orderable ([ADR 0046](Decisions.md)). |
+| `sharpe`, `sortino`, `calmar` | ratio | Risk-adjusted return; annualized. Each is `inf` when it earned something against no measured risk at all, so the set stays orderable ([ADR 0042](Decisions.md)). |
 | `max_drawdown_pct`, `volatility_pct`, `exposure_pct` | percent | Largest peak-to-trough decline; annualized volatility; fraction of steps holding a position. |
 | `win_rate` | fraction | Fraction of closed trades whose PnL net of the recorded fee is positive. |
 | `profit_factor` | ratio | Net profit over net loss, both after fees (`inf` with no losses). |
 | `num_trades` | count | Closed round trips. A position still open at the end is in the return and the exposure but in none of these four. |
 | `avg_trade_pct` | percent | Mean net trade PnL as a percent of **starting** equity, not of the equity the trade opened with. |
 | `num_fills` | count | Fills applied over the run. Zero beside orders you placed means the feed never filled them. |
-| `funding_paid` | quote | Funding over the run: positive is paid away, negative is received. Zero on spot. A perp result cannot be decomposed without it, since a carry and a direction otherwise look the same ([ADR 0017](Decisions.md)). |
+| `funding_paid` | quote | Funding over the run: positive is paid away, negative is received. Zero on spot. A perp result cannot be decomposed without it, since a carry and a direction otherwise look the same ([ADR 0030](Decisions.md)). |
 
-Two things about ranking, because `tune` takes an argmax over these. `calmar` scales a **negative** return by its drawdown rather than dividing by it, so the losing runs order by how much they lost; dividing made the deepest bust score highest, since the deeper the loss the larger the divisor ([ADR 0072](Decisions.md)). And `cagr_pct` saturates rather than escaping to infinity: annualizing raises the growth ratio to one-over-the-years, so on minute candles the exponent leaves the float range and every profitable run ties at the top. An annualized rate off a few hours is an extrapolation and not a measurement, so rank a sub-year run on `total_return_pct` or `sharpe`.
+Two things about ranking, because `tune` takes an argmax over these. `calmar` scales a **negative** return by its drawdown rather than dividing by it, so the losing runs order by how much they lost; dividing made the deepest bust score highest, since the deeper the loss the larger the divisor ([ADR 0043](Decisions.md)). And `cagr_pct` saturates rather than escaping to infinity: annualizing raises the growth ratio to one-over-the-years, so on minute candles the exponent leaves the float range and every profitable run ties at the top. An annualized rate off a few hours is an extrapolation and not a measurement, so rank a sub-year run on `total_return_pct` or `sharpe`.
 
-The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0009](Decisions.md)). They read each trade's `net_pnl`, its whole round trip after fees, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADRs 0029, 0030](Decisions.md)). So they reproduce from the log:
+The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0036](Decisions.md)). They read each trade's `net_pnl`, its whole round trip after fees, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADRs 0041, 0037](Decisions.md)). So they reproduce from the log:
 
 ```python
 win_rate = sum(t["net_pnl"] > 0 for t in result.trades) / len(result.trades)
@@ -414,7 +414,7 @@ win_rate = sum(t["net_pnl"] > 0 for t in result.trades) / len(result.trades)
 
 `num_fills` is the canary for a dead feed: a series with no volume fills nothing, silently and correctly, and without it that run is indistinguishable from a strategy that never triggered. `periods_per_year` must be finite and positive.
 
-The conventions (risk-free rate, sample deviation, annualization) are fixed in [ADR 0007](Decisions.md).
+The conventions (risk-free rate, sample deviation, annualization) are fixed in [ADR 0040](Decisions.md).
 
 ### Trades
 
@@ -426,11 +426,11 @@ Each entry in `trades()` is one closed portion of a position:
 | `side` | Side of the position that closed (`buy` for a long, `sell` for a short). |
 | `size` | Base size closed. |
 | `entry_price`, `exit_price` | Average entry before the fill, and the fill price. |
-| `fees` | The whole round-trip fee on the closed size: its share of the position's entry fee plus the closing fill's fee ([ADR 0030](Decisions.md)). |
+| `fees` | The whole round-trip fee on the closed size: its share of the position's entry fee plus the closing fill's fee ([ADR 0037](Decisions.md)). |
 | `pnl` | Gross realized price PnL, before fees. |
-| `net_pnl` | `pnl - fees`: what the trade actually added to the account. The trade statistics are built from this, so they reproduce from the log ([ADR 0030](Decisions.md)). |
+| `net_pnl` | `pnl - fees`: what the trade actually added to the account. The trade statistics are built from this, so they reproduce from the log ([ADR 0037](Decisions.md)). |
 | `bars_held` | Bars held, from the position's first entry. |
-| `liquidated` | True when a liquidation force-closed the position rather than an order ([ADRs 0003, 0052](Decisions.md)). Its `exit_price` is where the margin ran out, not the extreme the bar printed, so the loss is bounded by the margin and the account is left with exactly nothing rather than owing. |
+| `liquidated` | True when a liquidation force-closed the position rather than an order ([ADRs 0032, 0033](Decisions.md)). Its `exit_price` is where the margin ran out, not the extreme the bar printed, so the loss is bounded by the margin and the account is left with exactly nothing rather than owing. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, each trade also carries `entry_time` and `exit_time`, the index values at those ticks. A raw numpy input has no index, so its trades stay tick-only.
 
@@ -438,7 +438,7 @@ When the `Backtester` is given a pandas DataFrame or parquet input with a dateti
 
 ## Tuning
 
-`emsl.tune` searches a strategy's parameters for the configuration that maximizes (or minimizes) an objective. Each trial is a full backtest through the same `Backtester` above, so the `Strategy` you backtest is the `Strategy` you tune: declare the tunable parameters as constructor arguments and store them as fields, and `tune` builds a fresh strategy per trial from the sampled values. The search runs across worker processes, rebuilding the engine in each worker rather than shipping a live one across the boundary, so it scales over cores ([ADR 0021](Decisions.md)). It needs optuna and cloudpickle, which the `[tune]` extra pulls in; emsl is not on PyPI, so install it from a release as the [README](../README.md#install) shows.
+`emsl.tune` searches a strategy's parameters for the configuration that maximizes (or minimizes) an objective. Each trial is a full backtest through the same `Backtester` above, so the `Strategy` you backtest is the `Strategy` you tune: declare the tunable parameters as constructor arguments and store them as fields, and `tune` builds a fresh strategy per trial from the sampled values. The search runs across worker processes, rebuilding the engine in each worker rather than shipping a live one across the boundary, so it scales over cores ([ADR 0051](Decisions.md)). It needs optuna and cloudpickle, which the `[tune]` extra pulls in; emsl is not on PyPI, so install it from a release as the [README](../README.md#install) shows.
 
 ```python
 from emsl import tune
@@ -485,7 +485,7 @@ best = result.best_strategy()             # a fresh SmaCross with the best param
 
 `TuneResult.best_stats` is in-sample. It is the maximum of a noisy score over every trial, on the bars the search was allowed to see, so it is biased upward by the act of searching and by more the harder you searched. Quoting it as a result is the most common way a backtest misleads, and no statistic computed from the same bars can undo it.
 
-`oos=0.3` fits every trial on the first 70% of the series and re-runs the winner on the last 30%, which no trial ever saw, into `TuneResult.oos_stats` and `TuneResult.oos_result`. The split is always the **end** of the series, never a random slice, because a strategy is a claim about what comes next and shuffling would let a trial fit around the very bars meant to test it ([ADR 0049](Decisions.md)).
+`oos=0.3` fits every trial on the first 70% of the series and re-runs the winner on the last 30%, which no trial ever saw, into `TuneResult.oos_stats` and `TuneResult.oos_result`. The split is always the **end** of the series, never a random slice, because a strategy is a claim about what comes next and shuffling would let a trial fit around the very bars meant to test it ([ADR 0053](Decisions.md)).
 
 Two costs worth knowing. The search sees less data, which matters on a short series. And the winner warms up **inside** the held-out bars rather than being handed history across the boundary, so a strategy with a 200-bar warm-up gives up its first 200 bars there; that understates the out-of-sample result rather than flattering it, which is the direction to err in.
 
@@ -518,7 +518,7 @@ Leaving `oos` out warns, because the default cannot be silent without being a tr
 | `seed` | `None` | Seeds the sampler. |
 | `direction` | `"maximize"` | `"maximize"` or `"minimize"`. |
 | `verbose` | `False` | `True` restores optuna's per-trial logging. |
-| `min_trades` | 0 | Fails a trial that closed fewer round trips ([ADR 0034](Decisions.md)). |
+| `min_trades` | 0 | Fails a trial that closed fewer round trips ([ADR 0052](Decisions.md)). |
 
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
@@ -545,7 +545,7 @@ emsl.chart(frame=candles, run=forward.result).show()
 
 `train` is the share of the series the first fit gets; the rest is divided into `windows` stretches, each traded with parameters chosen on the bars **before** it and never on itself. `anchored=True` fits on everything before each window instead of on a moving block. Everything else is `tune`'s, and each window is an ordinary search.
 
-**`result` is an ordinary `BacktestResult`**, so every metric and the chart take it directly with no special case. That is not a convenience, it is the construction: rather than stitching per-window curves together, a composite strategy carries the schedule and delegates each bar to the window that owns it, and the whole thing is **one real engine pass**. So the fills are real, funding is real, the account is continuous across the seams, and every warm-up has the history before its own window to use rather than restarting at the boundary ([ADR 0057](Decisions.md)). The curve is flat until the first window, because before that there was nothing fitted to trade.
+**`result` is an ordinary `BacktestResult`**, so every metric and the chart take it directly with no special case. That is not a convenience, it is the construction: rather than stitching per-window curves together, a composite strategy carries the schedule and delegates each bar to the window that owns it, and the whole thing is **one real engine pass**. So the fills are real, funding is real, the account is continuous across the seams, and every warm-up has the history before its own window to use rather than restarting at the boundary ([ADR 0056](Decisions.md)). The curve is flat until the first window, because before that there was nothing fitted to trade.
 
 | Field | Meaning |
 | :--- | :--- |
@@ -559,7 +559,7 @@ emsl.chart(frame=candles, run=forward.result).show()
 
 `decay` is the interpretable part. A large positive number says the search keeps finding things that do not survive the next stretch, which is the failure a single holdout can see once and this one sees repeatedly. Positive carries that meaning in both directions: under `direction="minimize"` a smaller traded score is the better one, so the gap is turned over before it is averaged rather than reading backwards. `consistency` is not turned over, it is withheld, because it counts stretches that cleared zero and a minimized objective is a magnitude that never goes under zero, so the share would be a constant rather than a reading.
 
-**`traded` is read off the run that happened**, through [`segment`](#over-time-rather-than-in-total), seeded from the balance the account carried into that stretch. It used to come from a fresh isolated backtest over the window's bars, which is the stitching ADR 0057 refuses one level down: that run restarts every warm-up inside the window, so a winner needing 150 bars of history never had `next` called on a 60-bar stretch and the window reported a tidy `0.0`, indistinguishable from a stretch that genuinely broke even ([ADR 0060](Decisions.md)). `bars_traded` is beside it for the same reason: it counts the bars of the window its own winner could decide on, so a window nobody traded reads as one. `traded` is `None` when the objective is a callable, since a callable takes a whole result and a window is a slice of one.
+**`traded` is read off the run that happened**, through [`segment`](#over-time-rather-than-in-total), seeded from the balance the account carried into that stretch. It used to come from a fresh isolated backtest over the window's bars, which is the stitching ADR 0056 refuses one level down: that run restarts every warm-up inside the window, so a winner needing 150 bars of history never had `next` called on a 60-bar stretch and the window reported a tidy `0.0`, indistinguishable from a stretch that genuinely broke even ([ADR 0057](Decisions.md)). `bars_traded` is beside it for the same reason: it counts the bars of the window its own winner could decide on, so a window nobody traded reads as one. `traded` is `None` when the objective is a callable, since a callable takes a whole result and a window is a slice of one.
 
 **Window length and step are hyperparameters too.** Trying five layouts and reporting the best is the same mistake one level up, and nothing here can catch you at it.
 
@@ -602,7 +602,7 @@ metrics.cost_curve(SmaCross(20, 60), candles, costs=(0.0, 2.0, 5.0, 10.0, 20.0))
 metrics.breakeven_bps(SmaCross(20, 60), candles)  # the round-trip cost that kills it
 ```
 
-Both re-run the backtest, so they take the strategy and the data rather than a finished result. Costs are **round trip** in basis points, split evenly across the two sides, so `10` is five in and five out. A `Strategy` subclass is rebuilt for each run; an instance has its attributes put back as they were before each one, so your configuration survives and nothing a previous run left does ([ADR 0103](Decisions.md)). Either way every run starts from the same strategy, which is the whole premise of a sweep that moves only the fee. Anything else you pass goes to the `Backtester` unchanged, except `fee_taker` and `fee_maker`, which the sweep sets itself and refuses as a contradiction. `breakeven_bps` returns `None` when the strategy already loses for free, and the ceiling when it survives all the way there.
+Both re-run the backtest, so they take the strategy and the data rather than a finished result. Costs are **round trip** in basis points, split evenly across the two sides, so `10` is five in and five out. A `Strategy` subclass is rebuilt for each run; an instance has its attributes put back as they were before each one, so your configuration survives and nothing a previous run left does ([ADR 0058](Decisions.md)). Either way every run starts from the same strategy, which is the whole premise of a sweep that moves only the fee. Anything else you pass goes to the `Backtester` unchanged, except `fee_taker` and `fee_maker`, which the sweep sets itself and refuses as a contradiction. `breakeven_bps` returns `None` when the strategy already loses for free, and the ceiling when it survives all the way there.
 
 ### The shape of the ride
 
@@ -627,9 +627,9 @@ metrics.rolling_sharpe(result, window=720)            # length T, aligned, NaN w
 
 `buy_and_hold(result, frame)` answers the first question anyone asks, with the excess return, the beta against holding, and the information ratio.
 
-`excursions(result, frame)` gives the worst and best each trade went while it was open, in percent of its entry. A trade log says what a rule earned; this says what it lived through, and it is the direct answer to where a stop belongs. Both are a **bound rather than an exact figure, and neither overstates**: a bar prints its open first and its close last and nothing else in it is ordered, so the bar a trade entered on counts only from the fill forward to its close, the bar it left on only from its open up to the fill, and the bars strictly between count whole ([ADR 0095](Decisions.md)). A market entry did live through its whole entry bar and does not get credited for it, because nothing in a trade row says which kind of order opened the position. `session_buckets(result, frame, by="hour")` groups trade PnL by hour of day or day of week, booked at the exit bar; it needs the DataFrame rather than the array, because only a real clock can be bucketed by hour. Crypto trades around the clock and an hourly strategy routinely has its whole edge inside the few hours a day funding is stamped, which one bucket holding the entire result will show faster than any statistic. Hours are UTC, and **weekdays run Monday 0 to Sunday 6**, matching `datetime.weekday` and pandas' `dayofweek` so a key reads against any other clock you are holding.
+`excursions(result, frame)` gives the worst and best each trade went while it was open, in percent of its entry. A trade log says what a rule earned; this says what it lived through, and it is the direct answer to where a stop belongs. Both are a **bound rather than an exact figure, and neither overstates**: a bar prints its open first and its close last and nothing else in it is ordered, so the bar a trade entered on counts only from the fill forward to its close, the bar it left on only from its open up to the fill, and the bars strictly between count whole ([ADR 0038](Decisions.md)). A market entry did live through its whole entry bar and does not get credited for it, because nothing in a trade row says which kind of order opened the position. `session_buckets(result, frame, by="hour")` groups trade PnL by hour of day or day of week, booked at the exit bar; it needs the DataFrame rather than the array, because only a real clock can be bucketed by hour. Crypto trades around the clock and an hourly strategy routinely has its whole edge inside the few hours a day funding is stamped, which one bucket holding the entire result will show faster than any statistic. Hours are UTC, and **weekdays run Monday 0 to Sunday 6**, matching `datetime.weekday` and pandas' `dayofweek` so a key reads against any other clock you are holding.
 
-**Each of the three checks that the frame is the one the run saw, and they do not check the same thing** ([ADR 0059](Decisions.md)). `excursions` and `session_buckets` read the run's own tick indices straight into these bars, so they need the *identical* series and compare its fingerprint against `result.data_hash`; another asset of the same length made a losing trade report both of its excursions as gains. `buy_and_hold` needs only the same *number* of bars, because a different asset there is the whole point: `beta` and `information_ratio` are benchmark statistics and are only interesting against something other than what you traded, so benchmarking an ETH strategy against holding BTC is a supported question. All three used to absorb a mismatch silently, which is how a 2,000-bar slice of a 100,000-bar frame returned 35 excursion rows out of 1,516 and said nothing.
+**Each of the three checks that the frame is the one the run saw, and they do not check the same thing** ([ADR 0047](Decisions.md)). `excursions` and `session_buckets` read the run's own tick indices straight into these bars, so they need the *identical* series and compare its fingerprint against `result.data_hash`; another asset of the same length made a losing trade report both of its excursions as gains. `buy_and_hold` needs only the same *number* of bars, because a different asset there is the whole point: `beta` and `information_ratio` are benchmark statistics and are only interesting against something other than what you traded, so benchmarking an ETH strategy against holding BTC is a supported question. All three used to absorb a mismatch silently, which is how a 2,000-bar slice of a 100,000-bar frame returned 35 excursion rows out of 1,516 and said nothing.
 
 ### What the number is worth
 
@@ -639,9 +639,9 @@ metrics.rolling_sharpe(result, window=720)            # length T, aligned, NaN w
 
 Three things to know before quoting any of them. The benchmark is stated **annualized**, like everything else here, and de-annualized internally, because handing the estimator an annualized figure is the standard way to get a confidently wrong answer.
 
-The published estimators count bars and assume each is an independent bet, which a strategy holding a position for two days on hourly candles badly violates. So the sample size counted here is `effective_sample(result)`, the standard `n (1 - r) / (1 + r)` at the first autocorrelation, and not the bar count ([ADR 0061](Decisions.md)). The library used to report `autocorrelation(result)` beside these, say in its own docstring that every confidence figure computed from the bar count was therefore overstated, and then compute them from the bar count anyway. Pass `independent=True` for the unadjusted formula. Read `num_trades` too: forty round trips over three thousand bars is forty bets and it is the bets that carry the information.
+The published estimators count bars and assume each is an independent bet, which a strategy holding a position for two days on hourly candles badly violates. So the sample size counted here is `effective_sample(result)`, the standard `n (1 - r) / (1 + r)` at the first autocorrelation, and not the bar count ([ADR 0045](Decisions.md)). The library used to report `autocorrelation(result)` beside these, say in its own docstring that every confidence figure computed from the bar count was therefore overstated, and then compute them from the bar count anyway. Pass `independent=True` for the unadjusted formula. Read `num_trades` too: forty round trips over three thousand bars is forty bets and it is the bets that carry the information.
 
-And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0007](Decisions.md)).
+And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0040](Decisions.md)).
 
 None of them corrects for having searched. `deflated_sharpe(study, null)` does:
 
@@ -658,7 +658,7 @@ A search returns the best of many noisy scores, so its winner is high partly bec
 
 **The null is required, and that is the design rather than an inconvenience.** The threshold depends on how many independent looks were taken and how far the scores scatter, and a TPE search supplies neither honestly: it concentrates its trials in the winning basin, so they are not independent draws and the spread between them *shrinks as it converges*. Computed from the search's own trials this number would grow more permissive the harder you overfit, which is exactly backwards. A random search over the same space is an honest "best of N looks here" and cannot do that ([ADR 0054](Decisions.md)).
 
-**The two arguments answer different halves of the threshold.** The null says how far a sharpe scatters over this space and these bars, and nothing else. How many times you looked is a property of your search, so it is read off the study: every trial of it, including the failed ones, because a configuration you evaluated and rejected is one you evaluated. Taking the count off the null instead answered about the wrong search, and made a winner more convincing the smaller the null ([ADR 0058](Decisions.md)).
+**The two arguments answer different halves of the threshold.** The null says how far a sharpe scatters over this space and these bars, and nothing else. How many times you looked is a property of your search, so it is read off the study: every trial of it, including the failed ones, because a configuration you evaluated and rejected is one you evaluated. Taking the count off the null instead answered about the wrong search, and made a winner more convincing the smaller the null ([ADR 0055](Decisions.md)).
 
 Five things are refused rather than guessed: a null that is not a random search, a null over different bars (checked by fingerprint), a search that selected on something other than `sharpe`, a null too small to set a threshold, and a null carrying a `min_trades` floor, since an activity floor keeps the trials that traded most and those scatter less than the space does. A null thinner than the search it judges warns instead of raising. `deflation_threshold(spread, looks)` is the bar itself, if you want to see it.
 
@@ -674,7 +674,7 @@ A `BacktestResult` carries `config` (the engine settings it ran under), `data_ha
 metrics.compare({"cheap": cheap_run, "dear": expensive_run})
 ```
 
-prints one row per run, leading with the data fingerprint, and returns the rows. `keys=` picks the columns, and a key no result reports is refused rather than printed as the word `None` in every row, which reads as a run that scored nothing instead of a column that does not exist. A notebook accumulates a great many backtests and nothing on a bare result says which bars or which fees produced it, so "was Tuesday's 2.1 sharpe on the same costs as today's 1.9" had no answer at all ([ADR 0051](Decisions.md)). Defining `__repr__` on a tunable strategy is worth it here: two rows both reading `SmaCross` tell you nothing.
+prints one row per run, leading with the data fingerprint, and returns the rows. `keys=` picks the columns, and a key no result reports is refused rather than printed as the word `None` in every row, which reads as a run that scored nothing instead of a column that does not exist. A notebook accumulates a great many backtests and nothing on a bare result says which bars or which fees produced it, so "was Tuesday's 2.1 sharpe on the same costs as today's 1.9" had no answer at all ([ADR 0039](Decisions.md)). Defining `__repr__` on a tunable strategy is worth it here: two rows both reading `SmaCross` tell you nothing.
 
 <br>
 
@@ -707,9 +707,9 @@ class Cross(emsl.Strategy):
 | Participation | `obv(close, volume)`, `mfi(high, low, close, volume, length=14)` |
 | Comparison | `shift(values, bars=1)`, `change(values, bars=1)`, `crossover(values, other)`, `crossunder(values, other)` |
 
-**The comparison group is the one that is about safety rather than convenience.** `shift(values, n)` is how you look back: written by hand, `values[i - n]` on an early bar is a negative index, which numpy resolves from the END of the array, so the rule reads a price from the far future and raises nothing. `Strategy.warmup` ([ADR 0050](Decisions.md)) closes that only when the declared warm-up is at least as deep as the lookback, and declaring the indicator's warm-up and then reaching further back inside `next` is the natural way to get it wrong. `shift` pads rather than wrapping, so there is no index left to get wrong.
+**The comparison group is the one that is about safety rather than convenience.** `shift(values, n)` is how you look back: written by hand, `values[i - n]` on an early bar is a negative index, which numpy resolves from the END of the array, so the rule reads a price from the far future and raises nothing. `Strategy.warmup` ([ADR 0049](Decisions.md)) closes that only when the declared warm-up is at least as deep as the lookback, and declaring the indicator's warm-up and then reaching further back inside `next` is the natural way to get it wrong. `shift` pads rather than wrapping, so there is no index left to get wrong.
 
-`crossover` and `crossunder` return **booleans**, and they are the only functions here that do not pad with `NaN`. `bool(nan)` is `True` in Python, so a float warm-up would fire a rule on precisely the bars where nothing is known; they pad with `False` instead ([ADR 0063](Decisions.md)). `other` may be a second series or a plain number, since crossing a level is the commoner case:
+`crossover` and `crossunder` return **booleans**, and they are the only functions here that do not pad with `NaN`. `bool(nan)` is `True` in Python, so a float warm-up would fire a rule on precisely the bars where nothing is known; they pad with `False` instead ([ADR 0060](Decisions.md)). `other` may be a second series or a plain number, since crossing a level is the commoner case:
 
 ```python
 class Cross(emsl.Strategy):
@@ -733,7 +733,7 @@ class Cross(emsl.Strategy):
 
 *Where there is nothing to say, it says nothing rather than a number.* A window with no range has no position inside it, so `stoch` and `willr` are a gap there rather than a fifty; a window that traded nothing has no weighted price, so `vwap` and `vwma` are a gap rather than an unweighted average; a market with neither gains nor losses has no ratio of strength to weakness, so `rsi` and `mfi` are a gap rather than the 100 some implementations report, which would fire an overbought rule on a market that has not moved. `obv` restarts its running total after a gap rather than carrying across one, on the same rule the exponential averages use.
 
-*Nothing knows about the engine.* These are functions of arrays: no state, no engine, no pandas needed. Computing once in `init` and handing the same array to the chart is what keeps the line on screen from drifting from the line that made the decision ([ADR 0042](Decisions.md)).
+*Nothing knows about the engine.* These are functions of arrays: no state, no engine, no pandas needed. Computing once in `init` and handing the same array to the chart is what keeps the line on screen from drifting from the line that made the decision ([ADR 0073](Decisions.md)).
 
 Functions with more than one output return a named object rather than a tuple to unpack, so a caller cannot one day unpack three anonymous arrays in the wrong order. There are five of them: `Bands` (`.upper`, `.middle`, `.lower`) from `bbands`, `keltner` and `donchian`; `Macd` (`.line`, `.signal`, `.histogram`); `Stochastic` (`.k`, `.d`); `Trend` (`.adx`, `.plus`, `.minus`); and `Channel` from `supertrend`, which adds `.direction` to the three band lines. Read `.direction`, which is `1.0` while long and `-1.0` while short, rather than comparing the close against the line: the line is the edge in force and that comparison is what set it.
 
@@ -745,7 +745,7 @@ Three behaviours worth knowing. `vwap` is rolling over `length` bars rather than
 
 `emsl.chart` draws a frame, your own arrays and a run. `show()` puts the chart in the notebook cell, and it is stored in the `.ipynb`, so reopening that notebook shows the same charts with no kernel running. `save(path)` writes one HTML file that opens in a browser instead.
 
-It computes nothing and knows no indicator names: you bring arrays, it turns them into marks ([ADR 0042](Decisions.md)). Everything is precomputed, which is what lets a chart outlive the process that made it ([ADR 0041](Decisions.md)). No dependency beyond numpy and the standard library: pandas is duck-typed, and IPython is imported only inside `show`.
+It computes nothing and knows no indicator names: you bring arrays, it turns them into marks ([ADR 0073](Decisions.md)). Everything is precomputed, which is what lets a chart outlive the process that made it ([ADR 0072](Decisions.md)). No dependency beyond numpy and the standard library: pandas is duck-typed, and IPython is imported only inside `show`.
 
 ```python
 import emsl
@@ -768,6 +768,6 @@ emsl.chart(frame, [                                  # matched by type, in any o
 
 `chart(frame, *args, marks=, run=, panels=, focus=, candle_color=, theme=, palette=, height=, title=, future=0, stats=, trades=True, drawdown=, notes=)` returns a `Chart`, with `show()` for a notebook cell, `save(path)` for a file, and `spec()` for the underlying document. `frame` is a DataFrame with a DatetimeIndex or a parquet path, narrower than the `Backtester` deliberately: a chart cannot omit its x axis, and fabricating one is how a file ends up reading 1970.
 
-Arrays are read by position. Length `T` maps entry `i` to bar `i` and length `T - 1` maps entry `i` to bar `i + 1`, which is what `equity_curve` and a diff are; any other length raises and names both numbers ([ADR 0037](Decisions.md)). A `NaN` is drawn as a gap rather than a dropped row ([ADR 0038](Decisions.md)).
+Arrays are read by position. Length `T` maps entry `i` to bar `i` and length `T - 1` maps entry `i` to bar `i + 1`, which is what `equity_curve` and a diff are; any other length raises and names both numbers ([ADR 0068](Decisions.md)). A `NaN` is drawn as a gap rather than a dropped row ([ADR 0069](Decisions.md)).
 
 The full contract, the mark reference, the padding helpers for values recorded inside `next`, and what cannot be charted are in the [Plotting](Plotting.md) guide.

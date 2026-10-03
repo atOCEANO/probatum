@@ -8,8 +8,8 @@ use crate::order::{Order, OrderId};
 /// A bounded set of resting orders held in a fixed number of slots, so the book
 /// itself never grows or reallocates once built. Resolution follows slot order,
 /// and `place` reuses the first free slot, so a cancelled slot hands its priority
-/// to the next order placed (ADR 0006). Slots are allocated up front, so the
-/// caller's capacity is bounded at the Python boundary (ADR 0027).
+/// to the next order placed (ADR 0018). Slots are allocated up front, so the
+/// caller's capacity is bounded at the Python boundary (ADR 0023).
 #[derive(Clone, Debug)]
 pub struct RestingOrderBook {
     slots: Vec<Option<Order>>,
@@ -87,7 +87,7 @@ impl RestingOrderBook {
     /// Put `order` back in the slot it came from, rather than in the first free one
     /// `place` would choose. Only for undoing a `cancel_at` that came to nothing:
     /// resolution follows slot order, so restoring an order anywhere else hands it
-    /// a priority it did not have (ADR 0083).
+    /// a priority it did not have (ADR 0017).
     pub fn restore(&mut self, index: usize, order: Order) {
         if let Some(slot) = self.slots.get_mut(index) {
             *slot = Some(order);
@@ -95,7 +95,7 @@ impl RestingOrderBook {
     }
 
     /// Remove every resting order, freeing all slots, so the next `place` takes
-    /// slot 0 and the priority that comes with it (ADR 0006).
+    /// slot 0 and the priority that comes with it (ADR 0018).
     pub fn cancel_all(&mut self) {
         for slot in &mut self.slots {
             *slot = None;

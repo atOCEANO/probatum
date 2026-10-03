@@ -4,7 +4,7 @@ Three steps and no fourth: build a compact spec dict, substitute it and the
 vendored renderer into a template, and hand the string to a notebook cell or a
 file. A cell's output is stored in the notebook, so a chart drawn this way is
 still there, and still interactive, when the notebook is reopened with no kernel
-behind it. There is no server, no build step and no bundler (ADR 0041).
+behind it. There is no server, no build step and no bundler (ADR 0072).
 
 This module computes nothing about your data. The one number it derives is the
 drawdown of the engine's own equity curve, which is a second view of a number the
@@ -35,7 +35,7 @@ _STATIC = _HERE / "_static"
 
 # an explicit ordered tuple rather than a directory glob: nothing here executes at
 # load, so the order is documentation, but a glob would silently ship any file
-# that happened to land in _static (ADR 0043)
+# that happened to land in _static (ADR 0074)
 _ASSETS = (
     "core.js",
     "primitives/band.js",
@@ -327,7 +327,7 @@ def _height(value):
 
 
 def _start_for(size, num_bars, label, ahead=0):
-    # the bar index a series of this length begins at (ADR 0037)
+    # the bar index a series of this length begins at (ADR 0068)
     if size == num_bars:
         return 0
     if size == num_bars - 1:
@@ -350,9 +350,9 @@ def _align(values, num_bars, label, places=8, ahead=0):
     # one of those is to pad it to T. It is that drawing a short array early is
     # the visual signature of lookahead, and that the engine records an equity
     # point only on a real advance, so its entry i is the account at tick i+1
-    # (ADR 0037). The leading non-finite run folds into i0, so a rolling warm-up
+    # (ADR 0068). The leading non-finite run folds into i0, so a rolling warm-up
     # costs no bytes and the alignment stays exact; an interior gap stays in place
-    # as None, because a hole in the middle is information (ADR 0038)
+    # as None, because a hole in the middle is information (ADR 0069)
     start = _start_for(len(values), num_bars, label, ahead)
     finite = np.isfinite(values)
     if not finite.any():
@@ -516,7 +516,7 @@ def _place(extent, price):
     # Range overlap was the obvious rule and it carries no information about
     # units: an oscillator bounded 0 to 100 overlaps a coin priced 20 to 90, rides
     # the candles and stretches the axis. This rule cannot flatten them, because
-    # the threshold is the guarantee (ADR 0039)
+    # the threshold is the guarantee (ADR 0070)
     if extent is None or price is None or price[1] <= price[0]:
         return True
     span = max(price[1], extent[1]) - min(price[0], extent[0])
@@ -789,7 +789,7 @@ def _check_log(panels, marks, names, ohlc, tracks, ahead=0):
                 continue
             # the index into the array is not the bar it is drawn on: a T-1 series
             # starts at bar 1, and naming a bar one early is exactly the confusion
-            # the alignment contract exists to prevent (ADR 0037)
+            # the alignment contract exists to prevent (ADR 0068)
             at = int(bad[0])
             where = "" if start is None else f" at bar {start + at}"
             raise ValueError(
@@ -912,7 +912,7 @@ def _notes(notes):
 # alpha compositions the renderer would otherwise build by concatenating a byte
 # onto one of these, in two files that had to agree on the byte. An alpha is a
 # reading somebody could disagree with, so it is chosen here and crosses the seam
-# as a colour (ADR 0115)
+# as a colour (ADR 0076)
 _ALPHAS = (
     ("volUp", "up", "66"), ("volDown", "down", "66"),
     ("equityTop", "s1", "44"), ("equityBottom", "s1", "00"),
@@ -1131,7 +1131,7 @@ def chart(
     accepted, ``T + future``, drawn from bar 0.
 
     Nothing here computes anything about your data, and nothing is fetched at any
-    point: the result is one HTML document carrying its own renderer (ADR 0041).
+    point: the result is one HTML document carrying its own renderer (ADR 0072).
     """
     if frame is None:
         raise TypeError(
@@ -1259,7 +1259,7 @@ def chart(
         # balance, and the engine takes it from the balance, so a first bar that lost
         # money drew a flat zero panel under a headline reading the engine's own
         # number. Capped for the same reason the engine caps it: a bust past zero is
-        # 100% down, not more (ADR 0042)
+        # 100% down, not more (ADR 0073)
         start = getattr(result, "initial", None)
         opened = equity if start is None else np.concatenate(([float(start)], equity))
         peak = np.maximum.accumulate(opened)[-len(equity):]
@@ -1273,7 +1273,7 @@ def chart(
         # first bar fell twenty percent and then recovered to exactly where it
         # started reported +25.00% in both places while the headline above the
         # chart, which reads the engine, correctly said +0.0%. The account before
-        # its first advance is a real datum, not a pad, which is why ADR 0042
+        # its first advance is a real datum, not a pad, which is why ADR 0073
         # already seeds the drawdown peak from it
         if start is not None:
             equity = np.concatenate(([float(start)], equity))

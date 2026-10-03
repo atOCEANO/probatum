@@ -1,13 +1,13 @@
 //! The next-bar fill model. An order decided at the close of one bar fills on the
 //! NEXT bar, so a fill is never priced off information the decision could not have
 //! seen. Market fills are takers, limit fills are makers, and a stop triggers and
-//! then fills as a taker. See ADR 0004 (slippage) and ADR 0005 (volume cap).
+//! then fills as a taker. See ADR 0002 (slippage) and ADR 0003 (volume cap).
 
 use emsl_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
 
 /// The most a taker fill may be moved against itself, as a fraction of the
 /// reference price. A slip of 1.0 would price a sell at zero and anything beyond
-/// it below zero, which is not a trade, so the total is held just under 1 (ADR 0024).
+/// it below zero, which is not a trade, so the total is held just under 1 (ADR 0006).
 const MAX_SLIP: f64 = 0.99;
 
 /// The cost side of execution: how far a market order slips and how much of a bar
@@ -18,14 +18,14 @@ pub struct FillModel {
     pub slippage_bps: Bps,
     /// The most of a bar's volume ONE order may take, as a fraction (1.0 is the
     /// whole bar), so no single fill exceeds that slice of what the bar traded.
-    /// Volume is in base units, as an order's size is (ADR 0005). The cap is per
+    /// Volume is in base units, as an order's size is (ADR 0003). The cap is per
     /// order, not a shared per-bar budget: several orders resolving against the
     /// same bar each get it, which is why the queue of pending market orders is
-    /// bounded rather than unlimited (ADR 0047).
+    /// bounded rather than unlimited (ADR 0010).
     pub max_fill_fraction: f64,
     /// Market-impact coefficient: extra adverse slippage equal to `impact` times
     /// the fill's fraction of the bar volume, so a larger order pays more. Zero
-    /// disables it. See ADR 0013.
+    /// disables it. See ADR 0004.
     pub impact: f64,
 }
 
@@ -34,7 +34,7 @@ impl FillModel {
     /// `f64::min` keeps the other operand when one side is NaN, so BOTH sides
     /// carry the guard: a non-finite remaining would launder a NaN size into a
     /// full-cap fill (ADR 0001), and a non-finite fraction would delete the cap
-    /// altogether and let one order take more than the bar traded (ADR 0024).
+    /// altogether and let one order take more than the bar traded (ADR 0006).
     /// The available side must be finite as well as positive: an infinite fraction
     /// leaves `min` with a real operand and would hand back the whole remaining.
     fn cap(&self, order: &Order, bar: &Candle) -> f64 {
@@ -47,10 +47,10 @@ impl FillModel {
     }
 
     /// The adverse slip on a taker fill: the flat rate plus the impact term. Both
-    /// are floored at zero, since slippage is adverse by definition (ADR 0004) and
+    /// are floored at zero, since slippage is adverse by definition (ADR 0002) and
     /// a negative rate would fill better than the market, and the total is capped
     /// below 1 so the reference price can never be dropped to zero or through it
-    /// (ADR 0024).
+    /// (ADR 0006).
     fn taker_slip(&self, size: f64, volume: f64) -> f64 {
         let flat = self.slippage_bps.as_fraction().max(0.0);
         let impact = if volume > 0.0 && volume.is_finite() {
@@ -69,13 +69,13 @@ impl FillModel {
     ///
     /// Slippage and impact are adverse by construction, and impact is bounded above
     /// by nothing the bar shows: it is `impact` times the fraction of the bar's
-    /// volume taken (ADR 0013), and the total is capped only at `MAX_SLIP`, which is
+    /// volume taken (ADR 0004), and the total is capped only at `MAX_SLIP`, which is
     /// a rule about not reaching zero rather than about the market. So an order
     /// taking a whole bar at a coefficient of 0.5 was priced 50% away from anything
     /// the bar traded near. A venue cannot fill outside what traded, and a loss
     /// booked against a price the bar does not show is bounded by nothing at all,
     /// which defeats the liquidation's own guarantee from outside the liquidation
-    /// (ADRs 0052, 0067). The bound is the bar's own range (ADR 0074).
+    /// (ADRs 0033, 0034). The bound is the bar's own range (ADR 0005).
     fn within(side: Side, price: f64, bar: &Candle) -> f64 {
         match side {
             Side::Buy => price.min(bar.high),
@@ -116,7 +116,7 @@ impl FillModel {
     /// so it pays the taker rate. Booking every limit as a maker meant a buy and a
     /// sell resting at the same price both filled on one wide bar as makers, and
     /// since a maker rate is legally a rebate, that straddle ended flat and richer
-    /// every bar, without bound (ADR 0045).
+    /// every bar, without bound (ADR 0009).
     pub fn fill_limit(&self, order: &Order, bar: &Candle) -> Option<Fill> {
         let limit = order.price?.get();
         let touched = match order.side {
@@ -308,7 +308,7 @@ mod tests {
     fn a_non_finite_fill_fraction_does_not_remove_the_cap() {
         // f64::min keeps the other operand when one side is NaN, so an unguarded
         // NaN or inf fraction would let one order take the whole order size
-        // regardless of what the bar traded (ADR 0024)
+        // regardless of what the bar traded (ADR 0006)
         for fraction in [f64::NAN, f64::INFINITY] {
             let f =
                 model(0.0, fraction).fill_market(&market(Side::Buy, 10_000.0), &bar(100.0, 5.0));
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn a_negative_slippage_cannot_improve_a_fill() {
-        // slippage is adverse by definition (ADR 0004); a negative rate would fill
+        // slippage is adverse by definition (ADR 0002); a negative rate would fill
         // a buy below the open and mint equity out of the cost model
         let f = model(-20_000.0, 1.0)
             .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0))
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn a_sell_is_never_priced_at_or_below_zero() {
         // a huge flat slip or a huge impact would otherwise reach 1.0 and price the
-        // fill at zero, or beyond it and price it negative (ADR 0024)
+        // fill at zero, or beyond it and price it negative (ADR 0006)
         let flat = model(50_000.0, 1.0)
             .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0))
             .unwrap();
@@ -422,7 +422,7 @@ mod tests {
         assert!(!made.is_taker);
         // the bar opens at the limit, so it is lifted on arrival: a taker. This is
         // the straddle case, where a buy and a sell at one price both fill on one
-        // bar and used to collect two maker rebates for a flat position (ADR 0045)
+        // bar and used to collect two maker rebates for a flat position (ADR 0009)
         let bar = ohlc(100.0, 101.0, 99.0, 100.0, 1000.0);
         let bought = m.fill_limit(&limit(Side::Buy, 1.0, 100.0), &bar).unwrap();
         let sold = m.fill_limit(&limit(Side::Sell, 1.0, 100.0), &bar).unwrap();
@@ -513,7 +513,7 @@ mod tests {
         assert!(!m.limit_crosses(Side::Sell, Price(105.0), Price(100.0))); // sell above: maker
     }
 
-    // a taker price never leaves the bar that produced it (ADR 0074)
+    // a taker price never leaves the bar that produced it (ADR 0005)
 
     #[test]
     fn impact_cannot_price_a_market_fill_outside_the_bar() {

@@ -4,7 +4,7 @@ A holdout asks whether one winner survives one tail. A walk-forward asks the
 larger question, which is what the whole PROCEDURE would have earned: fit on what
 you had, trade the next stretch, refit, repeat. That is what running a strategy
 actually looks like, and it is the only construction here whose answer is a curve
-rather than a number (ADR 0057).
+rather than a number (ADR 0056).
 
 The curve is produced by one real engine pass, not by stitching. A composite
 strategy carries the schedule of fitted parameters and delegates each bar to the
@@ -75,7 +75,7 @@ class WalkForward:
     ``windows`` is one record per refit: the bars it was fitted on, the bars it
     traded, the parameters it chose, the score it reached in the fit, and
     ``traded``, the score those bars earned **in this run**, read off the real
-    equity curve rather than from a fresh isolated backtest (ADR 0060).
+    equity curve rather than from a fresh isolated backtest (ADR 0057).
 
     ``bars_traded`` is beside it: how many of the window's bars its own winner
     could decide on, once its warm-up is taken off. A window whose warm-up is
@@ -227,7 +227,7 @@ def _score_windows(records, result, composite, objective):
     """Score each window on the bars the composite run actually traded.
 
     The obvious way is a fresh ``Backtester`` over the window alone, and that is
-    the stitching ADR 0057 refuses, one level down. Such a run opens its own
+    the stitching ADR 0056 refuses, one level down. Such a run opens its own
     account and restarts every warm-up inside the window, so a winner whose
     warm-up is longer than its window never has ``next`` called at all and the
     window reports a tidy ``0.0``, indistinguishable from a stretch that genuinely
@@ -238,7 +238,7 @@ def _score_windows(records, result, composite, objective):
     ``metrics.segment``: the window's slice of the real equity curve, seeded from
     the balance carried into it. That is also the only reading in which a loss in
     one stretch shrinks the size available in the next, which is the thing
-    refitting a live strategy actually does (ADR 0060).
+    refitting a live strategy actually does (ADR 0057).
 
     ``bars_traded`` is carried beside it, because a window whose winner could not
     decide on most of its bars is a window whose score means less.

@@ -70,7 +70,7 @@ def test_trades_stay_tick_only_for_numpy_input():
 def test_the_result_carries_the_annualization_its_stats_were_computed_at():
     # anything reading the curve a second time, emsl.metrics most of all, has to
     # reach the numbers this result already reports, and inferring it twice is how
-    # two readings come to disagree (ADR 0048)
+    # two readings come to disagree (ADR 0044)
     with pytest.warns(UserWarning):
         result = Backtester(series()).run(BuyThenClose())
     assert result.periods_per_year == 365.0
@@ -213,7 +213,7 @@ def test_a_frame_was_never_aliased_and_still_is_not():
 
 
 def test_a_warmup_computed_inside_init_is_the_one_that_is_honoured():
-    # ADR 0050 reads it AFTER init, so a strategy can work it out from the data it
+    # ADR 0049 reads it AFTER init, so a strategy can work it out from the data it
     # just looked at. The only test asserting the skip declares warmup as a CLASS
     # attribute, which is already set before init runs, so reading it early passes
     # that one; the fixtures that do compute it inside init fall back to the class

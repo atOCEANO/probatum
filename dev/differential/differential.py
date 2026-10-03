@@ -47,7 +47,7 @@ def config(rng):
         # the book bound was always the default 8, so a full book was reached only
         # by accumulating eight orders and the refusal path was mostly unvisited.
         # Both the resting book and the pending market queue are bounded by this
-        # (ADRs 0027, 0028, 0047), and at 1 every second placement is refused
+        # (ADRs 0023, 0014, 0010), and at 1 every second placement is refused
         max_open_orders=rng.choice([1, 2, 8]),
         leverage=rng.choice([0.0, 3.0, 10.0]) if market == "perp" else 10.0,
         impact=rng.choice([0.0, 0.01, 0.5]),
@@ -58,7 +58,7 @@ def config(rng):
 
 # every order surface the reference models, so the gate exercises all of them.
 # Narrow it with KINDS=limit when a disagreement needs isolating, which is how
-# ADR 0079 was found: whole-surface runs said "limits", and limits alone said
+# ADR 0013 was found: whole-surface runs said "limits", and limits alone said
 # which limit
 KINDS = os.environ.get(
     "KINDS",
@@ -90,14 +90,14 @@ def plan(rng, bars):
             out.append(("close", side, 0.0))
         elif kind == "reduce":
             # deliberately either side: a reduce_only order pointed the wrong way
-            # is clamped to nothing rather than opening the other side (ADR 0028)
+            # is clamped to nothing rather than opening the other side (ADR 0014)
             out.append(("reduce", side, rng.uniform(0.1, 40.0)))
         elif kind in ("reduce_limit", "stop_entry"):
             out.append((kind, side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
         else:
             # `replace` reads the same shape, and its `side` is deliberately
             # ignored by both simulators: a replacement keeps the side of the
-            # order it moves (ADR 0032), which is the claim this exercises
+            # order it moves (ADR 0015), which is the claim this exercises
             out.append((kind, side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
     return out
 
@@ -146,7 +146,7 @@ def place(engine, action, live):
         got = None
         if live:
             # a refused replacement puts the original back under its own id
-            # (ADR 0069), so the slot is only re-pointed when one was placed
+            # (ADR 0016), so the slot is only re-pointed when one was placed
             moved = engine.replace(live[0], action[2], action[3])
             if moved is not None:
                 live[0] = moved
@@ -287,7 +287,7 @@ def main():
         # funding_paid is read as well as position and equity, because a
         # liquidation zeroes the equity on both sides and hides any disagreement
         # about what the account paid on its way there. That blind spot is exactly
-        # where ADR 0082 was hiding: 3,000 cases over six seeds never saw it
+        # where ADR 0031 was hiding: 3,000 cases over six seeds never saw it
         for i, ((pa, ea, fa), (pb, eb, fb)) in enumerate(zip(mine, theirs)):
             if not close_enough(pa, pb) or not close_enough(ea, eb, cfg["quote"]):
                 where = (f"bar {i + 1}: position {pa:.6f} against {pb:.6f}, "

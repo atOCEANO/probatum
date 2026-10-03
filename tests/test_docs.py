@@ -36,13 +36,6 @@ _GATE = (
     pathlib.Path(__file__).resolve().parent.parent / "Dockerfile",
 )
 
-# 0080 was never written, and the rest were withdrawn because they recorded fixes
-# and working notes rather than decisions. Renumbering would break every citation
-# of a later decision, so the gaps stay
-_UNUSED_DECISIONS = {31, 33, 36, 62, 66, 73, 75, 76, 77, 78, 80, 81, 84, 85, 86, 87,
-                     88, 89, 90, 91, 92, 93, 97, 98, 99, 101, 102, 104, 105, 106, 107,
-                     108, 109, 110, 111, 112, 113, 114, 116, 117, 118}
-
 # builder produces the wheel every other stage installs, and the one recipe that
 # does run it alone sits in dev/golden.py's docstring rather than in a page, so
 # the stage is exempt here for as long as that is where the recipe lives
@@ -166,15 +159,9 @@ def decisions_page():
 
 
 def declared_decisions(text):
-    # a decision is a bolded title carrying its number, and a title can carry two
-    # ("Funding (0002, 0017)") when one paragraph settled two things at once
-    found = set()
-    for line in text.splitlines():
-        if not line.startswith("**") or "**" not in line[2:]:
-            continue
-        title = line[2:line.index("**", 2)]
-        found.update(int(number) for number in re.findall(r"\b(\d{4})\b", title))
-    return found
+    # a decision is a paragraph opening with its number and title in bold, and the
+    # list keeps page order so that a repeat or a misplaced entry can be seen
+    return [int(number) for number in re.findall(r"^\*\*(\d{4}) ", text, re.M)]
 
 
 def gate_stages():
@@ -187,26 +174,28 @@ def gate_stages():
 
 def test_the_decisions_are_numbered_without_a_gap_or_a_repeat():
     # the top number was verified by hand with a grep every time one was added,
-    # which is how 0080 came to be skipped without anyone noticing
+    # which is how emsl's record came to skip 0080 without anyone noticing
     declared = declared_decisions(decisions_page())
     assert declared, "no numbered decisions were found"
-    expected = set(range(1, max(declared) + 1)) - _UNUSED_DECISIONS
-    missing = sorted(expected - declared)
-    extra = sorted(_UNUSED_DECISIONS & declared)
+    repeated = sorted({n for n in declared if declared.count(n) > 1})
+    assert not repeated, (
+        f"{[f'{n:04d}' for n in repeated]} opens more than one decision; each number "
+        f"belongs to one"
+    )
+    missing = sorted(set(range(1, max(declared) + 1)) - set(declared))
     assert not missing, (
         f"the decisions run to {max(declared):04d} but {[f'{n:04d}' for n in missing]} "
         f"is not among them; either it was lost or the numbering skipped it"
     )
-    assert not extra, (
-        f"{[f'{n:04d}' for n in extra]} is recorded as never written, but the page "
-        f"now uses it; drop it from _UNUSED_DECISIONS in this file"
+    assert declared == sorted(declared), (
+        "the decisions are out of number order; the page lists them in order"
     )
 
 
 def test_every_decision_a_page_cites_is_one_that_exists():
     # a citation is the load-bearing half of this documentation set: the code
-    # comments, the commit messages and the guides all point at these numbers
-    declared = declared_decisions(decisions_page())
+    # comments and the guides all point at these numbers
+    declared = set(declared_decisions(decisions_page()))
     text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     cited = set()
     for run in re.findall(r"ADRs?\s+((?:\d{4})(?:(?:,|\s+and)\s+\d{4})*)", text):

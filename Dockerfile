@@ -110,7 +110,7 @@ CMD ["python", "/benchmarks/surfaces.py"]
 # decisions, over randomised paths. `dev/differential/reference.py` is written from
 # Decisions.md and never from the Rust, which is the whole point of it, so a rule
 # the engine gets wrong is a rule the reference gets right and the two part company
-# on a number. It found the slot leak of ADR 0079, which had survived every test
+# on a number. It found the slot leak of ADR 0013, which had survived every test
 # written against the implementation because none of them thought to ask.
 #
 # Six seeds of five hundred cases is about ninety seconds and has to be exact: the
@@ -122,7 +122,7 @@ CMD ["python", "/benchmarks/surfaces.py"]
 # against the engine it is built from, which shares every mistake the engine
 # makes. Each env is compared against a reference started at that env's own
 # offset, because an episode beginning part way into the series still funds on
-# the bars the SERIES funds on (ADRs 0002, 0017) and nothing that starts
+# the bars the SERIES funds on (ADR 0030) and nothing that starts
 # every env at bar zero can see that rule at all.
 #   docker build --target test-differential .
 FROM python:3.11-slim AS test-differential
@@ -140,7 +140,7 @@ RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl numpy \
 
 # The chart layer's other half. Every assertion in the correctness gate reads the
 # JSON spec, because the gate has no browser and a spec assertion is the sharper
-# test of what Python decided (ADR 0043). What it cannot reach is whether the
+# test of what Python decided (ADR 0074). What it cannot reach is whether the
 # shipped JavaScript parses, runs and draws. This stage supplies the browser; like
 # test-sb3 it stays out of the local gate because its image is heavy, and CI runs
 # both:
@@ -266,7 +266,7 @@ RUN cargo bench --locked -p bar-engine --bench step_instructions
 
 # Miri runs the candle tests in an interpreter that reports undefined behaviour,
 # which checks the library's one reinterpretation of memory, the floats behind
-# every zero-copy view (ADR 0008). It needs a nightly toolchain, pinned by date and
+# every zero-copy view (ADR 0062). It needs a nightly toolchain, pinned by date and
 # named on each command so that rust-toolchain.toml does not win. CI runs it:
 #   docker build --target miri .
 FROM python:3.11-slim AS miri

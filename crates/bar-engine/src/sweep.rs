@@ -7,7 +7,7 @@
 //! compiled in here, so as a public surface it would be one nobody could extend
 //! without writing Rust. Parameter search from Python goes through `emsl.tune`;
 //! this stays as the in-core path and the benchmark of the GIL-free sweep. See
-//! ADR 0011.
+//! ADR 0063.
 
 use rayon::prelude::*;
 

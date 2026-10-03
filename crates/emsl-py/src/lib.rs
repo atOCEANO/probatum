@@ -128,7 +128,7 @@ fn candles_from_array(array: PyReadonlyArray2<'_, f64>) -> PyResult<Candles> {
         // a dead flat market pays out. The reachable cause is not a typo: a feed
         // that ships low/high/open/close, sliced positionally, satisfies
         // high >= low on every row and still mints money, so the whole ordering
-        // is what has to be checked rather than the one pair (ADR 0096)
+        // is what has to be checked rather than the one pair (ADR 0025)
         if !(bar.low <= bar.open
             && bar.open <= bar.high
             && bar.low <= bar.close
@@ -147,13 +147,13 @@ fn candles_from_array(array: PyReadonlyArray2<'_, f64>) -> PyResult<Candles> {
 
 /// The largest resting-order book the caller may ask for. Slots are allocated up
 /// front, once per env, so an unbounded request aborts the process on allocation
-/// failure instead of raising; far above any real strategy (ADR 0027).
+/// failure instead of raising; far above any real strategy (ADR 0023).
 const MAX_OPEN_ORDERS_LIMIT: usize = 4096;
 
 /// Reject a zero observation window. The batched gathers chunk their output buffer
 /// by the window, and rayon asserts a chunk size is nonzero, so a zero window used
 /// to reach Python as a PanicException, which is not an `Exception` and so escapes
-/// an ordinary `except` (ADR 0027).
+/// an ordinary `except` (ADR 0023).
 fn check_window(window: usize) -> PyResult<()> {
     if window == 0 {
         return Err(PyValueError::new_err("window must be at least 1, got 0"));
@@ -164,7 +164,7 @@ fn check_window(window: usize) -> PyResult<()> {
 /// Reject a configuration scalar that is not finite. The candle array is already
 /// checked for exactly this, and a NaN knob is no less poisonous: a NaN quote makes
 /// every state field NaN, and a NaN `max_fill_fraction` deletes the volume cap
-/// because `f64::min` keeps the other operand (ADR 0027).
+/// because `f64::min` keeps the other operand (ADR 0023).
 fn finite(name: &str, value: f64) -> PyResult<f64> {
     if !value.is_finite() {
         return Err(PyValueError::new_err(format!(
@@ -200,7 +200,7 @@ fn a_rebate(name: &str, rate: f64) -> PyResult<f64> {
 }
 
 /// Validate every engine knob and build the config. One place, so `Engine` and
-/// `Batch` cannot drift apart on what they accept (ADR 0027).
+/// `Batch` cannot drift apart on what they accept (ADR 0023).
 #[allow(clippy::too_many_arguments)]
 fn build_config(
     market: &str,
@@ -229,7 +229,7 @@ fn build_config(
         quote: at_least("quote", quote, 0.0)?,
         fee_taker,
         fee_maker,
-        // slippage and impact are adverse by definition (ADRs 0004, 0013); a
+        // slippage and impact are adverse by definition (ADRs 0002, 0004); a
         // negative rate would fill better than the market and mint equity
         slippage_bps: at_least("slippage_bps", slippage_bps, 0.0)?,
         max_fill_fraction: {
@@ -251,7 +251,7 @@ fn build_config(
 }
 
 /// Read an optional per-env cost-override array, checked to length `num_envs`.
-/// `None` leaves the batch on its shared scalar for that field (ADR 0014).
+/// `None` leaves the batch on its shared scalar for that field (ADR 0066).
 fn per_env_vec(
     name: &str,
     num_envs: usize,
@@ -374,7 +374,7 @@ fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyD
 /// the `Arc`) becomes the array's base so the data outlives the view, and the array
 /// is made read-only because the buffer is shared across envs. Both `observation`
 /// and `data` go through it, and the floats come from emsl-core's `floats`, the
-/// library's one reinterpretation of candle memory (ADR 0008).
+/// library's one reinterpretation of candle memory (ADR 0062).
 fn candle_view<'py>(window: &[Candle], container: Bound<'py, PyAny>) -> Bound<'py, PyArray2<f64>> {
     let rows = window.len();
     let view = ArrayView2::from_shape((rows, 5), floats(window))
@@ -510,7 +510,7 @@ impl Engine {
     /// `rows` is `lookback`, or fewer early in the series. The array borrows the
     /// engine's immutable candle buffer directly with no copy; it is read-only
     /// because that buffer is shared across envs, and it holds the engine alive
-    /// for as long as the view exists (ADR 0008).
+    /// for as long as the view exists (ADR 0062).
     fn observation<'py>(
         slf: Bound<'py, Self>,
         lookback: usize,
@@ -526,7 +526,7 @@ impl Engine {
     /// `(T, 5)`, columns open, high, low, close, volume by position (close is
     /// column 3). Like `observation` it borrows the engine's immutable buffer with
     /// no copy and holds the engine alive for the view's life; it is the
-    /// full-series companion, so `eng.data[:, 3]` reads every close (ADR 0008).
+    /// full-series companion, so `eng.data[:, 3]` reads every close (ADR 0062).
     #[getter]
     fn data<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray2<f64>> {
         let container = slf.clone().into_any();
@@ -568,7 +568,7 @@ impl Engine {
         column_view(engine.inner.candles_all(), 3, container)
     }
 
-    /// Every volume, as a zero-copy read-only view. Base units (ADR 0005).
+    /// Every volume, as a zero-copy read-only view. Base units (ADR 0003).
     #[getter]
     fn volumes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
         let container = slf.clone().into_any();
@@ -608,7 +608,7 @@ impl Engine {
     /// or the size or trigger is not finite. `reduce_only` makes it a protective
     /// stop that can only shrink the position: without it a stop that outlives the
     /// one that closed the position opens a fresh one on the other side, which is
-    /// what a stop-loss almost never wants (ADR 0028).
+    /// what a stop-loss almost never wants (ADR 0014).
     #[pyo3(signature = (side, size, trigger, reduce_only = false))]
     fn stop(
         &mut self,
@@ -642,7 +642,7 @@ impl Engine {
     /// None when `order_id` is no longer resting, and nothing is placed in that
     /// case. Use it for a trailing stop: re-placing with `stop()` each bar rests a
     /// new order every time, and the one that fills leaves its siblings live to open
-    /// a position on the other side (ADR 0032).
+    /// a position on the other side (ADR 0015).
     #[pyo3(signature = (order_id, size = None, price = None, trigger = None))]
     fn replace(
         &mut self,
@@ -670,7 +670,7 @@ impl Engine {
     }
 
     /// True when the account died since the last reset: a perp liquidation, or
-    /// equity reaching zero on either market (ADR 0019). The engine does not stop on
+    /// equity reaching zero on either market (ADR 0029). The engine does not stop on
     /// it, so a backtest that wants to halt has to read it.
     fn is_bust(&self) -> bool {
         self.inner.is_bust()
@@ -687,7 +687,7 @@ impl Engine {
     /// limit needs `price`, a stop needs `trigger`. Returns the order id, or None if
     /// the book is full, a post_only limit would cross, or `size` is not a positive
     /// finite number. `tif` applies to market and limit orders; a stop rests until
-    /// it triggers (ADR 0016).
+    /// it triggers (ADR 0007).
     #[pyo3(signature = (
         side,
         size,
@@ -764,7 +764,7 @@ impl Engine {
         risk_free: f64,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         // A non-positive annualization has no square root and no per-period rate,
-        // and the stats set must never come back NaN (ADRs 0007, 0027).
+        // and the stats set must never come back NaN (ADRs 0040, 0023).
         if !(periods_per_year.is_finite() && periods_per_year > 0.0) {
             return Err(PyValueError::new_err(format!(
                 "periods_per_year must be a finite positive number, got {periods_per_year}"
@@ -828,7 +828,7 @@ impl Engine {
         // A declared warm-up is read once, after init, so a strategy can compute it
         // from the data it just looked at. The bars before it still advance and
         // still fill whatever is resting; only the decision is skipped, which is
-        // what makes the guard everybody writes by hand unnecessary (ADR 0050).
+        // what makes the guard everybody writes by hand unnecessary (ADR 0049).
         let warmup: usize = match strategy.getattr("warmup") {
             Ok(value) if !value.is_none() => value.extract().map_err(|_| {
                 PyValueError::new_err(format!(
@@ -864,7 +864,7 @@ impl Engine {
 #[pyclass]
 struct Batch {
     inner: EnvBatch,
-    // the feature matrix, cached once by set_features (ADR 0010): observe_features
+    // the feature matrix, cached once by set_features (ADR 0064): observe_features
     // gathers from this buffer each step rather than recopying the whole (T, F)
     // matrix from numpy, matching how the candles are copied once and shared
     features: Vec<f64>,
@@ -931,7 +931,7 @@ impl Batch {
         )?;
         let series = candles_from_array(candles)?;
 
-        // Per-env cost randomization (ADR 0014): each override, if given, replaces
+        // Per-env cost randomization (ADR 0066): each override, if given, replaces
         // its scalar field for the matching env; absent overrides keep the scalar.
         let ft = per_env_vec("fee_taker_per_env", num_envs, &fee_taker_per_env, a_rebate)?;
         let fm = per_env_vec("fee_maker_per_env", num_envs, &fee_maker_per_env, a_rebate)?;
@@ -1121,14 +1121,14 @@ impl Batch {
     }
 
     /// Per-env termination flags as a `(num_envs,)` array: true where the account
-    /// died, by a perp liquidation or by equity reaching zero (ADR 0019).
+    /// died, by a perp liquidation or by equity reaching zero (ADR 0029).
     fn busts<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
         PyArray1::from_vec_bound(py, self.inner.busts())
     }
 
     /// Cache the shared `(T, F)` feature matrix once, so `observe_features` gathers
     /// from it each step instead of recopying the whole matrix from numpy. Call it
-    /// once before observing; the matrix must have one row per candle (ADR 0010).
+    /// once before observing; the matrix must have one row per candle (ADR 0064).
     fn set_features(&mut self, features: PyReadonlyArray2<'_, f64>) -> PyResult<()> {
         let n_features = features.as_array().ncols();
         let n_rows = features.as_array().nrows();

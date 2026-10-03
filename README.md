@@ -48,7 +48,7 @@ The whole engine is one small loop: load candles, place an order if you want to,
 
 It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, slippage, market impact, a per-order volume cap), a small Python API, and a chart layer that draws a run and your own arrays into one self-contained HTML file.
 
-It **does not**: model the full order book (L2), latency, or queue position, and it places no live orders. This is the bar-level, approximate member of a planned family; a future sibling is a tick and L2 engine at higher resolution. At bar granularity the fill model cannot see the intrabar path, so it can be slightly more generous than a live book would be; the costs it charges are the real ones. The bar-level resolution limits are recorded in [ADR 0006](.Documentation/Decisions.md).
+It **does not**: model the full order book (L2), latency, or queue position, and it places no live orders. This is the bar-level, approximate member of a planned family; a future sibling is a tick and L2 engine at higher resolution. At bar granularity the fill model cannot see the intrabar path, so it can be slightly more generous than a live book would be; the costs it charges are the real ones. The bar-level resolution limits are recorded in [ADR 0018](.Documentation/Decisions.md).
 
 **Who it is for.** Quant and machine-learning researchers. Not market makers or high-frequency desks, who run C++ and FPGA next to the exchange and need the order book this tier does not model. One decision per candle is the resolution most research works at.
 
@@ -234,7 +234,7 @@ print(result.best_value)                      # in-sample: the best of 200 tries
 print(result.oos_stats["sharpe"])             # on bars no trial ever saw
 ```
 
-**Read the second number, not the first.** `best_value` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `oos=0.3` fits every trial on the first 70% of the series and scores the winner on the last 30%, which no trial ever touched. The gap between the two is what the search invented. Leave `oos` out and it says so ([ADR 0049](.Documentation/Decisions.md)).
+**Read the second number, not the first.** `best_value` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `oos=0.3` fits every trial on the first 70% of the series and scores the winner on the last 30%, which no trial ever touched. The gap between the two is what the search invented. Leave `oos` out and it says so ([ADR 0053](.Documentation/Decisions.md)).
 
 `objective` takes any stats key, or a function of your own over the finished run, so you can score on something the stats set does not name. It receives the whole `BacktestResult`, which puts the equity curve and every trade in reach, and a lambda or a closure survives the trip to the worker processes:
 

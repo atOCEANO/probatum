@@ -62,7 +62,7 @@ def test_terminal_observation_lands_in_info_on_done():
 def test_a_liquidation_reaches_sb3_as_a_true_terminal():
     # every other test here ends its episode with episode_len, so the only `done`
     # any of them has ever seen is a truncation, and three claims rest on that gap
-    # (ADR 0022). All three of these pass every assertion above: `dones =
+    # (ADR 0065). All three of these pass every assertion above: `dones =
     # truncations`, which never reports a death at all; an unconditional
     # `TimeLimit.truncated = True`, which tells PPO to bootstrap the value past a
     # bankruptcy; and `terminal_observation = obs[i]`, which hands back the fresh

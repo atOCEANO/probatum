@@ -15,7 +15,7 @@
 //! Equity is then marked at the close. A fill that reduces a perp is bounded once
 //! more as it lands, because the fence was read from the position carried into the
 //! bar and one grown or opened during the bar has none of its own
-//! (ADRs 0067, 0094).
+//! (ADRs 0034, 0035).
 
 use emsl_core::{
     Account, Bps, Candle, CostModel, Fill, FlatCostModel, Market, Order, OrderId, OrderType, Price,
@@ -57,14 +57,14 @@ pub struct EngineConfig {
     pub report: bool,
     /// Perp margin cap: a fill may not grow the position past `max_leverage`
     /// times equity in notional. Zero means no cap; the shipped default is a
-    /// finite 10x (ADR 0012). Ignored on spot.
+    /// finite 10x (ADR 0027). Ignored on spot.
     pub max_leverage: f64,
-    /// Market-impact coefficient for taker fills (ADR 0013). Zero disables it.
+    /// Market-impact coefficient for taker fills (ADR 0004). Zero disables it.
     pub impact: f64,
     /// Perp funding rate charged per event on the position notional; a long pays a
-    /// positive rate, a short receives (ADR 0017). Ignored on spot.
+    /// positive rate, a short receives (ADR 0030). Ignored on spot.
     pub funding_rate: f64,
-    /// Bars between funding events. Zero disables funding (ADR 0017).
+    /// Bars between funding events. Zero disables funding (ADR 0030).
     pub funding_interval: usize,
 }
 
@@ -91,7 +91,7 @@ impl Default for EngineConfig {
 /// cost models, and an optional reporter.
 pub struct Engine {
     // Set once in `new` and never reassigned or mutated. emsl-py hands out
-    // zero-copy, read-only numpy views into this buffer (ADR 0008), so its
+    // zero-copy, read-only numpy views into this buffer (ADR 0062), so its
     // address and contents must stay stable for the engine's whole life; do not
     // add a method that reallocates it or vends a mutable candle view.
     candles: Candles,
@@ -109,7 +109,7 @@ pub struct Engine {
     position_entry_tick: usize,
     /// The fee already paid to open the position now standing, in quote. A close
     /// consumes the share belonging to the size it closes, so a completed trade can
-    /// carry its whole round-trip cost rather than the exit side alone (ADR 0030).
+    /// carry its whole round-trip cost rather than the exit side alone (ADR 0037).
     /// Zero whenever the position is flat.
     open_fee: f64,
     /// Fills applied since the last reset. A run whose orders never filled, on a
@@ -117,10 +117,10 @@ pub struct Engine {
     /// placed an order.
     fills: usize,
     /// Funding paid since the last reset, in quote, positive when paid away. The
-    /// account returned each payment and this is what keeps it (ADR 0017).
+    /// account returned each payment and this is what keeps it (ADR 0030).
     funding_paid: f64,
     /// Set when the account is dead: force-closed by a perp liquidation, or marked
-    /// at a non-positive equity on either market, which is terminal too (ADR 0019).
+    /// at a non-positive equity on either market, which is terminal too (ADR 0029).
     /// A terminal event for the RL env. Cleared on reset.
     bust: bool,
 }
@@ -176,7 +176,7 @@ impl Engine {
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));
         // The id counter deliberately survives a reset. Restarting it made an id
         // handed out in one episode name a live order in the next, so a handle
-        // carried across a reset cancelled somebody else's order (ADR 0028).
+        // carried across a reset cancelled somebody else's order (ADR 0014).
         self.position_entry_tick = self.tick;
         self.open_fee = 0.0;
         self.fills = 0;
@@ -189,7 +189,7 @@ impl Engine {
     }
 
     /// True when the account died since the last reset, by a perp liquidation or by
-    /// equity reaching zero on either market. The RL env's terminal signal (ADR 0019).
+    /// equity reaching zero on either market. The RL env's terminal signal (ADR 0029).
     /// The engine does not stop on it; a driver that wants to halt checks it.
     pub fn is_bust(&self) -> bool {
         self.bust
@@ -227,7 +227,7 @@ impl Engine {
     /// The `lookback` bars ending at (and including) the current tick, as a
     /// zero-copy borrow into the shared series. Clamped to what exists, so early
     /// in the series it returns the available bars. The Python layer turns this
-    /// into a read-only numpy view (ADR 0008).
+    /// into a read-only numpy view (ADR 0062).
     pub fn candle_window(&self, lookback: usize) -> &[Candle] {
         self.candles.window(self.tick + 1, lookback)
     }
@@ -250,16 +250,16 @@ impl Engine {
         tif: TimeInForce,
     ) -> Option<OrderId> {
         // The queue holds the same number of orders the resting book does. It was
-        // unbounded, and since the volume cap is per order (ADR 0005), one order
+        // unbounded, and since the volume cap is per order (ADR 0003), one order
         // split into a hundred took a hundred times the cap against a single bar,
         // every slice priced as though it were the only participant. Bounding it
         // does not make the cap honest, it makes the evasion finite; a liquidity
-        // budget shared across a bar is the real answer (ADR 0047)
+        // budget shared across a bar is the real answer (ADR 0010)
         if self.pending.len() >= self.config.max_open_orders {
             return None;
         }
-        // The same guard the resting book has carried since ADR 0027, extended to
-        // the queue on the day ADR 0047 made the queue a bounded resource too. A
+        // The same guard the resting book has carried since ADR 0023, extended to
+        // the queue on the day ADR 0010 made the queue a bounded resource too. A
         // size that can never fill used to take a slot anyway, so two of them ahead
         // of a real order refused it: `qty_from_weight` returns exactly zero on a
         // flat mark, which is how a strategy places one without meaning to.
@@ -286,7 +286,7 @@ impl Engine {
         // it is refused a slot rather than resting inert forever. A non-finite price
         // is refused for the same reason: every touch test against it compares with
         // NaN and is false, so the order would camp on a slot until the book filled
-        // up and later placements were silently rejected (ADR 0027).
+        // up and later placements were silently rejected (ADR 0023).
         if !size.is_finite() || size <= 0.0 || !price.is_finite() {
             return None;
         }
@@ -322,7 +322,7 @@ impl Engine {
         reduce_only: bool,
     ) -> Option<OrderId> {
         // The same guard as a limit: a non-positive or non-finite size never fills,
-        // and a non-finite trigger never triggers (ADRs 0001, 0027).
+        // and a non-finite trigger never triggers (ADRs 0001, 0023).
         if !size.is_finite() || size <= 0.0 || !trigger.is_finite() {
             return None;
         }
@@ -334,7 +334,7 @@ impl Engine {
     /// The one order primitive the typed shortcuts wrap. Dispatches on `kind`: a
     /// market ignores `price` and `trigger`, a limit needs a `price`, a stop needs
     /// a `trigger`. `tif` applies to market and limit orders; a stop rests until it
-    /// triggers (ADR 0016). `None` if the book is full, the size is not a positive
+    /// triggers (ADR 0007). `None` if the book is full, the size is not a positive
     /// finite number, a post_only limit would cross, or a limit has no price or a
     /// stop no trigger.
     #[allow(clippy::too_many_arguments)]
@@ -388,7 +388,7 @@ impl Engine {
     /// if the book is full, the size is not a positive finite number, or the
     /// trigger is not finite. `reduce_only` makes it a protective stop that can
     /// only shrink the position, never open one on the other side; a stop-loss
-    /// wants it true (ADR 0028).
+    /// wants it true (ADR 0014).
     pub fn stop(
         &mut self,
         side: Side,
@@ -427,7 +427,7 @@ impl Engine {
     /// order every time, so the one that fills leaves its siblings live, and on a
     /// perp those open a position on the other side; a trail written with `replace`
     /// cannot leave two orders alive, and once the stop has filled the replacement
-    /// silently does nothing instead of arming a fresh one (ADR 0032).
+    /// silently does nothing instead of arming a fresh one (ADR 0015).
     pub fn replace(
         &mut self,
         id: OrderId,
@@ -462,15 +462,15 @@ impl Engine {
             // size or a non-finite trigger silently disarmed a live stop-loss. The
             // slot it came from is still free, since nothing was placed on this
             // path, so putting the old order back cannot fail and its id stays
-            // valid (ADR 0032).
+            // valid (ADR 0015).
             //
             // Back in that same slot, not wherever `place` would put it. `place`
-            // takes the FIRST free slot (ADR 0006), so an order whose neighbour had
+            // takes the FIRST free slot (ADR 0018), so an order whose neighbour had
             // been cancelled was silently promoted up the queue by a replacement
             // that was REFUSED, and resolution follows slot order: on a spot book
             // with the cash clamp binding, the promoted order took the cash the
             // other one would have had. "Nothing happened" has to include the
-            // queue (ADR 0083).
+            // queue (ADR 0017).
             self.book.restore(slot, old);
         }
         placed
@@ -514,11 +514,11 @@ impl Engine {
             //    fills; on any other bar the orders are resolved against a candle
             //    clipped at the fence, so an exit that would have filled beyond it
             //    simply never triggers. Checking only afterwards, as this used to,
-            //    left ADR 0052's guarantee resting on the position still being open
+            //    left ADR 0033's guarantee resting on the position still being open
             //    at the end of the bar: a `close()` on a bar that gapped past the
             //    liquidation booked the whole gap and left the account owing money,
             //    and a partial close left a "liquidation" priced outside the bar
-            //    that booked a profit (ADR 0067).
+            //    that booked a profit (ADR 0034).
             let long = self.account.position.qty.get() >= 0.0;
             let fence = self.liquidation_fence(&bar);
             let gapped = fence.is_some_and(|f| if long { bar.open <= f } else { bar.open >= f });
@@ -538,7 +538,7 @@ impl Engine {
                     // FOK is all or nothing against everything that can shrink the
                     // fill, not just the bar's liquidity: the margin cap and the
                     // spot clamps are applied to a copy first, so an order that
-                    // could only fill in part books nothing at all (ADR 0025).
+                    // could only fill in part books nothing at all (ADR 0008).
                     if order.tif == TimeInForce::Fok
                         && self.clamp_fill(order.reduce_only, &fill).size.get() + CLOSE_EPS
                             < order.size.get()
@@ -555,7 +555,7 @@ impl Engine {
             // 3. funding at each interval boundary, on the position held at the
             //    funding event (so after this bar's fills, not the position carried
             //    into the bar), marked at the close, and before liquidation so a
-            //    funding debit can bust the account this bar (ADR 0017).
+            //    funding debit can bust the account this bar (ADR 0030).
             //
             //    At the close of the RESOLVING bar, which is the fenced one: this
             //    read `bar.close` and so marked a liquidated account at a price on
@@ -566,7 +566,7 @@ impl Engine {
             //    rising was CREDITED for the whole rise, which overstates
             //    funding_paid on any run with a liquidation in it and, at the
             //    margin, hands the account enough to clear the bust check it had
-            //    already failed (ADR 0082)
+            //    already failed (ADR 0031)
             if self.config.funding_interval > 0 && self.tick % self.config.funding_interval == 0 {
                 self.funding_paid += self
                     .account
@@ -590,7 +590,7 @@ impl Engine {
         // A dead account is terminal, marked at the close, for both markets: perp
         // liquidation force-closes above, but a spot account (or a perp drained by
         // fees or funding) can still reach zero equity without a forced close, and
-        // that is a true terminal, not a truncation (ADR 0019).
+        // that is a true terminal, not a truncation (ADR 0029).
         if state.equity <= 0.0 {
             self.bust = true;
         }
@@ -621,7 +621,7 @@ impl Engine {
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
         // opened from negative equity was closed at the bar's adverse extreme and
-        // deepened the bad debt instead of being refused (ADR 0026).
+        // deepened the bad debt instead of being refused (ADR 0028).
         let max_size = if equity > 0.0 {
             self.config.max_leverage * equity / mark
         } else {
@@ -632,7 +632,7 @@ impl Engine {
         // A same-side grow may keep an existing over-cap position (from an equity
         // drop) but not extend it, so the allowance is the larger of the cap and
         // the current size. A flip closes the old side and opens a fresh one, which
-        // must fit the cap outright, so it gets no such allowance (ADR 0012).
+        // must fit the cap outright, so it gets no such allowance (ADR 0027).
         let flipping = pos != 0.0 && new_pos != 0.0 && (new_pos > 0.0) != (pos > 0.0);
         let max_abs = if flipping {
             max_size
@@ -646,7 +646,7 @@ impl Engine {
     }
 
     /// On spot, keep the position from going below zero: a sell may not exceed the
-    /// current long, so it can flatten but never open or extend a short (ADR 0015).
+    /// current long, so it can flatten but never open or extend a short (ADR 0022).
     /// A sell from flat is clamped to nothing. No-op on perp, where a short is a
     /// normal signed position, and on a buy.
     fn cap_spot_short(&self, fill: &mut Fill) {
@@ -663,7 +663,7 @@ impl Engine {
     /// On spot, keep a buy within the cash on hand: its cost, notional plus fee,
     /// may not exceed the quote balance, so the balance never goes negative. This
     /// is the buy-side mirror of `cap_spot_short`; spot has no borrow and no margin,
-    /// so credit is refused rather than pretended (ADR 0018). No-op on perp, where
+    /// so credit is refused rather than pretended (ADR 0021). No-op on perp, where
     /// the margin cap governs, and on a sell.
     fn cap_spot_buy(&self, fill: &mut Fill) {
         if self.config.market != Market::Spot || fill.side != Side::Buy {
@@ -692,7 +692,7 @@ impl Engine {
     /// perp margin cap, the spot short and cash clamps, then reduce_only. Returns
     /// the fill that would actually be booked, so an all-or-nothing order can be
     /// judged against the real fillable size rather than the raw liquidity the
-    /// fill model offered (ADR 0025). A refused fill comes back sized zero.
+    /// fill model offered (ADR 0008). A refused fill comes back sized zero.
     fn clamp_fill(&self, reduce_only: bool, fill: &Fill) -> Fill {
         let mut fill = *fill;
         // size is a positive magnitude; a non-positive or non-finite fill is not a
@@ -700,9 +700,9 @@ impl Engine {
         // below zero, and that one is the input both risk clamps have to give up
         // on: each divides by the mark, so each returns without clamping anything,
         // and the fill that follows buys an unbounded position for nothing or for a
-        // credit. MAX_SLIP exists so a slipped fill cannot reach zero (ADR 0024);
+        // credit. MAX_SLIP exists so a slipped fill cannot reach zero (ADR 0006);
         // this is the same rule applied to the bar's own price, which the candle
-        // validator lets through because it checks only for finiteness (ADR 0027)
+        // validator lets through because it checks only for finiteness (ADR 0023)
         let size = fill.size.get();
         let price = fill.price.get();
         if !size.is_finite() || size <= 0.0 || !price.is_finite() || price <= 0.0 {
@@ -727,7 +727,7 @@ impl Engine {
         // because the position refuses anything at or below it: a size in between
         // moved no cash and no position, but still counted a fill and banked a fee,
         // which shows up as a phantom fill in the dead-feed canary and as drift in
-        // the round-trip fee identity (ADR 0030)
+        // the round-trip fee identity (ADR 0037)
         let clamped = fill.size.get();
         if clamped.is_nan() || clamped <= CLOSE_EPS {
             fill.size = Qty(0.0);
@@ -739,7 +739,7 @@ impl Engine {
     /// when nothing on the bar can kill the account.
     ///
     /// The trigger is the bar's adverse extreme and the answer is the bankruptcy
-    /// price, which are two different numbers on purpose (ADR 0052). Read before
+    /// price, which are two different numbers on purpose (ADR 0033). Read before
     /// the bar's orders are resolved, because it is the point past which this
     /// account was no longer in the market.
     fn liquidation_fence(&self, bar: &Candle) -> Option<f64> {
@@ -785,7 +785,7 @@ impl Engine {
     /// against a bar that wicked to 80 booked a loss of 200 and left the account
     /// owing 100. A position cannot lose more than the margin behind it, so the
     /// exit is priced where the margin runs out, and the liquidation fee is inside
-    /// that price rather than charged past it (ADR 0052).
+    /// that price rather than charged past it (ADR 0033).
     fn liquidate(&mut self) {
         let price = match self.account.bankruptcy_price(self.cost.fee_taker) {
             Some(price) => price,
@@ -811,7 +811,7 @@ impl Engine {
     /// No fill closes a perp past the point the margin behind it ran out.
     ///
     /// `fenced` clips the whole candle, and it is read once from the position
-    /// carried INTO the bar, which is the approximation ADR 0067 accepted on the
+    /// carried INTO the bar, which is the approximation ADR 0034 accepted on the
     /// grounds that its error runs pessimistic. It does not, in three shapes. A
     /// position GROWN during the bar and exited on the same bar is bounded by a
     /// fence computed for a smaller position, or by no fence at all when the
@@ -826,7 +826,7 @@ impl Engine {
     /// That third one is the dangerous shape, because the first two are loud and
     /// pessimistic while it flatters. Bounding the fill instead of the bar covers
     /// all three, because the bound is read at the moment the fill lands rather
-    /// than a step earlier (ADR 0094).
+    /// than a step earlier (ADR 0035).
     ///
     /// Closing at the bankruptcy price leaves equity exactly zero AT that price,
     /// so a partial close is bounded by the same number as a full one and no
@@ -883,7 +883,7 @@ impl Engine {
     /// close the position on the account directly and reach none of it, so the
     /// forced close appeared in no trade row, counted toward no fill, and left the
     /// dead position's entry fee standing to be charged against the NEXT trade
-    /// (ADR 0030).
+    /// (ADR 0037).
     ///
     /// Twelve boundary mutants survive here and ALL TWELVE are equivalent or sit
     /// on an unreachable branch. Measured, not argued: probes asserting the three
@@ -896,7 +896,7 @@ impl Engine {
     ///   `open_fee` without a fee share are all dead. Four mutants.
     ///
     ///   `closed` is never between zero and CLOSE_EPS. It comes from the
-    ///   position's own dust rule (ADR 0023), so it is either exactly zero or
+    ///   position's own dust rule (ADR 0026), so it is either exactly zero or
     ///   comfortably above the epsilon, and `>` cannot be told from `>=`. That
     ///   also makes the `&&` in the entry-fee guard equivalent to `||`: at
     ///   `closed == 0` the share is `open_fee * 0 / pos` either way. Four mutants.
@@ -955,7 +955,7 @@ impl Engine {
             let pnl = self.account.realized() - realized_before;
             // The whole round trip: the fee paid to open this size and the fee paid
             // to close it. Charging only the exit side made a strategy whose edge is
-            // smaller than its costs look profitable per trade (ADR 0030).
+            // smaller than its costs look profitable per trade (ADR 0037).
             let fees = entry_fee + exit_fee;
             let trade = Trade {
                 entry_tick: self.position_entry_tick,
@@ -1003,7 +1003,7 @@ impl Engine {
     /// A stop is consumed only when it produces a fill. On a bar that trades no
     /// volume the trigger may be crossed and nothing can fill, and treating that as
     /// a trigger would delete a stop-loss precisely on the illiquid data where it
-    /// matters; it stays armed for the next bar that can trade instead (ADR 0035).
+    /// matters; it stays armed for the next bar that can trade instead (ADR 0011).
     fn resolve_resting(&mut self, bar: &Candle) {
         let mut fills: Vec<(OrderId, Fill, OrderType, bool, TimeInForce, f64)> = Vec::new();
         for order in self.book.iter() {
@@ -1031,7 +1031,7 @@ impl Engine {
         // books a win. They are ordered by how badly they end for the position
         // instead, worst first, which does not depend on how the strategy was
         // typed and is the same pessimism the rest of the engine already applies
-        // (ADR 0056). The sort is stable, so anything that is not an exit keeps
+        // (ADR 0019). The sort is stable, so anything that is not an exit keeps
         // its slot order.
         let position = self.account.position.qty.get();
         if fills.len() > 1 && position != 0.0 {
@@ -1042,8 +1042,8 @@ impl Engine {
             // rule than the one written down and not a harmless one: it let an
             // entry be funded by the proceeds of a sale that may just as well have
             // come after it, so the account ended a wide bar richer than slot order
-            // (ADR 0006) would have left it, which is the optimism ADR 0056 exists
-            // to remove rather than relocate (ADR 0071)
+            // (ADR 0018) would have left it, which is the optimism ADR 0019 exists
+            // to remove rather than relocate (ADR 0020)
             let slots: Vec<usize> = (0..fills.len())
                 .filter(|&i| adversity(position, entry, &fills[i].1).is_finite())
                 .collect();
@@ -1063,7 +1063,7 @@ impl Engine {
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the snapshot the loop above saw. The
-            // sweep below then cancels it unfilled (ADRs 0016, 0025).
+            // sweep below then cancels it unfilled (ADRs 0007, 0008).
             if kind == OrderType::Limit
                 && tif == TimeInForce::Fok
                 && self.clamp_fill(reduce_only, &fill).size.get() + CLOSE_EPS < requested
@@ -1073,7 +1073,7 @@ impl Engine {
             let applied = self.apply_fill_clamped(reduce_only, fill);
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
-                // ADR 0035 says and what it used to say only for a bar with no
+                // ADR 0011 says and what it used to say only for a bar with no
                 // volume at all. Triggering and being cancelled regardless meant a
                 // bar carrying a thousandth of a unit filled a token size and threw
                 // the rest of the protection away, while a bar carrying exactly
@@ -1082,7 +1082,7 @@ impl Engine {
                 // It also deleted a breakout stop outright whenever a cash or margin
                 // clamp took the fill to zero. So it accumulates and rests like a
                 // limit, and the remainder stays armed for the next bar that can
-                // actually trade it (ADR 0068).
+                // actually trade it (ADR 0012).
                 OrderType::Stop | OrderType::Limit => {
                     if applied > 0.0 {
                         if let Some(order) = self.book.get_mut(id) {
@@ -1096,7 +1096,7 @@ impl Engine {
                     // 0.1 against a size of 1.0 leave 1.1e-16, which is all it
                     // takes. Enough of those and the book is full of orders that
                     // will never trade, and every later placement is refused in
-                    // silence, which is the harm ADR 0027 names (ADR 0079)
+                    // silence, which is the harm ADR 0023 names (ADR 0013)
                     let done = self
                         .book
                         .get(id)
@@ -1110,7 +1110,7 @@ impl Engine {
         }
 
         // IOC and FOK limits get one bar of exposure, then expire whether or not
-        // they filled: they never rest for a later bar (ADR 0016).
+        // they filled: they never rest for a later bar (ADR 0007).
         let expiring: Vec<OrderId> = self
             .book
             .iter()
@@ -1265,7 +1265,7 @@ mod tests {
 
     #[test]
     fn default_config_caps_perp_leverage_at_ten() {
-        // the shipped default is a finite 10x cap, not uncapped notional (ADR 0012)
+        // the shipped default is a finite 10x cap, not uncapped notional (ADR 0027)
         assert_eq!(EngineConfig::default().max_leverage, 10.0);
     }
 
@@ -1325,7 +1325,7 @@ mod tests {
 
     #[test]
     fn a_gtc_limit_fills_across_bars_under_the_volume_cap() {
-        // ADR 0005: a resting limit fills up to the volume cap each bar and keeps its
+        // ADR 0003: a resting limit fills up to the volume cap each bar and keeps its
         // remainder resting for the next, so a large limit completes over several bars
         let candles = Candles::new(vec![
             ohlc(100.0, 100.0, 50.0, 100.0, 10.0), // decision bar
@@ -1599,7 +1599,7 @@ mod tests {
 
     #[test]
     fn a_replacement_keeps_the_side_it_was_placed_on() {
-        // the KIND half of ADR 0032 is pinned, by re-resting a stop as a limit and
+        // the KIND half of ADR 0015 is pinned, by re-resting a stop as a limit and
         // watching the unwrap fail. The SIDE half is asserted nowhere, and flipping
         // it in either branch left every test green: the one fixture that reaches
         // this replaces a stop that is reduce_only against a FLAT position, so the
@@ -1695,7 +1695,7 @@ mod tests {
 
     #[test]
     fn a_fok_limit_the_cash_cannot_afford_fills_nothing() {
-        // ADR 0025 says all or nothing against EVERY clamp, not just the bar's
+        // ADR 0008 says all or nothing against EVERY clamp, not just the bar's
         // liquidity, and the resting path judges that with a second copy of the
         // rule the pending path already has. Only the pending one was pinned:
         // a_fok_limit_fills_fully_or_not_at_all is refused by the volume cap
@@ -1858,7 +1858,7 @@ mod tests {
     #[test]
     fn a_flip_records_only_the_closed_portion() {
         // a flip through zero reopens on the opposite side; spot cannot go short
-        // (ADR 0015), so the flip is exercised on a perp
+        // (ADR 0022), so the flip is exercised on a perp
         let mut e = Engine::new(
             series(),
             EngineConfig {
@@ -1929,7 +1929,7 @@ mod tests {
 
     #[test]
     fn sell_stop_triggers_when_a_bar_crosses_it() {
-        // a sell stop from flat opens a short, a perp behavior (ADR 0015)
+        // a sell stop from flat opens a short, a perp behavior (ADR 0022)
         let mut e = Engine::new(crash_series(), perp_cfg());
         e.reset();
         e.stop(Side::Sell, 1.0, 95.0, false); // placed at bar 0
@@ -2105,7 +2105,7 @@ mod tests {
         // the invariant the entry-fee attribution buys: with the position closed and
         // no liquidation, the net PnL of the logged trades IS the change in equity.
         // Charging only the exit fee left about half the cost attributed to nothing
-        // (ADR 0030).
+        // (ADR 0037).
         let mut config = cfg(); // spot
         config.report = true;
         config.fee_taker = 0.001;
@@ -2292,7 +2292,7 @@ mod tests {
     #[test]
     fn replace_moves_one_order_and_refuses_to_arm_a_second() {
         // the trailing-stop trap: re-placing with stop() rests a new order every
-        // bar, and the one that fills leaves its siblings live (ADR 0032)
+        // bar, and the one that fills leaves its siblings live (ADR 0015)
         let mut e = Engine::new(dip_series(), perp_cfg());
         e.reset();
         let first = e.stop(Side::Sell, 1.0, 90.0, true).unwrap();
@@ -2312,7 +2312,7 @@ mod tests {
     #[test]
     fn funding_can_bust_the_account_on_the_same_bar() {
         // a punitive funding rate on a leveraged long drains equity below zero within
-        // the step, before the liquidation check, so the account busts (ADR 0017)
+        // the step, before the liquidation check, so the account busts (ADR 0030)
         let mut config = perp_cfg(); // quote 100
         config.funding_rate = 1.0; // 100% of notional per event, for the test
         config.funding_interval = 1;
@@ -2331,7 +2331,7 @@ mod tests {
     #[test]
     fn a_fok_market_blocked_by_the_cash_clamp_fills_nothing() {
         // the bar has the liquidity, but spot cash affords only 50 of the 1000, and
-        // FOK is all or nothing against every clamp, not just volume (ADR 0025)
+        // FOK is all or nothing against every clamp, not just volume (ADR 0008)
         let mut e = Engine::new(series(), cfg()); // spot, quote 10_000, bar 1 open 200
         e.reset();
         e.order(
@@ -2373,7 +2373,7 @@ mod tests {
     fn an_insolvent_perp_cannot_open_a_position() {
         // after a gap liquidation the account is flat with negative equity. Nothing
         // backs new notional, and liquidation cannot force-close a flat account, so
-        // the fill is refused rather than opened and closed at the low (ADR 0026)
+        // the fill is refused rather than opened and closed at the low (ADR 0028)
         let candles = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1_000_000.0),
             ohlc(100.0, 100.0, 100.0, 100.0, 1_000_000.0),
@@ -2488,7 +2488,7 @@ mod tests {
     #[test]
     fn funding_is_charged_only_on_interval_bars() {
         // every other funding test uses interval 1, where the modulo is trivially
-        // true on every bar, so the schedule itself is never exercised (ADR 0017)
+        // true on every bar, so the schedule itself is never exercised (ADR 0030)
         let mut config = perp_cfg();
         config.quote = 10_000.0;
         config.funding_rate = 0.001;
@@ -2528,7 +2528,7 @@ mod tests {
     #[test]
     fn order_ids_stay_unique_across_a_reset() {
         // an id handed out in one episode must not name a live order in the next,
-        // or a handle carried across a reset cancels somebody else's order (ADR 0028)
+        // or a handle carried across a reset cancels somebody else's order (ADR 0014)
         let mut e = Engine::new(dip_series(), cfg());
         e.reset();
         let first = e.limit_buy(1.0, 50.0).unwrap();
@@ -2543,7 +2543,7 @@ mod tests {
     fn a_stop_crossed_on_a_dead_bar_stays_armed() {
         // bar 1 crosses the trigger but trades nothing, so the stop cannot fill. It
         // must survive: consuming it here would delete the protection on exactly the
-        // illiquid data where a stop matters, and it fills on bar 2 instead (ADR 0035)
+        // illiquid data where a stop matters, and it fills on bar 2 instead (ADR 0011)
         let candles = Candles::new(vec![
             ohlc(100.0, 101.0, 99.0, 100.0, 1_000.0),
             ohlc(100.0, 101.0, 80.0, 85.0, 0.0), // crosses 95, no volume
@@ -2574,7 +2574,7 @@ mod tests {
     #[test]
     fn a_non_finite_limit_price_or_stop_trigger_is_refused_a_slot() {
         // every touch test against NaN is false, so such an order never fills and
-        // never expires; it would hold a slot until the book was full (ADR 0027)
+        // never expires; it would hold a slot until the book was full (ADR 0023)
         let mut e = Engine::new(series(), cfg());
         e.reset();
         assert_eq!(e.limit_buy(1.0, f64::NAN), None);
@@ -2607,7 +2607,7 @@ mod tests {
     fn funding_is_kept_where_the_result_can_read_it() {
         // the account returned every payment and nothing kept it, so the one cost
         // unique to a perp was unmeasurable from a finished run, and a carry could
-        // not be told apart from a direction (ADR 0017)
+        // not be told apart from a direction (ADR 0030)
         let config = EngineConfig {
             market: Market::Perp,
             funding_rate: 0.001,
@@ -2650,7 +2650,7 @@ mod tests {
         // the fence is read from the position carried INTO the bar, and an account
         // that entered flat carries none, so the stop reduced a position the
         // margin no longer stood behind and booked the whole distance. Placing a
-        // stop was four times worse than placing nothing (ADR 0094)
+        // stop was four times worse than placing nothing (ADR 0035)
         let mut e = Engine::new(crash_series(), perp_10x());
         e.reset();
         e.market_buy(10.0);
@@ -2726,7 +2726,7 @@ mod tests {
         // the forced close ran on the account directly and reached none of the
         // engine's bookkeeping: it appeared in no trade row, counted toward no
         // fill, and left the dead position's entry fee standing to be charged
-        // against the NEXT position (ADR 0030)
+        // against the NEXT position (ADR 0037)
         let config = EngineConfig {
             market: Market::Perp,
             quote: 100.0,
@@ -2752,7 +2752,7 @@ mod tests {
             "closed at {}",
             trades[0].exit_price
         );
-        // and the account is left with exactly nothing, never owing (ADR 0052)
+        // and the account is left with exactly nothing, never owing (ADR 0033)
         assert!(s.equity.abs() < CLOSE_EPS, "left {}", s.equity);
         assert!(trades[0].fees > 1.0); // the entry fee, plus a real fee on the exit
         assert_eq!(e.open_fee, 0.0); // nothing left over to charge the next position
@@ -2847,9 +2847,9 @@ mod tests {
 
     #[test]
     fn splitting_an_order_cannot_take_more_than_its_slots_of_a_bar() {
-        // the volume cap is per order (ADR 0005) and the pending queue was
+        // the volume cap is per order (ADR 0003) and the pending queue was
         // unbounded, so a hundred small market buys took the whole bar while every
-        // slice was priced as though it were the only participant (ADR 0047)
+        // slice was priced as though it were the only participant (ADR 0010)
         let config = EngineConfig {
             max_open_orders: 3,
             max_fill_fraction: 0.01, // 10 base units per order, against volume 1000
@@ -2869,7 +2869,7 @@ mod tests {
 
     #[test]
     fn a_straddle_of_limits_at_one_price_never_ends_richer() {
-        // ADR 0006 accepts that a buy and a sell resting at the same price can both
+        // ADR 0018 accepts that a buy and a sell resting at the same price can both
         // fill against one wide bar, which is a bar-fidelity artifact. Booking both
         // as makers turned that artifact into a money printer, because a maker rate
         // is legally a rebate: the account came back flat and richer every bar,
@@ -2945,7 +2945,7 @@ mod tests {
 
     #[test]
     fn closing_on_a_bar_that_gapped_past_the_liquidation_leaves_nothing_owed() {
-        // ADR 0052 says bad debt is structurally unreachable rather than clamped,
+        // ADR 0033 says bad debt is structurally unreachable rather than clamped,
         // and that rested on the position still being open when the check ran at
         // the end of the bar. An exit order flattened it first, so nothing was left
         // to liquidate and the account booked the whole gap: a 10x long on 100 of
@@ -3022,7 +3022,7 @@ mod tests {
         // both risk clamps divide by the mark, so each returns without clamping when
         // it is zero or negative, and the fill behind them bought an unbounded
         // position for nothing. The candle validator lets those prices through
-        // because it checks only finiteness (ADRs 0024, 0027)
+        // because it checks only finiteness (ADRs 0006, 0023)
         for price in [0.0, -100.0] {
             let bars = Candles::new(vec![
                 ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
@@ -3044,7 +3044,7 @@ mod tests {
         // replace cancels before it places, so a replacement the book refuses left
         // nothing behind and still answered None, which this method defines as
         // "nothing happened". A trail reads that as "it already filled" and stops
-        // arming one, so the protective stop was silently gone (ADR 0032)
+        // arming one, so the protective stop was silently gone (ADR 0015)
         let mut e = Engine::new(series(), perp_cfg());
         e.reset();
         e.market_buy(1.0);
@@ -3067,10 +3067,10 @@ mod tests {
 
     #[test]
     fn a_refused_replacement_leaves_the_original_where_it_was_in_the_queue() {
-        // ADR 0032 defines a None from `replace` as "nothing happened", and ADR 0069
+        // ADR 0015 defines a None from `replace` as "nothing happened", and ADR 0016
         // restores the original so that is true of the book too. It was not true of
         // the order's PRIORITY. The restore goes through `place`, which takes the
-        // FIRST free slot (ADR 0006), so an order whose neighbour had been cancelled
+        // FIRST free slot (ADR 0018), so an order whose neighbour had been cancelled
         // was silently promoted up the queue by a replacement that was refused.
         //
         // Resolution follows slot order, and slot order decides who gets the cash
@@ -3112,7 +3112,7 @@ mod tests {
 
     #[test]
     fn a_stop_is_consumed_by_filling_and_by_nothing_else() {
-        // ADR 0035 binds triggering to filling, and that held only for a bar with no
+        // ADR 0011 binds triggering to filling, and that held only for a bar with no
         // volume at all. A cash clamp that took the fill to zero deleted the stop
         // just as thoroughly, and it is the same protection either way
         let bars = Candles::new(vec![
@@ -3172,8 +3172,8 @@ mod tests {
 
     #[test]
     fn a_market_size_that_cannot_fill_is_refused_a_queue_slot() {
-        // the queue became a bounded resource with ADR 0047 and did not inherit
-        // ADR 0027's guard, so two sizes that can never fill refused a real order.
+        // the queue became a bounded resource with ADR 0010 and did not inherit
+        // ADR 0023's guard, so two sizes that can never fill refused a real order.
         // qty_from_weight returns exactly zero on a flat mark, which is how a
         // strategy places one without meaning to
         let mut e = Engine::new(
@@ -3193,7 +3193,7 @@ mod tests {
 
     #[test]
     fn the_worst_first_sort_leaves_everything_that_is_not_an_exit_where_it_was() {
-        // ADR 0056 says the sort applies only to fills that reduce the position, and
+        // ADR 0019 says the sort applies only to fills that reduce the position, and
         // ranking a non-exit at infinity moved every one of them behind every exit.
         // That let an entry be funded by the proceeds of a sale that may well have
         // come after it, so the account ended the bar richer than slot order leaves it
@@ -3245,7 +3245,7 @@ mod tests {
         // trade again and never expired. Ten fills of 0.1 against a size of 1.0
         // leave 1.1e-16 behind, which is enough to hold a slot for the whole run;
         // a strategy resting orders on a long series eventually finds every
-        // placement silently refused (ADR 0079)
+        // placement silently refused (ADR 0013)
         let bars: Vec<Candle> = (0..14)
             .map(|_| ohlc(100.0, 100.0, 100.0, 100.0, 0.1))
             .collect();
@@ -3305,7 +3305,7 @@ mod tests {
 
     #[test]
     fn two_partial_closes_consume_the_entry_fee_exactly_once() {
-        // ADR 0030's whole point: a trade carries its round trip, so the entry fee
+        // ADR 0037's whole point: a trade carries its round trip, so the entry fee
         // is split across the closes by size and consumed exactly once. The
         // arithmetic that does it had no test of its own
         let config = EngineConfig {
@@ -3337,7 +3337,7 @@ mod tests {
 
     #[test]
     fn a_flip_must_fit_the_cap_outright_where_a_grow_may_keep_what_it_has() {
-        // ADR 0012's allowance: a position already over the cap because equity
+        // ADR 0027's allowance: a position already over the cap because equity
         // fell is not force-reduced, so a same-side add may keep it, but a flip
         // closes that side and opens a fresh one which gets no such credit. The
         // two branches only differ when the position IS over the cap, and nothing
@@ -3434,7 +3434,7 @@ mod tests {
 
     #[test]
     fn adversity_ranks_an_exit_by_what_it_realizes_and_sorts_everything_else_last() {
-        // the whole of ADR 0056 rests on this eight-line function, and the suite
+        // the whole of ADR 0019 rests on this eight-line function, and the suite
         // reached it only through the engine, where one wide bar exercises one
         // branch. Every comparison and every term is pinned here instead
         let long_loss = adversity(2.0, 100.0, &exit_at(Side::Sell, 90.0));
@@ -3453,7 +3453,7 @@ mod tests {
             "a short's worse exit must sort first"
         );
 
-        // anything that is not an exit sorts last and never reorders (ADR 0071)
+        // anything that is not an exit sorts last and never reorders (ADR 0020)
         for (position, side) in [
             (2.0, Side::Buy),   // adding to a long
             (-2.0, Side::Sell), // adding to a short
@@ -3471,7 +3471,7 @@ mod tests {
 
     #[test]
     fn a_wick_that_busts_a_long_liquidates_even_when_the_bar_closes_back_above_it() {
-        // ADR 0003 puts the trigger at the bar's ADVERSE EXTREME, the low for a
+        // ADR 0032 puts the trigger at the bar's ADVERSE EXTREME, the low for a
         // long, because a bar that traded there is a bar the account was closed out
         // on whatever it printed afterwards. Every other liquidation fixture ends
         // at or below its own bust level, so marking the check at bar.close passes
@@ -3494,7 +3494,7 @@ mod tests {
         let state = e.step();
         // margin at the low is 100 + 10 * (85 - 100) = -50, so the account died on
         // the way down and is closed where the margin ran out, at
-        // (10 * 100 - 100) / 10 = 90, leaving exactly nothing (ADR 0052)
+        // (10 * 100 - 100) / 10 = 90, leaving exactly nothing (ADR 0033)
         assert!(e.is_bust());
         assert_eq!(state.position, 0.0);
         assert_eq!(state.equity, 0.0);
@@ -3509,7 +3509,7 @@ mod tests {
     fn a_wick_that_busts_a_short_liquidates_even_when_the_bar_closes_back_below_it() {
         // the mirror of the rule above, and no engine test has ever liquidated a
         // short at all: a short's adverse extreme is the HIGH, so a wick up that
-        // takes the margin kills it however calmly the bar ends (ADR 0003). A check
+        // takes the margin kills it however calmly the bar ends (ADR 0032). A check
         // reading bar.close, or one that kept the long's low for both sides, reads
         // 100 here and carries a dead short into the next bar. The favourable wick
         // reaches 70, twice as far from the entry as the adverse one, so a check
@@ -3538,7 +3538,7 @@ mod tests {
 
     #[test]
     fn funding_on_a_liquidating_bar_marks_at_the_fence_and_not_at_the_raw_close() {
-        // ADR 0082. Every order on a fenced bar resolves against the clipped
+        // ADR 0031. Every order on a fenced bar resolves against the clipped
         // candle, which `fenced` calls the honest picture of a market the account
         // was not in, and funding reached past it to the raw close. This short
         // dies at 110 on a bar that closes at 128, so the two readings are 11.0
@@ -3576,7 +3576,7 @@ mod tests {
         // 100 of margin plus 11 of funding runs out at 111.1 rather than 110
         assert!(e.is_bust());
         assert_eq!(state.position, 0.0);
-        // ADR 0052's nothing left, to the last bit the funding arithmetic allows:
+        // ADR 0033's nothing left, to the last bit the funding arithmetic allows:
         // 100 of margin, 11 of credit and an exit at 111.1 land 5.7e-14 off zero
         assert!(state.equity.abs() < 1e-9);
         let trades = e.reporter().expect("reporting is on").trades();
@@ -3587,7 +3587,7 @@ mod tests {
 
     #[test]
     fn an_over_cap_position_is_kept_whole_refuses_an_add_and_reduces_only_what_was_asked() {
-        // ADR 0012's allowance runs one way only: a position pushed over its cap by
+        // ADR 0027's allowance runs one way only: a position pushed over its cap by
         // a fall in equity is not force-reduced, and it may not be extended either.
         // Dropping the max(pos.abs()) from the cap turns this refusal into a fill,
         // and the fill is on the SAME side, so the order that was meant to be
@@ -3644,7 +3644,7 @@ mod tests {
 
     #[test]
     fn funding_fires_on_the_absolute_bar_index_not_on_bars_since_the_reset() {
-        // ADRs 0002 and 0017: the funding schedule belongs to the series, so every
+        // ADR 0030: the funding schedule belongs to the series, so every
         // env in a vectorized run charges the same bars however its episode was
         // offset. Only an offset start separates the two counters, and nothing did
         // that: starting at bar 2 with an interval of 3 funds ticks 3 and 6, while
@@ -3674,12 +3674,12 @@ mod tests {
 
     #[test]
     fn a_bar_that_gaps_up_past_a_shorts_bankruptcy_price_closes_it_at_the_fence() {
-        // ADR 0067 works the fence out before the bar's orders are resolved, and it
+        // ADR 0034 works the fence out before the bar's orders are resolved, and it
         // faces the position's OWN direction: a short dies going up, so a bar that
         // OPENS above its bankruptcy price is a bar the account was already closed
         // out on. Every fence fixture is a 10x long, so the short side of that
         // comparison was never taken; with the long's test a close() here books the
-        // raw open of 150 and leaves the account owing 400 (ADR 0052)
+        // raw open of 150 and leaves the account owing 400 (ADR 0033)
         let bars = Candles::new(vec![
             ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
             ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
@@ -3713,7 +3713,7 @@ mod tests {
         // buy stop there saves the account, while one at 140 sits beyond a price
         // the account had already been closed at. Clipping a short's bar with the
         // long's max() leaves that 140 reachable and books an exit 30 past the
-        // point the margin was gone (ADR 0067)
+        // point the margin was gone (ADR 0034)
         let bars = Candles::new(vec![
             ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
             ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
@@ -3773,7 +3773,7 @@ mod tests {
     /// the paths these properties have to hold across.
     ///
     /// `impact` is deliberately extreme. At 0.5 against a bar the order takes all
-    /// of, the raw slip is 50%, which is what found ADR 0074: the price left the
+    /// of, the raw slip is 50%, which is what found ADR 0005: the price left the
     /// bar entirely and the loss it booked was bounded by nothing, so the bad-debt
     /// guarantee fell over from outside the liquidation. Holding a taker price
     /// inside its bar is what makes the property below hold at this coefficient.
@@ -3803,7 +3803,7 @@ mod tests {
     /// resting when the bar resolved, and no run this ever produced had one.
     /// A stop armed away from the close and a limit armed through it are the two
     /// shapes that reach the book, and the protective pair is what a reader of
-    /// the guide actually writes (ADR 0094).
+    /// the guide actually writes (ADR 0035).
     fn drive(engine: &mut Engine, actions: &[f64]) -> Vec<State> {
         let mut seen = Vec::with_capacity(actions.len());
         for action in actions {
@@ -3821,7 +3821,7 @@ mod tests {
             // trigger is further out than the liquidation distance at this
             // leverage on purpose: that is the case where the account dies before
             // the stop does, so the stop is the fill that reduces a position the
-            // margin no longer stands behind (ADR 0094)
+            // margin no longer stands behind (ADR 0035)
             if weight > 1.0 {
                 let (side, trigger) = if buying {
                     (Side::Sell, close * 0.90)
@@ -3850,7 +3850,7 @@ mod tests {
     proptest! {
         #[test]
         fn a_perp_never_ends_a_bar_owing_money((bars, actions) in walk_and_actions(50, 40)) {
-            // ADRs 0052 and 0067: bad debt is unreachable rather than caught, so no
+            // ADRs 0033 and 0034: bad debt is unreachable rather than caught, so no
             // path through a violent series at full leverage may take equity below
             // zero on any bar. The point tests pin the three shapes that broke it;
             // this is the one that says there is no fourth shape
@@ -3899,7 +3899,7 @@ mod tests {
             (bars, actions) in walk_and_actions(50, 40),
             cut in 5usize..35,
         ) {
-            // ADR 0065 promises an order decided on bar i fills against bar i + 1 and
+            // ADR 0050 promises an order decided on bar i fills against bar i + 1 and
             // never a later one, so rewriting every bar past the cut has to leave
             // every state up to it identical. Lookahead has exactly this shape
             let mut altered = bars.clone();
@@ -3924,9 +3924,9 @@ mod tests {
                 Just(0.0), Just(-1.0), Just(f64::NAN), Just(365.0), Just(525_600.0)
             ],
         ) {
-            // ADRs 0007, 0029, 0046 and 0072: nothing is ever NaN, and the only
+            // ADRs 0040, 0041, 0042 and 0043: nothing is ever NaN, and the only
             // infinity is the deliberate one a reward earned against no measured risk
-            // goes to. A high annualization is ordinary input, since ADR 0048 reads
+            // goes to. A high annualization is ordinary input, since ADR 0044 reads
             // it off the candles and minute bars are a normal feed
             let mut e = Engine::new(Candles::new(bars), every_cost());
             e.reset();

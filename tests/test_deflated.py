@@ -98,7 +98,7 @@ def test_the_looks_are_the_searchs_own_trials_and_not_the_nulls():
     # the null estimates how far a sharpe scatters over this space. It does not
     # decide how hard YOU searched, and reading the count off it meant a small
     # null flattered the winner: the same 12-trial study scored as though it had
-    # looked 6 times against one null and 48 times against another (ADR 0058)
+    # looked 6 times against one null and 48 times against another (ADR 0055)
     study = search(n_trials=12)
     few = search(sampler="random", seed=3, n_trials=12)
     many = search(sampler="random", seed=3, n_trials=48)

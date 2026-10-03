@@ -60,13 +60,13 @@ class Strategy:
     ``self.closes[i - self.slow]`` on an early bar is a NEGATIVE index, which numpy
     resolves from the END of the array, so the rule reads prices from the future,
     reports a wonderful result, and raises nothing. Declare it once instead. It is
-    read after ``init``, so it can be computed there (ADR 0050).
+    read after ``init``, so it can be computed there (ADR 0049).
 
     It is called on every bar but the last. An order decided on a bar fills on the
     next one, so on the final bar there is no bar left to fill against and nothing
     a decision could do; a ``T``-bar series therefore calls ``next`` ``T - 1``
     times. A position still open at the end is marked into the equity curve and the
-    return, but it never closes, so it appears in no trade metric (ADR 0009).
+    return, but it never closes, so it appears in no trade metric (ADR 0036).
     """
 
     warmup = 0
@@ -85,17 +85,17 @@ class BacktestResult:
     on a real advance, so the opening balance is not the first entry, and anything
     reading a peak off the curve alone cannot see a fall from the starting balance.
     The engine seeds its own drawdown from it, and it is carried here so a second
-    reading cannot disagree (ADR 0042). It is ``None`` on a result built by hand.
+    reading cannot disagree (ADR 0073). It is ``None`` on a result built by hand.
 
     ``periods_per_year`` is the annualization the stats were computed at, carried
     for the same reason: anything reading the curve again, ``emsl.metrics`` most
     of all, has to reach the same numbers this result already reports, and
-    inferring it twice is how two readings come to disagree (ADR 0048).
+    inferring it twice is how two readings come to disagree (ADR 0044).
 
     ``config``, ``data_hash``, ``strategy`` and ``version`` are what make a run
     identifiable a week later. A notebook accumulates two hundred of these, and
     without them "was Tuesday's 2.1 sharpe on the same fees as today's 1.9" has no
-    answer at all (ADR 0051). ``to_dict`` returns the lot as plain data.
+    answer at all (ADR 0039). ``to_dict`` returns the lot as plain data.
 
     ``risk_free`` is the annual rate the stats were computed against, carried for
     the reason ``periods_per_year`` is: ``metrics.sharpe`` reads it off the result
@@ -158,7 +158,7 @@ class Backtester:
     ``periods_per_year`` is read from the candles' own spacing when they carry a
     datetime index, so hourly candles annualize at 8760 without being told. Pass
     a number to state it yourself. A numpy input has no index to read, and it
-    says so rather than assuming (ADR 0048).
+    says so rather than assuming (ADR 0044).
     """
 
     def __init__(
@@ -186,7 +186,7 @@ class Backtester:
         # Engine off this buffer every call, so editing the array in place between
         # two runs changed the second one while the fingerprint below, taken once,
         # went on saying they saw the same bars. That field exists to answer
-        # exactly the question it was getting wrong (ADR 0051)
+        # exactly the question it was getting wrong (ADR 0039)
         if isinstance(candles, np.ndarray) and np.shares_memory(self._candles, candles):
             self._candles = self._candles.copy()
         self._config = dict(

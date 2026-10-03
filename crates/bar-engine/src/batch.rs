@@ -29,7 +29,7 @@ impl EnvBatch {
 
     /// Build one engine per entry in `configs`, all over the one shared candle
     /// series. Lets each env carry its own config (per-env cost randomization,
-    /// ADR 0014) while the candles stay shared with no duplication.
+    /// ADR 0066) while the candles stay shared with no duplication.
     pub fn with_configs(candles: Candles, configs: &[EngineConfig]) -> EnvBatch {
         let engines = configs
             .iter()
@@ -134,7 +134,7 @@ impl EnvBatch {
     }
 
     /// Per-env termination flag: true where the env's account died, by a perp
-    /// liquidation or by equity reaching zero on either market (ADR 0019).
+    /// liquidation or by equity reaching zero on either market (ADR 0029).
     pub fn busts(&self) -> Vec<bool> {
         self.engines.iter().map(Engine::is_bust).collect()
     }

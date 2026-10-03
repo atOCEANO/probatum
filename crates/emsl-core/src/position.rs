@@ -13,7 +13,7 @@ pub const POS_EPS: f64 = 1e-9;
 
 /// True when `fill` moves the position at all. A non-finite value or a size at
 /// or below the dust epsilon changes nothing, so the account must not move cash
-/// for it either (ADR 0023).
+/// for it either (ADR 0026).
 #[inline]
 pub fn moves_position(fill: &Fill) -> bool {
     fill.size.get().is_finite() && fill.size.get() > POS_EPS && fill.price.get().is_finite()
@@ -58,7 +58,7 @@ impl Position {
     /// Non-finite fills and zero-size fills are ignored, so a bad value cannot
     /// poison the account; the engine validates orders before they reach here.
     /// `Account::apply_fill` gates its cash move on the same `moves_position`
-    /// predicate, so a fill refused here never moves quote either (ADR 0023).
+    /// predicate, so a fill refused here never moves quote either (ADR 0026).
     pub fn apply(&mut self, fill: &Fill) -> f64 {
         if !moves_position(fill) {
             return 0.0;

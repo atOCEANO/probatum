@@ -29,7 +29,7 @@ pub struct Account {
 impl Account {
     /// A fresh account with `quote` cash and no position. Nothing is validated
     /// here; the Python boundary is where a negative or non-finite quote is
-    /// refused (ADR 0027).
+    /// refused (ADR 0023).
     pub fn new(market: Market, quote: f64) -> Account {
         Account {
             market,
@@ -41,7 +41,7 @@ impl Account {
     /// Apply a fill and its fee, moving cash by the market's convention. A fill
     /// the position refuses (non-finite, or sized at or below the dust epsilon)
     /// moves no cash and pays no fee, so quote can never change without the
-    /// position changing with it (ADR 0023).
+    /// position changing with it (ADR 0026).
     pub fn apply_fill(&mut self, fill: &Fill, fee: f64) {
         if !moves_position(fill) {
             return;
@@ -84,7 +84,7 @@ impl Account {
     /// Base size worth `fraction` of current equity at `price`. `fraction` can
     /// exceed 1 for leverage on a perp; the margin cap is enforced elsewhere. A
     /// price that is not finite and positive has no size to give, so it returns
-    /// zero rather than an infinity the caller would have to notice (ADR 0023).
+    /// zero rather than an infinity the caller would have to notice (ADR 0026).
     pub fn qty_from_weight(&self, fraction: f64, price: Price) -> Qty {
         if !tradeable(price) {
             return Qty(0.0);
@@ -115,7 +115,7 @@ impl Account {
     }
 
     /// True when the position is dead at `mark`: a perp whose equity has fallen to
-    /// zero or below. Spot and a flat position are never liquidated (ADR 0003).
+    /// zero or below. Spot and a flat position are never liquidated (ADR 0032).
     ///
     /// The test is the trigger only. The price the position is then closed at is
     /// `bankruptcy_price`, which is not this mark: `mark` is the worst the bar
@@ -136,7 +136,7 @@ impl Account {
     /// runs out, rather than at whatever the bar happened to print afterwards. It
     /// also answers where a fee comes from when nothing is left to pay it with:
     /// the close lands far enough before ruin that the fee fits inside what
-    /// remains (ADR 0052). `None` when the position is dust or the arithmetic is
+    /// remains (ADR 0033). `None` when the position is dust or the arithmetic is
     /// degenerate.
     pub fn bankruptcy_price(&self, fee_rate: f64) -> Option<Price> {
         let qty = self.position.qty.get();
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn closing_at_the_bankruptcy_price_leaves_exactly_nothing() {
         // whatever the bar printed, the position cannot lose more than the margin
-        // behind it, so the exit is priced where that margin runs out (ADR 0052)
+        // behind it, so the exit is priced where that margin runs out (ADR 0033)
         for side in [Side::Buy, Side::Sell] {
             let mut a = Account::new(Market::Perp, 100.0);
             a.apply_fill(&fill(side, 10.0, 100.0), 0.0);
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn a_sub_dust_fill_moves_neither_position_nor_cash() {
         // the position ignores anything at or below POS_EPS, so the cash move and
-        // the fee must be gated on the same test or quote drifts on its own (ADR 0023)
+        // the fee must be gated on the same test or quote drifts on its own (ADR 0026)
         let mut a = Account::new(Market::Spot, 1000.0);
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0); // quote 800, long 2
         let before = a;

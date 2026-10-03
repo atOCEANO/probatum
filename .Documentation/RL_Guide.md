@@ -32,7 +32,7 @@
 
 <div align="center">
   <img src="imgs/205318.png" alt="The RL step and autoreset cycle" width="100%" />
-  <p style="margin: 0;"><i>The vectorized loop: observe, act, step every env at once with the GIL released, read the reward; a finished env resets on the same step (ADR 0010).</i></p>
+  <p style="margin: 0;"><i>The vectorized loop: observe, act, step every env at once with the GIL released, read the reward; a finished env resets on the same step (ADR 0064).</i></p>
 </div>
 
 <br>
@@ -161,12 +161,12 @@ Only `data` has no default.
 | `quote` | `10_000.0` | Starting quote balance per env. |
 | `fee_taker`, `fee_maker` | `0.0006`, `0.0002` | Fees, fraction of notional. Scalar, or `(low, high)` sampled per env. |
 | `slippage_bps` | `0.0` | Slippage on market fills, basis points. Scalar, or `(low, high)` per env. |
-| `impact` | `0.0` | Market-impact coefficient (ADR 0013): extra slippage per unit of the bar's volume filled. Scalar, or `(low, high)` per env. |
+| `impact` | `0.0` | Market-impact coefficient (ADR 0004): extra slippage per unit of the bar's volume filled. Scalar, or `(low, high)` per env. |
 | `max_fill_fraction` | `1.0` | Cap on the fraction of a bar's volume one order takes. |
 | `max_open_orders` | `8` | Resting-order slots per env. |
 | `leverage` | `10.0` | Perp margin cap on notional; the 10x default bounds a fresh perp, `0.0` disables it. |
 | `funding_rate` | `0.0` | Perp funding per event on the position notional; a long pays, a short receives. |
-| `funding_interval` | `0` | Bars between funding events; `0` disables funding ([ADR 0017](Decisions.md)). |
+| `funding_interval` | `0` | Bars between funding events; `0` disables funding ([ADR 0030](Decisions.md)). |
 | `trade_size` | `1.0` | Base size a buy or sell action places. |
 | `reward_fn` | `None` | Reward function; `None` uses change in equity. |
 | `action_fn` | `None` | Decoder from actions (and state) to per-env sizes; `None` uses the `Discrete(3)` default. |
@@ -224,7 +224,7 @@ env = VectorEnv(
 )
 ```
 
-The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning is in [ADR 0014](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`emsl.Batch`](Python_API.md#batch) directly.
+The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning is in [ADR 0066](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`emsl.Batch`](Python_API.md#batch) directly.
 
 The per-env cost draw and the start offsets come from independent generators, both spawned from the constructor `seed`, so a given `seed` produces the same start offsets whether or not a cost range is passed. The cost draw is fixed for the env's life; `reset(seed=...)` re-seeds only the offset stream.
 
@@ -234,7 +234,7 @@ The per-env cost draw and the start offsets come from independent generators, bo
 
 An env ends in one of two ways, reported as separate `(num_envs,)` boolean arrays:
 
-- **`terminations[i]`** is true when env `i`'s equity fell to zero or below, a true terminal. On perp that is a liquidation, force-closed at the bar's adverse extreme; on either market an account otherwise drained to zero at the close terminates too ([ADR 0019](Decisions.md)).
+- **`terminations[i]`** is true when env `i`'s equity fell to zero or below, a true terminal. On perp that is a liquidation, force-closed at the bar's adverse extreme; on either market an account otherwise drained to zero at the close terminates too ([ADR 0029](Decisions.md)).
 - **`truncations[i]`** is true when env `i` reached the last bar, or `episode_len` steps if that is set, a time limit.
 
 Finished envs auto-reset on the same step: the observation returned for a done env is already the first observation of its next episode, at a fresh random offset. The true final observation and equity of the episode that ended are placed in `infos`:
@@ -246,7 +246,7 @@ Finished envs auto-reset on the same step: the observation returned for a done e
 | `final_equity` | float array; the final equity at done indices, `NaN` elsewhere. |
 | `_final_equity` | boolean mask. |
 
-This is the pre-1.0 Gymnasium vector autoreset, the same-step convention the large body of single-file RL code was written against. The env implements it itself, so it holds even on Gymnasium 1.x, whose newer next-step autoreset is deliberately not used; the choice is recorded in [ADR 0010](Decisions.md). On Gymnasium versions that tag autoreset style, the env declares `SAME_STEP` in its metadata, so a vector wrapper handles it correctly instead of assuming the next-step default.
+This is the pre-1.0 Gymnasium vector autoreset, the same-step convention the large body of single-file RL code was written against. The env implements it itself, so it holds even on Gymnasium 1.x, whose newer next-step autoreset is deliberately not used; the choice is recorded in [ADR 0064](Decisions.md). On Gymnasium versions that tag autoreset style, the env declares `SAME_STEP` in its metadata, so a vector wrapper handles it correctly instead of assuming the next-step default.
 
 <br>
 
@@ -258,4 +258,4 @@ This is the pre-1.0 Gymnasium vector autoreset, the same-step convention the lar
 
 ## On the cost hook
 
-The spec sketched a per-fill `cost_fn(fill, state)` callback. It is deliberately not offered: a Python callback cannot run inside the GIL-free batched step without dragging the engine back under the GIL and down to Python speed. Its size-dependent intent lives instead in the `impact` coefficient (a worse fill for a larger share of the bar's volume), and its cross-env variety in the cost ranges above. The reasoning is in [ADR 0013](Decisions.md).
+The spec sketched a per-fill `cost_fn(fill, state)` callback. It is deliberately not offered: a Python callback cannot run inside the GIL-free batched step without dragging the engine back under the GIL and down to Python speed. Its size-dependent intent lives instead in the `impact` coefficient (a worse fill for a larger share of the bar's volume), and its cross-env variety in the cost ranges above. The reasoning is in [ADR 0004](Decisions.md).

@@ -173,7 +173,7 @@ def test_a_short_series_that_also_has_a_gap_still_starts_at_bar_one():
     # length, so the start offset was zero and invisible, and both short-series
     # tests were gapless, so they took the fast path and never reached the line
     # that adds the two together. A short array drawn one bar early is the
-    # lookahead signature ADR 0037 exists to prevent
+    # lookahead signature ADR 0068 exists to prevent
     values = np.arange(7, dtype=float)
     values[:2] = np.nan
     spec = emsl.chart(frame(8), Line(values, "f")).spec()
@@ -292,7 +292,7 @@ def test_a_frame_with_a_non_finite_price_is_refused():
 # --------------------------------------------------------- panels and placement
 
 def test_the_overlay_threshold_is_pinned_on_both_sides():
-    # ADR 0039 calls the half-panel threshold the guarantee rather than a tuning
+    # ADR 0070 calls the half-panel threshold the guarantee rather than a tuning
     # parameter, and the suite only ever exercised ratios of 1.0, 0.08 and 0.002,
     # so every value from 0.09 to 1.0 would have passed. frame(8) spans 99 to 108,
     # so a flat series at V merges to a span of V - 99 and the ratio is 9 / that
@@ -618,7 +618,7 @@ def test_a_run_that_does_not_report_its_opening_balance_still_charts():
 
 
 def test_a_drawdown_is_capped_at_a_total_loss():
-    # bad debt takes equity below zero (ADR 0003), and the engine caps there for a
+    # bad debt takes equity below zero (ADR 0032), and the engine caps there for a
     # reason: uncapped, a deeper bust reports a larger fall than a wipeout
     result = emsl.backtest.BacktestResult(
         stats={}, equity_curve=np.array([10.0, -50.0]), trades=[], initial=100.0
@@ -1103,7 +1103,7 @@ def test_no_alpha_is_composed_in_the_javascript():
     # the pattern above cannot see this shape: an alpha byte concatenated onto a
     # theme colour carries no # of its own, so `t.up + "66"` walked past it for
     # the life of the layer, in two files that had to agree on the byte. Choosing
-    # an alpha is choosing a colour, and it belongs on the python side (ADR 0115)
+    # an alpha is choosing a colour, and it belongs on the python side (ADR 0076)
     from emsl import _chart
 
     for name in _chart._ASSETS:
@@ -1655,7 +1655,7 @@ def test_a_forced_close_is_marked_in_the_trade_payload():
 
 
 def test_the_drawdown_panel_falls_from_the_running_peak_not_from_the_balance():
-    # ADR 0042 seeds the peak from the opening balance and then RUNS it, the way
+    # ADR 0073 seeds the peak from the opening balance and then RUNS it, the way
     # the engine does. The fixture behind that never makes a new high before its
     # worst bar, so the peak IS the opening balance throughout and a plain anchor
     # on `initial` returns the identical number. A run that doubles and then gives
