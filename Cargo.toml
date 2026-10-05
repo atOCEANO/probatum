@@ -14,8 +14,8 @@ license = "MIT"
 repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
 
 [workspace.dependencies]
-pyo3 = "0.22"
-numpy = "0.22"
+pyo3 = "0.29"
+numpy = "0.29"
 rayon = "1"
 criterion = "0.5"
 proptest = "1"

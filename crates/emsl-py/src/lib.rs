@@ -283,7 +283,7 @@ fn per_env_vec(
 }
 
 fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("id", order.id.0)?;
     d.set_item("side", side_str(order.side))?;
     d.set_item("kind", kind_str(order.kind))?;
@@ -301,7 +301,7 @@ fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyD
 }
 
 fn state_to_dict<'py>(py: Python<'py>, state: &State) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("tick_index", state.tick_index)?;
     d.set_item("base", state.base)?;
     d.set_item("quote", state.quote)?;
@@ -317,7 +317,7 @@ fn state_to_dict<'py>(py: Python<'py>, state: &State) -> PyResult<Bound<'py, PyD
     d.set_item("realized_pnl", state.realized_pnl)?;
     d.set_item("unrealized_pnl", state.unrealized_pnl)?;
     d.set_item("funding_paid", state.funding_paid)?;
-    let orders = PyList::empty_bound(py);
+    let orders = PyList::empty(py);
     for order in &state.open_orders {
         orders.append(order_to_dict(py, order)?)?;
     }
@@ -326,7 +326,7 @@ fn state_to_dict<'py>(py: Python<'py>, state: &State) -> PyResult<Bound<'py, PyD
 }
 
 fn states_to_list<'py>(py: Python<'py>, states: &[State]) -> PyResult<Bound<'py, PyList>> {
-    let list = PyList::empty_bound(py);
+    let list = PyList::empty(py);
     for state in states {
         list.append(state_to_dict(py, state)?)?;
     }
@@ -334,7 +334,7 @@ fn states_to_list<'py>(py: Python<'py>, states: &[State]) -> PyResult<Bound<'py,
 }
 
 fn stats_to_dict<'py>(py: Python<'py>, stats: &Stats) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("total_return_pct", stats.total_return_pct)?;
     d.set_item("net_profit_pct", stats.net_profit_pct)?;
     d.set_item("cagr_pct", stats.cagr_pct)?;
@@ -354,7 +354,7 @@ fn stats_to_dict<'py>(py: Python<'py>, stats: &Stats) -> PyResult<Bound<'py, PyD
 }
 
 fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("entry_tick", trade.entry_tick)?;
     d.set_item("exit_tick", trade.exit_tick)?;
     d.set_item("side", side_str(trade.side))?;
@@ -384,7 +384,7 @@ fn candle_view<'py>(window: &[Candle], container: Bound<'py, PyAny>) -> Bound<'p
     // array because `container` (the engine, holding the Arc) is its base. The buffer
     // is never mutated and the array is made read-only just below, so this alias into
     // shared data can never be written through.
-    let array = unsafe { PyArray2::borrow_from_array_bound(&view, container) };
+    let array = unsafe { PyArray2::borrow_from_array(&view, container) };
     // SAFETY: the array was just created and is not yet shared with Python, so
     // clearing its WRITEABLE flag races with nothing; a read-only view is required
     // because the candle buffer is shared across every env in a batch.
@@ -410,7 +410,7 @@ fn column_view<'py>(
     // SAFETY: as in `candle_view`, the view points into the immutable candle buffer,
     // which outlives the array because `container` (the engine, holding the Arc) is
     // its base, and the array is made read-only immediately below.
-    let array = unsafe { PyArray1::borrow_from_array_bound(&view.column(column), container) };
+    let array = unsafe { PyArray1::borrow_from_array(&view.column(column), container) };
     // SAFETY: the array was just created and is not yet shared with Python, so
     // clearing its WRITEABLE flag races with nothing.
     unsafe {
@@ -782,14 +782,14 @@ impl Engine {
     fn equity_curve<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
         self.inner
             .reporter()
-            .map(|reporter| PyArray1::from_slice_bound(py, reporter.equity_curve()))
+            .map(|reporter| PyArray1::from_slice(py, reporter.equity_curve()))
     }
 
     /// The closed trades as a list of dicts, or None when reporting is off.
     fn trades<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
         match self.inner.reporter() {
             Some(reporter) => {
-                let list = PyList::empty_bound(py);
+                let list = PyList::empty(py);
                 for trade in reporter.trades() {
                     list.append(trade_to_dict(py, trade)?)?;
                 }
@@ -997,7 +997,7 @@ impl Batch {
     /// Reset every env to the first bar, returning one initial state dict per env
     /// in env order.
     fn reset_all<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let states = py.allow_threads(|| self.inner.reset_all());
+        let states = py.detach(|| self.inner.reset_all());
         states_to_list(py, &states)
     }
 
@@ -1017,7 +1017,7 @@ impl Batch {
 
         // GIL released: apply the actions and run the parallel step. The closure
         // touches only Rust data, never a Python object.
-        let states = py.allow_threads(|| {
+        let states = py.detach(|| {
             if let Some(sizes) = &action_vec {
                 for (engine, &size) in self.inner.engines_mut().iter_mut().zip(sizes) {
                     if size > 0.0 {
@@ -1042,7 +1042,7 @@ impl Batch {
         offsets: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<()> {
         let offs = self.offsets_vec(offsets)?;
-        py.allow_threads(|| {
+        py.detach(|| {
             self.inner.reset_at_each(&offs);
         });
         Ok(())
@@ -1068,7 +1068,7 @@ impl Batch {
         }
         let mask_vec = mask_slice.to_vec();
         let offs = self.offsets_vec(offsets)?;
-        py.allow_threads(|| {
+        py.detach(|| {
             self.inner.reset_masked(&mask_vec, &offs);
         });
         Ok(())
@@ -1084,7 +1084,7 @@ impl Batch {
         actions: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
         let action_vec = self.action_vec(&actions)?;
-        py.allow_threads(|| {
+        py.detach(|| {
             if let Some(sizes) = &action_vec {
                 for (engine, &size) in self.inner.engines_mut().iter_mut().zip(sizes) {
                     if size > 0.0 {
@@ -1104,26 +1104,26 @@ impl Batch {
     fn observe<'py>(&self, py: Python<'py>, window: usize) -> PyResult<Bound<'py, PyArray3<f64>>> {
         check_window(window)?;
         let n = self.inner.len();
-        let flat = py.allow_threads(|| self.inner.observe_all(window));
+        let flat = py.detach(|| self.inner.observe_all(window));
         let array = Array3::from_shape_vec((n, window, 5), flat)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyArray3::from_owned_array_bound(py, array))
+        Ok(PyArray3::from_owned_array(py, array))
     }
 
     /// Per-env equity as a `(num_envs,)` array, for building the reward.
     fn equities<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec_bound(py, self.inner.equities())
+        PyArray1::from_vec(py, self.inner.equities())
     }
 
     /// Per-env truncation flags (reached the last bar) as a `(num_envs,)` array.
     fn dones<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
-        PyArray1::from_vec_bound(py, self.inner.dones())
+        PyArray1::from_vec(py, self.inner.dones())
     }
 
     /// Per-env termination flags as a `(num_envs,)` array: true where the account
     /// died, by a perp liquidation or by equity reaching zero (ADR 0008).
     fn busts<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
-        PyArray1::from_vec_bound(py, self.inner.busts())
+        PyArray1::from_vec(py, self.inner.busts())
     }
 
     /// Cache the shared `(T, F)` feature matrix once, so `observe_features` gathers
@@ -1162,13 +1162,13 @@ impl Batch {
         }
         let n = self.inner.len();
         let n_features = self.n_features;
-        let out = py.allow_threads(|| {
+        let out = py.detach(|| {
             self.inner
                 .observe_features_all(window, &self.features, n_features)
         });
         let array = Array3::from_shape_vec((n, window, n_features), out)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyArray3::from_owned_array_bound(py, array))
+        Ok(PyArray3::from_owned_array(py, array))
     }
 
     /// A batched per-env account snapshot as a dict of `(num_envs,)` arrays, for
@@ -1176,22 +1176,16 @@ impl Batch {
     /// mark_price, funding_paid.
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.inner.snapshot();
-        let d = PyDict::new_bound(py);
-        d.set_item("equity", PyArray1::from_vec_bound(py, snap.equity))?;
-        d.set_item("position", PyArray1::from_vec_bound(py, snap.position))?;
+        let d = PyDict::new(py);
+        d.set_item("equity", PyArray1::from_vec(py, snap.equity))?;
+        d.set_item("position", PyArray1::from_vec(py, snap.position))?;
         d.set_item(
             "unrealized_pnl",
-            PyArray1::from_vec_bound(py, snap.unrealized_pnl),
+            PyArray1::from_vec(py, snap.unrealized_pnl),
         )?;
-        d.set_item(
-            "realized_pnl",
-            PyArray1::from_vec_bound(py, snap.realized_pnl),
-        )?;
-        d.set_item("mark_price", PyArray1::from_vec_bound(py, snap.mark_price))?;
-        d.set_item(
-            "funding_paid",
-            PyArray1::from_vec_bound(py, snap.funding_paid),
-        )?;
+        d.set_item("realized_pnl", PyArray1::from_vec(py, snap.realized_pnl))?;
+        d.set_item("mark_price", PyArray1::from_vec(py, snap.mark_price))?;
+        d.set_item("funding_paid", PyArray1::from_vec(py, snap.funding_paid))?;
         Ok(d)
     }
 }
