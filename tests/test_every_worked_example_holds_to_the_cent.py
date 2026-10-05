@@ -5,9 +5,11 @@ reference simulator written from that page. The engine joins each test once it
 models the rule; until then the reference is held to the page on its own.
 """
 
+import math
+
 import pytest
 
-from reference.simulator import Bar, Instrument, Venue, periods_per_year, run
+from reference.simulator import Bar, Instrument, Venue, edge, periods_per_year, run
 
 HOUR = 3_600 * 10**9
 DAY  = 24 * HOUR
@@ -271,3 +273,98 @@ def test_a_stop_reached_on_a_bar_with_no_volume_stays_armed_for_the_next():
                       1: [("sell", dict(instrument=0, size=1.0, stop=95.0))]})
 
     assert [(f["bar"], f["price"]) for f in sim.fills] == [(1, 100.0), (3, 95.0)]
+
+
+def test_a_taker_buy_of_0_141_pays_spread_slippage_and_impact_up_to_21_014_75():
+    # 24 returns of +a and -a have a sample deviation of exactly 0.004
+    a      = 0.004 * math.sqrt(23.0 / 24.0)
+    closes = [21_000.0]
+    for k in range(24):
+        closes.append(closes[-1] * math.exp(a if k % 2 == 0 else -a))
+
+    bars = [[Bar(c, c, c, c, 24_800.0)] for c in closes]
+    bars.append([Bar(21_012.0, 21_080.0, 21_000.0, 21_050.0, 24_800.0)])
+    venue = Venue(
+        taker    = 0.0005,
+        spread   = ("fixed", 0.6),
+        slippage = 1.0,
+        impact   = ("sqrt", 0.1),
+    )
+    sim = run(hourly(len(bars)), bars, [Instrument("BTCUSDT")], venue,
+              script={24: [("buy", dict(instrument=0, size=0.141))]})
+    [fill] = sim.fills
+
+    assert fill["spread"]   == pytest.approx(0.63, abs=0.005)
+    assert fill["slippage"] == pytest.approx(2.10, abs=0.005)
+    assert fill["impact"]   == pytest.approx(0.02, abs=0.005)
+    assert fill["price"]    == pytest.approx(21_014.75, abs=0.005)
+    assert fill["size"] * fill["price"] == pytest.approx(2_963.08, abs=0.005)
+    assert fill["fee"] == pytest.approx(1.48, abs=0.005)
+
+
+def test_a_budget_of_a_tenth_of_50_lets_five_orders_of_2_fill_2_2_and_1():
+    bars   = [[flat(100.0, volume=50.0)] for _ in range(26)]
+    script = {24: [("buy", dict(instrument=0, size=2.0)) for _ in range(5)]}
+    sim    = run(hourly(len(bars)), bars, [Instrument("BTCUSDT")], Venue(budget=0.1),
+                 script=script)
+
+    assert [f["size"] for f in sim.fills] == pytest.approx([2.0, 2.0, 1.0])
+    assert [e["kind"] for e in sim.events if e["order"] in (4, 5)] == [
+        "placed", "placed", "not_filled", "not_filled"]
+
+
+def test_six_bars_estimate_a_spread_of_0_1027_percent():
+    six = [Bar(100.0, 100.5, 99.8, 100.2, 1_000.0),
+           Bar(100.3, 100.6, 100.0, 100.0, 1_000.0),
+           Bar(100.1, 100.6, 99.9, 100.4, 1_000.0),
+           Bar(100.5, 100.8, 100.1, 100.1, 1_000.0),
+           Bar(100.2, 100.7, 100.0, 100.5, 1_000.0),
+           Bar(100.6, 100.9, 100.3, 100.3, 1_000.0)]
+
+    assert edge(six) ** 2 == pytest.approx(1.0553e-6, rel=1e-4)
+    assert edge(six)      == pytest.approx(0.001027, abs=5e-7)
+
+    bars = [[bar] for bar in six] + [[Bar(100.40, 100.6, 100.3, 100.5, 1_000.0)]]
+    sim  = run(hourly(len(bars)), bars, [Instrument("BTCUSDT")],
+               Venue(spread="estimated", window=6),
+               script={5: [("buy", dict(instrument=0, size=1.0))]})
+
+    assert sim.fills[0]["spread"] == pytest.approx(0.05, abs=0.005)
+
+
+def test_with_sizes_on_a_budget_cut_fill_rounds_down_to_the_lot():
+    bars  = [[flat(100.0, volume=0.0754)]] + [[Bar(100.0, 100.5, 98.5, 99.5, 0.0754)]]
+    venue = Venue(sizes=True)
+    sim   = run(hourly(2), bars, [Instrument("BTCUSDT", lot=0.001)], venue,
+                script={0: [("buy", dict(instrument=0, size=0.2, limit=99.0)),
+                            ("buy", dict(instrument=0, size=0.0004))]})
+    [fill] = sim.fills
+
+    assert fill["size"] == pytest.approx(0.075, abs=1e-12)
+
+    resting = sim.orders[1]
+    assert resting["status"] == "resting"
+    assert resting["size"] - resting["filled"] == pytest.approx(0.125, abs=1e-12)
+    assert sim.orders[2]["status"] == "refused"
+
+
+def test_a_bar_that_carries_half_a_bitcoin_and_buys_a_tenth_gains_266_0815():
+    bars = [[flat(60_000.0, volume=1e6)], [flat(60_000.0, volume=1e6)],
+            [Bar(60_300.0, 60_600.0, 60_250.0, 60_500.0, 1e6)]]
+    venue = Venue(
+        taker    = 0.0005,
+        spread   = ("fixed", 6.0 / 60_300.0 * 10_000.0),
+        slippage = 1.0,
+    )
+    sim = run(hourly(3), bars, [Instrument("BTCUSDT")], venue,
+              script={0: [("buy", dict(instrument=0, size=0.5))],
+                      1: [("buy", dict(instrument=0, size=0.1))]})
+    fill = sim.fills[-1]
+
+    assert fill["price"] == pytest.approx(60_309.03, abs=0.005)
+
+    row = sim.ledger[2]
+    assert row["spread"]   == pytest.approx(0.30, abs=1e-9)
+    assert row["slippage"] == pytest.approx(0.603, abs=1e-9)
+    assert row["fees"]     == pytest.approx(3.0155, abs=5e-5)
+    assert row["equity"] - sim.ledger[1]["equity"] == pytest.approx(266.0815, abs=5e-5)

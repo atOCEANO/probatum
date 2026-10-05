@@ -204,9 +204,9 @@ For a fill on bar `t`, the window is the instrument's last `W` bars before `t`, 
 price = ref * (1 + side * (s / 2 + slip + imp)), held inside [low, high]
 ```
 
-`ref` is the open, or for a stop the worse of its trigger and the open; `side` is +1 for a buy and -1 for a sell; `s` is the spread as a fraction of the price; `slip` the slippage; `imp` the impact; and `low` and `high` are the bar's range, clipped where the bar is clipped. `slip` and `imp` are floored at zero, and `s / 2 + slip + imp` is held below one. A buy never fills above the high and a sell never below the low.
+`ref` is the open, or for a stop the worse of its trigger and the open; `side` is +1 for a buy and -1 for a sell; `s` is the spread as a fraction of the price; `slip` the slippage; `imp` the impact; and `low` and `high` are the bar's range, clipped where the bar is clipped. `slip` and `imp` are floored at zero, and `s / 2 + slip + imp` is held at 0.99 at most. A buy never fills above the high and a sell never below the low.
 
-`imp = k * sigma * sqrt(q / V)` under `sqrt(k)` and `k * sigma * q / V` under `linear(k)`, where `q` is the fill's size.
+`imp = k * sigma * sqrt(q / V)` under `sqrt(k)` and `k * sigma * q / V` under `linear(k)`, where `q` is the size the liquidity budget allows the fill, before the wallet's clamps, which then apply at the price that size set.
 
 **Worked example.** A buy of 0.141 BTC on a bar that opens at 21,012.00. An estimated spread of 0.6 bps adds 0.63, a slippage of 1 bp adds 2.10, and impact under `sqrt(0.1)`, with `sigma` 0.004 and `V` 24,800 BTC, adds `0.1 * 0.004 * sqrt(0.141 / 24,800) * 21,012 = 0.02`. The fill is at 21,014.75, below the bar's high, and the taker fee of 0.05% on 2,963.08 is 1.48.
 
@@ -266,9 +266,9 @@ give `s2 = 1.0553e-6`, a spread of 0.1027% of the price. A buy whose reference i
 
 ### Sizes and dust
 
-With sizes on, an order's size is rounded down to the lot and a limit or trigger to the tick, or to Hyperliquid's five significant figures with its decimal cap; an order below the minimum notional is refused, a reducing one exempt where the venue exempts it; and one above the maximum order quantity is clamped to it. A position or an order's remainder below half a lot is zeroed at the bar's close with no fee and recorded as a dust adjustment. With sizes off, a fill of 1e-9 base units or less moves nothing, and an order retires at that remainder.
+With sizes on, an order's size is rounded down to the lot when it is placed, and so is every fill's size after its clamps, and a limit or a trigger is rounded to the nearest tick, or to Hyperliquid's five significant figures within its decimal cap. An order below the minimum notional at the last close is refused, a reducing one exempt where the venue exempts it; one above the maximum order quantity is clamped to it; and an order retires when what remains of it is less than a lot. A position that floating-point sums leave below half a lot is zeroed at the bar's close with no fee, and its value there is recorded as a dust adjustment. With sizes off, a fill of 1e-9 base units or less moves nothing, and an order retires at that remainder.
 
-**Worked example.** With a lot of 0.001, a remainder of 0.0004 BTC is zeroed at the close as dust, and one of 0.0006 BTC is kept.
+**Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0754 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0004 is refused when it is placed, since it rounds to nothing.
 
 <br>
 <br>
@@ -512,7 +512,7 @@ One row per bar from the first, where row 0 is the opening balance, so no curve 
 
 ### The ledger identity
 
-Each bar, the change in equity equals the price PnL less spread, slippage, impact, fees, funding, the liquidation charge and the dust adjustment. Price PnL is measured from reference prices, a fill's reference and then each bar's mark, and every term is computed on its own, so none is a residual. The identity holds within an error bound derived from the magnitudes involved. On a run that ends flat with no liquidation charge and no dust adjustment, the round trips' net PnL sums to the change in equity.
+Each bar, the change in equity equals the price PnL less spread, slippage, impact, fees, funding, the liquidation charge and the dust adjustment. Price PnL is measured from reference prices, a fill's reference and then each bar's mark, and a fill's spread, slippage and impact are what it paid beyond its reference, each in proportion when the bar's range held its price back. Every term is computed on its own, so none is a residual. The identity holds within an error bound derived from the magnitudes involved. On a run that ends flat with no liquidation charge and no dust adjustment, the round trips' net PnL sums to the change in equity.
 
 **Worked example.** A bar carries 0.5 BTC from a mark of 60,000 and buys 0.1 BTC. The reference is the open, 60,300. The buy pays an estimated half-spread of 3.00, a slippage of 1 bp (6.03) and the taker fee of 0.05%, for a fill at 60,309.03. The bar closes at 60,500.
 - Price PnL: `0.5 * (60,500 - 60,000) + 0.1 * (60,500 - 60,300) = 250 + 20 = 270.00`.

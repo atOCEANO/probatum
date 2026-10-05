@@ -13,38 +13,48 @@ returns: the ledger, the fill log, the order log and the round trips.
 Scope: the clock, the step's order of events, market, value, limit and stop
 orders with their time in force, `post_only`, `reduce_only`, brackets, `replace`
 and cancels, `target`, the slot table, maker after the first bar, self-trade
-refusal, the worse exit first, fees, the spot and margin wallets with transfers,
-listing and delisting, round trips and the ledger. The fill model's costs,
-funding, the margin cap and liquidation, inverse contracts and several instruments
-on one path are not here.
+refusal, the worse exit first, the fill model (the trailing window, the liquidity
+budget, the spread, slippage, impact, sizes and dust), fees, the spot and margin
+wallets with transfers, listing and delisting, round trips and the ledger.
+Funding, the margin cap and liquidation, inverse contracts and several
+instruments on one path are not here.
 """
 
 import collections
 import math
 import statistics
 
-DUST = 1e-9          # Fills, Sizes and dust: a fill this small moves nothing
+DUST     = 1e-9      # Sizes and dust: with sizes off, a fill this small moves nothing
+MAX_COST = 0.99      # Fills, A taker's price: s / 2 + slip + imp at most
 
 Bar = collections.namedtuple("Bar", "open high low close volume")
 
 
 class Instrument:
 
-    def __init__(self, name, kind="linear", lot=0.0, tick=0.0, delist=None):
+    def __init__(self, name, kind="linear", lot=0.0, tick=0.0, sigfigs=None,
+                 decimals=None, min_notional=0.0, max_qty=math.inf,
+                 reduce_only_exempt=False, delist=None):
         if kind not in ("spot", "linear"):
             raise ValueError(f"kind: {kind!r} is not modelled; use spot or linear")
 
-        self.name   = name
-        self.kind   = kind
-        self.lot    = float(lot)
-        self.tick   = float(tick)
-        self.delist = delist          # nanoseconds, or None
+        self.name               = name
+        self.kind               = kind
+        self.lot                = float(lot)
+        self.tick               = float(tick)
+        self.sigfigs            = sigfigs   # Hyperliquid's rule: significant figures,
+        self.decimals           = decimals  # within a cap on decimal places
+        self.min_notional       = float(min_notional)
+        self.max_qty            = float(max_qty)
+        self.reduce_only_exempt = reduce_only_exempt
+        self.delist             = delist    # nanoseconds, or None
 
 
 class Venue:
 
     def __init__(self, balance=10_000.0, maker=0.0002, taker=0.0006, leverage=10.0,
-                 max_open_orders=8, limit="touch", intrabar="pessimistic"):
+                 max_open_orders=8, limit="touch", window=24, budget=1.0, spread=None,
+                 slippage=0.0, impact=None, sizes=False, intrabar="pessimistic"):
         if limit not in ("touch", "through"):
             raise ValueError(f"limit: {limit!r}; use touch or through")
 
@@ -57,6 +67,12 @@ class Venue:
         self.leverage        = float(leverage)
         self.max_open_orders = int(max_open_orders)
         self.limit           = limit
+        self.window          = int(window)
+        self.budget          = float(budget)
+        self.spread          = spread  # None, ("fixed", bps) or "estimated"
+        self.slippage        = float(slippage)
+        self.impact          = impact  # None, ("linear", k) or ("sqrt", k)
+        self.sizes           = sizes
         self.intrabar        = intrabar
 
 
@@ -64,6 +80,49 @@ def periods_per_year(times):
     """Time, Annualisation: the clock's rows less one per 365 days of its span."""
     days = (times[-1] - times[0]) / 86_400e9
     return (len(times) - 1) * 365.0 / days
+
+
+def mean(values):
+    return sum(values) / len(values)
+
+
+def edge(bars):
+    """Fills, The spread estimate: Ardia, Guidotti and Kroencke's estimator over the
+    bars' consecutive pairs, floored at zero, and zero where it is undefined."""
+    if len(bars) < 3:
+        return 0.0
+
+    o     = [math.log(bar.open) for bar in bars]
+    h     = [math.log(bar.high) for bar in bars]
+    lo    = [math.log(bar.low) for bar in bars]
+    c     = [math.log(bar.close) for bar in bars]
+    m     = [(a + b) / 2.0 for a, b in zip(h, lo)]
+    pairs = range(1, len(bars))
+    r1    = [m[t] - o[t] for t in pairs]
+    r2    = [o[t] - m[t - 1] for t in pairs]
+    r3    = [m[t] - c[t - 1] for t in pairs]
+    r4    = [c[t - 1] - m[t - 1] for t in pairs]
+    r5    = [o[t] - c[t - 1] for t in pairs]
+    tau   = [1.0 if h[t] != lo[t] or lo[t] != c[t - 1] else 0.0 for t in pairs]
+    po    = (mean([tau[k] * (o[t] != h[t]) for k, t in enumerate(pairs)])
+             + mean([tau[k] * (o[t] != lo[t]) for k, t in enumerate(pairs)]))
+
+    pc = (mean([tau[k] * (c[t - 1] != h[t - 1]) for k, t in enumerate(pairs)])
+          + mean([tau[k] * (c[t - 1] != lo[t - 1]) for k, t in enumerate(pairs)]))
+    pt = mean(tau)
+    if sum(tau) < 2 or po == 0.0 or pc == 0.0:
+        return 0.0
+
+    d1 = [r - mean(r1) / pt * w for r, w in zip(r1, tau)]
+    d3 = [r - mean(r3) / pt * w for r, w in zip(r3, tau)]
+    d5 = [r - mean(r5) / pt * w for r, w in zip(r5, tau)]
+    x1 = [-4.0 / po * a * b - 4.0 / pc * d * e for a, b, d, e in zip(d1, r2, d3, r4)]
+    x2 = [-4.0 / po * a * b - 4.0 / pc * d * e for a, b, d, e in zip(d1, r5, d5, r4)]
+    e1, e2 = mean(x1), mean(x2)
+    v1 = mean([x * x for x in x1]) - e1 * e1
+    v2 = mean([x * x for x in x2]) - e2 * e2
+    s2 = (v2 * e1 + v1 * e2) / (v1 + v2) if v1 + v2 > 0.0 else (e1 + e2) / 2.0
+    return math.sqrt(max(s2, 0.0))
 
 
 class Trip:
@@ -140,22 +199,25 @@ class Simulator:
         self.entry    = [0.0] * n
 
         self.mark        = [None] * n
+        self.history     = [[] for _ in range(n)]  # each instrument's own bars
         self.listed      = [False] * n
         self.delisted    = [False] * n
         self.trip        = [None] * n
         self.trips       = []
-        self.pending     = []          # market orders, filling at each one's next bar
-        self.slots       = []          # Orders, Maker, taker and the book: one table
+        self.pending     = []                      # market orders, filling at each one's next bar
+        self.slots       = []                      # Orders, Maker, taker and the book: one table
         self.transfers   = []
         self.orders      = {}
         self.next_id     = 1
         self.fills       = []
         self.events      = []
-        self.decided     = -1          # the row whose close the last `target` came from
+        self.decided     = -1                      # the row whose close the last `target` came from
         self.target_legs = []
+        self.budget_left = {}
+        self.costs       = None
 
         self.see_row(0)
-        self.ledger = [self.row(0, fees=0.0)]
+        self.ledger = [self.row(0)]
 
 
     def see_row(self, t):
@@ -163,6 +225,7 @@ class Simulator:
             if bar is not None:
                 self.listed[i] = True
                 self.mark[i]   = bar.close
+                self.history[i].append(bar)
 
 
     def wallet_equity(self):
@@ -199,12 +262,26 @@ class Simulator:
                 and (instrument is None or o["instrument"] == instrument)]
 
 
-    def row(self, t, fees):
+    def window(self, i):
+        """Fills, The window: the instrument's last W bars before the fill's bar, their
+        mean volume, and the sample deviation of their log returns close to close."""
+        bars    = self.history[i][-self.venue.window:]
+        closes  = [bar.close for bar in self.history[i][-(self.venue.window + 1):]]
+        returns = [math.log(b / a) for a, b in zip(closes, closes[1:])]
+        volume  = mean([bar.volume for bar in bars]) if bars else 0.0
+        sigma   = statistics.stdev(returns) if len(returns) >= 2 else 0.0
+
+        return bars, volume, sigma
+
+
+    def row(self, t, costs=None):
+        costs = costs or dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0, dust=0.0)
+
         spot, margin = self.wallet_equity()
         equity = spot + margin
         out    = dict(time=self.times[t], equity=equity, spot_cash=self.spot_cash,
-                      margin_cash=self.margin_cash, fees=fees, terminal=equity <= 0.0,
-                      instruments=[])
+                      margin_cash=self.margin_cash, terminal=equity <= 0.0,
+                      instruments=[], **costs)
 
         for i in range(len(self.instruments)):
             q, mark = self.position[i], self.mark[i]
@@ -225,6 +302,40 @@ class Simulator:
             instrument=None if order is None else order["instrument"],
             size=size, price=price, reason=reason,
         ))
+
+
+    def lot_down(self, i, size):
+        """Fills, Sizes and dust: with sizes on, down to a whole number of lots."""
+        lot = self.instruments[i].lot
+        if not self.venue.sizes or lot <= 0.0:
+            return size
+        return math.floor(round(size / lot, 9)) * lot
+
+
+    def round_price(self, i, price):
+        """Fills, Sizes and dust: to the nearest tick, or to Hyperliquid's rule."""
+        inst = self.instruments[i]
+        if not self.venue.sizes or price is None or not math.isfinite(price):
+            return price
+
+        if inst.sigfigs is not None:
+            digits = inst.sigfigs - 1 - int(math.floor(math.log10(abs(price))))
+            if inst.decimals is not None:
+                digits = min(digits, inst.decimals)
+            return round(price, digits)
+
+        if inst.tick > 0.0:
+            return round(price / inst.tick) * inst.tick
+
+        return price
+
+
+    def remainder_done(self, i, remaining):
+        """An order retires when what remains of it can no longer fill."""
+        lot = self.instruments[i].lot
+        if self.venue.sizes and lot > 0.0:
+            return remaining < lot - DUST
+        return remaining <= DUST
 
 
     def new_order(self, instrument, side, kind, size=None, value=None, price=None,
@@ -251,28 +362,56 @@ class Simulator:
         return order["id"]
 
 
-    def common_refusal(self, order):
-        i = order["instrument"]
+    def size_refusal(self, order):
+        """Orders and Sizes: why an order's size cannot be placed, or None. With sizes
+        on it is rounded down to the lot, held to the maximum order quantity and
+        checked against the minimum notional at the last close."""
+        i    = order["instrument"]
+        inst = self.instruments[i]
         if not self.listed[i]:
             return "the instrument has not printed its first bar"
 
         if self.delisted[i]:
             return "the instrument is delisted"
 
+        if order["size"] is None:
+            return None
+
+        if not math.isfinite(order["size"]) or order["size"] <= 0.0:
+            return f"size: {order['size']} cannot fill"
+
+        if not self.venue.sizes:
+            return None
+
+        rounded = self.lot_down(i, order["size"])
+        if rounded <= 0.0:
+            return f"size: {order['size']} rounds to nothing at a lot of {inst.lot}"
+
+        if rounded > inst.max_qty:
+            self.log("clamped", order, f"size: {rounded} held to {inst.max_qty}",
+                     size=inst.max_qty)
+            rounded = inst.max_qty
+
+        order["size"] = rounded
+        exempt = order["reduce_only"] and inst.reduce_only_exempt
+        if rounded * self.mark[i] < inst.min_notional and not exempt:
+            return (f"size: {rounded} is below the minimum notional of "
+                    f"{inst.min_notional}")
+
         return None
 
 
     def place_market(self, order):
         """Orders, Order types: a market order fills at its instrument's next open,
-        and a value order's size is its amount over that fill price (Units)."""
-        asked = order["size"] if order["value"] is None else order["value"]
-        why   = self.common_refusal(order)
+        and a value order's size is its amount over its fill price (Units)."""
+        why = self.size_refusal(order)
 
-        if asked is None or not math.isfinite(asked) or asked <= 0.0:
-            why = f"size: {asked} cannot fill"
-        elif why is None and len([o for o in self.pending
-                                  if o["instrument"] == order["instrument"]]) \
-                >= self.venue.max_open_orders:
+        if why is None and order["value"] is not None and (
+                not math.isfinite(order["value"]) or order["value"] <= 0.0):
+            why = f"amount: {order['value']} cannot fill"
+
+        if why is None and len([o for o in self.pending if o["instrument"]
+                                == order["instrument"]]) >= self.venue.max_open_orders:
             why = f"max_open_orders: {self.venue.max_open_orders} already waiting"
 
         if why is not None:
@@ -287,13 +426,9 @@ class Simulator:
     def resting_refusal(self, order, replacing=None):
         """Why a limit or a stop cannot rest, or None."""
         i, side = order["instrument"], order["side"]
-        why = self.common_refusal(order)
+        why = self.size_refusal(order)
         if why is not None:
             return why
-
-        if order["size"] is not None and (not math.isfinite(order["size"])
-                                          or order["size"] <= 0.0):
-            return f"size: {order['size']} cannot fill"
 
         if order["kind"] == "limit" and not math.isfinite(order["price"]):
             return f"limit: {order['price']} is not a price"
@@ -339,6 +474,9 @@ class Simulator:
 
 
     def place_resting(self, order):
+        order["price"]   = self.round_price(order["instrument"], order["price"])
+        order["trigger"] = self.round_price(order["instrument"], order["trigger"])
+
         why = self.resting_refusal(order)
         if why is not None:
             return self.refuse(order, why)
@@ -401,8 +539,8 @@ class Simulator:
         account holds the position they close and taking their side from it."""
         legs = []
 
-        for leg, kind, price in (("stop", "stop", stop), ("take_profit", "limit",
-                                                          take_profit)):
+        for leg, kind, price in (("stop", "stop", stop),
+                                 ("take_profit", "limit", take_profit)):
             if price is None:
                 continue
 
@@ -463,9 +601,9 @@ class Simulator:
 
         moved = dict(old)
         if price is not None:
-            moved["price"] = float(price)
+            moved["price"] = self.round_price(old["instrument"], float(price))
         if trigger is not None:
-            moved["trigger"] = float(trigger)
+            moved["trigger"] = self.round_price(old["instrument"], float(trigger))
 
         if size is not None:
             moved["size"] = float(size) + old["filled"]
@@ -478,8 +616,7 @@ class Simulator:
             self.log("refused", old, f"replace: {why}")
             return None
 
-        slot = self.slots.index(old)
-        self.slots[slot] = None
+        self.slots[self.slots.index(old)] = None
         old.update(moved)
         self.rest(old)
         self.log("placed", old, "replace")
@@ -520,11 +657,17 @@ class Simulator:
             q = self.position[i]
             if q != 0.0 and (q + leg) * q < 0.0:
                 reducing.append((i, -q))
-                growing.append((i, q + leg))
+                grow = q + leg
             elif q != 0.0 and abs(q + leg) < abs(q):
                 reducing.append((i, leg))
+                grow = 0.0
             else:
-                growing.append((i, leg))
+                grow = leg
+
+            # a growing leg below the minimum notional is skipped
+            small = self.venue.sizes and abs(grow) * close < inst.min_notional
+            if grow != 0.0 and not small:
+                growing.append((i, grow))
 
         for legs, reduce_only in ((reducing, True), (growing, False)):
             for i, leg in legs:
@@ -549,19 +692,28 @@ class Simulator:
             return False
 
         self.t += 1
-        t    = self.t
-        fees = 0.0
+        t = self.t
+        self.costs = dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0, dust=0.0)
+
+        # Fills, The liquidity budget: what each instrument's fills may take this bar
+        self.budget_left = {}
+        for i, bar in enumerate(self.bars[t]):
+            if bar is not None:
+                _, volume, _ = self.window(i)
+                self.budget_left[i] = self.venue.budget * volume
 
         self.apply_transfers()                   # 1
         # 2 funding between rows and 3 the liquidation path are not in this scope
         self.delist(t)
-        fees += self.fill_market_orders(t)       # 4
+        self.fill_market_orders(t)               # 4
+
         self.arm()
-        fees += self.fill_resting_orders(t)      # 5
+        self.fill_resting_orders(t)              # 5
         # 6 to 8, exits on a liquidating bar, the check and funding, are not here
         self.see_row(t)                          # 9
-        self.ledger.append(self.row(t, fees))
 
+        self.sweep_dust()
+        self.ledger.append(self.row(t, self.costs))
         return True
 
 
@@ -606,11 +758,56 @@ class Simulator:
             if q != 0.0:
                 self.apply(i, "sell" if q > 0.0 else "buy", abs(q), self.mark[i],
                            rate=0.0, taker=False, order=None, reason="delist",
-                           reference=None)
+                           reference=self.mark[i])
+
+
+    def taker_price(self, i, side, reference, size, bar):
+        """Fills, A taker's price: the reference moved against the side by half the
+        spread, the slippage and the impact, then held inside the bar."""
+        bars, volume, sigma = self.window(i)
+        spread = self.venue.spread
+
+        if spread is None:
+            s = 0.0
+        elif spread == "estimated":
+            s = edge(bars)
+        else:
+            s = spread[1] / 10_000.0
+
+        slip = max(self.venue.slippage / 10_000.0, 0.0)
+        imp  = 0.0
+        if self.venue.impact is not None and volume > 0.0:
+            model, k = self.venue.impact
+            share = size / volume
+            imp   = k * sigma * (math.sqrt(share) if model == "sqrt" else share)
+            imp   = max(imp, 0.0)
+
+        total = min(s / 2.0 + slip + imp, MAX_COST)
+        scale = total / (s / 2.0 + slip + imp) if s / 2.0 + slip + imp > 0.0 else 1.0
+        sign  = 1.0 if side == "buy" else -1.0
+        raw   = reference * (1.0 + sign * total)
+        price = min(raw, bar.high) if side == "buy" else max(raw, bar.low)
+
+        costs = dict(spread=reference * s / 2.0 * scale,
+                     slippage=reference * slip * scale,
+                     impact=reference * imp * scale, adjustment=price - raw)
+        return price, costs
+
+
+    def book(self, size, costs):
+        """What a run records: a fill's costs are what it paid beyond its reference,
+        so a price the bar's range held back pays each of them in proportion."""
+        computed = costs["spread"] + costs["slippage"] + costs["impact"]
+        if computed <= 0.0:
+            return
+
+        paid = (computed - abs(costs["adjustment"])) / computed
+        self.costs["spread"] += size * costs["spread"] * paid
+        self.costs["slippage"] += size * costs["slippage"] * paid
+        self.costs["impact"] += size * costs["impact"] * paid
 
 
     def fill_market_orders(self, t):
-        fees    = 0.0
         waiting = []
         for order in self.pending:
             i   = order["instrument"]
@@ -619,36 +816,48 @@ class Simulator:
                 waiting.append(order)       # Time, The clock: it waits for its bar
                 continue
 
-            price = bar.open                # Fills, A taker's price, with no costs here
+            side   = order["side"]
+            budget = self.budget_left.get(i, 0.0)
             if order["value"] is not None:
-                asked = order["value"] / price
+                wanted = order["value"] / bar.open
             else:
-                asked = order["size"] - order["filled"]
-            size = self.clamp(i, order["side"], asked, price, order["reduce_only"],
+                wanted = order["size"] - order["filled"]
+
+            allowed = min(wanted, budget)
+            price, costs = self.taker_price(i, side, bar.open, allowed, bar)
+            if order["value"] is not None:
+                wanted  = order["value"] / price
+                allowed = min(wanted, budget)
+
+            size = self.clamp(i, side, allowed, price, order["reduce_only"],
                               self.venue.taker)
-            if bar.volume <= 0.0 or size <= DUST or (order["tif"] == "fok"
-                                                     and size < asked - DUST):
+            size          = self.lot_down(i, size)
+            whole         = size >= self.lot_down(i, wanted) - DUST
+            refused_whole = order["tif"] == "fok" and not whole
+            if bar.volume <= 0.0 or size <= DUST or refused_whole:
                 order["status"] = "expired"
                 self.log("not_filled", order, "nothing could fill on its bar"
                          if order["tif"] != "fok" else "fok: the whole size could not")
                 continue
 
-            if size < asked - DUST:
-                self.log("clamped", order, f"{size} of the {asked} asked fits",
+            if not whole:
+                self.log("clamped", order, f"{size} of the {wanted} asked fits",
                          size=size)
-            fees += self.apply(i, order["side"], size, price, self.venue.taker, True,
-                               order, order["reason"], reference=bar.open)
+
+            self.budget_left[i] = budget - size
+            self.book(size, costs)
+            self.apply(i, side, size, price, self.venue.taker, True, order,
+                       order["reason"], reference=bar.open, costs=costs)
             order["filled"] += size
 
             # a market order lives one bar: what it did not fill is gone
-            if size < asked - DUST:
+            if not whole:
                 order["status"] = "expired"
                 self.log("expired", order, "a market order takes one bar")
             else:
                 order["status"] = "filled"
 
         self.pending = waiting
-        return fees
 
 
     def side_of(self, order):
@@ -663,8 +872,8 @@ class Simulator:
 
 
     def offer(self, order, bar):
-        """Whether the bar reaches a resting order, and if so at what price, maker or
-        taker (Order types, Maker, taker and the book, Fills, Limits)."""
+        """Whether the bar reaches a resting order, at what reference, and whether it
+        fills as a taker (Order types, Maker, taker and the book, Fills, Limits)."""
         side = self.side_of(order)
         if side is None or not order["armed"]:
             return None
@@ -682,26 +891,22 @@ class Simulator:
             opened_through = bar.open <= price if side == "buy" else bar.open >= price
             if not reached:
                 return None
-            first = order["seen"] == 0
-            return price, first and opened_through
+            return price, order["seen"] == 0 and opened_through
 
         trigger = order["trigger"]
         if side == "buy":
             if bar.high < trigger:
                 return None
-            price = min(max(trigger, bar.open), bar.high)
-        else:
-            if bar.low > trigger:
-                return None
-            price = max(min(trigger, bar.open), bar.low)
+            return max(trigger, bar.open), True
 
-        return price, True
+        if bar.low > trigger:
+            return None
+        return min(trigger, bar.open), True
 
 
     def fill_resting_orders(self, t):
         """The step, 5: resting orders in slot order, a position's exits reordered by
         the PnL per unit each would realize, worst first unless optimistic."""
-        fees   = 0.0
         offers = []
         for slot, order in enumerate(self.slots):
             if order is None:
@@ -724,35 +929,50 @@ class Simulator:
                 offers.append((slot, order, found[0], found[1]))
 
         offers = self.worst_first(offers)
-        for slot, order, price, taker in offers:
+        for slot, order, reference, taker in offers:
             if order["status"] != "resting":
                 continue                     # its OCO partner filled first
 
             i    = order["instrument"]
+            bar  = self.bars[t][i]
             side = self.side_of(order)
             if side is None:
                 continue
 
             remaining = (abs(self.position[i]) if order["size"] is None
                          else order["size"] - order["filled"])
+            budget  = self.budget_left.get(i, 0.0)
+            allowed = min(remaining, budget)
+            if order["kind"] == "stop":
+                price, costs = self.taker_price(i, side, reference, allowed, bar)
+            else:
+                price, costs = reference, dict(spread=0.0, slippage=0.0, impact=0.0,
+                                               adjustment=0.0)
+
             rate = self.venue.taker if taker else self.venue.maker
-            size = self.clamp(i, side, remaining, price, order["reduce_only"], rate)
-            if order["tif"] == "fok" and size < remaining - DUST:
+            size = self.lot_down(i, self.clamp(i, side, allowed, price,
+                                               order["reduce_only"], rate))
+            whole = size >= self.lot_down(i, remaining) - DUST
+            if size <= DUST or (order["tif"] == "fok" and not whole):
                 continue
-            if size <= DUST:
-                continue
-            if size < remaining - DUST:
+
+            if not whole:
                 self.log("clamped", order, f"{size} of the {remaining} asked fits",
                          size=size)
 
+            self.budget_left[i] = budget - size
+            self.book(size, costs)
             reason = order["leg"] or order["reason"]
-            fees += self.apply(i, side, size, price, rate, taker, order, reason,
-                               reference=price)
+            self.apply(i, side, size, price, rate, taker, order, reason,
+                       reference=reference, costs=costs)
             order["filled"] += size
             if order["pair"] is not None:
                 self.cancel(order["pair"], "its OCO partner filled")
-            done = (self.position[i] == 0.0 if order["size"] is None
-                    else order["size"] - order["filled"] <= DUST)
+
+            if order["size"] is None:
+                done = self.position[i] == 0.0
+            else:
+                done = self.remainder_done(i, order["size"] - order["filled"])
             if done:
                 order["status"] = "filled"
                 self.slots[self.slots.index(order)] = None
@@ -766,8 +986,6 @@ class Simulator:
                 order["status"] = "expired"
                 self.slots[self.slots.index(order)] = None
                 self.log("expired", order, f"{order['tif']}: one bar")
-
-        return fees
 
 
     def worst_first(self, offers):
@@ -810,13 +1028,44 @@ class Simulator:
                 affordable = self.spot_cash / (price * (1.0 + rate))
                 size       = min(size, max(affordable, 0.0))
 
-        return size
+        return max(size, 0.0)
 
 
-    def apply(self, i, side, size, price, rate, taker, order, reason, reference):
+    def sweep_dust(self):
+        """Fills, Sizes and dust: a position floating point leaves below half a lot is
+        zeroed at the close, and its value there is the dust adjustment."""
+        if not self.venue.sizes:
+            return
+
+        for i, inst in enumerate(self.instruments):
+            q = self.position[i]
+            if q == 0.0 or inst.lot <= 0.0 or abs(q) >= inst.lot / 2.0:
+                continue
+
+            if inst.kind == "spot":
+                value = q * self.mark[i]
+            else:
+                value = q * (self.mark[i] - self.entry[i])
+
+            self.costs["dust"] += value
+            self.position[i], self.entry[i] = 0.0, 0.0
+
+            if self.trip[i] is not None:
+                trip = self.trip[i]
+                trip.close_bar, trip.close_time = self.t, self.times[self.t]
+                trip.reason = "dust"
+                self.trips.append(trip)
+                self.trip[i] = None
+
+
+    def apply(self, i, side, size, price, rate, taker, order, reason, reference,
+              costs=None):
         """Accounting: a fill's fee, its cash, its position and its round trip."""
-        t         = self.t
-        fee       = size * price * rate
+        t     = self.t
+        costs = costs or dict(spread=0.0, slippage=0.0, impact=0.0, adjustment=0.0)
+        fee   = size * price * rate
+        self.costs["fees"] += fee
+
         signed    = size if side == "buy" else -size
         before    = self.position[i]
         closed    = min(size, abs(before)) if before * signed < 0.0 else 0.0
@@ -869,8 +1118,9 @@ class Simulator:
         self.fills.append(dict(
             time=self.times[t], bar=t, instrument=i,
             order=None if order is None else order["id"], side=side, size=size,
-            price=price, reference=reference, spread=0.0, slippage=0.0, impact=0.0,
-            fee=fee, adjustment=0.0, taker=taker, reason=reason,
+            price=price, reference=reference, spread=costs["spread"],
+            slippage=costs["slippage"], impact=costs["impact"], fee=fee,
+            adjustment=costs["adjustment"], taker=taker, reason=reason,
         ))
         if order is not None:
             self.log("filled", order, reason, size=size, price=price)
