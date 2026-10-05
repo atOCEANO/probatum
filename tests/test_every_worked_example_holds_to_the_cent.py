@@ -23,6 +23,26 @@ def hourly(rows):
     return [i * HOUR for i in range(rows)]
 
 
+# one tier at 20x with a maintenance rate of 0.5% and no amount
+MAINTAINED = [(1e12, 20.0, 0.005, 0.0)]
+
+
+def half_a_bitcoin(later, script=None, tiers=None, times=None, interval=None,
+                   events=None, **venue):
+    """The page's account: a margin wallet of 10,000 USDT holding a long of 0.5 BTC
+    from 60,000 from row 1, its entry's taker fee of 15.00 taken from a balance of
+    10,015, and then the bars in ``later``. The entry is a limit on a bar that opens
+    on it, so a venue's slippage never moves it."""
+    bars   = [[flat(60_000.0)], [flat(60_000.0)]] + [[bar] for bar in later]
+    script = dict(script or {})
+    script[0] = [("buy", dict(instrument=0, size=0.5, limit=60_000.0))]
+    settings = dict(balance=10_015.0, maker=0.0002, taker=0.0005)
+    settings.update(venue)
+
+    return run(times or hourly(len(bars)), bars, [Instrument("BTCUSDT", tiers=tiers)],
+               Venue(**settings), script=script, interval=interval, funding=events)
+
+
 def test_hourly_bars_over_a_year_annualise_at_8760():
     assert periods_per_year(hourly(8_761)) == 8_760.0
 
@@ -419,3 +439,183 @@ def test_an_event_during_a_closure_is_charged_at_the_next_open_at_the_last_mark(
     assert sim.ledger[1]["funding"] == 0.0
     assert sim.ledger[1]["equity"]  == pytest.approx(500.0)
     assert sim.ledger[2]["funding"] == pytest.approx(10.25)
+
+
+def seven_oclock(rate, stamp=8 * HOUR, intrabar="pessimistic"):
+    return half_a_bitcoin([Bar(60_000.0, 60_000.0, 40_210.0, 41_000.0, 1_000.0)],
+                          tiers=MAINTAINED, times=[5 * HOUR, 6 * HOUR, 7 * HOUR],
+                          events=[(stamp, 0, rate)], funding="data", intrabar=intrabar)
+
+
+def test_a_debit_charged_after_the_check_leaves_489_75_against_102_50():
+    sim = seven_oclock(0.0005)
+    row = sim.ledger[-1]
+
+    assert row["funding"] == pytest.approx(10.25)
+    assert row["equity"]  == pytest.approx(489.75)
+    assert sim.maintenance_of(0, 0.5, 20_500.0) == pytest.approx(102.50)
+    assert row["liquidation"] == 0.0
+
+
+def test_a_debit_of_410_closes_the_account_at_the_close_and_charges_its_90_00():
+    sim   = seven_oclock(0.02)
+    close = sim.fills[-1]
+
+    assert (close["reason"], close["price"], close["fee"]) == ("liquidation",
+                                                              41_000.0, 0.0)
+    assert sim.ledger[-1]["funding"]     == pytest.approx(410.0)
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(90.00)
+    assert sim.margin_cash               == 0.0
+
+
+@pytest.mark.parametrize("intrabar, liquidated", [("pessimistic", True),
+                                                  ("optimistic", False)])
+def test_a_debit_inside_the_bar_counts_toward_its_check_only_when_pessimistic(
+        intrabar, liquidated):
+    sim = seven_oclock(0.0005, stamp=7 * HOUR + 30 * 60 * 10**9, intrabar=intrabar)
+    row = sim.ledger[-1]
+
+    assert row["funding"] == pytest.approx(10.25)
+    if liquidated:
+        assert sim.fills[-1]["price"] == pytest.approx(40_221.61, abs=0.005)
+        assert row["liquidation"]     == pytest.approx(100.55, abs=0.005)
+    else:
+        assert sim.fills[-1]["reason"] == "limit"
+        assert row["equity"] == pytest.approx(489.75)
+
+
+def test_a_debit_over_a_weekend_moves_the_trigger_onto_mondays_gap():
+    # 7 January 1970 was a Wednesday, so the rows run Wednesday to Friday and Monday
+    sim = half_a_bitcoin([Bar(60_000.0, 60_000.0, 41_000.0, 41_000.0, 1_000.0),
+                          Bar(40_150.0, 40_600.0, 40_000.0, 40_400.0, 1_000.0)],
+                         tiers=MAINTAINED, times=[6 * DAY, 7 * DAY, 8 * DAY, 11 * DAY],
+                         interval=DAY, events=[(9 * DAY + 8 * HOUR, 0, 0.0005)],
+                         funding="data")
+
+    assert sim.ledger[2]["equity"] == pytest.approx(500.0)
+
+    close = sim.fills[-1]
+    assert (close["bar"], close["reason"]) == (3, "liquidation")
+    assert close["price"]               == pytest.approx(40_221.61, abs=0.005)
+    assert sim.ledger[3]["funding"]     == pytest.approx(10.25)
+    assert sim.ledger[3]["liquidation"] == pytest.approx(100.55, abs=0.005)
+
+
+def test_twenty_times_ten_thousand_lets_a_buy_of_5_bitcoin_fill_3_33333():
+    sim = run(hourly(2), [[flat(60_000.0)], [flat(60_000.0)]], [Instrument("BTCUSDT")],
+              Venue(taker=0.0005, leverage=20.0),
+              script={0: [("buy", dict(instrument=0, size=5.0))]})
+
+    assert sim.fills[0]["size"] == pytest.approx(3.33333, abs=5e-6)
+    assert [e["kind"] for e in sim.events] == ["placed", "clamped", "filled", "expired"]
+
+
+def test_binance_tiers_ask_1_200_either_side_of_300_000():
+    tiers = [(300_000.0, 125.0, 0.004, 0.0), (800_000.0, 100.0, 0.005, 300.0)]
+    sim   = run(hourly(1), [[flat(60_000.0)]], [Instrument("BTCUSDT", tiers=tiers)])
+
+    assert sim.maintenance_of(0, 5.0, 300_000.0)  == pytest.approx(1_200.0)
+    assert sim.maintenance_of(0, 5.0, 300_000.01) == pytest.approx(1_200.0, abs=1e-4)
+
+    broken = [(300_000.0, 125.0, 0.004, 0.0), (800_000.0, 100.0, 0.005, 250.0)]
+    with pytest.raises(ValueError, match="continuity"):
+        Instrument("BTCUSDT", tiers=broken)
+    with pytest.raises(ValueError, match="initial rate"):
+        Instrument("BTCUSDT", tiers=[(1e12, 125.0, 0.008, 0.0)])
+
+
+FALL = Bar(41_500.0, 41_500.0, 39_000.0, 39_500.0, 1_000.0)
+
+
+def test_with_no_maintenance_the_account_closes_at_40_020_01_and_ends_at_zero():
+    sim   = half_a_bitcoin([FALL])
+    close = sim.fills[-1]
+
+    assert close["reason"] == "liquidation"
+    assert close["price"]  == pytest.approx(40_020.01, abs=0.005)
+    assert close["fee"]    == pytest.approx(10.005, abs=5e-4)
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(0.0, abs=1e-6)
+    assert sim.margin_cash == 0.0
+
+
+def test_a_stop_at_41_000_fills_on_the_clipped_bar_and_keeps_489_75():
+    sim = half_a_bitcoin([FALL], {1: [("sell", dict(instrument=0, size=0.5,
+                                                    stop=41_000.0))]})
+
+    assert [(f["reason"], f["price"]) for f in sim.fills] == [("limit", 60_000.0),
+                                                              ("stop", 41_000.0)]
+    assert sim.margin_cash == pytest.approx(489.75)
+
+
+@pytest.mark.parametrize("intrabar, last, cash", [("pessimistic", "liquidation", 0.0),
+                                                  ("optimistic", "limit", 995.80)])
+def test_a_limit_at_42_000_is_held_back_on_a_liquidating_bar_unless_optimistic(
+        intrabar, last, cash):
+    wide = Bar(41_500.0, 42_500.0, 39_000.0, 39_500.0, 1_000.0)
+    sim  = half_a_bitcoin([wide], {1: [("sell", dict(instrument=0, size=0.5,
+                                                     limit=42_000.0))]},
+                          intrabar=intrabar)
+
+    assert sim.fills[-1]["reason"] == last
+    assert sim.margin_cash         == pytest.approx(cash)
+    if last == "liquidation":
+        assert sim.fills[-1]["price"]  == pytest.approx(40_020.01, abs=0.005)
+        assert sim.orders[2]["status"] == "cancelled"
+
+
+def test_a_gap_through_the_clip_point_liquidates_the_account_before_the_bar_opens():
+    sim = half_a_bitcoin([Bar(60_000.0, 60_000.0, 40_500.0, 40_500.0, 1_000.0),
+                          Bar(40_010.0, 40_600.0, 39_000.0, 39_500.0, 1_000.0)],
+                         {2: [("sell", dict(instrument=0, size=0.5, stop=40_300.0))]})
+
+    assert [(f["bar"], f["reason"]) for f in sim.fills] == [(1, "limit"),
+                                                            (3, "liquidation")]
+    assert sim.fills[-1]["price"]  == pytest.approx(40_020.01, abs=0.005)
+    assert sim.orders[2]["status"] == "cancelled"
+
+
+SLIDE = Bar(41_000.0, 41_200.0, 40_150.0, 40_500.0, 1_000.0)
+
+
+def test_takeover_at_half_a_percent_maintenance_charges_the_100_50_left():
+    sim   = half_a_bitcoin([SLIDE], tiers=MAINTAINED)
+    close = sim.fills[-1]
+
+    assert close["reason"] == "liquidation"
+    assert close["price"]  == pytest.approx(40_201.01, abs=0.005)
+    assert close["fee"]    == 0.0
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(100.50, abs=0.005)
+    assert sim.margin_cash == 0.0
+
+
+@pytest.mark.parametrize("low, slippage, kept, charge", [
+    (40_150.0, 0.0, 90.45, 0.0),
+    (40_140.0, 0.0, 90.45, 0.0),
+    (40_130.0, 0.0, 0.0, 100.50),
+    (40_150.0, 10.0, 70.36, 0.0),
+    (40_150.0, 20.0, 0.0, 100.50),
+])
+def test_book_then_backstop_sells_at_the_trigger_unless_it_would_reach_the_backstop(
+        low, slippage, kept, charge):
+    bar = Bar(41_000.0, 41_200.0, low, 40_500.0, 1_000.0)
+    sim = half_a_bitcoin([bar], tiers=MAINTAINED, slippage=slippage,
+                         liquidation=("book_then_backstop", 2.0 / 3.0))
+
+    assert sim.fills[-1]["reason"]       == "liquidation"
+    assert sim.margin_cash               == pytest.approx(kept, abs=0.005)
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(charge, abs=0.005)
+
+
+def test_a_sale_past_the_close_point_fills_at_95_and_books_0_45_back():
+    sim = run(hourly(3), [[flat(100.0)], [flat(100.0)], [flat(95.0)]],
+              [Instrument("XYZUSDT")],
+              Venue(balance=51.5, maker=0.0, taker=0.001, leverage=50.0),
+              script={0: [("buy", dict(instrument=0, size=10.0))],
+                      1: [("close", dict(instrument=0))]})
+
+    assert sim.ledger[1]["margin_cash"] == pytest.approx(50.5)
+
+    sale = sim.fills[-1]
+    assert sale["price"]                 == 95.0
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(-0.45, abs=0.005)
+    assert sim.margin_cash               == pytest.approx(0.0, abs=1e-9)

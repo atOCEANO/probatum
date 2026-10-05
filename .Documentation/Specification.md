@@ -352,6 +352,8 @@ An `every` or `every_bars` event is charged on every perpetual held, and a `data
 
 **Worked example of the order.** A margin wallet of 10,000 USDT holds a long of 0.5 BTC from 60,000 at a maintenance rate of 0.5%, so its trigger is 40,201.01. The 07:00 bar falls to 40,210 and closes at 41,000, and the 08:00 event has a rate of 0.05%. The path never reaches the trigger, so the check passes; the debit of `0.0005 * 0.5 * 41,000 = 10.25` is then charged at the close, where equity is 489.75 against a requirement of 102.50, and the account survives. Counted toward the bar's low, the debit would have moved the trigger to 40,221.61 and liquidated the account on a payment it had not yet made.
 
+Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the requirement of 102.50, and the account would be closed at the close, 41,000, with its remaining 90.00 booked as the liquidation charge. Had the 0.05% event been stamped at 07:30, inside the bar, the pessimistic setting would count its debit toward the check, which moves the trigger to 40,221.61, above the low of 40,210, so the account would be liquidated there and the debit paid; the optimistic setting would not count it, and the account would survive as before.
+
 **Worked example across a gap.** The same account holds its long on an instrument whose bars stop at Friday's close of 41,000 and resume at Monday's open of 40,150, with an event at a rate of 0.05% stamped on Saturday. The decision at Friday's close sees equity of 500.00, because the event has not happened yet. At the start of Monday's bar the debit of 10.25 is charged at the last mark, 41,000, which moves the trigger to 40,221.61; the gap segment from 41,000 to 40,150 crosses it, so the account is liquidated on the gap at 40,221.61, where equity and the requirement are both 100.55.
 
 <br>
@@ -366,6 +368,8 @@ An `every` or `every_bars` event is charged on every perpetual held, and a `data
 - A growing fill is clamped to what the cap allows, and the clamp is an order-log event with the size allowed and the size asked.
 - When one fill is checked, every other leg is marked at the same fraction of its own bar's move as the fill sits at on its own path ([The path](#the-path)), or at its favourable extreme under `intrabar="optimistic"`.
 - While the account is over the cap because equity fell, no fill may raise the summed requirement, and a flip must fit the cap outright. A position over the cap is never force-reduced. With margin equity at or below zero, only reducing fills pass.
+
+**Worked example at one instrument.** A margin wallet of 10,000 USDT at 20x holds at most 200,000 of BTCUSDT notional, so a market buy of 5 BTC at an open of 60,000 fills 3.33333, and the order log records the clamp.
 
 **Worked example.** A margin wallet of 10,000 USDT; BTCUSDT allows 20x and ETHUSDT 10x. A long of 1 BTC at 60,000 uses `60,000 / 20 = 3,000` of the cap.
 
@@ -429,7 +433,7 @@ For a short, `(1 - m)` becomes `(1 + m)` and `(1 - f)` becomes `(1 + f)`, with `
 3. Otherwise the bar of every perpetual the account holds is clipped at the clip point's fraction of its own move, and the bar's orders resolve against the clipped bars. A perpetual the account does not hold is not clipped. Spot bars are never clipped.
 4. Under the pessimistic setting, the bar's fills are first resolved without the reducing perpetual fills priced on the favourable side of their open, and the path is solved for the account as it then stands. If it reaches the trigger those fills are cancelled; otherwise the bar resolves again with them, in slot order. Under the optimistic setting they resolve in slot order with the rest.
 5. **The check.** The path is solved again against the raw bars for the account after the bar's fills, every carried leg from its open and every leg opened or grown during the bar from its fill price, with any funding stamped inside the bar counted as `intrabar` decides. If the trigger is on the path, the forced close is booked at the clip point recomputed for those positions and that balance. An account already past it where its path starts closes each carried leg at its open and each new leg at its fill price.
-6. Funding owned by the bar is charged at the closes, and an account a debit takes to its trigger is closed there.
+6. Funding owned by the bar is charged at the closes, and an account a debit takes to its trigger is closed there. A margin wallet that fees have left below zero with no perpetual held, which can happen when the margin bound stops at an average entry, is set to zero, and the deficit is booked as a negative liquidation charge.
 
 ### The forced close
 
@@ -440,8 +444,8 @@ For a short, `(1 - m)` becomes `(1 + m)` and `(1 - f)` becomes `(1 + f)`, with `
 ### The margin bound
 
 1. A reducing fill is placed on its instrument's path at its fraction, clamped to `[0, 1]`; a fill on the favourable side of its open, or on a bar with no adverse move, is at fraction 0.
-2. The account's close-level equity is evaluated with every other leg at the same fraction, or at its favourable extreme under `intrabar="optimistic"`.
-3. If that equity is below zero, the fill is lifted toward the close point, never outside its instrument's clipped bar nor past its position's average entry. The part of the lift the bar cannot hold, times the size closed and net of the fee that part would have paid, is booked as a negative liquidation charge.
+2. The account's close-level equity is evaluated with every other leg at the same fraction, or at its favourable extreme under `intrabar="optimistic"`, and with the fill's own fee in place of the closing fee on the size it closes, so the wallet the fill leaves is never below zero.
+3. If that equity is below zero, the fill is lifted toward the close point, never outside its instrument's clipped bar nor past its position's average entry. The lift the bar holds moves the fill's price and is recorded as its adjustment; the part it cannot hold, times the size closed, is paid into the margin wallet, net of the fee it would have added to a sale or with the fee it would have saved a purchase. Both are booked as a negative liquidation charge, so the price PnL stays measured from the fill's reference.
 
 **Worked example.** A margin wallet of 50.5, a long of 10 at 100, a fee of 0.1%, and a market sell on a bar that trades at 95 throughout. The close point is where `50.5 + 10 * (p - 100) = 0.001 * 10 * p`, so `p = 949.5 / 9.99 = 95.045045`. The sale fills at 95, the bar's high, and `(95.045045 - 95) * 10 * 0.999 = 0.45` is booked as a negative liquidation charge.
 

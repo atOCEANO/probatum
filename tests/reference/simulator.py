@@ -4,7 +4,8 @@ It exists to disagree with the engine, so it is written from the rules as the
 Specification states them and never from the Rust. Each step names the section it
 implements, so a disagreement can be argued from the page rather than guessed at,
 and every price, cash movement and log row is computed plainly, in the order the
-page lists them. It is slow on purpose.
+page lists them. It is slow on purpose, and where the engine solves the
+liquidation path in closed form, this finds its crossings by bisection.
 
 It takes what the low-level binding takes, the bars on a clock, the instruments,
 the venue and the decisions made at each close, and it returns what the binding
@@ -14,14 +15,18 @@ Scope: the clock, the step's order of events, market, value, limit and stop
 orders with their time in force, `post_only`, `reduce_only`, brackets, `replace`
 and cancels, `target`, the slot table, maker after the first bar, self-trade
 refusal, the worse exit first, the fill model (the trailing window, the liquidity
-budget, the spread, slippage, impact, sizes and dust), fees, funding, the spot
-and margin wallets with transfers, listing and delisting, round trips and the
-ledger. The margin cap and liquidation, and so the check a funding event inside a
-bar counts toward, inverse contracts and several instruments on one path are not
-here.
+budget, the spread, slippage, impact, sizes and dust), fees, funding, the spot and
+margin wallets with transfers, the margin cap with leverage tiers, maintenance
+tiers, the liquidation path with its trigger, close and clip points, the
+liquidation rule, takeover and book then backstop, the margin bound, exits held
+on a liquidating bar, listing and delisting, round trips and the ledger. The other
+legs at a fill's fraction for the cap and the margin bound, the optimistic corners
+of several instruments, a flip's old side on the check and inverse contracts are
+not here.
 """
 
 import collections
+import copy
 import math
 import statistics
 
@@ -29,16 +34,38 @@ DUST     = 1e-9      # Sizes and dust: with sizes off, a fill this small moves n
 MAX_COST = 0.99      # Fills, A taker's price: s / 2 + slip + imp at most
 SNAP     = 10**9     # Funding: a stamp within a second of a row boundary is on it
 
-Bar = collections.namedtuple("Bar", "open high low close volume")
+Bar  = collections.namedtuple("Bar", "open high low close volume")
+Tier = collections.namedtuple("Tier", "up_to leverage rate amount")
+# a leg of the liquidation path: its price runs from start to end as s runs 0 to 1
+Leg = collections.namedtuple("Leg", "instrument q entry start end")
+# a leg of the check: it joins the path at frac, at start, and runs on to end
+CheckLeg = collections.namedtuple("CheckLeg", "instrument q entry frac start end")
+
+
+def first_zero(f, lo=0.0, hi=1.0):
+    """The first point in [lo, hi] where f falls to zero or below, by bisection, for
+    an f above zero at lo and at or below it at hi that crosses zero once there."""
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if f(mid) <= 0.0:
+            hi = mid
+        else:
+            lo = mid
+
+    return hi
 
 
 class Instrument:
 
     def __init__(self, name, kind="linear", lot=0.0, tick=0.0, sigfigs=None,
                  decimals=None, min_notional=0.0, max_qty=math.inf,
-                 reduce_only_exempt=False, delist=None):
+                 reduce_only_exempt=False, tiers=None, tiers_by="notional",
+                 delist=None):
         if kind not in ("spot", "linear"):
             raise ValueError(f"kind: {kind!r} is not modelled; use spot or linear")
+
+        if tiers_by not in ("notional", "quantity"):
+            raise ValueError(f"tiers_by: {tiers_by!r}; use notional or quantity")
 
         self.name               = name
         self.kind               = kind
@@ -49,7 +76,30 @@ class Instrument:
         self.min_notional       = float(min_notional)
         self.max_qty            = float(max_qty)
         self.reduce_only_exempt = reduce_only_exempt
+        self.tiers              = [Tier(*map(float, tier)) for tier in (tiers or [])]
+        self.tiers_by           = tiers_by
         self.delist             = delist    # nanoseconds, or None
+        self.check_tiers()
+
+
+    def check_tiers(self):
+        """Margin, Maintenance: the loader refuses a notional table whose amounts break
+        continuity, any rate not below one, and a maintenance rate that reaches the
+        tier's initial rate."""
+        previous = None
+        for tier in self.tiers:
+            if tier.rate >= 1.0:
+                raise ValueError(f"tiers: a rate of {tier.rate} is not below one")
+            if tier.leverage > 0.0 and tier.rate >= 1.0 / tier.leverage:
+                raise ValueError(f"tiers: a maintenance rate of {tier.rate} reaches "
+                                 f"the initial rate of {1.0 / tier.leverage}")
+            if self.tiers_by == "notional" and previous is not None:
+                wanted = previous.amount + (tier.rate - previous.rate) * previous.up_to
+                if abs(tier.amount - wanted) > 1e-9 * max(1.0, abs(wanted)):
+                    raise ValueError(f"tiers: an amount of {tier.amount} where "
+                                     f"continuity needs {wanted}")
+
+            previous = tier
 
 
 class Venue:
@@ -57,7 +107,7 @@ class Venue:
     def __init__(self, balance=10_000.0, maker=0.0002, taker=0.0006, leverage=10.0,
                  max_open_orders=8, limit="touch", window=24, budget=1.0, spread=None,
                  slippage=0.0, impact=None, sizes=False, intrabar="pessimistic",
-                 funding="none"):
+                 funding="none", liquidation="takeover", liquidation_fee=None):
         if limit not in ("touch", "through"):
             raise ValueError(f"limit: {limit!r}; use touch or through")
 
@@ -79,8 +129,17 @@ class Venue:
         self.intrabar        = intrabar
         self.funding         = funding  # "none", "data", ("every", hours, rate) or
 
-
                                         # ("every_bars", n, rate)
+        if liquidation != "takeover" and not (
+                isinstance(liquidation, tuple) and len(liquidation) == 2
+                and liquidation[0] == "book_then_backstop"
+                and 0.0 < liquidation[1] < 1.0):
+            raise ValueError(f"liquidation: {liquidation!r}; use takeover or "
+                             f"('book_then_backstop', share) with a share below one")
+
+        self.liquidation     = liquidation  # "takeover" or ("book_then_backstop", share)
+        self.liquidation_fee = (self.taker if liquidation_fee is None
+                                else float(liquidation_fee))
 
 
 def periods_per_year(times):
@@ -175,6 +234,12 @@ class Trip:
         )
 
 
+# the account's state a bar can be resolved twice from (The rule, 4)
+MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
+           "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
+           "legs", "next_id", "target_legs", "liquidations")
+
+
 class Simulator:
 
     def __init__(self, times, bars, instruments, venue=None, interval=None,
@@ -187,6 +252,11 @@ class Simulator:
         self.interval    = int(interval or (statistics.median(gaps) if gaps else 0))
         n                = len(self.instruments)
         self.schedule_funding(funding)
+
+        if self.venue.liquidation != "takeover" and not any(
+                self.has_maintenance(i) for i in range(n)):
+            raise ValueError("liquidation: book_then_backstop needs a maintenance "
+                             "table, since with none its backstop level is the trigger")
 
         # Wallets: a number funds the one wallet a universe of one kind uses, and
         # a universe holding both kinds names each
@@ -207,26 +277,35 @@ class Simulator:
         self.position = [0.0] * n
         self.entry    = [0.0] * n
 
-        self.mark        = [None] * n
-        self.history     = [[] for _ in range(n)]  # each instrument's own bars
-        self.listed      = [False] * n
-        self.delisted    = [False] * n
-        self.trip        = [None] * n
-        self.trips       = []
-        self.pending     = []                      # market orders, filling at each one's next bar
-        self.slots       = []                      # Orders, Maker, taker and the book: one table
-        self.transfers   = []
-        self.orders      = {}
-        self.next_id     = 1
-        self.fills       = []
-        self.events      = []
-        self.decided     = -1                      # the row whose close the last `target` came from
-        self.target_legs = []
-        self.budget_left = {}
-        self.costs       = None
+        self.mark         = [None] * n
+        self.history      = [[] for _ in range(n)]     # each instrument's own bars
+        self.listed       = [False] * n
+        self.delisted     = [False] * n
+        self.trip         = [None] * n
+        self.trips        = []
+        self.pending      = []              # market orders, filling at each one's next bar
+        self.slots        = []                # Orders, Maker, taker and the book: one table
+        self.transfers    = []
+        self.orders       = {}
+        self.next_id      = 1
+        self.fills        = []
+        self.events       = []
+        self.decided      = -1              # the row whose close the last `target` came from
+        self.target_legs  = []
+        self.budget_left  = {}
+        self.costs        = self.no_costs()
+        self.clipped      = {}
+        self.legs         = {}
+        self.liquidations = 0
 
         self.see_row(0)
         self.ledger = [self.row(0)]
+
+
+    @staticmethod
+    def no_costs():
+        return dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0, funding=0.0,
+                    liquidation=0.0, dust=0.0)
 
 
     def see_row(self, t):
@@ -235,6 +314,10 @@ class Simulator:
                 self.listed[i] = True
                 self.mark[i]   = bar.close
                 self.history[i].append(bar)
+
+
+    def perps(self):
+        return [i for i, inst in enumerate(self.instruments) if inst.kind != "spot"]
 
 
     def wallet_equity(self):
@@ -257,18 +340,81 @@ class Simulator:
         return spot + margin
 
 
-    def cap_requirement(self):
-        """Margin, The cap: notional over leverage, summed over the perpetuals."""
-        if self.venue.leverage <= 0.0:
+    def has_maintenance(self, i):
+        return any(tier.rate > 0.0 for tier in self.instruments[i].tiers)
+
+
+    def tier_of(self, i, size, notional):
+        """Margin, Maintenance: the tier a position's notional, or its size in
+        contracts on a quantity table, falls in."""
+        inst = self.instruments[i]
+        if not inst.tiers:
+            return None
+
+        measure = notional if inst.tiers_by == "notional" else size
+        for tier in inst.tiers:
+            if measure <= tier.up_to:
+                return tier
+        return inst.tiers[-1]
+
+
+    def leverage_of(self, i, size, notional):
+        tier = self.tier_of(i, size, notional)
+        return self.venue.leverage if tier is None else tier.leverage
+
+
+    def maintenance_of(self, i, size, notional):
+        """Margin, Maintenance: `N * m - c` on a notional table, `N * m` by quantity."""
+        tier = self.tier_of(i, size, notional)
+        if tier is None or tier.rate <= 0.0 or notional <= 0.0:
             return 0.0
-        return sum(abs(q) * self.mark[i] / self.venue.leverage
-                   for i, q in enumerate(self.position)
-                   if q != 0.0 and self.instruments[i].kind != "spot")
+
+        if self.instruments[i].tiers_by == "notional":
+            return notional * tier.rate - tier.amount
+        return notional * tier.rate
+
+
+    def cap_requirement(self, prices=None, sizes=None):
+        """Margin, The cap: each perpetual's notional over its tier's leverage."""
+        total = 0.0
+
+        for i in self.perps():
+            size = abs(self.position[i]) if sizes is None else sizes.get(i, 0.0)
+            if size == 0.0:
+                continue
+
+            price    = self.mark[i] if prices is None else prices.get(i, self.mark[i])
+            leverage = self.leverage_of(i, size, size * price)
+            if leverage > 0.0:
+                total += size * price / leverage
+
+        return total
+
+
+    def margin_equity(self, prices=None):
+        equity = self.margin_cash
+
+        for i in self.perps():
+            if self.position[i] != 0.0:
+                price = self.mark[i] if prices is None else prices.get(i, self.mark[i])
+                equity += self.position[i] * (price - self.entry[i])
+
+        return equity
+
+
+    def account_maintained(self):
+        return any(self.has_maintenance(i) for i in self.perps()
+                   if self.position[i] != 0.0)
 
 
     def resting(self, instrument=None):
         return [o for o in self.slots if o is not None
                 and (instrument is None or o["instrument"] == instrument)]
+
+
+    def bar_for(self, t, i):
+        """The rule, 3: a held perpetual's bar, clipped at the clip point."""
+        return self.clipped.get(i, self.bars[t][i])
 
 
     def window(self, i):
@@ -284,14 +430,13 @@ class Simulator:
 
 
     def row(self, t, costs=None):
-        costs = costs or dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0,
-                              funding=0.0, dust=0.0)
+        costs = costs or self.no_costs()
 
         spot, margin = self.wallet_equity()
         equity = spot + margin
         out    = dict(time=self.times[t], equity=equity, spot_cash=self.spot_cash,
                       margin_cash=self.margin_cash, terminal=equity <= 0.0,
-                      instruments=[], **costs)
+                      liquidations=self.liquidations, instruments=[], **costs)
 
         for i in range(len(self.instruments)):
             q, mark = self.position[i], self.mark[i]
@@ -702,9 +847,9 @@ class Simulator:
             return False
 
         self.t += 1
-        t = self.t
-        self.costs = dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0,
-                          funding=0.0, dust=0.0)
+        t            = self.t
+        self.costs   = self.no_costs()
+        self.clipped = {}
 
         # Fills, The liquidity budget: what each instrument's fills may take this bar
         self.budget_left = {}
@@ -713,21 +858,76 @@ class Simulator:
                 _, volume, _ = self.window(i)
                 self.budget_left[i] = self.venue.budget * volume
 
-        self.apply_transfers()                   # 1
+        self.apply_transfers()                                      # 1
         self.charge_funding(self.between[t], t, at_close=False)     # 2
-        # 3 the liquidation path is not in this scope
+        self.solve_carried(t)                                       # 3
+        self.legs = {i: [(abs(self.position[i]), self.entry[i], None)]
+                     for i in self.perps() if self.position[i] != 0.0}
         self.delist(t)
-        self.fill_market_orders(t)               # 4
+        self.fill_market_orders(t)                                  # 4
 
         self.arm()
-        self.fill_resting_orders(t)              # 5
-        # 6 and 7, exits on a liquidating bar and the check, are not in this scope
+        self.resolve_resting(t)                                     # 5, 6 and 7
         self.charge_funding(self.owned[t], t, at_close=True)        # 8
-        self.see_row(t)                          # 9
+        self.check_closes(t)
+        self.see_row(t)                                             # 9
 
         self.sweep_dust()
         self.ledger.append(self.row(t, self.costs))
         return True
+
+
+    def snapshot(self):
+        return copy.deepcopy({name: getattr(self, name) for name in MUTABLE})
+
+
+    def restore(self, saved):
+        for name, value in saved.items():
+            setattr(self, name, value)
+
+
+    def resolve_resting(self, t):
+        """The step, 5 to 7: the resting orders, then the check. Under the pessimistic
+        setting a bar's reducing perpetual fills priced on the favourable side of
+        their open are first held back, and if the check then liquidates, they never
+        happened (Liquidation, The rule, 4)."""
+        if self.venue.intrabar == "pessimistic" and self.favourable_exits(t):
+            saved = self.snapshot()
+            self.fill_resting_orders(t, hold_favourable=True)
+            if self.check(t):
+                return
+
+            self.restore(saved)
+
+        self.fill_resting_orders(t)
+        self.check(t)
+
+
+    def favourable_exits(self, t):
+        for order in self.resting():
+            bar   = self.bar_for(t, order["instrument"])
+            found = None if bar is None else self.offer(order, bar)
+            if found is not None and self.favourable(order, found[0], t):
+                return True
+
+        return False
+
+
+    def favourable(self, order, price, t):
+        """A reducing perpetual fill priced on the favourable side of its open."""
+        i    = order["instrument"]
+        q    = self.position[i]
+        side = self.side_of(order)
+
+        if self.instruments[i].kind == "spot" or side is None:
+            return False
+
+        reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
+        bar     = self.bars[t][i]
+        if not reduces or bar is None:
+            return False
+
+        return price > bar.open if q > 0.0 else price < bar.open
 
 
     def schedule_funding(self, events):
@@ -776,28 +976,325 @@ class Simulator:
                     break
 
 
-    def charge_funding(self, events, t, at_close):
+    def funding_due(self, events, t, at_close):
         """Funding, The charge: q * p * r for each perpetual held, at the close of the
         row that owns the event, or at the last mark where there is none."""
-        for _, instrument, rate, _ in events:
-            if instrument is None:
-                held = [i for i, inst in enumerate(self.instruments)
-                        if inst.kind != "spot"]
-            else:
-                held = [instrument]
-
+        due = []
+        for _, instrument, rate, inside in events:
+            held = self.perps() if instrument is None else [instrument]
             for i in held:
                 q = self.position[i]
                 if q == 0.0 or self.instruments[i].kind == "spot":
                     continue
 
-                bar    = self.bars[t][i]
-                price  = bar.close if at_close and bar is not None else self.mark[i]
-                charge = q * price * rate
-                self.margin_cash -= charge
-                self.costs["funding"] += charge
-                if self.trip[i] is not None:
-                    self.trip[i].funding += charge
+                bar   = self.bars[t][i]
+                price = bar.close if at_close and bar is not None else self.mark[i]
+                due.append((i, q * price * rate, inside))
+
+        return due
+
+
+    def pay_funding(self, i, charge):
+        self.margin_cash -= charge
+        self.costs["funding"] += charge
+        if self.trip[i] is not None:
+            self.trip[i].funding += charge
+
+
+    def charge_funding(self, events, t, at_close):
+        for i, charge, _ in self.funding_due(events, t, at_close):
+            self.pay_funding(i, charge)
+
+
+    def state_at(self, piece, wallet, s):
+        """Margin equity, the maintenance requirement and the notional on a piece of
+        the path at fraction s, with every leg at the same fraction of its move."""
+        equity    = wallet
+        sizes     = collections.defaultdict(float)
+        notionals = collections.defaultdict(float)
+
+        for leg in piece:
+            price = leg.start + s * (leg.end - leg.start)
+            equity += leg.q * (price - leg.entry)
+            sizes[leg.instrument] += abs(leg.q)
+            notionals[leg.instrument] += abs(leg.q) * price
+
+        requirement = sum(self.maintenance_of(i, sizes[i], notionals[i]) for i in sizes)
+        return equity, requirement, sum(notionals.values())
+
+
+    def solve(self, path, wallet, share=1.0):
+        """Liquidation, The trigger, close and clip points: the first point on the
+        path where margin equity falls to `share` of the requirement, and the point
+        the account leaves the market. Both are found by bisection: on a piece, equity
+        less the requirement is concave and the close level linear, so each crosses
+        once."""
+        maintained = any(self.has_maintenance(leg.instrument)
+                         for piece in path for leg in piece)
+        fee = self.venue.taker if maintained else self.venue.liquidation_fee
+
+        def g(piece, s):
+            equity, requirement, _ = self.state_at(piece, wallet, s)
+            return equity - share * requirement
+
+        def h(piece, s):
+            equity, _, notional = self.state_at(piece, wallet, s)
+            return equity - fee * notional
+
+        trigger = None
+        for k, piece in enumerate(path):
+            if g(piece, 0.0) <= 0.0:
+                trigger = (k, 0.0)
+                break
+            if g(piece, 1.0) <= 0.0:
+                trigger = (k, first_zero(lambda s, piece=piece: g(piece, s)))
+                break
+
+        if trigger is None:
+            return None
+
+        if maintained:
+            return trigger, trigger
+
+        # with no maintenance the account leaves where it stays at or past the close
+        # level all the way to the trigger; a leg joining the check's path adds to
+        # the closing fee, so the level can step down where one piece meets the next
+        k, s = trigger
+        while True:
+            piece = path[k]
+            if h(piece, 0.0) > 0.0:
+                return trigger, (k, first_zero(lambda u, piece=piece: h(piece, u),
+                                               0.0, s))
+            if k == 0 or h(path[k - 1], 1.0) > 0.0:
+                return trigger, (k, 0.0)
+            k, s = k - 1, 1.0
+
+
+    def carried_path(self, t):
+        """Liquidation, The path: every perpetual held into the bar, from its last mark
+        to its open and from its open to its adverse extreme, all in step."""
+        gap, bar_piece = [], []
+        for i in self.perps():
+            q = self.position[i]
+            if q == 0.0:
+                continue
+
+            bar = self.bars[t][i]
+            if bar is None:
+                # an instrument unavailable on the bar keeps its last mark
+                still = Leg(i, q, self.entry[i], self.mark[i], self.mark[i])
+                gap.append(still)
+                bar_piece.append(still)
+                continue
+
+            adverse = bar.low if q > 0.0 else bar.high
+            gap.append(Leg(i, q, self.entry[i], self.mark[i], bar.open))
+            bar_piece.append(Leg(i, q, self.entry[i], bar.open, adverse))
+
+        return [gap, bar_piece]
+
+
+    def solve_carried(self, t):
+        """Liquidation, The rule, 1 to 3: the path for the positions carried in. A clip
+        on the gap segment liquidates before the bar opens; one on the bar segment
+        clips every held perpetual's bar there."""
+        path = self.carried_path(t)
+        if not path[0]:
+            return
+
+        result = self.solve(path, self.margin_cash)
+        if result is None:
+            return
+
+        trigger, (k, s) = result
+        if k == 0:
+            closes = [(leg.instrument, leg.q, leg.start + s * (leg.end - leg.start))
+                      for leg in path[0]]
+            self.liquidate(closes, t, path, self.margin_cash, trigger)
+            return
+
+        for leg in path[1]:
+            bar = self.bars[t][leg.instrument]
+            if bar is None:
+                continue
+            clip = leg.start + s * (leg.end - leg.start)
+            hold = max if leg.q > 0.0 else min
+            self.clipped[leg.instrument] = Bar(
+                hold(bar.open, clip), hold(bar.high, clip), hold(bar.low, clip),
+                hold(bar.close, clip), bar.volume)
+
+
+    def track(self, i, before, after, price, opened):
+        """The check's legs of a perpetual through the bar's fills. A reducing fill
+        shrinks every leg in proportion, as average-entry accounting does, so the
+        legs' entries always sum to the position's; an opening fill adds a leg at its
+        price."""
+        legs = self.legs.get(i, [])
+        if after == 0.0 or before * after < 0.0:
+            legs = []
+        elif abs(after) < abs(before):
+            legs = [(size * abs(after) / abs(before), entry, start)
+                    for size, entry, start in legs]
+
+        if opened > DUST and after != 0.0:
+            legs.append((opened, price, price))
+
+        self.legs[i] = legs
+
+
+    def check_legs(self, t):
+        """The rule, 5: every carried leg from its open and every leg opened or grown
+        during the bar from its fill price, each to its adverse extreme; a fill on the
+        favourable side of the open joins at fraction 0, on its own segment."""
+        legs = []
+        for i, held in self.legs.items():
+            q = self.position[i]
+            if q == 0.0:
+                continue
+
+            sign = 1.0 if q > 0.0 else -1.0
+            bar  = self.bars[t][i]
+            for size, entry, start in held:
+                if bar is None:
+                    legs.append(CheckLeg(i, sign * size, entry, 0.0, self.mark[i],
+                                         self.mark[i]))
+                    continue
+                adverse = bar.low if q > 0.0 else bar.high
+                if start is None:
+                    legs.append(CheckLeg(i, sign * size, entry, 0.0, bar.open, adverse))
+                    continue
+                move = adverse - bar.open
+                frac = (start - bar.open) / move if move != 0.0 else 0.0
+                frac = frac if 0.0 < frac <= 1.0 else 0.0
+                legs.append(CheckLeg(i, sign * size, entry, frac, start, adverse))
+
+        return legs
+
+
+    @staticmethod
+    def price_at(leg, s):
+        """A check leg's price at fraction s; before it joins, its fill price."""
+        if s <= leg.frac or leg.frac >= 1.0:
+            return leg.start
+        return leg.start + (s - leg.frac) / (1.0 - leg.frac) * (leg.end - leg.start)
+
+
+    def pieces(self, legs):
+        """The check's path, cut where a leg joins: on each piece the legs joined by
+        its start move in step, and a leg filled at the adverse extreme itself is
+        tested on a last piece of no length."""
+        cuts  = sorted({0.0, 1.0} | {leg.frac for leg in legs})
+        spans = list(zip(cuts, cuts[1:]))
+        if any(leg.frac >= 1.0 for leg in legs):
+            spans.append((1.0, 1.0))
+
+        path = [[Leg(leg.instrument, leg.q, leg.entry, self.price_at(leg, a),
+                     self.price_at(leg, b)) for leg in legs if leg.frac <= a]
+                for a, b in spans]
+        return path, spans
+
+
+    def check(self, t):
+        """Liquidation, The rule, 5: the path solved again against the raw bars for the
+        account after the bar's fills, any funding stamped inside the bar counted as
+        `intrabar` decides. Returns whether it liquidated."""
+        legs = self.check_legs(t)
+        if not legs:
+            return False
+
+        counted = [(i, charge) for i, charge, inside
+                   in self.funding_due(self.owned[t], t, at_close=True) if inside
+                   and (charge > 0.0 if self.venue.intrabar == "pessimistic"
+                        else charge < 0.0)]
+        wallet = self.margin_cash - sum(charge for _, charge in counted)
+
+        path, spans = self.pieces(legs)
+        result = self.solve(path, wallet)
+        if result is None:
+            return False
+
+        trigger, (k, u) = result
+        a, b = spans[k]
+        s = a + u * (b - a)
+
+        for i, charge in counted:
+            self.pay_funding(i, charge)          # an event counted is an event paid
+
+        closes = [(leg.instrument, leg.q, self.price_at(leg, s)) for leg in legs]
+        self.liquidate(closes, t, path, wallet, trigger)
+        return True
+
+
+    def check_closes(self, t):
+        """The rule, 6: once the bar's own funding is charged, the account is checked
+        at the closes, and closed there if a debit has taken it to its trigger. A
+        wallet that fees have left below zero with nothing held is set to zero."""
+        held = [i for i in self.perps() if self.position[i] != 0.0]
+        if not held:
+            if self.margin_cash < 0.0:
+                self.costs["liquidation"] += self.margin_cash
+                self.margin_cash = 0.0
+            return
+
+        prices = {i: (self.bars[t][i].close if self.bars[t][i] is not None
+                      else self.mark[i]) for i in held}
+        piece = [Leg(i, self.position[i], self.entry[i], prices[i], prices[i])
+                 for i in held]
+        equity, requirement, _ = self.state_at(piece, self.margin_cash, 0.0)
+
+        if equity - requirement <= 0.0:
+            self.liquidate([(i, self.position[i], prices[i]) for i in held], t)
+
+
+    def liquidate(self, closes, t, path=None, wallet=None, trigger=None):
+        """Liquidation, The forced close: takeover closes every leg at its price at the
+        clip, and book then backstop sells each from its trigger as a taker unless the
+        path reaches the backstop level or the sale's costs would cross it."""
+        maintained = self.account_maintained()
+        model      = self.venue.liquidation
+
+        if model != "takeover" and path is not None and maintained:
+            share = model[1]
+            sales = []
+            for i, q, price in closes:
+                side = "sell" if q > 0.0 else "buy"
+                sold, costs = self.taker_price(i, side, price, abs(q), self.bars[t][i])
+                sales.append((i, q, sold, costs))
+
+            paid = sum(abs(q) * (abs(sold - price) + sold * self.venue.taker)
+                       for (i, q, price), (_, _, sold, _) in zip(closes, sales))
+
+            k, s = trigger
+            equity, requirement, _ = self.state_at(path[k], wallet, s)
+            reached = self.solve(path, wallet, share=share) is not None
+            if not reached and equity - paid >= share * requirement:
+                for i, q, sold, costs in sales:
+                    side = "sell" if q > 0.0 else "buy"
+                    self.book(abs(q), costs)
+                    self.apply(i, side, abs(q), sold, self.venue.taker, True, None,
+                               "liquidation", reference=costs["reference"],
+                               costs=costs)
+                self.after_liquidation()
+                return
+
+        rate = 0.0 if maintained else self.venue.liquidation_fee
+        for i, q, price in closes:
+            self.apply(i, "sell" if q > 0.0 else "buy", abs(q), price, rate, False,
+                       None, "liquidation", reference=price)
+
+        # whatever the margin wallet still holds is the liquidation charge, and the
+        # wallet ends at exactly zero
+        self.costs["liquidation"] += self.margin_cash
+        self.margin_cash = 0.0
+        self.after_liquidation()
+
+
+    def after_liquidation(self):
+        for order in [o for o in self.pending + self.resting()
+                      if self.instruments[o["instrument"]].kind != "spot"]:
+            self.cancel(order["id"], "liquidation")
+
+        self.liquidations += 1
 
 
     def apply_transfers(self):
@@ -806,8 +1303,8 @@ class Simulator:
             if transfer["to"] == "margin":
                 allowed = self.spot_cash
             else:
-                spot, margin = self.wallet_equity()
-                allowed = min(self.margin_cash, margin - self.cap_requirement())
+                allowed = min(self.margin_cash,
+                              self.margin_equity() - self.cap_requirement())
 
             moved = max(0.0, min(amount, allowed))
             if moved < amount:
@@ -869,11 +1366,16 @@ class Simulator:
         scale = total / (s / 2.0 + slip + imp) if s / 2.0 + slip + imp > 0.0 else 1.0
         sign  = 1.0 if side == "buy" else -1.0
         raw   = reference * (1.0 + sign * total)
-        price = min(raw, bar.high) if side == "buy" else max(raw, bar.low)
+
+        if bar is None:
+            price = raw         # a liquidation sale where the instrument has no bar
+        else:
+            price = min(raw, bar.high) if side == "buy" else max(raw, bar.low)
 
         costs = dict(spread=reference * s / 2.0 * scale,
                      slippage=reference * slip * scale,
-                     impact=reference * imp * scale, adjustment=price - raw)
+                     impact=reference * imp * scale, adjustment=price - raw,
+                     reference=reference)
         return price, costs
 
 
@@ -894,7 +1396,7 @@ class Simulator:
         waiting = []
         for order in self.pending:
             i   = order["instrument"]
-            bar = self.bars[t][i]
+            bar = self.bar_for(t, i)
             if bar is None:
                 waiting.append(order)       # Time, The clock: it waits for its bar
                 continue
@@ -912,9 +1414,8 @@ class Simulator:
                 wanted  = order["value"] / price
                 allowed = min(wanted, budget)
 
-            size = self.clamp(i, side, allowed, price, order["reduce_only"],
-                              self.venue.taker)
-            size          = self.lot_down(i, size)
+            size = self.lot_down(i, self.clamp(i, side, allowed, price,
+                                               order["reduce_only"], self.venue.taker))
             whole         = size >= self.lot_down(i, wanted) - DUST
             refused_whole = order["tif"] == "fok" and not whole
             if bar.volume <= 0.0 or size <= DUST or refused_whole:
@@ -929,6 +1430,8 @@ class Simulator:
 
             self.budget_left[i] = budget - size
             self.book(size, costs)
+            price, costs = self.bound(i, side, size, price, bar, self.venue.taker,
+                                      costs)
             self.apply(i, side, size, price, self.venue.taker, True, order,
                        order["reason"], reference=bar.open, costs=costs)
             order["filled"] += size
@@ -987,14 +1490,14 @@ class Simulator:
         return min(trigger, bar.open), True
 
 
-    def fill_resting_orders(self, t):
+    def fill_resting_orders(self, t, hold_favourable=False):
         """The step, 5: resting orders in slot order, a position's exits reordered by
         the PnL per unit each would realize, worst first unless optimistic."""
         offers = []
         for slot, order in enumerate(self.slots):
             if order is None:
                 continue
-            bar = self.bars[t][order["instrument"]]
+            bar = self.bar_for(t, order["instrument"])
             if bar is None:
                 continue                     # it waits for its instrument's next bar
 
@@ -1008,8 +1511,12 @@ class Simulator:
                 continue                     # a bar with no volume fills nothing
 
             found = self.offer(order, bar)
-            if found is not None:
-                offers.append((slot, order, found[0], found[1]))
+            if found is None:
+                continue
+            if hold_favourable and self.favourable(order, found[0], t):
+                continue
+
+            offers.append((slot, order, found[0], found[1]))
 
         offers = self.worst_first(offers)
         for slot, order, reference, taker in offers:
@@ -1017,7 +1524,7 @@ class Simulator:
                 continue                     # its OCO partner filled first
 
             i    = order["instrument"]
-            bar  = self.bars[t][i]
+            bar  = self.bar_for(t, i)
             side = self.side_of(order)
             if side is None:
                 continue
@@ -1026,11 +1533,12 @@ class Simulator:
                          else order["size"] - order["filled"])
             budget  = self.budget_left.get(i, 0.0)
             allowed = min(remaining, budget)
+
             if order["kind"] == "stop":
                 price, costs = self.taker_price(i, side, reference, allowed, bar)
             else:
                 price, costs = reference, dict(spread=0.0, slippage=0.0, impact=0.0,
-                                               adjustment=0.0)
+                                               adjustment=0.0, reference=reference)
 
             rate = self.venue.taker if taker else self.venue.maker
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
@@ -1045,6 +1553,7 @@ class Simulator:
 
             self.budget_left[i] = budget - size
             self.book(size, costs)
+            price, costs = self.bound(i, side, size, price, bar, rate, costs)
             reason = order["leg"] or order["reason"]
             self.apply(i, side, size, price, rate, taker, order, reason,
                        reference=reference, costs=costs)
@@ -1095,7 +1604,7 @@ class Simulator:
 
 
     def clamp(self, i, side, size, price, reduce_only, rate):
-        """Wallets and Orders: every clamp a fill passes, in the page's order."""
+        """Wallets, Orders and Margin: each clamp a fill passes, in the page's order."""
         q = self.position[i]
 
         if reduce_only:
@@ -1110,8 +1619,95 @@ class Simulator:
             else:
                 affordable = self.spot_cash / (price * (1.0 + rate))
                 size       = min(size, max(affordable, 0.0))
+            return max(size, 0.0)
 
-        return max(size, 0.0)
+        return self.cap(i, side, max(size, 0.0), price)
+
+
+    def cap(self, i, side, size, price):
+        """Margin, The cap: summed notional over leverage may not exceed margin equity,
+        measured before the fill's own fee; a growing fill is clamped to what it
+        allows, an account over the cap may not grow, and one at or below zero equity
+        may only shrink. A flip's new side fits the cap from zero."""
+        q        = self.position[i]
+        signed   = size if side == "buy" else -size
+        reducing = min(size, abs(q)) if q * signed < 0.0 else 0.0
+        growing  = size - reducing
+        if growing <= DUST:
+            return size
+
+        equity = self.margin_equity({i: price})
+        if equity <= 0.0:
+            return reducing
+
+        base   = 0.0 if q * signed <= 0.0 else abs(q)
+        sizes  = {j: abs(self.position[j]) for j in self.perps()}
+        prices = {i: price}
+
+        def need(extra):
+            sizes[i] = base + extra
+            return self.cap_requirement(prices, sizes)
+
+        if need(0.0) >= equity:
+            return reducing
+
+        limit = growing
+        inst  = self.instruments[i]
+        if inst.tiers:
+            last  = inst.tiers[-1].up_to
+            room  = last / price if inst.tiers_by == "notional" else last
+            limit = min(limit, max(room - base, 0.0))
+
+        if need(limit) <= equity:
+            return reducing + limit
+
+        # the requirement only rises with the fill's size, through every tier
+        return reducing + first_zero(lambda x: equity - need(x), 0.0, limit)
+
+
+    def bound(self, i, side, size, price, bar, rate, costs):
+        """The margin bound: a reducing perpetual fill whose close-level equity at its
+        price is below zero, with its own fee on the size it closes, is lifted toward
+        the close point, never outside its bar nor past the position's average entry.
+        The lift the bar holds is in the price and the part it cannot hold, net of the
+        fee it moves, is paid into the wallet; both are a negative liquidation charge,
+        and the fill log records the lift."""
+        q       = self.position[i]
+        reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
+        if self.instruments[i].kind == "spot" or not reduces:
+            return price, costs
+
+        closed     = min(size, abs(q))
+        maintained = self.account_maintained()
+        fee        = self.venue.taker if maintained else self.venue.liquidation_fee
+
+        def level(p):
+            rest = sum(abs(self.position[j]) * self.mark[j] for j in self.perps()
+                       if j != i) + (abs(q) - closed) * p
+            return self.margin_equity({i: p}) - rate * closed * p - fee * rest
+
+        if level(price) >= 0.0:
+            return price, costs
+
+        up   = 1.0 if q > 0.0 else -1.0
+        span = abs(price)
+        while level(price + up * span) < 0.0 and span < 1e12:
+            span *= 2.0
+
+        star = price + up * first_zero(lambda d: -level(price + up * d), 0.0, span)
+        if q > 0.0:
+            goal   = min(star, self.entry[i])
+            lifted = max(price, min(goal, bar.high))
+        else:
+            goal   = max(star, self.entry[i])
+            lifted = min(price, max(goal, bar.low))
+
+        # a sale lifted by d takes d more and pays d * rate more in fee; a purchase
+        # lowered by d pays d less and d * rate less in fee
+        credit = max(up * (goal - lifted), 0.0) * closed * (1.0 - up * rate)
+        self.margin_cash += credit
+        self.costs["liquidation"] -= abs(lifted - price) * size + credit
+        return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price)
 
 
     def sweep_dust(self):
@@ -1196,6 +1792,8 @@ class Simulator:
 
         if self.trip[i] is not None:
             self.trip[i].size = max(self.trip[i].size, abs(after))
+        if self.instruments[i].kind != "spot":
+            self.track(i, before, after, price, opened)
 
         self.position[i] = after
         self.fills.append(dict(
