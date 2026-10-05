@@ -3,7 +3,7 @@
 
 <div style="padding-top: 0px;">
   <a href="https://github.com/atOCEANO/embeddable-market-simulation-library/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/embeddable-market-simulation-library?label=release&color=2ea043" alt="Latest release" /></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python 3.9+" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88-orange.svg?logo=rust&logoColor=white" alt="Rust 1.88" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
 </div>
@@ -47,15 +47,14 @@ This needs no interpreter, so it is the inner loop for anything below the Python
 
 ### The Python wheel, in Docker
 
-The `emsl-py` crate is an `extension-module` cdylib: it cannot be unit-tested with `cargo test`, because the test binary has no interpreter to link. So the binding is checked two ways. The Rust side compiles and lints with `cargo build -p emsl-py` and `clippy`. The behavior is checked through the built wheel on a Docker gate that builds one `abi3` wheel and installs it on Python 3.9, 3.11, and 3.12, running the `tests/` suite on each:
+The `emsl-py` crate is an `extension-module` cdylib: it cannot be unit-tested with `cargo test`, because the test binary has no interpreter to link. So the binding is checked two ways. The Rust side compiles and lints with `cargo build -p emsl-py` and `clippy`. The behavior is checked through the built wheel on a Docker gate that builds one `abi3` wheel and installs it on Python 3.13 and 3.14, running the `tests/` suite on each:
 
 ```bash
-docker build --target test39  .
-docker build --target test311 .
-docker build --target test312 .
+docker build --target test313 .
+docker build --target test314 .
 ```
 
-Because the wheel is `abi3-py39`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.9 and up" check, run before a Python-facing change is done, not on every edit. Every gate stage installs its packages with `-c dev/constraints.txt`, as CI does, so both test the versions pinned there.
+Because the wheel is `abi3-py313`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.13 and up" check, run before a Python-facing change is done, not on every edit. Every gate stage installs its packages with `-c dev/constraints.txt`, as CI does, so both test the versions pinned there.
 
 <br>
 
@@ -149,4 +148,4 @@ Every non-obvious behavior is settled as a numbered [decision](Decisions.md) bef
 
 ### Nothing ships unverified
 
-A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.9, 3.11 and 3.12, and it builds the `test-slow`, `test-browser`, `test-sb3`, `test-sdist` and `miri` stages exactly as they are built locally; against the commit before, it runs cargo-mutants on the changed Rust lines and compares the step loop's instruction count (see [`.github/workflows/`](../.github/workflows/)).
+A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.13 and 3.14, and it builds the `test-slow`, `test-browser`, `test-sb3`, `test-sdist` and `miri` stages exactly as they are built locally; against the commit before, it runs cargo-mutants on the changed Rust lines and compares the step loop's instruction count (see [`.github/workflows/`](../.github/workflows/)).

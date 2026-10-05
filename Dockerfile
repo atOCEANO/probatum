@@ -1,11 +1,10 @@
 # Cross-version gate: build the one abi3 wheel, then prove it imports and passes
-# the whole suite on Python 3.9, 3.11, and 3.12. The wheel is built once in
-# `builder`; each test stage installs that same wheel on a different interpreter.
+# the whole suite on Python 3.13 and 3.14. The wheel is built once in `builder`;
+# each test stage installs that same wheel on a different interpreter.
 #
 # Run one stage at a time, any failure fails the build:
-#   docker build --target test39  -t emsl-gate39  .
-#   docker build --target test311 -t emsl-gate311 .
-#   docker build --target test312 -t emsl-gate312 .
+#   docker build --target test313 -t emsl-gate313 .
+#   docker build --target test314 -t emsl-gate314 .
 #
 # The rust-checks stage is the other half of the same gate: it runs the pure-Rust
 # format, lint, and test commands CI runs, so a Rust change is verified the same
@@ -16,7 +15,7 @@
 # so its timing never fails a test build:
 #   docker build --target bench   .
 
-FROM python:3.11-slim AS builder
+FROM python:3.13-slim AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -34,7 +33,7 @@ RUN maturin build --release --locked --out /wheels
 # into an already-provisioned toolchain, which conflicts on some CI runners. The
 # base carries Python because clippy over emsl-py needs an interpreter for pyo3's
 # build config.
-FROM python:3.11-slim AS rust-checks
+FROM python:3.13-slim AS rust-checks
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -48,7 +47,7 @@ RUN cargo fmt --all --check \
     && cargo clippy --locked --workspace --all-targets -- -D warnings \
     && cargo test --locked -p emsl-core -p bar-engine
 
-FROM python:3.9-slim AS test39
+FROM python:3.13-slim AS test313
 COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY .Documentation /docs
@@ -61,10 +60,10 @@ COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
     numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
-    && python -c "import emsl; print('py39 wheel import OK')" \
+    && python -c "import emsl; print('py313 wheel import OK')" \
     && pytest -q /tests
 
-FROM python:3.11-slim AS test311
+FROM python:3.14-slim AS test314
 COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY .Documentation /docs
@@ -74,23 +73,10 @@ COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
     numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
-    && python -c "import emsl; print('py311 wheel import OK')" \
+    && python -c "import emsl; print('py314 wheel import OK')" \
     && pytest -q /tests
 
-FROM python:3.12-slim AS test312
-COPY --from=builder /wheels /wheels
-COPY tests /tests
-COPY .Documentation /docs
-COPY README.md /README.md
-COPY Dockerfile /Dockerfile
-COPY dev /devtools
-COPY dev/constraints.txt /constraints.txt
-RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
-    && python -c "import emsl; print('py312 wheel import OK')" \
-    && pytest -q /tests
-
-FROM python:3.11-slim AS bench
+FROM python:3.13-slim AS bench
 COPY --from=builder /wheels /wheels
 COPY benchmarks /benchmarks
 RUN pip install --no-cache-dir /wheels/*.whl numpy \
@@ -100,7 +86,7 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy \
 # Needs the full deps, so it is its own stage; run it and read stdout:
 #   docker build --target bench-surfaces -t emsl-bench-surfaces .
 #   docker run --rm emsl-bench-surfaces
-FROM python:3.11-slim AS bench-surfaces
+FROM python:3.13-slim AS bench-surfaces
 COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium optuna cloudpickle
 COPY benchmarks /benchmarks
@@ -127,7 +113,7 @@ CMD ["python", "/benchmarks/surfaces.py"]
 # the bars the SERIES funds on (ADR 0020) and nothing that starts
 # every env at bar zero can see that rule at all.
 #   docker build --target test-slow .
-FROM python:3.11-slim AS test-slow
+FROM python:3.13-slim AS test-slow
 COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY .Documentation /docs
@@ -148,13 +134,20 @@ RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
 #   docker build --target test-browser .
 # The image ships the browsers under /ms-playwright but not the python package,
 # and the two are versioned together, so the pin here has to match the tag above.
+# Its own Python is older than the wheel's floor, so uv puts a 3.13 beside it and
+# the browsers stay the image's. That playwright pins a greenlet with no wheel for
+# 3.13, which does not build there either, so the constraints file's greenlet
+# overrides the pin.
 FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy AS test-browser
 COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY dev/constraints.txt /constraints.txt
-RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy pandas pytest playwright==1.47.0 \
-    && pytest -q -p no:cacheprovider /tests/test_render.py
+RUN pip install --no-cache-dir -c /constraints.txt uv \
+    && grep '^greenlet==' /constraints.txt > /override.txt \
+    && uv venv --python 3.13 /venv \
+    && uv pip install --python /venv -c /constraints.txt --override /override.txt \
+    /wheels/*.whl numpy pandas pytest playwright==1.47.0 \
+    && /venv/bin/pytest -q -p no:cacheprovider /tests/test_render.py
 
 # Every chart image in the documentation, rebuilt from the frozen sample data and
 # screenshotted. Opt-in, because it needs the published dataset
@@ -163,7 +156,9 @@ RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
 #   docker run --rm -v "<sample-market-data>/data:/data:ro" \
 #       -v "${PWD}/.Documentation:/out" emsl-charts
 # It shares test-browser's base, so it pulls no image that stage has not already
-# pulled: the browsers ship in it and pip cannot install them on its own.
+# pulled: the browsers ship in it and pip cannot install them on its own. It takes
+# its Python 3.13 and greenlet the same way, since a different base would mean
+# different fonts and so different images.
 FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy AS charts
 COPY --from=builder /wheels /wheels
 COPY dev/charts /charts
@@ -176,9 +171,12 @@ COPY dev/charts /charts
 RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 COPY dev/constraints.txt /constraints.txt
-RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy pandas pyarrow playwright==1.47.0
-CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
+RUN pip install --no-cache-dir -c /constraints.txt uv \
+    && grep '^greenlet==' /constraints.txt > /override.txt \
+    && uv venv --python 3.13 /venv \
+    && uv pip install --python /venv -c /constraints.txt --override /override.txt \
+    /wheels/*.whl numpy pandas pyarrow playwright==1.47.0
+CMD ["sh", "-c", "/venv/bin/python /charts/build.py && /venv/bin/python /charts/shoot.py"]
 
 # The hand-made diagrams, rendered from their mermaid sources. The
 # other half of the same idea as `charts`: every picture in the documentation is
@@ -207,7 +205,7 @@ CMD ["sh", "-c", "set -e; for f in /diagrams/*.mmd; do n=$(basename \"$f\" .mmd)
 #   docker build --target test-sb3 .
 # torch alone comes from its CPU index, which does not carry every pinned version
 # of torch's own dependencies; those install from PyPI with the rest
-FROM python:3.11-slim AS test-sb3
+FROM python:3.13-slim AS test-sb3
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir --no-deps -c /constraints.txt torch \
     --index-url https://download.pytorch.org/whl/cpu
@@ -251,7 +249,7 @@ CMD ["cargo", "mutants", "--package", "emsl-core", "--package", "bar-engine", "-
 # the machine the way a timing does, so CI compares it with the commit before and
 # fails on a rise of more than 10%. Here it prints the counts:
 #   docker build --target bench-instructions .
-FROM python:3.11-slim AS bench-instructions
+FROM python:3.13-slim AS bench-instructions
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl build-essential valgrind \
     && rm -rf /var/lib/apt/lists/*
@@ -270,7 +268,7 @@ RUN cargo bench --locked -p bar-engine --bench step_instructions
 # every zero-copy view (ADR 0040). It needs a nightly toolchain, pinned by date and
 # named on each command so that rust-toolchain.toml does not win. CI runs it:
 #   docker build --target miri .
-FROM python:3.11-slim AS miri
+FROM python:3.13-slim AS miri
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl build-essential \
     && rm -rf /var/lib/apt/lists/*

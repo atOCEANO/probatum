@@ -1,6 +1,6 @@
 # Release: build the abi3 wheels and the sdist, then publish them as a GitHub
 # Release with the artifacts attached. One abi3 wheel per platform covers Python
-# 3.9 and up, so the four below cover the common targets without a per-version
+# 3.13 and up, so the four below cover the common targets without a per-version
 # matrix.
 #
 # A v* tag builds AND releases. A manual dispatch builds only, so the whole
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.11" # pyo3 needs a >=3.9 interpreter to build
+          python-version: "3.13" # pyo3 builds against an interpreter at the floor
       - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
       # The first attempt never fails the job, so the retry below always gets to
       # run; the retry is the one that decides.
@@ -115,7 +115,7 @@ jobs:
 
             ## Install
 
-            Wheels are attached below, one per platform, each covering Python 3.9 and
+            Wheels are attached below, one per platform, each covering Python 3.13 and
             up, and no compiler is needed. emsl is not on PyPI, so install the wheel
             for your machine by its URL:
 

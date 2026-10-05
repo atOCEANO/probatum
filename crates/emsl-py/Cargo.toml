@@ -11,7 +11,7 @@ name = "_emsl"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { workspace = true, features = ["abi3-py39", "extension-module"] }
+pyo3 = { workspace = true, features = ["abi3-py313", "extension-module"] }
 numpy = { workspace = true }
 emsl-core = { path = "../emsl-core" }
 bar-engine = { path = "../bar-engine" }

@@ -3,7 +3,7 @@
 
 <div style="padding-top: 0px;">
   <a href="https://github.com/atOCEANO/embeddable-market-simulation-library/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/embeddable-market-simulation-library?label=release&color=2ea043" alt="Latest release" /></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python 3.9+" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88-orange.svg?logo=rust&logoColor=white" alt="Rust 1.88" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
 </div>
@@ -379,7 +379,7 @@ Not promised: an indicator's output to the last bit (the recursive ones trade 2e
 
 Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels, so installing one needs no compiler. **emsl is not on PyPI**, so install the wheel for your platform by its URL.
 
-Each build covers one platform, and one wheel per platform serves **Python 3.9 and up**, because the extension is stable-ABI:
+Each build covers one platform, and one wheel per platform serves **Python 3.13 and up**, because the extension is stable-ABI:
 
 | Platform | Wheel | Built |
 | :--- | :--- | :--- |
@@ -447,10 +447,10 @@ pip install dist/*.whl
 
 ## Building and validating
 
-The pure-Rust crates validate locally with cargo; the Python surface validates on a Docker gate that builds the one abi3 wheel and runs the test suite across Python 3.9, 3.11, and 3.12. The riskiest code is adversarially verified, a process that has caught real bugs before they shipped; the full workflow is in the [Validation Guide](.Documentation/Validation_Guide.md).
+The pure-Rust crates validate locally with cargo; the Python surface validates on a Docker gate that builds the one abi3 wheel and runs the test suite across Python 3.13 and 3.14. The riskiest code is adversarially verified, a process that has caught real bugs before they shipped; the full workflow is in the [Validation Guide](.Documentation/Validation_Guide.md).
 
 ```bash
 cargo test -p emsl-core -p bar-engine     # pure-Rust core
 cargo clippy --workspace --all-targets -- -D warnings
-docker build --target test311 .           # wheel + pytest on Python 3.11
+docker build --target test313 .           # wheel + pytest on Python 3.13
 ```
