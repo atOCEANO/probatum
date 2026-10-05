@@ -66,6 +66,8 @@ Inverse perpetuals count in their own quantities ([Inverse contracts](#inverse-c
 
 **Worked example.** A stock's daily bars on Thursday, Friday and Monday are three consecutive rows. A 3-bar average on Monday averages Thursday, Friday and Monday; a market order decided at Friday's close fills at Monday's open; and a stop that Monday's open gaps through fills at that open.
 
+**Worked example of a delisting.** An instrument delisted at 12:00, whose last hourly bar opened at 11:00 and closed at 50.00, while another instrument goes on printing. A long of 2 held into 12:00 closes on the 12:00 row at 50.00 with no fee and the reason `delist`, and a market order still waiting on it is cancelled.
+
 ### Annualisation
 
 `periods_per_year = (T - 1) * 365 / D`, where `T` is the number of rows on the clock and `D` the days from the first row's open to the last row's. It is taken once over the whole Data, so every slice of it annualises alike, and a Data needs two rows to have one.
@@ -122,7 +124,7 @@ A bar gives four prices and no order between them. The venue's `intrabar` settin
 
 ### Units
 
-`buy(size)` and `sell(size)` take base units, or contracts on an inverse instrument. `buy_value(amount)` and `sell_value(amount)` take the quote currency. `target(weights)` takes signed weights of account equity: `1.0` is fully long unlevered, `-0.5` half short.
+`buy(size)` and `sell(size)` take base units, or contracts on an inverse instrument. `buy_value(amount)` and `sell_value(amount)` take the quote currency, and the size such an order fills is its amount over its fill price, so it spends or raises that amount before its fee. `target(weights)` takes signed weights of account equity: `1.0` is fully long unlevered, `-0.5` half short.
 
 ### Target
 
@@ -280,7 +282,7 @@ A fill that crosses zero closes the old side at its average entry, realizing the
 
 ### Round trips
 
-A round trip is a maximal run of one sign on one instrument: it opens when a position leaves zero and ends when it returns to zero or flips, and resizing inside it does not end it. Its net PnL is the PnL between its fill prices less its fees and the funding charged on it while open. One still open at the end is reported, marked at the last close and flagged. Its best and worst excursions count only the part of each bar the trade was in: the entry bar from the fill to the close, the exit bar from the open to the fill.
+A round trip is a maximal run of one sign on one instrument: it opens when a position leaves zero and ends when it returns to zero or flips, and resizing inside it does not end it. Its net PnL is the PnL between its fill prices less its fees and the funding charged on it while open. One still open at the end is reported, marked at the last close and flagged. It reports its instrument and side; its size, the largest position it reached; its entry and exit, the average prices of its opening and its closing fills; the bars and times it opened and closed on; its fees, every fee of its fills, with a flip's fee split by size between the round trip it closes and the one it opens; its funding; its net PnL; and its return, the net PnL over its size times its entry. Its best and worst excursions count only the part of each bar the trade was in: the entry bar from the fill to the close, the exit bar from the open to the fill.
 
 **Worked example.**
 
@@ -303,10 +305,12 @@ Six fills make two closed round trips and an open one, and `num_trades` is 2.
 
 ## Wallets
 
-- The spot wallet holds cash and spot holdings. A buy is clamped to its cash and a sell to its holding; it never borrows and is never liquidated.
+- The spot wallet holds cash and spot holdings. A buy is clamped to what its cash pays for, fee included, and a sell to its holding; it never borrows and is never liquidated.
 - The margin wallet holds the collateral behind every perpetual, in cross margin.
-- A transfer is applied at the start of the bar after it was decided, before any fill. A transfer out of the margin wallet is clamped so that the margin left still covers the cap's requirement, and one out of the spot wallet is clamped to its cash; a clamped transfer is an order-log event.
+- A transfer is applied at the start of the bar after it was decided, before any fill. A transfer out of the margin wallet is clamped to the cash the wallet holds, so unrealized profit cannot be moved, and so that the margin left still covers the cap's requirement; one out of the spot wallet is clamped to its cash; a clamped transfer is an order-log event.
 - Account equity is the sum of both wallets. An account whose equity is at or below zero is terminal.
+
+**Worked example.** A spot wallet of 1,000 USDT buys 20 at an open of 100 with a taker fee of 0.1%: its cash pays for `1,000 / (100 * 1.001) = 9.99001`, so 9.99001 fills and the order log records the clamp. A margin wallet with 600 USDT of cash and 400 of unrealized profit, under a cap requirement of 200, moves at most 600 to the spot wallet, the cash it holds, though its equity less the requirement is 800.
 
 <br>
 <br>
