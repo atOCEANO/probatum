@@ -16,13 +16,13 @@ orders with their time in force, `post_only`, `reduce_only`, brackets, `replace`
 and cancels, `target`, the slot table, maker after the first bar, self-trade
 refusal, the worse exit first, the fill model (the trailing window, the liquidity
 budget, the spread, slippage, impact, sizes and dust), fees, funding, the spot and
-margin wallets with transfers, the margin cap with leverage tiers, maintenance
-tiers, the liquidation path with its trigger, close and clip points, the
-liquidation rule, takeover and book then backstop, the margin bound, exits held
-on a liquidating bar, inverse contracts settled in their coin, listing and
-delisting, round trips and the ledger. The other legs at a fill's fraction for the
-cap and the margin bound, the optimistic corners of several instruments and a
-flip's old side on the check are not here.
+margin wallets with transfers, `target` across them, the margin cap with leverage
+tiers, maintenance tiers, the liquidation path of several instruments in step with
+its trigger, close and clip points, a flip's two sides on the check, the optimistic
+corners, the liquidation rule, takeover and book then backstop, the margin bound,
+the cap and the bound with every other leg at the fill's fraction, exits held on a
+liquidating bar, inverse contracts settled in their coin, listing and delisting,
+round trips and the ledger.
 """
 
 import collections
@@ -38,8 +38,12 @@ Bar  = collections.namedtuple("Bar", "open high low close volume")
 Tier = collections.namedtuple("Tier", "up_to leverage rate amount")
 # a leg of the liquidation path: its price runs from start to end as s runs 0 to 1
 Leg = collections.namedtuple("Leg", "instrument q entry start end")
-# a leg of the check: it joins the path at frac, at start, and runs on to end
-CheckLeg = collections.namedtuple("CheckLeg", "instrument q entry frac start end")
+# a leg of the check: it joins the path at frac, at start, and runs on to end; one a
+# flip closed leaves it at leave, and is held to the end where leave is None
+CheckLeg = collections.namedtuple("CheckLeg", "instrument q entry frac start end leave")
+# what a position held during a bar is made of, for the check: start is None for a
+# leg carried in from the open, and leave is set on the old side of a flip
+Held = collections.namedtuple("Held", "size entry start join leave long")
 
 
 def first_zero(f, lo=0.0, hi=1.0):
@@ -478,6 +482,43 @@ class Simulator:
         return self.clipped.get(i, self.bars[t][i])
 
 
+    def fraction(self, i, long, price, t):
+        """The path: where `price` lies on instrument `i`'s adverse segment of bar
+        `t`, from its open to its low for a long and to its high for a short; a price
+        on the favourable side of the open, or a bar with no adverse move, is at 0."""
+        bar = self.bars[t][i]
+        if bar is None:
+            return 0.0
+
+        move = (bar.low if long else bar.high) - bar.open
+        if move == 0.0:
+            return 0.0
+
+        return min(max((price - bar.open) / move, 0.0), 1.0)
+
+
+    def others_at(self, s, t, skip):
+        """Margin, The cap, and The margin bound: every other perpetual held, at the
+        same fraction of its own bar's move, or at its favourable extreme under the
+        optimistic setting; one with no bar keeps its last mark."""
+        prices = {}
+        for j in self.perps():
+            q = self.position[j]
+            if j == skip or q == 0.0:
+                continue
+
+            bar = self.bars[t][j]
+            if bar is None:
+                prices[j] = self.mark[j]
+            elif self.venue.intrabar == "optimistic":
+                prices[j] = bar.high if q > 0.0 else bar.low
+            else:
+                adverse = bar.low if q > 0.0 else bar.high
+                prices[j] = bar.open + s * (adverse - bar.open)
+
+        return prices
+
+
     def window(self, i):
         """Fills, The window: the instrument's last W bars before the fill's bar, their
         mean volume, and the sample deviation of their log returns close to close."""
@@ -859,8 +900,10 @@ class Simulator:
         return old["id"]
 
 
-    def target(self, weights, tolerance=0.0):
-        """Orders, Target: the legs that bring each named instrument to its weight."""
+    def target(self, weights, tolerance=0.0, transfer=False):
+        """Orders, Target: the legs that bring each named instrument to its weight,
+        with `transfer` moving the spot legs' shortfall across from the margin wallet
+        at the start of the next bar."""
         if not isinstance(weights, dict):
             if isinstance(weights, (int, float)):
                 weights = [weights]
@@ -913,6 +956,18 @@ class Simulator:
                                       reduce_only=reduce_only, reason="rebalance")
                 self.target_legs.append(self.orders[order_id])
 
+        if transfer:
+            # what the spot legs cost at the close, fees in, less what their sales
+            # raise and the cash the spot wallet holds
+            needed = -self.spot_cash
+            for i, leg in reducing + growing:
+                if self.instruments[i].kind == "spot":
+                    cost = leg * self.mark[i]
+                    needed += cost + abs(cost) * self.venue.taker
+
+            if needed > 0.0:
+                self.transfer(needed, to="spot")
+
         return [order["id"] for order in self.target_legs]
 
 
@@ -948,7 +1003,9 @@ class Simulator:
         self.apply_transfers()                                      # 1
         self.charge_funding(self.between[t], t, at_close=False)     # 2
         self.solve_carried(t)                                       # 3
-        self.legs = {i: [(abs(self.position[i]), self.entry[i], None)]
+
+        self.legs = {i: [Held(abs(self.position[i]), self.entry[i], None, 0.0, None,
+                              self.position[i] > 0.0)]
                      for i in self.perps() if self.position[i] != 0.0}
         self.delist(t)
         self.fill_market_orders(t)                                  # 4
@@ -1196,6 +1253,13 @@ class Simulator:
             return
 
         trigger, (k, s) = result
+
+        # the gap is one move for every path; inside the bars, the optimistic setting
+        # waits for every path to reach the trigger
+        if trigger[0] == 1 and not self.reached_by_every_path(path[1], self.margin_cash,
+                                                               t):
+            return
+
         if k == 0:
             closes = [(leg.instrument, leg.q, leg.start + s * (leg.end - leg.start))
                       for leg in path[0]]
@@ -1213,49 +1277,88 @@ class Simulator:
                 hold(bar.close, clip), bar.volume)
 
 
+    def reached_by_every_path(self, legs, wallet, t):
+        """The path: under the optimistic setting an account holding several
+        perpetuals is liquidated on a bar only if every path inside the bars reaches
+        the trigger, which is so when a corner does, one perpetual at its adverse
+        extreme and every other at its favourable extreme, or the closes do."""
+        held = sorted({leg.instrument for leg in legs})
+        if self.venue.intrabar == "pessimistic" or len(held) < 2:
+            return True
+
+        ends = {}
+        for j in held:
+            bar  = self.bars[t][j]
+            long = next(leg.q for leg in legs if leg.instrument == j) > 0.0
+            if bar is None:
+                ends[j] = (self.mark[j],) * 3
+            elif long:
+                ends[j] = (bar.low, bar.high, bar.close)
+            else:
+                ends[j] = (bar.high, bar.low, bar.close)
+
+        states = [{j: ends[j][0 if j == k else 1] for j in held} for k in held]
+        states.append({j: ends[j][2] for j in held})
+
+        for prices in states:
+            piece = [Leg(leg.instrument, leg.q, leg.entry, prices[leg.instrument],
+                         prices[leg.instrument]) for leg in legs]
+            equity, requirement, _ = self.state_at(piece, wallet, 0.0)
+            if equity - requirement <= 0.0:
+                return True
+
+        return False
+
+
     def track(self, i, before, after, price, opened):
         """The check's legs of a perpetual through the bar's fills. A reducing fill
-        shrinks every leg in proportion, as average-entry accounting does, so the
-        legs' entries always sum to the position's; an opening fill adds a leg at its
-        price."""
-        legs = self.legs.get(i, [])
-        if after == 0.0 or before * after < 0.0:
-            legs = []
+        shrinks every held leg in proportion, as average-entry accounting does, so the
+        legs' entries always sum to the position's, and an opening fill adds a leg
+        where its price lies on its side's path. A flip keeps the old side until the
+        flip's fraction, measured from the flip's price since the wallet holds what it
+        realized, and the new side joins there."""
+        legs    = self.legs.get(i, [])
+        held    = [leg for leg in legs if leg.leave is None]
+        left    = [leg for leg in legs if leg.leave is not None]
+        floor   = max((leg.leave for leg in left), default=0.0)
+        flipped = before * after < 0.0
+
+        if flipped:
+            floor = self.fraction(i, before > 0.0, price, self.t)
+            left += [leg._replace(entry=price, leave=floor) for leg in held]
+            held = []
+        elif after == 0.0:
+            held = []
         elif abs(after) < abs(before):
-            legs = [(size * abs(after) / abs(before), entry, start)
-                    for size, entry, start in legs]
+            held = [leg._replace(size=leg.size * abs(after) / abs(before))
+                    for leg in held]
 
         if opened > DUST and after != 0.0:
-            legs.append((opened, price, price))
+            join = floor if flipped else max(
+                self.fraction(i, after > 0.0, price, self.t), floor)
+            held.append(Held(opened, price, price, join, None, after > 0.0))
 
-        self.legs[i] = legs
+        self.legs[i] = held + left
 
 
     def check_legs(self, t):
         """The rule, 5: every carried leg from its open and every leg opened or grown
-        during the bar from its fill price, each to its adverse extreme; a fill on the
-        favourable side of the open joins at fraction 0, on its own segment."""
+        during the bar from its fill price, each to its adverse extreme, with the old
+        side of a flip up to the flip's fraction."""
         legs = []
-        for i, held in self.legs.items():
-            q = self.position[i]
-            if q == 0.0:
-                continue
-
-            sign = 1.0 if q > 0.0 else -1.0
-            bar  = self.bars[t][i]
-            for size, entry, start in held:
+        for i, records in self.legs.items():
+            bar = self.bars[t][i]
+            for leg in records:
+                q = leg.size if leg.long else -leg.size
                 if bar is None:
-                    legs.append(CheckLeg(i, sign * size, entry, 0.0, self.mark[i],
-                                         self.mark[i]))
+                    legs.append(CheckLeg(i, q, leg.entry, 0.0, self.mark[i],
+                                         self.mark[i], leg.leave))
                     continue
-                adverse = bar.low if q > 0.0 else bar.high
-                if start is None:
-                    legs.append(CheckLeg(i, sign * size, entry, 0.0, bar.open, adverse))
-                    continue
-                move = adverse - bar.open
-                frac = (start - bar.open) / move if move != 0.0 else 0.0
-                frac = frac if 0.0 < frac <= 1.0 else 0.0
-                legs.append(CheckLeg(i, sign * size, entry, frac, start, adverse))
+
+                adverse = bar.low if leg.long else bar.high
+                start   = bar.open if leg.start is None else leg.start
+                legs.append(CheckLeg(i, q, leg.entry, leg.join, start, adverse,
+                                     leg.leave))
 
         return legs
 
@@ -1269,16 +1372,19 @@ class Simulator:
 
 
     def pieces(self, legs):
-        """The check's path, cut where a leg joins: on each piece the legs joined by
-        its start move in step, and a leg filled at the adverse extreme itself is
-        tested on a last piece of no length."""
-        cuts  = sorted({0.0, 1.0} | {leg.frac for leg in legs})
+        """The check's path, cut where a leg joins or leaves: on each piece the legs
+        held through it move in step, and a leg filled at the adverse extreme itself
+        is tested on a last piece of no length."""
+        cuts = {0.0, 1.0} | {leg.frac for leg in legs}
+        cuts |= {leg.leave for leg in legs if leg.leave is not None}
+        cuts  = sorted(cuts)
         spans = list(zip(cuts, cuts[1:]))
         if any(leg.frac >= 1.0 for leg in legs):
             spans.append((1.0, 1.0))
 
         path = [[Leg(leg.instrument, leg.q, leg.entry, self.price_at(leg, a),
-                     self.price_at(leg, b)) for leg in legs if leg.frac <= a]
+                     self.price_at(leg, b)) for leg in legs
+                 if leg.frac <= a and (leg.leave is None or leg.leave >= b)]
                 for a, b in spans]
         return path, spans
 
@@ -1288,7 +1394,8 @@ class Simulator:
         account after the bar's fills, any funding stamped inside the bar counted as
         `intrabar` decides. Returns whether it liquidated."""
         legs = self.check_legs(t)
-        if not legs:
+        held = [leg for leg in legs if leg.leave is None]
+        if not held:
             return False
 
         counted = [(i, charge) for i, charge, inside
@@ -1299,7 +1406,7 @@ class Simulator:
 
         path, spans = self.pieces(legs)
         result = self.solve(path, wallet)
-        if result is None:
+        if result is None or not self.reached_by_every_path(held, wallet, t):
             return False
 
         trigger, (k, u) = result
@@ -1309,7 +1416,7 @@ class Simulator:
         for i, charge in counted:
             self.pay_funding(i, charge)          # an event counted is an event paid
 
-        closes = [(leg.instrument, leg.q, self.price_at(leg, s)) for leg in legs]
+        closes = [(leg.instrument, leg.q, self.price_at(leg, s)) for leg in held]
         self.liquidate(closes, t, path, wallet, trigger)
         return True
 
@@ -1739,13 +1846,16 @@ class Simulator:
         if growing <= DUST:
             return size
 
-        equity = self.margin_equity({i: price})
+        # the other legs sit where the fill sits on the path of the side it grows
+        prices = self.others_at(self.fraction(i, side == "buy", price, self.t), self.t,
+                                skip=i)
+        prices[i] = price
+        equity = self.margin_equity(prices)
         if equity <= 0.0:
             return reducing
 
-        base   = 0.0 if q * signed <= 0.0 else abs(q)
-        sizes  = {j: abs(self.position[j]) for j in self.perps()}
-        prices = {i: price}
+        base  = 0.0 if q * signed <= 0.0 else abs(q)
+        sizes = {j: abs(self.position[j]) for j in self.perps()}
 
         def need(extra):
             sizes[i] = base + extra
@@ -1786,6 +1896,8 @@ class Simulator:
         part       = math.copysign(closed, q)    # what the fill closes, signed
         maintained = self.account_maintained()
         fee        = self.venue.taker if maintained else self.venue.liquidation_fee
+        others     = self.others_at(self.fraction(i, q > 0.0, price, self.t), self.t,
+                                    skip=i)
 
         def own_fee(p):
             return abs(inst.notional(closed, p)) * rate
@@ -1795,10 +1907,10 @@ class Simulator:
             return inst.profit(part, self.entry[i], p) - own_fee(p)
 
         def level(p):
-            rest = sum(abs(self.instruments[j].notional(self.position[j], self.mark[j]))
-                       for j in self.perps() if j != i)
+            rest = sum(abs(self.instruments[j].notional(self.position[j], others[j]))
+                       for j in others)
             rest += abs(inst.notional(abs(q) - closed, p))
-            return self.margin_equity({i: p}) - own_fee(p) - fee * rest
+            return self.margin_equity({**others, i: p}) - own_fee(p) - fee * rest
 
         if level(price) >= 0.0:
             return price, costs

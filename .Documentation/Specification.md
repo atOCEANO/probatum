@@ -137,11 +137,11 @@ inverse, V dollars  wanted = weight * equity_t * close_t / V            contract
 
 - The leg `wanted - position` is rounded toward zero to the lot. A flip becomes a reducing leg to zero and a growing leg on the other side, and every reducing leg is placed before every growing leg.
 - A leg whose notional is below `tolerance * equity_t` is skipped, and so is a growing leg below the minimum notional; a reducing leg is exempt where the venue exempts reduce-only orders. A size a clamp reduces is rounded down to the lot again.
-- A spot leg spends the spot wallet's cash and a perpetual leg the margin wallet's; `transfer=True` moves a spot shortfall across at the start of bar `t + 1`.
+- A spot leg spends the spot wallet's cash and a perpetual leg the margin wallet's; `transfer=True` moves a spot shortfall across at the start of bar `t + 1`: what the spot legs cost at `close_t`, fees included, less what their sales raise and the spot wallet's cash.
 - A negative weight on a spot instrument is refused. A second `target` in one decision replaces the first's legs.
 - The difference between the weights asked for and the weights held after the fills is recorded as each instrument's drift.
 
-**Worked example.** A flat account of 10,000 USDT targets 0.5 of BTCUSDT at a close of 60,000, with a lot of 0.001: the wanted position is `0.5 * 10,000 / 60,000 = 0.083333`, and the leg is a buy of 0.083. A wallet of 1 BTC targeting -1.0 of an inverse perpetual with 100-dollar contracts, at a close of 60,000, wants `-1.0 * 1 * 60,000 / 100 = -600` contracts.
+**Worked example.** A flat account of 10,000 USDT targets 0.5 of BTCUSDT at a close of 60,000, with a lot of 0.001: the wanted position is `0.5 * 10,000 / 60,000 = 0.083333`, and the leg is a buy of 0.083. A wallet of 1 BTC targeting -1.0 of an inverse perpetual with 100-dollar contracts, at a close of 60,000, wants `-1.0 * 1 * 60,000 / 100 = -600` contracts. A spot wallet of 1,000 USDT and a margin wallet of 9,000, with a taker fee of 0.1%, targeting 0.5 of BTC on spot at a close of 60,000 with `transfer=True`, buy `0.5 * 10,000 / 60,000 = 0.083333` BTC for 5,000.00 and a fee of 5.00, so 4,005.00 moves to the spot wallet at the start of the next bar, before the leg fills.
 
 ### Order types
 
@@ -405,7 +405,7 @@ bar segment   p_i(s) = o_i + s * (x_i - o_i)    from the open to the adverse ext
 
 Legs that change during the bar join the path:
 - a leg opened or grown during the bar enters at the fraction where its fill price lies on its adverse segment; a fill on the favourable side of the open enters at fraction 0, on its own segment from the fill price to the adverse extreme;
-- a leg that flips is tested on both segments, the old side up to the flip's fraction and the new side from there to its own adverse extreme;
+- a leg that flips is tested on both segments, the old side up to the flip's fraction on its own segment, measured from the flip's price since the wallet already holds what it realized, and the new side from there to its own adverse extreme;
 - an instrument flat at the bar's start takes the segment of the side its first fill opens;
 - an instrument unavailable on the bar keeps its last mark and does not move.
 
