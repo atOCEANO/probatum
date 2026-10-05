@@ -872,8 +872,8 @@ def deflated_sharpe(study, null):
 
     The two arguments answer different halves of the threshold, and the null
     answers only one of them: how far a sharpe scatters over this space. How many
-    times you looked is a property of **your** search and is read off it (ADR
-    0055).
+    times you looked is a property of **your** search and is read off it
+    (ADR 0032).
     """
     looks, spread = _null_shape(study, null)
     return probabilistic_sharpe(

@@ -40,7 +40,7 @@ class Reference:
         self.impact = float(impact)
         self.funding_rate = float(funding_rate)
         self.funding_interval = int(funding_interval)
-        # ADR 0010 bounds the resting book and ADR 0010 the pending queue, and once
+        # ADR 0010 bounds both the resting book and the pending queue, and once
         # either is full every further placement is REJECTED rather than queued.
         # Leaving it unbounded here was the second thing this reference got wrong:
         # a GTC limit rests forever (ADR 0010), so a run that keeps placing them
@@ -476,7 +476,7 @@ class Reference:
             self.bust = True
 
     def worst_first(self, offers):
-        """ADR 0012 as corrected by 0071: only the exits reorder, among their own slots."""
+        """ADR 0012: only the exits reorder, among their own slots."""
         position, entry = self.position, self.entry
 
         def adversity(item):

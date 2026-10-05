@@ -112,10 +112,10 @@ impl Stats {
             // leaves the float range: 200 minute bars is 0.00038 of a year, so
             // a 50% gain annualizes past f64::MAX and comes back infinite. A
             // run ending +50% and one ending +300% then report the same
-            // infinity, tie at the top of a sweep, and borrow the meaning ADR
-            // 0046 reserves for a reward earned against no measured risk. ADR
-            // 0048 derives the annualization from the candles, so minute bars
-            // are not an exotic input. The value saturates rather than
+            // infinity, tie at the top of a sweep, and borrow the meaning
+            // ADR 0030 reserves for a reward earned against no measured risk.
+            // ADR 0004 derives the annualization from the candles, so minute
+            // bars are not an exotic input. The value saturates rather than
             // escaping; `total_return_pct` is what to rank a sub-year run on,
             // because an annualized rate off a few hours is an extrapolation
             // and not a measurement (ADR 0030).
@@ -191,8 +191,8 @@ impl Stats {
         // Calmar divides a return by a drawdown, and on a LOSING run that is a loss
         // over a loss: the deeper the bust the larger the divisor, so a total
         // wipeout scored -1.00 while a run that lost only 20% scored -3.71, and an
-        // argmax over the set picked the wipeout. That is the same inversion ADR
-        // 0029 was written to close, surviving underneath the 100% cap that closed
+        // argmax over the set picked the wipeout. That is the same inversion
+        // ADR 0030 was written to close, surviving underneath the 100% cap that closed
         // it for busts, because the cap only equalizes busts against each other. A
         // negative return is scaled by its drawdown instead of divided by it, which
         // is the identical number at a total loss, so the two branches meet, and it
