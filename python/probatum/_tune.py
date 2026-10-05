@@ -2,7 +2,7 @@
 
 ``tune`` searches a strategy's parameters for the configuration that maximizes (or
 minimizes) an objective, running each trial as a full backtest through the same
-``emsl.backtest.Backtester`` a single run uses. The same ``Strategy`` subclass
+``probatum.backtest.Backtester`` a single run uses. The same ``Strategy`` subclass
 feeds a backtest and a tune; the difference is that ``tune`` builds a fresh one per
 trial from the sampled parameters, ``StrategyClass(**params)``, so a strategy
 declares its tunables as constructor arguments and stores them as fields.
@@ -55,10 +55,10 @@ first and the search follows a different path each time. Pin ``n_jobs=1`` when a
 result has to be reproducible.
 
 ``optuna`` drives the search and ``cloudpickle`` carries the strategy and objective
-to the workers; both install with ``pip install 'emsl[tune]'``.
+to the workers; both install with ``pip install 'probatum[tune]'``.
 
-    from emsl import tune
-    from emsl.backtest import Strategy
+    from probatum import tune
+    from probatum.backtest import Strategy
 
 
     class SmaCross(Strategy):
@@ -135,6 +135,7 @@ class _Spec:
     distribution through ``_distribution``.
     """
 
+
     def _distribution(self):
         raise NotImplementedError
 
@@ -144,15 +145,16 @@ class Int(_Spec):
     ``log`` scale. The shorthand ``(low, high)`` of two ints builds the same.
     """
 
+
     def __init__(self, low, high, step=1, log=False):
-        self.low = int(low)
+        self.low  = int(low)
         self.high = int(high)
         self.step = int(step)
-        self.log = bool(log)
+        self.log  = bool(log)
+
 
     def _distribution(self):
         from optuna.distributions import IntDistribution
-
         return IntDistribution(self.low, self.high, step=self.step, log=self.log)
 
 
@@ -162,15 +164,16 @@ class Float(_Spec):
     same, and ``(low, high, "log")`` sets ``log``.
     """
 
+
     def __init__(self, low, high, step=None, log=False):
-        self.low = float(low)
+        self.low  = float(low)
         self.high = float(high)
         self.step = None if step is None else float(step)
-        self.log = bool(log)
+        self.log  = bool(log)
+
 
     def _distribution(self):
         from optuna.distributions import FloatDistribution
-
         return FloatDistribution(self.low, self.high, step=self.step, log=self.log)
 
 
@@ -178,6 +181,7 @@ class Categorical(_Spec):
     """A parameter drawn from a fixed list of choices. The shorthand is a plain
     ``list``.
     """
+
 
     def __init__(self, choices):
         self.choices = list(choices)
@@ -187,9 +191,9 @@ class Categorical(_Spec):
                 f"least one choice to draw from"
             )
 
+
     def _distribution(self):
         from optuna.distributions import CategoricalDistribution
-
         return CategoricalDistribution(self.choices)
 
 
@@ -197,7 +201,6 @@ def _load_cloudpickled(payload):
     # rebuild a wrapper from its cloudpickle bytes; the reconstruction target of
     # _CloudPickled.__reduce__, so it stays wrapped on both fork and spawn workers
     import cloudpickle
-
     return _CloudPickled(cloudpickle.loads(payload))
 
 
@@ -212,12 +215,13 @@ class _CloudPickled:
     directly, so it stays wrapped either way and the worker reads ``.obj`` (ADR 0032).
     """
 
+
     def __init__(self, obj):
         self.obj = obj
 
+
     def __reduce__(self):
         import cloudpickle
-
         return (_load_cloudpickled, (cloudpickle.dumps(self.obj),))
 
 
@@ -233,10 +237,13 @@ def _worker_init(
     # runs once when a worker process starts, so every trial that worker takes
     # reuses the one engine rather than rebuilding it per call
     _WORKER["backtester"] = Backtester(
-        candles, periods_per_year=periods_per_year, risk_free=risk_free, **config
+        candles,
+        periods_per_year = periods_per_year,
+        risk_free        = risk_free,
+        **config,
     )
-    _WORKER["strategy"] = strategy_wrapped.obj
-    _WORKER["objective"] = objective_wrapped.obj
+    _WORKER["strategy"]   = strategy_wrapped.obj
+    _WORKER["objective"]  = objective_wrapped.obj
     _WORKER["min_trades"] = min_trades
 
 
@@ -254,6 +261,7 @@ def _evaluate(backtester, strategy, objective, params, min_trades=0):
     # a NaN score is an undefined result the caller fails the trial on; an infinite
     # score (profit_factor with no losses, say) is kept so it can rank
     result = backtester.run(strategy(**params))
+
     # a configuration that barely traded is scored on a handful of samples, and the
     # best point estimate in a search walks straight to the thinnest cell. Failing it
     # is the same treatment a NaN objective gets (ADR 0032)
@@ -262,27 +270,33 @@ def _evaluate(backtester, strategy, objective, params, min_trades=0):
             f"only {result.stats['num_trades']} trades, below min_trades={min_trades}, "
             f"for params {params}"
         )
+
     value = float(objective(result))
     if math.isnan(value):
         raise ValueError(f"objective returned NaN for params {params}")
+
     return value, result.stats
 
 
 def _to_distribution(name, spec):
     if isinstance(spec, _Spec):
         return spec._distribution()
+
     if isinstance(spec, list):
         return Categorical(spec)._distribution()
+
     if isinstance(spec, tuple) and len(spec) in (2, 3):
         log = len(spec) == 3
         if log and spec[2] != "log":
             raise ValueError(f"space['{name}'] third element must be 'log', got {spec[2]!r}")
+
         low, high = spec[0], spec[1]
         if isinstance(low, bool) or isinstance(high, bool):
             raise TypeError(f"space['{name}'] bounds must be numbers, not booleans")
         if isinstance(low, int) and isinstance(high, int):
             return Int(low, high, log=log)._distribution()
         return Float(low, high, log=log)._distribution()
+
     raise TypeError(
         f"space['{name}'] must be (low, high), (low, high, 'log'), a list of "
         f"choices, or a tune.Int/Float/Categorical, got {spec!r}"
@@ -292,18 +306,21 @@ def _to_distribution(name, spec):
 def _resolve_objective(objective):
     if callable(objective):
         return objective
+
     if isinstance(objective, str):
         if objective not in _STAT_KEYS:
             raise KeyError(
                 f"objective '{objective}' is not a stats key; choose one of "
                 f"{sorted(_STAT_KEYS)} or pass a callable"
             )
+
         key = objective
 
         def named(result):
             return float(result.stats[key])
 
         return named
+
     raise TypeError(
         f"objective arrived as {objective!r}; pass a stats-key string or a "
         f"callable taking a BacktestResult"
@@ -313,11 +330,14 @@ def _resolve_objective(objective):
 def _resolve_n_jobs(n_jobs):
     if n_jobs is None:
         return 1
+
     n_jobs = int(n_jobs)
     if n_jobs == -1:
         return max(1, os.cpu_count() or 1)
+
     if n_jobs < 1:
         raise ValueError(f"n_jobs must be a positive integer or -1, got {n_jobs}")
+
     return n_jobs
 
 
@@ -331,14 +351,17 @@ def _validate_param_names(strategy, space):
         sig = inspect.signature(strategy)
     except (TypeError, ValueError):
         return
+
     params = sig.parameters.values()
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
         return
+
     accepted = {
         p.name
         for p in params
         if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     }
+
     unknown = sorted(k for k in space if k not in accepted)
     if unknown:
         raise TypeError(
@@ -365,6 +388,7 @@ def _drive_sequential(
         else:
             trial.set_user_attr("stats", stats)
             study.tell(trial, value)
+
     return last_error
 
 
@@ -383,9 +407,11 @@ def _drive_parallel(
         _CloudPickled(objective),
         min_trades,
     )
-    inflight = {}
-    submitted = 0
+
+    inflight   = {}
+    submitted  = 0
     last_error = None
+
     with ProcessPoolExecutor(
         max_workers=n_jobs, initializer=_worker_init, initargs=initargs
     ) as pool:
@@ -396,6 +422,7 @@ def _drive_parallel(
                 trial = study.ask(distributions)
                 inflight[pool.submit(_worker_eval, trial.params)] = trial
                 submitted += 1
+
             while inflight:
                 done, _ = wait(inflight, return_when=FIRST_COMPLETED)
                 for future in done:
@@ -414,6 +441,7 @@ def _drive_parallel(
                         submitted += 1
         except BrokenProcessPool as exc:
             last_error = exc
+
     if isinstance(last_error, BrokenProcessPool):
         warnings.warn(
             "a tuning worker process died and the pool broke; returning the trials "
@@ -421,6 +449,7 @@ def _drive_parallel(
             RuntimeWarning,
             stacklevel=2,
         )
+
     return last_error
 
 
@@ -443,39 +472,45 @@ class TuneResult:
     or one that ran on other bars (ADR 0032).
     """
 
+
     def __init__(self, study, strategy, best_result=None, oos_result=None,
                  objective=None, sampler=None, min_trades=0, direction=None):
-        self._study = study
+        self._study    = study
         self._strategy = strategy
-        best = study.best_trial
+
+        best             = study.best_trial
         self.best_params = dict(best.params)
-        self.best_value = float(best.value)
-        self.best_stats = dict(best.user_attrs.get("stats", {}))
+        self.best_value  = float(best.value)
+        self.best_stats  = dict(best.user_attrs.get("stats", {}))
         self.best_result = best_result
-        self.oos_result = oos_result
-        self.oos_stats = dict(oos_result.stats) if oos_result is not None else None
-        self.objective = objective
-        self.sampler = sampler
-        self.direction = direction
-        self.min_trades = int(min_trades)
-        self.data_hash = best_result.data_hash if best_result is not None else None
+        self.oos_result  = oos_result
+        self.oos_stats   = dict(oos_result.stats) if oos_result is not None else None
+        self.objective   = objective
+        self.sampler     = sampler
+        self.direction   = direction
+        self.min_trades  = int(min_trades)
+        self.data_hash   = best_result.data_hash if best_result is not None else None
+
         self.trials = [
             {
                 "number": t.number,
                 "params": dict(t.params),
-                "value": t.value,
-                "state": t.state.name,
-                "stats": t.user_attrs.get("stats"),
+                "value":  t.value,
+                "state":  t.state.name,
+                "stats":  t.user_attrs.get("stats"),
             }
             for t in study.trials
         ]
+
 
     @property
     def study(self):
         return self._study
 
+
     def best_strategy(self):
         return self._strategy(**self.best_params)
+
 
     def __repr__(self):
         held = "" if self.oos_stats is None else ", held out"
@@ -529,22 +564,28 @@ def tune(
             f"strategy arrived as {strategy!r}, which is not callable; pass a "
             f"Strategy subclass or a callable that builds one"
         )
+
     if not isinstance(space, dict) or not space:
         raise ValueError(
             f"space arrived as {space!r}; pass a dict of parameter name to range "
             f"with at least one entry"
         )
+
     if direction not in ("maximize", "minimize"):
         raise ValueError(f"direction must be 'maximize' or 'minimize', got {direction!r}")
+
     if int(n_trials) < 1:
         raise ValueError(f"n_trials must be a positive integer, got {n_trials}")
+
     if market not in ("spot", "perp"):
         raise ValueError(f"market must be 'spot' or 'perp', got {market!r}")
+
     if int(min_trades) < 0:
         raise ValueError(f"min_trades must be zero or a positive integer, got {min_trades}")
-    n_trials = int(n_trials)
+
+    n_trials   = int(n_trials)
     min_trades = int(min_trades)
-    n_jobs = _resolve_n_jobs(n_jobs)
+    n_jobs     = _resolve_n_jobs(n_jobs)
     _validate_param_names(strategy, space)
 
     # resolve the annualization here, from the index, rather than letting each
@@ -553,6 +594,7 @@ def tune(
     candles, index = prepare(data)
     periods_per_year = annualization(periods_per_year, index)
     candles, held_out = _split(candles, oos)
+
     config = dict(
         market=market,
         quote=quote,
@@ -566,12 +608,14 @@ def tune(
         funding_rate=funding_rate,
         funding_interval=funding_interval,
     )
-    distributions = {name: _to_distribution(name, spec) for name, spec in space.items()}
-    objective_fn = _resolve_objective(objective)
 
+    distributions = {name: _to_distribution(name, spec) for name, spec in space.items()}
+    objective_fn  = _resolve_objective(objective)
     optuna.logging.set_verbosity(optuna.logging.INFO if verbose else optuna.logging.WARNING)
+
     if sampler not in ("tpe", "random"):
         raise ValueError(f"sampler must be 'tpe' or 'random', got {sampler!r}")
+
     drawn = (
         optuna.samplers.RandomSampler(seed=seed)
         if sampler == "random"
@@ -581,7 +625,10 @@ def tune(
 
     if n_jobs == 1:
         backtester = Backtester(
-            candles, periods_per_year=periods_per_year, risk_free=risk_free, **config
+            candles,
+            periods_per_year = periods_per_year,
+            risk_free        = risk_free,
+            **config,
         )
         last_error = _drive_sequential(
             study, distributions, n_trials, strategy, objective_fn, backtester, min_trades
@@ -603,21 +650,32 @@ def tune(
     # the winner re-run on the bars it was chosen on, so the result can be charted
     # and measured without rebuilding the search's configuration by hand
     best_result = Backtester(
-        candles, periods_per_year=periods_per_year, risk_free=risk_free, **config
+        candles,
+        periods_per_year = periods_per_year,
+        risk_free        = risk_free,
+        **config,
     ).run(strategy(**study.best_trial.params))
+
     oos_result = None
     if held_out is not None:
         oos_result = Backtester(
-            held_out, periods_per_year=periods_per_year, risk_free=risk_free, **config
+            held_out,
+            periods_per_year = periods_per_year,
+            risk_free        = risk_free,
+            **config,
         ).run(strategy(**study.best_trial.params))
+
     return TuneResult(
-        study, strategy, best_result, oos_result,
-        objective=objective if isinstance(objective, str) else getattr(
+        study,
+        strategy,
+        best_result,
+        oos_result,
+        objective  = objective if isinstance(objective, str) else getattr(
             objective, "__name__", "a callable"
         ),
-        sampler=sampler,
-        min_trades=min_trades,
-        direction=direction,
+        sampler    = sampler,
+        min_trades = min_trades,
+        direction  = direction,
     )
 
 
@@ -636,12 +694,16 @@ def _split(candles, oos):
             stacklevel=2,
         )
         return candles, None
+
     oos = float(oos)
     if not 0.0 <= oos < 1.0:
         raise ValueError(f"oos must be at least 0 and below 1, got {oos}")
+
     if oos == 0.0:
         return candles, None
+
     split = int(round(len(candles) * (1.0 - oos)))
+
     # both halves have to be long enough to reset and step at least once, and a
     # split that leaves either one too short is a mistake in the caller's fraction
     # rather than something to silently ignore
@@ -651,6 +713,7 @@ def _split(candles, oos):
             f"{len(candles) - split} to test on, and each side needs at least 2; "
             f"use a longer series or a smaller fraction"
         )
+
     return candles[:split], candles[split:]
 
 
@@ -659,9 +722,10 @@ def _import_optuna():
         import optuna
     except ImportError as exc:
         raise ImportError(
-            "optuna is required for emsl.tune; pip install 'emsl[tune]' "
+            "optuna is required for probatum.tune; pip install 'probatum[tune]' "
             "(installs optuna and cloudpickle)"
         ) from exc
+
     return optuna
 
 
@@ -670,12 +734,12 @@ def _require_cloudpickle():
         import cloudpickle  # noqa: F401
     except ImportError as exc:
         raise ImportError(
-            "cloudpickle is required for n_jobs > 1; pip install 'emsl[tune]' "
+            "cloudpickle is required for n_jobs > 1; pip install 'probatum[tune]' "
             "(installs optuna and cloudpickle)"
         ) from exc
 
 
-tune.Int = Int
-tune.Float = Float
+tune.Int         = Int
+tune.Float       = Float
 tune.Categorical = Categorical
-tune.TuneResult = TuneResult
+tune.TuneResult  = TuneResult

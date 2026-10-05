@@ -12,11 +12,11 @@ window that owns it, so the run has real fills, real funding, a continuous
 account across the seams, and full history for every warm-up. Every metric and
 the chart take the result as they would any other, because it is one.
 
-    forward = emsl.walk_forward(SmaCross, space, candles, windows=5, train=0.5)
+    forward = probatum.walk_forward(SmaCross, space, candles, windows=5, train=0.5)
 
     forward.stats["sharpe"]        # out of sample, by construction
     forward.decay                  # how much the fit flattered itself, averaged over the windows
-    emsl.chart(frame=candles, run=forward.result).show()
+    probatum.chart(frame=candles, run=forward.result).show()
 """
 
 from __future__ import annotations
@@ -38,10 +38,12 @@ class _Scheduled(Strategy):
     series in ``init``, so a warm-up spans a seam instead of restarting at it.
     """
 
+
     def __init__(self, build, schedule):
-        self._build = build
+        self._build    = build
         self._schedule = schedule
-        self.parts = []
+        self.parts     = []
+
 
     def init(self, engine):
         self.parts = [
@@ -49,6 +51,7 @@ class _Scheduled(Strategy):
         ]
         for _, _, part in self.parts:
             part.init(engine)
+
         # the earliest bar any window may decide on is its own start, and a part
         # cannot decide before its own warm-up either
         self.warmup = min(
@@ -56,8 +59,10 @@ class _Scheduled(Strategy):
             default=0,
         )
 
+
     def next(self, state, engine):
         bar = state["tick_index"]
+
         for start, stop, part in self.parts:
             if start <= bar < stop:
                 if bar >= getattr(part, "warmup", 0):
@@ -90,12 +95,14 @@ class WalkForward:
     which is what orients ``decay`` and ``consistency``.
     """
 
+
     def __init__(self, result, windows, span, direction="maximize"):
-        self.result = result
-        self.stats = result.stats
-        self.windows = windows
-        self.span = span
+        self.result    = result
+        self.stats     = result.stats
+        self.windows   = windows
+        self.span      = span
         self.direction = direction
+
 
     @property
     def decay(self):
@@ -117,6 +124,7 @@ class WalkForward:
                 if w["traded"] is not None and w["fitted"] is not None]
         return float(np.mean(gaps)) if gaps else float("nan")
 
+
     @property
     def consistency(self):
         """The share of windows whose traded score was above zero.
@@ -131,8 +139,10 @@ class WalkForward:
         """
         if self.direction == "minimize":
             return float("nan")
+
         scored = [w["traded"] for w in self.windows if w["traded"] is not None]
         return float(np.mean([s > 0.0 for s in scored])) if scored else float("nan")
+
 
     def __repr__(self):
         return (
@@ -188,15 +198,17 @@ def walk_forward(
 
     candles, index = prepare(data)
     periods_per_year = annualization(periods_per_year, index)
+
     config = dict(
         market=market, quote=quote, fee_taker=fee_taker, fee_maker=fee_maker,
         slippage_bps=slippage_bps, max_fill_fraction=max_fill_fraction,
         max_open_orders=max_open_orders, leverage=leverage, impact=impact,
         funding_rate=funding_rate, funding_interval=funding_interval,
     )
+
     layout = _layout(len(candles), int(windows), float(train), bool(anchored))
 
-    records = []
+    records  = []
     schedule = []
     for fit_from, fit_to, test_to in layout:
         study = tune(
@@ -205,20 +217,25 @@ def walk_forward(
             oos=0, sampler=sampler, min_trades=min_trades,
             periods_per_year=periods_per_year, risk_free=risk_free, **config,
         )
+
         records.append({
             "fitted_on": (fit_from, fit_to),
             "traded_on": (fit_to, test_to),
-            "params": dict(study.best_params),
-            "fitted": study.best_value,
+            "params":    dict(study.best_params),
+            "fitted":    study.best_value,
         })
         schedule.append((fit_to, test_to, dict(study.best_params)))
 
     # one real pass over the whole series, so the account is continuous across the
     # seams and every warm-up has the history before its own window to use
     composite = _Scheduled(strategy, schedule)
-    result = Backtester(
-        candles, periods_per_year=periods_per_year, risk_free=risk_free, **config,
+    result    = Backtester(
+        candles,
+        periods_per_year = periods_per_year,
+        risk_free        = risk_free,
+        **config,
     ).run(composite)
+
     _score_windows(records, result, composite, objective)
     return WalkForward(result, records, (layout[0][1], layout[-1][2]), direction)
 
@@ -244,10 +261,11 @@ def _score_windows(records, result, composite, objective):
     decide on most of its bars is a window whose score means less.
     """
     bars = len(result.equity_curve) + 1
+
     for record in records:
         first, last = record["traded_on"]
         record["bars_traded"] = _decidable(composite, first, last, bars)
-        record["traded"] = _score(result, first, last, objective)
+        record["traded"]      = _score(result, first, last, objective)
 
 
 def _decidable(composite, first, last, bars):
@@ -266,12 +284,13 @@ def _score(result, first, last, objective):
     # computed on the wrong basis, which is what the isolated run was
     if callable(objective):
         return None
-    from .metrics import segment
 
+    from .metrics import segment
     try:
         value = segment(result, first, last).get(objective)
     except ValueError:
         return None
+
     return None if value is None else float(value)
 
 
@@ -284,20 +303,25 @@ def _layout(size, windows, train, anchored):
     """
     if windows < 1:
         raise ValueError(f"walk_forward needs at least one window, got {windows}")
+
     if not 0.0 < train < 1.0:
         raise ValueError(f"train must be above 0 and below 1, got {train}")
+
     first = int(round(size * train))
-    step = (size - first) // windows
+    step  = (size - first) // windows
+
     if first < 2 or step < 2:
         raise ValueError(
             f"walk_forward({windows} windows, train={train}) splits {size} bars "
             f"into a {first}-bar fit and {step}-bar stretches, and each side needs "
             f"at least 2; use fewer windows, a longer series, or a smaller train"
         )
+
     out = []
     for k in range(windows):
-        fit_to = first + k * step
-        test_to = size if k == windows - 1 else fit_to + step
+        fit_to   = first + k * step
+        test_to  = size if k == windows - 1 else fit_to + step
         fit_from = 0 if anchored else max(0, fit_to - first)
         out.append((fit_from, fit_to, test_to))
+
     return out

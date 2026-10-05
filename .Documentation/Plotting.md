@@ -27,7 +27,7 @@
 
 ## Plotting
 
-`emsl.chart` turns a frame, your own arrays and a run into a picture. It computes nothing: you bring the numbers.
+`probatum.chart` turns a frame, your own arrays and a run into a picture. It computes nothing: you bring the numbers.
 
 **`show()` draws it in the notebook cell.** Inline, where you are already working, zoomable and pannable in place. No second window, no server, no viewer to launch, and nothing to configure for your particular frontend.
 
@@ -40,19 +40,19 @@ Every example that draws here ends in `.show()` and appears in the cell below th
 **A frame** is candles, volume, a crosshair readout, zoom and pan:
 
 ```python
-emsl.chart(frame=frame).show()
+probatum.chart(frame=frame).show()
 ```
 
 **An array** finds itself a home, over the candles or on a panel of its own:
 
 ```python
-emsl.chart(frame=frame, marks=squeeze).show()
+probatum.chart(frame=frame, marks=squeeze).show()
 ```
 
 **A run** draws itself, with no configuration at all:
 
 ```python
-emsl.chart(frame=frame, run=result).show()
+probatum.chart(frame=frame, run=result).show()
 ```
 
 That last one is entry and exit arrows on the exact bars they filled on, an equity curve with its drawdown shaded onto it, and a trade log under the chart. Click a row and the chart frames that trade; click an arrow and the row reveals itself.
@@ -62,13 +62,13 @@ All three together is the chart most people are actually after:
 ```python
 strategy = SmaCross(fast=20, slow=50)
 
-result = emsl.backtest.Backtester(
+result = probatum.backtest.Backtester(
     candles=frame,
     market="perp",
     fee_taker=0.0005,
 ).run(strategy)
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Line(values=strategy.fast, name="SMA 20"),
@@ -93,7 +93,7 @@ Every image on this page is produced by `dev/charts/build.py` against a frozen p
 Every argument here is named, and this guide keeps it that way throughout. `chart` also accepts them positionally and matches by type, which is convenient once you know it and invisible until you do:
 
 ```python
-emsl.chart(frame, [Line(strategy.fast, "SMA 20"), Line(strategy.slow, "SMA 50")], result).show()
+probatum.chart(frame, [Line(strategy.fast, "SMA 20"), Line(strategy.slow, "SMA 50")], result).show()
 ```
 
 Naming buys more than clarity. `run=` is checked, so an array passed to it by mistake is refused; positionally, the same mistake is silently drawn as a line.
@@ -107,7 +107,7 @@ Every one of these is complete. Nothing is elided and nothing needs a strategy, 
 **A moving average over the candles.**
 
 ```python
-emsl.chart(frame=frame, marks=Line(values=frame.close.rolling(50).mean(), name="SMA 50")).show()
+probatum.chart(frame=frame, marks=Line(values=frame.close.rolling(50).mean(), name="SMA 50")).show()
 ```
 
 <div align="center">
@@ -120,7 +120,7 @@ emsl.chart(frame=frame, marks=Line(values=frame.close.rolling(50).mean(), name="
 **An oscillator**, given a panel of its own, with the levels that make it readable.
 
 ```python
-emsl.chart(frame=frame, marks=[
+probatum.chart(frame=frame, marks=[
     Line(values=rsi, name="RSI 14", panel="rsi"),
     Level(value=70.0, panel="rsi", style="dotted"),
     Level(value=30.0, panel="rsi", style="dotted"),
@@ -137,7 +137,7 @@ emsl.chart(frame=frame, marks=[
 **A channel**, shaded between its edges.
 
 ```python
-emsl.chart(frame=frame, marks=Band(upper=upper, lower=lower, name="bollinger",
+probatum.chart(frame=frame, marks=Band(upper=upper, lower=lower, name="bollinger",
                                    fill="#8b97a51a")).show()
 ```
 
@@ -151,7 +151,7 @@ emsl.chart(frame=frame, marks=Band(upper=upper, lower=lower, name="bollinger",
 **Shade the bars** a filter says are risk-off.
 
 ```python
-emsl.chart(frame=frame, marks=Background(values=risk_off, fill="#ff547026")).show()
+probatum.chart(frame=frame, marks=Background(values=risk_off, fill="#ff547026")).show()
 ```
 
 <div align="center">
@@ -164,7 +164,7 @@ emsl.chart(frame=frame, marks=Background(values=risk_off, fill="#ff547026")).sho
 **A glyph wherever a condition fires**, which is Pine's `plotshape`.
 
 ```python
-emsl.chart(frame=frame, marks=Markers(mask=crossed, shape="arrow_up", offset=-16)).show()
+probatum.chart(frame=frame, marks=Markers(mask=crossed, shape="arrow_up", offset=-16)).show()
 ```
 
 <div align="center">
@@ -177,7 +177,7 @@ emsl.chart(frame=frame, marks=Markers(mask=crossed, shape="arrow_up", offset=-16
 **Colour the candles themselves** by anything you like.
 
 ```python
-emsl.chart(frame=frame, candle_color=numpy.where(trending, "#4d9fff", None)).show()
+probatum.chart(frame=frame, candle_color=numpy.where(trending, "#4d9fff", None)).show()
 ```
 
 <div align="center">
@@ -190,7 +190,7 @@ emsl.chart(frame=frame, candle_color=numpy.where(trending, "#4d9fff", None)).sho
 **Two features, one panel each**, both pinned so they are comparable.
 
 ```python
-emsl.chart(frame=frame, marks=[
+probatum.chart(frame=frame, marks=[
     Line(values=fast_z, name="z 24", panel="z24"),
     Line(values=slow_z, name="z 168", panel="z168"),
 ], panels=[
@@ -209,7 +209,7 @@ emsl.chart(frame=frame, marks=[
 **A file to send to somebody with no Python.**
 
 ```python
-emsl.chart(frame=frame, run=result, title="SMA 20/50, BTCUSDT 1h").save(path="run.html")
+probatum.chart(frame=frame, run=result, title="SMA 20/50, BTCUSDT 1h").save(path="run.html")
 ```
 
 <br>
@@ -226,7 +226,7 @@ def vam(close, n):
     return numpy.log(close / close.shift(n)) / (logret.rolling(n).std() * numpy.sqrt(n))
 
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Line(values=vam(close=frame.close, n=72), name="vam 72", panel="vam"),
@@ -245,7 +245,7 @@ emsl.chart(
 Then the same feature at several lookbacks, one panel each, **all pinned to the same window**. Autoscaled panels are not comparable, and three of them side by side will happily tell you three parameterisations behave identically when they do not.
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Line(values=vam24, name="vam 24", panel="vam24"),
@@ -265,7 +265,7 @@ emsl.chart(
 Then the chart that answers the question, which is the feature's extremes against whatever you think they predict:
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Background(values=regime, fill={"hi": "#2fe0a81f", "lo": "#ff54701f"}),
@@ -318,7 +318,7 @@ That is the one rule worth knowing before you write anything. Everything is comp
 fast = frame.close.rolling(20).mean()
 slow = frame.close.rolling(50).mean()
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Line(values=fast, name="SMA 20"),
@@ -335,9 +335,9 @@ A pandas Series, a numpy array or a plain list all work, and all are read **by p
 ```python
 strategy = SmaCross(fast=20, slow=50)
 
-result = emsl.backtest.Backtester(candles=frame).run(strategy)
+result = probatum.backtest.Backtester(candles=frame).run(strategy)
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Line(values=strategy.fast, name="SMA 20"),
@@ -356,7 +356,7 @@ The call above writes `20` twice: once as the parameter the strategy trades on, 
 A `marks()` method fixes it, and it is an ordinary method rather than anything the library knows about. Nothing calls it during a run, so a sweep pays nothing for it.
 
 ```python
-class SmaCross(emsl.Strategy):
+class SmaCross(probatum.Strategy):
     def __init__(self, fast=20, slow=50):
         self.fast_n = fast
         self.slow_n = slow
@@ -377,13 +377,13 @@ class SmaCross(emsl.Strategy):
 ```
 
 ```python
-emsl.chart(frame=frame, marks=strategy.marks(), run=result).show()
+probatum.chart(frame=frame, marks=strategy.marks(), run=result).show()
 ```
 
 A list of marks is flattened like any other, so what the strategy declares and what you add at the call site compose. The strategy says what it traded on; the chart cell adds whatever you are comparing it against today, without editing the class or re-running anything.
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=strategy.marks() + [Line(values=buy_and_hold, name="buy and hold")],
     run=result,
@@ -419,7 +419,7 @@ or 8759, drawn from bar 1 like an equity curve or a diff
 **The best fix is to say which you meant while you are writing the loop**, because that is where the meaning is obvious. `Recorder` collects values under a name and an alignment, and hands back one value per bar:
 
 ```python
-class Carry(emsl.Strategy):
+class Carry(probatum.Strategy):
     def init(self, engine):
         self.log = Recorder(bars=engine)
 
@@ -428,7 +428,7 @@ class Carry(emsl.Strategy):
         self.log.at_next(state, liq=...)
 
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=Line(values=strategy.log["lev"], name="leverage", panel="risk"),
     run=result,
@@ -437,7 +437,7 @@ emsl.chart(
 
 A bar you returned early from is a gap, and a boolean one is `False`, so a warm-up needs no padding at all. One key holds one kind and one alignment; changing either raises rather than converting. It costs one array write per value per bar, so leave it out of a strategy you mean to sweep across hundreds of trials.
 
-`emsl.plot.at_bar` and `at_next` are the same two rules as plain functions, for when you already have a list. Both pad a boolean with `False` rather than NaN, which matters: `numpy.array([numpy.nan]).astype(bool)` is `True`, so a mask padded the way a float is padded reports the event it was looking for on its last bar. A risk report built by hand that way printed one liquidation on a run that never had one.
+`probatum.plot.at_bar` and `at_next` are the same two rules as plain functions, for when you already have a list. Both pad a boolean with `False` rather than NaN, which matters: `numpy.array([numpy.nan]).astype(bool)` is `True`, so a mask padded the way a float is padded reports the event it was looking for on its last bar. A risk report built by hand that way printed one liquidation on a run that never had one.
 
 A `Background` mask is guarded for you too: a NaN or a `pandas.NA` shades nothing rather than shading everything. A mask you cast yourself, before it reaches the chart, is your own.
 
@@ -499,7 +499,7 @@ held = numpy.zeros(len(frame), dtype=bool)
 for trade in result.trades:
     held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=strategy.marks(),
     run=result,
@@ -523,7 +523,7 @@ emsl.chart(
 `panels=` **configures** panels; it never creates or removes one. A name it does not recognise configures nothing, so a typo costs you nothing rather than manufacturing a blank pane. Listing panels also fixes their order relative to each other, without moving them relative to the panels you did not list.
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=marks,
     run=result,
@@ -545,7 +545,7 @@ A `BacktestResult` brings three things: the arrows, the trade log, and an equity
 The shading **is** the drawdown. The band runs from the equity curve up to the highest equity the run had seen by that bar, so it closes to nothing on every new high, is at its widest at the worst bar, and puts the trough directly beneath the peak that caused it. The legend prints the percentage beside the balance, and it is the same number the engine reports as `max_drawdown_pct`.
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     run=result,
     trades=False,                               # no arrows, no table
@@ -574,7 +574,7 @@ Up on the year and eight percent below the high, on the same bar. The curve alon
 ## The marks
 
 ```python
-from emsl.plot import (
+from probatum.plot import (
     Panel, Line, Histogram, Band, Level, Marker, Markers, Background, Recorder,
     ramp, at_bar, at_next,
 )
@@ -596,7 +596,7 @@ from emsl.plot import (
 `Band` with `only="above"` or `"below"` is the conditional fill an overbought shading actually is: it exists solely where the upper edge is past the reference, and its gradient runs from that edge toward each excursion's own extreme, so a brief poke past the level shades faintly and a deep one shades hard.
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Line(values=rsi, name="RSI 14", panel="momentum"),
@@ -634,14 +634,14 @@ Give it a `name` and it takes a legend row reading the region under the crosshai
 `Markers` is the same glyph on every bar a boolean says so, which is `plotshape`:
 
 ```python
-# emsl.ta.crossover, not a hand-rolled comparison: it pads with False rather
+# probatum.ta.crossover, not a hand-rolled comparison: it pads with False rather
 # than NaN, because bool(nan) is True and a float warm-up fires the rule on
 # precisely the bars where nothing is known (ADR 0037). Hand-rolling it also
 # aligns two pandas slices on their index rather than by position, which is a
 # different array of a different length
-crossed = emsl.ta.crossover(fast, slow)
+crossed = probatum.ta.crossover(fast, slow)
 
-emsl.chart(frame=frame, marks=[Markers(mask=crossed, shape="arrow_up", offset=-16)]).show()
+probatum.chart(frame=frame, marks=[Markers(mask=crossed, shape="arrow_up", offset=-16)]).show()
 ```
 
 It takes the same keywords as `Marker`, and `value=` additionally accepts an array, so each glyph can sit on its own bar's reading of something rather than on the bar's extreme. One `Markers` is one thing the renderer draws, where a list comprehension over `flatnonzero` is one for every glyph.
@@ -674,7 +674,7 @@ A trade dict, a `(start, end)` pair of bar indices, or an integer `N` meaning th
 ```python
 worst = min(result.trades, key=lambda trade: trade["net_pnl"])
 
-emsl.chart(frame=frame, marks=strategy.marks(), run=result, focus=worst).show()
+probatum.chart(frame=frame, marks=strategy.marks(), run=result, focus=worst).show()
 ```
 
 <div align="center">
@@ -687,7 +687,7 @@ emsl.chart(frame=frame, marks=strategy.marks(), run=result, focus=worst).show()
 ## Output
 
 ```python
-chart = emsl.chart(frame=frame, run=result, title="SMA cross 20/50, BTCUSDT 1h")
+chart = probatum.chart(frame=frame, run=result, title="SMA cross 20/50, BTCUSDT 1h")
 
 chart.show()                            # inline in a notebook cell
 chart.save(path="reports/run.html")     # one self-contained file
@@ -710,7 +710,7 @@ Two places it will not draw, both because the host removes the iframe before it 
 `title=` and `stats=` are drawn above the plot, the title on the left and the numbers on the right, which is what turns a saved file into a document rather than a picture. A file arrives in someone's inbox with only its filename, and a chart that cannot say which strategy over which period is an untitled squiggle.
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     run=result,
     title="Carry 24/168 at 3x, BTCUSDT perp, 2025",
@@ -727,7 +727,7 @@ Passing a run gives you four by default: return, sharpe, max drawdown and trade 
 `notes=` puts a table of your own in the panel under the plot, above the trade log and behind the same button. It takes a DataFrame, or a list of rows whose first row is the header.
 
 ```python
-emsl.chart(
+probatum.chart(
     frame=frame,
     run=result,
     title="each stretch traded on parameters fitted only on the bars before it",
@@ -742,7 +742,7 @@ emsl.chart(
 A DataFrame goes in the same place, which is usually what you already have. A `WalkForward` carries one record per refit on `windows`, so the table under the chart is the schedule the chart is asserting:
 
 ```python
-walk = emsl.walk_forward(
+walk = probatum.walk_forward(
     strategy=SmaCross,
     space={"fast": (10, 30)},
     data=frame,
@@ -751,7 +751,7 @@ walk = emsl.walk_forward(
     seed=0,
 )
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     run=walk.result,
     notes=pandas.DataFrame(walk.windows),   # fitted_on, traded_on, params, and the scores
@@ -779,7 +779,7 @@ One run is rich and the others are curves, and that asymmetry is on purpose: two
 # own bookkeeping rather than off the result
 stack = numpy.stack([run.equity_curve for run in neighbours.values()])
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[
         Band(
@@ -813,7 +813,7 @@ emsl.chart(
 `height` is the height of a **notebook cell**, in pixels, and `show(height=)` overrides it for one display without rebuilding anything. A **saved file sizes itself to the window** instead, which is what makes one file right on a laptop and on a wide monitor, and what lets another page embed it in an iframe of the page's own choosing.
 
 ```python
-chart = emsl.chart(frame=frame, run=result, height=420)
+chart = probatum.chart(frame=frame, run=result, height=420)
 
 chart.show()                      # a 420px cell
 chart.show(height=900)            # the same document, drawn taller
@@ -835,7 +835,7 @@ That is not an oversight and it is not worth engineering around. Sharing one cop
 Set the look once and forget it:
 
 ```python
-emsl.chart_defaults(theme="dark", height=560)
+probatum.chart_defaults(theme="dark", height=560)
 ```
 
 Both palettes travel in every document, so a saved file toggles light and dark offline and `theme` names the one it opens on rather than the only one it holds. `palette` overrides individual colours inside either.
@@ -843,7 +843,7 @@ Both palettes travel in every document, so a saved file toggles light and dark o
 `theme` and `palette` are on `chart` as well, and mean the same thing there, so one report can be branded without a global that then applies to every chart drawn after it. A palette given on the call replaces the session's rather than merging with it, the same way its theme does.
 
 ```python
-emsl.chart(frame=frame, run=result, theme="auto",
+probatum.chart(frame=frame, run=result, theme="auto",
            palette={"light": {"s1": "#00695c"}}).save("report.html")
 ```
 
@@ -861,7 +861,7 @@ Some series are computed from real bars but belong ahead of them: an Ichimoku cl
 lead = numpy.full(26, numpy.nan)
 senkou_a = numpy.concatenate([lead, ((tenkan + kijun) / 2).to_numpy()])   # T + 26
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=Band(upper=senkou_a, lower=senkou_b, name="cloud", fill=GREEN + "33"),
     future=26,
@@ -897,4 +897,4 @@ A negative displacement needs nothing at all: Chikou is `close.shift(-26)`, whic
 
 ## Where it sits
 
-One module, `python/emsl/_chart.py`, the marks in `python/emsl/plot.py`, and a vendored renderer under `python/emsl/_static/`. No new dependency: everything it needs is the standard library plus numpy, pandas is duck-typed and never imported unless you pass a DataFrame, and IPython is imported only inside `show`. `BacktestResult` gained one field, `initial`, the balance the run opened with, because the drawn fall and the reported `max_drawdown_pct` have to be the same number ([ADR 0042](Decisions.md)); nothing else that already existed was touched.
+One module, `python/probatum/_chart.py`, the marks in `python/probatum/plot.py`, and a vendored renderer under `python/probatum/_static/`. No new dependency: everything it needs is the standard library plus numpy, pandas is duck-typed and never imported unless you pass a DataFrame, and IPython is imported only inside `show`. `BacktestResult` gained one field, `initial`, the balance the run opened with, because the drawn fall and the reported `max_drawdown_pct` have to be the same number ([ADR 0042](Decisions.md)); nothing else that already existed was touched.

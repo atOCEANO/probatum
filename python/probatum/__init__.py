@@ -1,6 +1,6 @@
-"""emsl: embeddable market simulation library.
+"""probatum: embeddable market simulation library.
 
-The compiled Rust core is exposed as ``emsl._emsl``; this package re-exports its
+The compiled Rust core is exposed as ``probatum._probatum``; this package re-exports its
 public surface. ``Engine`` drives a single environment one bar at a time: build it
 from a ``(T, 5)`` OHLCV numpy array, then ``reset`` and ``step``. ``Batch`` runs
 many independent envs over one shared series and steps them in parallel with the
@@ -10,7 +10,7 @@ renders a frame, your own arrays and a run into one self-contained HTML document
 for a notebook cell or a file, computing nothing itself.
 """
 
-from ._emsl import Batch, Engine
+from ._probatum import Batch, Engine
 from ._data import to_ohlcv
 from . import backtest, metrics, plot, rl, ta
 from .backtest import Strategy
@@ -27,20 +27,20 @@ __all__ = [
 try:
     from importlib.metadata import version as _version
 
-    __version__ = _version("emsl")
+    __version__ = _version("probatum")
 except Exception:
     __version__ = "0.0.0"
 
 
 def __getattr__(name):
-    # sb3 is reachable as `emsl.sb3` but is not imported with the package, because
+    # sb3 is reachable as `probatum.sb3` but is not imported with the package, because
     # it needs stable_baselines3 and almost no install has it. The export table
-    # listed it for four releases while `emsl.sb3` raised AttributeError, and the
+    # listed it for four releases while `probatum.sb3` raised AttributeError, and the
     # test that would have caught that carried an exemption for this one name
     if name == "sb3":
         # import_module rather than `from . import sb3`, which resolves the name
         # through getattr on this very module and recurses until the stack ends
         import importlib
-
         return importlib.import_module(".sb3", __name__)
-    raise AttributeError(f"module 'emsl' has no attribute {name!r}")
+
+    raise AttributeError(f"module 'probatum' has no attribute {name!r}")

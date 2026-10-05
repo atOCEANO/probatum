@@ -3,8 +3,8 @@
 # each test stage installs that same wheel on a different interpreter.
 #
 # Run one stage at a time, any failure fails the build:
-#   docker build --target test313 -t emsl-gate313 .
-#   docker build --target test314 -t emsl-gate314 .
+#   docker build --target test313 -t probatum-gate313 .
+#   docker build --target test314 -t probatum-gate314 .
 #
 # The rust-checks stage is the other half of the same gate: it runs the pure-Rust
 # format, lint, and test commands CI runs, so a Rust change is verified the same
@@ -60,7 +60,7 @@ COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
     numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
-    && python -c "import emsl; print('py313 wheel import OK')" \
+    && python -c "import probatum; print('py313 wheel import OK')" \
     && pytest -q /tests
 
 FROM python:3.14-slim AS test314
@@ -73,7 +73,7 @@ COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
     numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
-    && python -c "import emsl; print('py314 wheel import OK')" \
+    && python -c "import probatum; print('py314 wheel import OK')" \
     && pytest -q /tests
 
 FROM python:3.13-slim AS bench
@@ -84,8 +84,8 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy \
 
 # Per-surface throughput (Engine, Backtester, tune, VectorEnv, Batch).
 # Needs the full deps, so it is its own stage; run it and read stdout:
-#   docker build --target bench-surfaces -t emsl-bench-surfaces .
-#   docker run --rm emsl-bench-surfaces
+#   docker build --target bench-surfaces -t probatum-bench-surfaces .
+#   docker run --rm probatum-bench-surfaces
 FROM python:3.13-slim AS bench-surfaces
 COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium optuna cloudpickle
@@ -152,9 +152,9 @@ RUN pip install --no-cache-dir -c /constraints.txt uv \
 # Every chart image in the documentation, rebuilt from the frozen sample data and
 # screenshotted. Opt-in, because it needs the published dataset
 # mounted and it writes into the tree rather than asserting anything:
-#   docker build --target charts -t emsl-charts .
+#   docker build --target charts -t probatum-charts .
 #   docker run --rm -v "<sample-market-data>/data:/data:ro" \
-#       -v "${PWD}/.Documentation:/out" emsl-charts
+#       -v "${PWD}/.Documentation:/out" probatum-charts
 # It shares test-browser's base, so it pulls no image that stage has not already
 # pulled: the browsers ship in it and pip cannot install them on its own. It takes
 # its Python 3.13 and greenlet the same way, since a different base would mean
@@ -182,9 +182,9 @@ CMD ["sh", "-c", "/venv/bin/python /charts/build.py && /venv/bin/python /charts/
 # other half of the same idea as `charts`: every picture in the documentation is
 # produced by something committed here, so none of them is a file nobody can
 # remake. Opt-in, and it writes into the tree rather than asserting anything:
-#   docker build --target diagrams -t emsl-diagrams .
+#   docker build --target diagrams -t probatum-diagrams .
 #   docker run --rm --shm-size=1g -v "${PWD}/dev/diagrams:/diagrams" \
-#     -v "${PWD}/.Documentation/imgs:/out" emsl-diagrams
+#     -v "${PWD}/.Documentation/imgs:/out" probatum-diagrams
 # The sources are mounted rather than copied in, so a rerun draws what is on disk.
 # Baked in at build time they made the second command alone redraw the previous
 # build's sources and print the same success lines doing it.
@@ -238,8 +238,8 @@ RUN PIP_CONSTRAINT=/constraints.txt pip install --no-cache-dir /sdist/*.tar.gz \
 # time and reruns their tests, and lists every change the tests did not notice.
 # The whole pass is slow and takes a lot of memory, and it has taken the Docker
 # daemon down when another build ran beside it, so it is opt-in and run alone:
-#   docker build --target mutants -t emsl-mutants .
-#   docker run --rm emsl-mutants
+#   docker build --target mutants -t probatum-mutants .
+#   docker run --rm probatum-mutants
 # CI runs it on the lines each push changes, where a missed mutant fails the job.
 FROM rust-checks AS mutants
 RUN cargo install --locked cargo-mutants --version 27.1.0

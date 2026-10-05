@@ -43,11 +43,14 @@ def to_ohlcv(data):
                 f"OHLCV, one row per bar"
             )
         return arr
-    frame = _as_frame(data)
+
+    frame   = _as_frame(data)
     missing = [c for c in _OHLCV if c not in frame.columns]
     if missing:
         raise ValueError(f"data is missing columns {missing}; need {_OHLCV}")
+
     _validate_index(frame)
+
     return np.ascontiguousarray(frame[_OHLCV].to_numpy(dtype=np.float64))
 
 
@@ -55,17 +58,18 @@ def _validate_index(frame):
     # the spec's input contract: a real (datetime) index must be sorted ascending
     # and unique. A default RangeIndex carries no timestamps, so it is exempt
     import pandas as pd
-
     idx = frame.index
     if isinstance(idx, pd.RangeIndex):
         return
+
     if not idx.is_monotonic_increasing:
         stamps = idx.to_numpy()
-        at = int(np.argmax(stamps[1:] <= stamps[:-1])) + 1
+        at     = int(np.argmax(stamps[1:] <= stamps[:-1])) + 1
         raise ValueError(
             f"data index falls back at row {at}, from {stamps[at - 1]} to "
             f"{stamps[at]}; sort the frame by its index before passing it"
         )
+
     if not idx.is_unique:
         repeats = idx[idx.duplicated()]
         raise ValueError(
@@ -78,6 +82,7 @@ def to_float2d(data):
     """Return a ``(T, F)`` float64 array from a numpy array or a pandas DataFrame."""
     if isinstance(data, np.ndarray):
         return np.ascontiguousarray(data, dtype=np.float64)
+
     frame = _as_frame(data)
     return np.ascontiguousarray(frame.to_numpy(dtype=np.float64))
 
@@ -89,11 +94,12 @@ def index_of(data):
     """
     if isinstance(data, np.ndarray):
         return None
-    import pandas as pd
 
+    import pandas as pd
     frame = _as_frame(data)
     if isinstance(frame.index, pd.RangeIndex):
         return None
+
     return frame.index.to_numpy()
 
 
@@ -107,6 +113,7 @@ def prepare(data):
     """
     if isinstance(data, np.ndarray):
         return to_ohlcv(data), None
+
     frame = _as_frame(data)
     return to_ohlcv(frame), index_of(frame)
 
@@ -119,6 +126,7 @@ def _epoch_seconds(index):
     # only the gaps are read, and a gap is the same in every zone
     if index is None:
         return None
+
     stamps = np.asarray(index)
     if stamps.dtype.kind == "O":
         try:
@@ -128,8 +136,10 @@ def _epoch_seconds(index):
         if stamps.tz is not None:
             stamps = stamps.tz_convert("UTC").tz_localize(None)
         stamps = stamps.to_numpy()
+
     if stamps.dtype.kind != "M":
         return None
+
     return stamps.astype("datetime64[s]").astype("int64").astype(np.float64)
 
 
@@ -153,14 +163,17 @@ def bars_per_year(index):
     seconds = _epoch_seconds(index)
     if seconds is None or seconds.size < 3:
         return None
+
     gaps = np.diff(seconds)
     gaps = gaps[gaps > 0]
     if gaps.size == 0:
         return None
-    median = float(np.median(gaps))
+
+    median  = float(np.median(gaps))
     nearest = min(_INTERVALS, key=lambda seconds: abs(seconds - median))
     if abs(nearest - median) <= 0.01 * nearest:
         return _YEAR_SECONDS / nearest
+
     warnings.warn(
         f"the candles are spaced {median:,.0f} seconds apart on median, which is "
         f"not within one percent of any standard interval, so they are being "
@@ -169,6 +182,7 @@ def bars_per_year(index):
         f"periods_per_year= to state it yourself",
         stacklevel=3,
     )
+
     return _YEAR_SECONDS / median
 
 
@@ -184,9 +198,11 @@ def annualization(given, index):
     """
     if given is not None:
         return float(given)
+
     inferred = bars_per_year(index)
     if inferred is not None:
         return inferred
+
     warnings.warn(
         "periods_per_year could not be read from the candles, because they carry "
         "no datetime index, so sharpe, sortino, volatility, cagr and calmar are "
@@ -204,10 +220,12 @@ def _as_frame(data):
     # after a dependency that would not have helped
     if isinstance(data, str) or hasattr(data, "__fspath__"):
         return _pandas().read_parquet(data)
+
     if type(data).__module__.split(".")[0] == "pandas":
         frame = _pandas().DataFrame
         if isinstance(data, frame):
             return data
+
     raise TypeError(
         f"unsupported data type {type(data).__name__}; "
         "pass a numpy array, a pandas DataFrame, or a parquet path"
@@ -221,4 +239,5 @@ def _pandas():
         raise ImportError(
             "pandas is required for DataFrame or parquet input; pip install pandas pyarrow"
         ) from exc
+
     return pd

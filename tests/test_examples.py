@@ -25,8 +25,8 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-import emsl
-from emsl.plot import (
+import probatum
+from probatum.plot import (
     Background, Band, Histogram, Level, Line, Marker, Markers, Panel, Recorder,
     at_bar, at_next, ramp,
 )
@@ -47,14 +47,15 @@ if PAGE is None:
 # A block whose point is prose rather than a call, keyed by a phrase it contains
 # so the list survives the page being edited around it. each one says why
 NOT_EXECUTABLE = {
-    "class SmaCross": "declares the strategy the rest of the page stands on",
+    "class SmaCross":  "declares the strategy the rest of the page stands on",
     "def marks(self)": "a method body, shown to explain where marks can live",
-    "Traceback": "the error a wrong length produces, quoted rather than run",
+    "Traceback":       "the error a wrong length produces, quoted rather than run",
 }
 
 
 def blocks():
     text = PAGE.read_text(encoding="utf-8")
+
     found, buffer, inside = [], [], False
     for line in text.splitlines():
         if line.startswith("```python"):
@@ -64,36 +65,40 @@ def blocks():
             inside = False
         elif inside:
             buffer.append(line)
+
     return found
 
 
 def frame(n=300):
     # the swing has to be big enough against the drift for a 20/50 cross to fire,
     # or half the page stands on a run with no trades in it
-    step = np.sin(np.arange(n, dtype=np.float64) / 9.0) * 2_600.0
+    step  = np.sin(np.arange(n, dtype=np.float64) / 9.0) * 2_600.0
     close = 20_000.0 + np.arange(n, dtype=np.float64) * 12.0 + step
     return pd.DataFrame(
         {
-            "open": close - 3.0,
-            "high": close + 25.0,
-            "low": close - 25.0,
-            "close": close,
+            "open":   close - 3.0,
+            "high":   close + 25.0,
+            "low":    close - 25.0,
+            "close":  close,
             "volume": 900.0 + np.arange(n, dtype=np.float64),
         },
         index=pd.date_range("2024-01-01", periods=n, freq="1h"),
     )
 
 
-class SmaCross(emsl.Strategy):
+class SmaCross(probatum.Strategy):
+
     def __init__(self, fast=20, slow=50):
         self.fast_n, self.slow_n = int(fast), int(slow)
 
+
     def init(self, engine):
-        close = pd.Series(engine.data[:, 3])
-        self.fast = close.rolling(self.fast_n).mean().to_numpy()
-        self.slow = close.rolling(self.slow_n).mean().to_numpy()
+        close       = pd.Series(engine.data[:, 3])
+        self.fast   = close.rolling(self.fast_n).mean().to_numpy()
+        self.slow   = close.rolling(self.slow_n).mean().to_numpy()
         self.warmup = self.slow_n
-        self.log = Recorder(engine)
+        self.log    = Recorder(engine)
+
 
     def marks(self):
         return [
@@ -101,9 +106,11 @@ class SmaCross(emsl.Strategy):
             Line(self.slow, f"SMA {self.slow_n}", style="dashed"),
         ]
 
+
     def next(self, state, engine):
         i = state["tick_index"]
         self.log.at_bar(state, lev=state["position"])
+
         if self.fast[i] > self.slow[i] and state["position"] <= 0.0:
             engine.market_buy(0.1)
         elif self.fast[i] < self.slow[i] and state["position"] > 0.0:
@@ -112,23 +119,25 @@ class SmaCross(emsl.Strategy):
 
 def prelude():
     """Every name the page uses, bound the way the page binds it."""
-    data = frame()
-    close = data.close
+    data     = frame()
+    close    = data.close
     strategy = SmaCross(fast=20, slow=50)
-    result = emsl.backtest.Backtester(candles=data).run(strategy)
+    result   = probatum.backtest.Backtester(candles=data).run(strategy)
+
     fast, slow = close.rolling(20).mean(), close.rolling(50).mean()
     logret = np.log(close / close.shift(1))
-    sd = close.rolling(20).std()
-    held = np.zeros(len(data), dtype=bool)
+    sd     = close.rolling(20).std()
+    held   = np.zeros(len(data), dtype=bool)
     for trade in result.trades:
         held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
 
-    rows = np.asarray(logret.rolling(24).std())
+    rows   = np.asarray(logret.rolling(24).std())
     regime = np.where(rows < np.nanquantile(rows, 0.33), "calm", "wild").astype(object)
 
     runs = {"20/50": result, "20/60": result, "24/50": result}
+
     return {
-        "numpy": np, "pandas": pd, "emsl": emsl,
+        "numpy": np, "pandas": pd, "probatum": probatum,
         "Background": Background, "Band": Band, "Histogram": Histogram,
         "Level": Level, "Line": Line, "Marker": Marker, "Markers": Markers,
         "Panel": Panel, "Recorder": Recorder, "ramp": ramp,
@@ -137,9 +146,9 @@ def prelude():
         "strategy": strategy, "result": result, "win": result,
         "neighbours": runs, "runs": runs,
         "fast": fast, "slow": slow, "logret": logret,
-        "rsi": emsl.ta.rsi(np.asarray(close, dtype=float), 14),
+        "rsi": probatum.ta.rsi(np.asarray(close, dtype=float), 14),
         "upper": np.asarray(fast + 2 * sd), "lower": np.asarray(fast - 2 * sd),
-        "crossed": emsl.ta.crossover(fast, slow),
+        "crossed": probatum.ta.crossover(fast, slow),
         "risk_off": np.asarray(rows > np.nanquantile(rows, 0.66)),
         "trending": np.asarray(close > close.rolling(50).mean()),
         "held": held,
@@ -167,7 +176,7 @@ def prelude():
             [np.full(26, np.nan), np.asarray(close.rolling(52).mean())]
         ),
         "marks": [Line(np.asarray(fast), "SMA 20")],
-        "chart": emsl.chart(frame=data, run=result),
+        "chart": probatum.chart(frame=data, run=result),
     }
 
 
@@ -185,9 +194,11 @@ def test_every_example_that_stands_on_the_prelude_actually_runs():
         if why is not None:
             skipped.append((number, why))
             continue
-        code = re.sub(r"\.show\(\s*[^)]*\)", ".spec()", source)
-        code = re.sub(r"\.save\(\s*[^)]*\)", ".spec()", code)
+
+        code      = re.sub(r"\.show\(\s*[^)]*\)", ".spec()", source)
+        code      = re.sub(r"\.save\(\s*[^)]*\)", ".spec()", code)
         namespace = prelude()
+
         try:
             exec(compile(code, f"Plotting.md block {number}", "exec"), namespace)
         except Exception as exc:

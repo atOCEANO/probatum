@@ -160,7 +160,7 @@ const mountControls = function () {
 
   // the one place in the bundle that interpolates spec text into markup, and it
   // depends on a guard on the other side of the seam: `_safe` in
-  // python/emsl/_chart.py refuses a panel name carrying the characters that would
+  // python/probatum/_chart.py refuses a panel name carrying the characters that would
   // break out of the attribute, which the payload escaping cannot reach because
   // JSON.parse restores the original
   paneCtls.innerHTML = SPEC.panels.map(function (p, i) {

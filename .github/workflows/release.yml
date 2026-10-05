@@ -108,7 +108,7 @@ jobs:
           # so what lands is the compare link against the previous tag
           generate_release_notes: true
           body: |
-            `emsl` is a bar-level crypto market simulator: a Rust core with a small
+            `probatum` is a bar-level crypto market simulator: a Rust core with a small
             Python surface. One engine drives a single backtest, a parameter search,
             and a batched reinforcement-learning rollout, so all three see the same
             fill model and the same costs.
@@ -116,14 +116,14 @@ jobs:
             ## Install
 
             Wheels are attached below, one per platform, each covering Python 3.13 and
-            up, and no compiler is needed. emsl is not on PyPI, so install the wheel
+            up, and no compiler is needed. probatum is not on PyPI, so install the wheel
             for your machine by its URL:
 
             ```bash
-            pip install "emsl @ <the wheel's URL, from the Assets below>"
+            pip install "probatum @ <the wheel's URL, from the Assets below>"
             ```
 
-            The optional extras go in brackets before the `@`: `"emsl[tune,sb3] @ <URL>"`.
+            The optional extras go in brackets before the `@`: `"probatum[tune,sb3] @ <URL>"`.
 
             Building from source instead needs the [Rust toolchain](https://rustup.rs):
 

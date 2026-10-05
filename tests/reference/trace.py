@@ -9,8 +9,8 @@ decisions rather than from a forty bar random walk.
 It writes the shrunk case to /diff, which no stage creates, so that has to be a
 mount or the run ends on a missing directory after the search it just did:
 
-  docker build --target test-slow -t emsl-slow .
-  docker run --rm -v "${PWD}/diff:/diff" -w /tests emsl-slow \
+  docker build --target test-slow -t probatum-slow .
+  docker run --rm -v "${PWD}/diff:/diff" -w /tests probatum-slow \
       python -m reference.trace 42
 """
 
@@ -29,11 +29,13 @@ def diverges(bars, cfg, actions):
         theirs, _ = D.drive_reference(bars, cfg, actions)
     except Exception:
         return None
+
     for i, ((pa, ea, fa), (pb, eb, fb)) in enumerate(zip(mine, theirs)):
         if not D.close_enough(pa, pb) or not D.close_enough(ea, eb, cfg["quote"]):
             return i
         if not D.close_enough(fa, fb, cfg["quote"]):
             return i
+
     return None
 
 
@@ -63,13 +65,14 @@ def shrink(bars, cfg, actions):
             if diverges(bars, cfg, trial) is not None:
                 actions = trial
                 changed = True
+
     return bars, actions, diverges(bars, cfg, actions)
 
 
 def trace(bars, cfg, actions):
     """Bar by bar, both sides, so the exact step that parts them is visible."""
-    array = D.np.array([list(b) for b in bars], dtype=D.np.float64)
-    engine = D.emsl.Engine(
+    array  = D.np.array([list(b) for b in bars], dtype=D.np.float64)
+    engine = D.probatum.Engine(
         array, market=cfg["market"], quote=cfg["quote"], fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
         max_fill_fraction=cfg["max_fill_fraction"],
@@ -82,6 +85,7 @@ def trace(bars, cfg, actions):
         funding_interval=cfg["funding_interval"], report=True,
     )
     engine.reset()
+
     ref = Reference(bars, **cfg)
 
     rows = []
@@ -116,23 +120,25 @@ def trace(bars, cfg, actions):
         ))
         if engine.done():
             break
+
     return rows, engine, ref
 
 
 def main():
-    seed = int(sys.argv[1])
+    seed  = int(sys.argv[1])
     cases = int(sys.argv[2]) if len(sys.argv) > 2 else 500
-    rng = random.Random(seed)
+    rng   = random.Random(seed)
 
     for case in range(cases):
-        bars = D.walk(rng, rng.randint(8, 40))
-        cfg = D.config(rng)
+        bars    = D.walk(rng, rng.randint(8, 40))
+        cfg     = D.config(rng)
         actions = D.plan(rng, bars)
         if diverges(bars, cfg, actions) is None:
             continue
 
         bars, actions, at = shrink(bars, cfg, actions)
         rows, engine, ref = trace(bars, cfg, actions)
+
         out = dict(
             seed=seed, case=case, config=cfg, diverges_at_row=at,
             bars=[list(b) for b in bars], actions=actions, rows=rows,
@@ -141,6 +147,7 @@ def main():
             reference_trades=[{k: (round(v, 6) if isinstance(v, float) else v)
                                for k, v in t.items()} for t in ref.trades],
         )
+
         path = f"/diff/case-seed{seed}.json"
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(out, handle, indent=1)

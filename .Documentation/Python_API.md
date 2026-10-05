@@ -31,21 +31,21 @@ Everything the package exports, and where each piece is documented in full:
 
 | Import | What it is |
 | :--- | :--- |
-| `emsl.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
-| `emsl.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
-| `emsl.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
-| `emsl.Strategy` | The base class a strategy subclasses, re-exported from `emsl.backtest`. [Below](#backtesting). |
-| `emsl.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
-| `emsl.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
-| `emsl.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
-| `emsl.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
-| `emsl.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
-| `emsl.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
-| `emsl.sb3` | `EmslVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
-| `emsl.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
-| `emsl.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
-| `emsl.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Markers`, `Background`, `Panel`, `Recorder`, `ramp`, `at_bar` and `at_next`: the marks a chart carries and the helpers that record and align them. [Plotting](Plotting.md#the-marks). |
-| `emsl.to_ohlcv` | Turn a DataFrame, a parquet path, or an array into the `(T, 5)` the engine takes. [Below](#data-input). |
+| `probatum.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
+| `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
+| `probatum.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
+| `probatum.Strategy` | The base class a strategy subclasses, re-exported from `probatum.backtest`. [Below](#backtesting). |
+| `probatum.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
+| `probatum.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
+| `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
+| `probatum.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
+| `probatum.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
+| `probatum.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
+| `probatum.sb3` | `ProbatumVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
+| `probatum.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
+| `probatum.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
+| `probatum.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Markers`, `Background`, `Panel`, `Recorder`, `ramp`, `at_bar` and `at_next`: the marks a chart carries and the helpers that record and align them. [Plotting](Plotting.md#the-marks). |
+| `probatum.to_ohlcv` | Turn a DataFrame, a parquet path, or an array into the `(T, 5)` the engine takes. [Below](#data-input). |
 
 All of it sits on the one Rust engine, so a backtest, an RL rollout, and a parameter search see the same fill model and the same costs.
 
@@ -57,7 +57,7 @@ Build an engine over a candle array, step to the end, read the account. Everythi
 
 ```python
 import numpy as np
-from emsl import Engine
+from probatum import Engine
 
 close = 100 + np.random.randn(1_000).cumsum()
 ohlcv = np.stack([close, close + 0.5, close - 0.5, close, np.full(1_000, 1000.0)], axis=1)
@@ -76,7 +76,7 @@ print(state["equity"], state["position"])      # account value and position at t
 
 ## Data input
 
-`emsl.to_ohlcv(data)` returns the `(T, 5)` float64 array the engine takes, from any of three inputs:
+`probatum.to_ohlcv(data)` returns the `(T, 5)` float64 array the engine takes, from any of three inputs:
 
 | Input | Handling |
 | :--- | :--- |
@@ -96,12 +96,12 @@ The wrappers call it for you, so a DataFrame can go straight into `Backtester` o
 
 ## The market
 
-The engine takes eleven knobs, and a backtest, a search and an RL rollout each take the same eleven. Written out at three call sites they are three chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `emsl.Market` holds them once and hands out the surfaces itself.
+The engine takes eleven knobs, and a backtest, a search and an RL rollout each take the same eleven. Written out at three call sites they are three chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `probatum.Market` holds them once and hands out the surfaces itself.
 
 ```python
-import emsl
+import probatum
 
-binance = emsl.Market(
+binance = probatum.Market(
     kind="perp",              # "spot" or "perp"
     fee_taker=0.0004,
     fee_maker=0.0002,
@@ -140,7 +140,7 @@ The keyword form is untouched and remains the right thing for a one-off: `Backte
 The single environment: build it, `reset`, place orders, `step`, read the state.
 
 ```python
-from emsl import Engine
+from probatum import Engine
 
 eng = Engine(
     candles,                 # (T, 5) numpy float64: open, high, low, close, volume
@@ -284,7 +284,7 @@ Many independent envs over one shared candle series, stepped in parallel with th
 
 ```python
 import numpy as np
-from emsl import Batch
+from probatum import Batch
 
 b = Batch(candles, num_envs=512, market="spot", quote=10_000.0)  # same engine knobs
 b.reset_all()                                # list of per-env state dicts
@@ -299,7 +299,7 @@ states = b.step_all(actions)                 # positive buys, negative sells, ze
 | `done()` | bool | True when the envs have reached the last bar (they step in lockstep here). |
 | `num_envs` | int | Number of envs (also `len(batch)`). |
 
-Because the envs are independent, batched stepping is bit-identical to stepping each in a loop. The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`emsl.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
+Because the envs are independent, batched stepping is bit-identical to stepping each in a loop. The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`probatum.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
 
 Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
 
@@ -307,23 +307,23 @@ Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`
 
 ## Reinforcement learning
 
-`emsl.rl.VectorEnv` is a Gymnasium-compatible vectorized env over the `Batch`: `num_envs` independent envs share one copy of the series, each starting at a random offset, all stepped in parallel with the GIL released. You supply what the agent sees (`features`), how it is rewarded (`reward_fn`), and what its actions mean (`action_fn`, `action_space`).
+`probatum.rl.VectorEnv` is a Gymnasium-compatible vectorized env over the `Batch`: `num_envs` independent envs share one copy of the series, each starting at a random offset, all stepped in parallel with the GIL released. You supply what the agent sees (`features`), how it is rewarded (`reward_fn`), and what its actions mean (`action_fn`, `action_space`).
 
 ```python
-from emsl.rl import VectorEnv
+from probatum.rl import VectorEnv
 
 env = VectorEnv(candles, features=indicators, num_envs=4096, window=60, market="perp")
 obs, info = env.reset(seed=0)                  # (4096, 60, F) float32
 obs, rewards, terminations, truncations, infos = env.step(actions)
 ```
 
-Stable-Baselines3 will not take a Gymnasium vector env directly, so `emsl.sb3.EmslVecEnv` presents it as an SB3 `VecEnv`, which keeps the batch intact under PPO, A2C, DQN, and SAC:
+Stable-Baselines3 will not take a Gymnasium vector env directly, so `probatum.sb3.ProbatumVecEnv` presents it as an SB3 `VecEnv`, which keeps the batch intact under PPO, A2C, DQN, and SAC:
 
 ```python
 from stable_baselines3 import PPO
-from emsl.sb3 import EmslVecEnv
+from probatum.sb3 import ProbatumVecEnv
 
-PPO("MlpPolicy", EmslVecEnv(env)).learn(total_timesteps=100_000)
+PPO("MlpPolicy", ProbatumVecEnv(env)).learn(total_timesteps=100_000)
 ```
 
 The full contract, every constructor argument, the observation and reward shapes, the action decoder, cost randomization, and the autoreset rules, is in the [RL Guide](RL_Guide.md).
@@ -332,10 +332,10 @@ The full contract, every constructor argument, the observation and reward shapes
 
 ## Backtesting
 
-`emsl.backtest` wraps the single engine into a classic strategy runner. Reporting is always on, so the result carries the stats, equity curve, and trades.
+`probatum.backtest` wraps the single engine into a classic strategy runner. Reporting is always on, so the result carries the stats, equity curve, and trades.
 
 ```python
-from emsl.backtest import Backtester, Strategy
+from probatum.backtest import Backtester, Strategy
 
 class SmaCross(Strategy):
     warmup = 30                               # next() waits for 30 bars of history
@@ -439,11 +439,11 @@ When the `Backtester` is given a pandas DataFrame or parquet input with a dateti
 
 ## Tuning
 
-`emsl.tune` searches a strategy's parameters for the configuration that maximizes (or minimizes) an objective. Each trial is a full backtest through the same `Backtester` above, so the `Strategy` you backtest is the `Strategy` you tune: declare the tunable parameters as constructor arguments and store them as fields, and `tune` builds a fresh strategy per trial from the sampled values. The search runs across worker processes, rebuilding the engine in each worker rather than shipping a live one across the boundary, so it scales over cores ([ADR 0032](Decisions.md)). It needs optuna and cloudpickle, which the `[tune]` extra pulls in; emsl is not on PyPI, so install it from a release as the [README](../README.md#install) shows.
+`probatum.tune` searches a strategy's parameters for the configuration that maximizes (or minimizes) an objective. Each trial is a full backtest through the same `Backtester` above, so the `Strategy` you backtest is the `Strategy` you tune: declare the tunable parameters as constructor arguments and store them as fields, and `tune` builds a fresh strategy per trial from the sampled values. The search runs across worker processes, rebuilding the engine in each worker rather than shipping a live one across the boundary, so it scales over cores ([ADR 0032](Decisions.md)). It needs optuna and cloudpickle, which the `[tune]` extra pulls in; probatum is not on PyPI, so install it from a release as the [README](../README.md#install) shows.
 
 ```python
-from emsl import tune
-from emsl.backtest import Strategy
+from probatum import tune
+from probatum.backtest import Strategy
 
 
 class SmaCross(Strategy):
@@ -536,12 +536,12 @@ With `n_jobs=1` a seeded search is reproducible, since the sampler is told resul
 A holdout asks whether one winner survives one tail. This asks the larger question: what the whole **procedure** would have earned. Fit on what you had, trade the next stretch, refit, repeat, which is what running a strategy actually looks like.
 
 ```python
-forward = emsl.walk_forward(SmaCross, space, candles, windows=5, train=0.5)
+forward = probatum.walk_forward(SmaCross, space, candles, windows=5, train=0.5)
 
 forward.stats["sharpe"]          # out of sample by construction
 forward.decay                    # how much each fit flattered itself
 forward.consistency              # the share of stretches that cleared zero
-emsl.chart(frame=candles, run=forward.result).show()
+probatum.chart(frame=candles, run=forward.result).show()
 ```
 
 `train` is the share of the series the first fit gets; the rest is divided into `windows` stretches, each traded with parameters chosen on the bars **before** it and never on itself. `anchored=True` fits on everything before each window instead of on a moving block. Everything else is `tune`'s, and each window is an ordinary search.
@@ -568,10 +568,10 @@ emsl.chart(frame=candles, run=forward.result).show()
 
 ## Metrics
 
-The fifteen [statistics](#statistics) come back from the engine. `emsl.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
+The fifteen [statistics](#statistics) come back from the engine. `probatum.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
 
 ```python
-from emsl import metrics
+from probatum import metrics
 
 result = Backtester(candles, market="perp", funding_rate=0.0001, funding_interval=8).run(MyStrategy())
 
@@ -622,7 +622,7 @@ metrics.period_returns(result, candles, by="month")   # or "quarter", "year"
 metrics.rolling_sharpe(result, window=720)            # length T, aligned, NaN warm-up
 ```
 
-`period_returns` is the first stability question anybody asks of a crypto backtest, which is whether the whole edge sits in one quarter, and a single number cannot answer it. `rolling_sharpe` is the same question as a shape: aligned and padded on the same rule `emsl.ta` uses, so it drops straight into [`emsl.chart`](#plotting) beside the equity curve.
+`period_returns` is the first stability question anybody asks of a crypto backtest, which is whether the whole edge sits in one quarter, and a single number cannot answer it. `rolling_sharpe` is the same question as a shape: aligned and padded on the same rule `probatum.ta` uses, so it drops straight into [`probatum.chart`](#plotting) beside the equity curve.
 
 ### The three that need the candles
 
@@ -684,10 +684,10 @@ prints one row per run, leading with the data fingerprint, and returns the rows.
 30 functions, chosen to cover what a bar-level strategy usually reaches for and stopped there. This is not an attempt to be ta-lib: an indicator library is mostly somebody's opinion about warm-up and smoothing, and a hundred of those opinions is a hundred chances to disagree with the chart you have read for years.
 
 ```python
-class Cross(emsl.Strategy):
+class Cross(probatum.Strategy):
     def init(self, engine):
-        self.fast = emsl.ta.ema(engine.closes, 20)
-        self.slow = emsl.ta.ema(engine.closes, 60)
+        self.fast = probatum.ta.ema(engine.closes, 20)
+        self.slow = probatum.ta.ema(engine.closes, 60)
         self.warmup = 60
 
     def next(self, state, engine):
@@ -713,11 +713,11 @@ class Cross(emsl.Strategy):
 `crossover` and `crossunder` return **booleans**, and they are the only functions here that do not pad with `NaN`. `bool(nan)` is `True` in Python, so a float warm-up would fire a rule on precisely the bars where nothing is known; they pad with `False` instead ([ADR 0037](Decisions.md)). `other` may be a second series or a plain number, since crossing a level is the commoner case:
 
 ```python
-class Cross(emsl.Strategy):
+class Cross(probatum.Strategy):
     def init(self, engine):
-        self.up = emsl.ta.crossover(emsl.ta.ema(engine.closes, 20),
-                                    emsl.ta.ema(engine.closes, 60))
-        self.strong = emsl.ta.adx(engine.highs, engine.lows, engine.closes).adx
+        self.up = probatum.ta.crossover(probatum.ta.ema(engine.closes, 20),
+                                    probatum.ta.ema(engine.closes, 60))
+        self.strong = probatum.ta.adx(engine.highs, engine.lows, engine.closes).adx
         self.warmup = 80
 
     def next(self, state, engine):
@@ -728,7 +728,7 @@ class Cross(emsl.Strategy):
 
 **Three rules hold for every one of them**, and they are why this is in the library rather than in your notebook.
 
-*One length, one alignment.* Every function returns a float64 array of length `T` aligned so entry `i` is bar `i`, with the warm-up as `NaN`, never a shorter array. So the same object goes into your rule and into [`emsl.chart`](#plotting) with no padding decision in between, and a gap in the input stays a gap in the output rather than being bridged.
+*One length, one alignment.* Every function returns a float64 array of length `T` aligned so entry `i` is bar `i`, with the warm-up as `NaN`, never a shorter array. So the same object goes into your rule and into [`probatum.chart`](#plotting) with no padding decision in between, and a gap in the input stays a gap in the output rather than being bridged.
 
 *The convention is written down.* `ema` is smoothed at `2 / (length + 1)` and seeded from the simple average of the first `length` values, not from the first value, which is TradingView's convention and stops one opening print steering the curve for hundreds of bars. `rsi`, `atr` and `adx` use Wilder's `1 / length`, which is what those indicators were defined with. `stdev` is population, dividing by `length`, because that is what `bbands` is defined against. `cci` divides by the mean **absolute** deviation and not the standard deviation, which is the definition and is what makes it behave differently from `zscore` on a fat-tailed series. `hma` floors both of its inner lengths to whole bars. Each function repeats its own choice in its docstring.
 
@@ -744,17 +744,17 @@ Three behaviours worth knowing. `vwap` is rolling over `length` bars rather than
 
 ## Plotting
 
-`emsl.chart` draws a frame, your own arrays and a run. `show()` puts the chart in the notebook cell, and it is stored in the `.ipynb`, so reopening that notebook shows the same charts with no kernel running. `save(path)` writes one HTML file that opens in a browser instead.
+`probatum.chart` draws a frame, your own arrays and a run. `show()` puts the chart in the notebook cell, and it is stored in the `.ipynb`, so reopening that notebook shows the same charts with no kernel running. `save(path)` writes one HTML file that opens in a browser instead.
 
 It computes nothing and knows no indicator names: you bring arrays, it turns them into marks ([ADR 0042](Decisions.md)). Everything is precomputed, which is what lets a chart outlive the process that made it ([ADR 0042](Decisions.md)). No dependency beyond numpy and the standard library: pandas is duck-typed, and IPython is imported only inside `show`.
 
 ```python
-import emsl
-from emsl.plot import Line, Band, Level, Panel
+import probatum
+from probatum.plot import Line, Band, Level, Panel
 
-result = emsl.backtest.Backtester(frame, market="perp", fee_taker=0.0005).run(s)
+result = probatum.backtest.Backtester(frame, market="perp", fee_taker=0.0005).run(s)
 
-emsl.chart(frame, [                                  # matched by type, in any order
+probatum.chart(frame, [                                  # matched by type, in any order
     Line(s.fast, "SMA 20"),                          # the strategy's own array, not a copy
     Line(s.slow, "SMA 50", style="dashed"),
     Line(rsi, "RSI 14", panel="momentum"),           # a name not yet used makes a panel

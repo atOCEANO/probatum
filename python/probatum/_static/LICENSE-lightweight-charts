@@ -1,7 +1,7 @@
 TradingView Lightweight Charts v5.2.0
 Copyright (c) 2026 TradingView, Inc.
 
-Vendored unmodified into emsl as python/emsl/_static/lightweight-charts.js, so a
+Vendored unmodified into probatum as python/probatum/_static/lightweight-charts.js, so a
 saved chart carries its own renderer and needs no network at any point. Not
 modified, not repackaged, banner intact. Licensed under the Apache License 2.0,
 reproduced in full below.

@@ -16,7 +16,7 @@ too, never bridged and never absorbed; an infinity in the input counts as missin
 because it is not a price. Nothing here raises over a gap, it costs warm-up. The
 chart's length contract is the sharpest idea in this library and a second
 convention beside it would undo that, so the same array goes straight into a rule
-and into ``emsl.chart`` with no padding decision in between. The two functions
+and into ``probatum.chart`` with no padding decision in between. The two functions
 that answer a yes-or-no question, ``crossover`` and ``crossunder``, return
 booleans and pad with ``False`` rather than ``NaN``, because ``bool(nan)`` is
 ``True`` and a warm-up that reads as a signal is the one shape of this rule that
@@ -33,10 +33,10 @@ no state, take no engine, need no pandas, and the chart still computes nothing
 object to the chart, so the line on screen cannot drift from the line that made
 the decision.
 
-    class Cross(emsl.Strategy):
+    class Cross(probatum.Strategy):
         def init(self, engine):
-            self.fast = emsl.ta.ema(engine.closes, 20)
-            self.slow = emsl.ta.ema(engine.closes, 60)
+            self.fast = probatum.ta.ema(engine.closes, 20)
+            self.slow = probatum.ta.ema(engine.closes, 60)
             self.warmup = 60
 """
 
@@ -90,10 +90,12 @@ class Bands:
 
     __slots__ = ("upper", "middle", "lower")
 
+
     def __init__(self, upper, middle, lower):
-        self.upper = upper
+        self.upper  = upper
         self.middle = middle
-        self.lower = lower
+        self.lower  = lower
+
 
     def __repr__(self):
         return f"Bands({len(self.middle)} bars)"
@@ -104,11 +106,13 @@ class Channel:
 
     __slots__ = ("upper", "middle", "lower", "direction")
 
+
     def __init__(self, upper, middle, lower, direction):
-        self.upper = upper
-        self.middle = middle
-        self.lower = lower
+        self.upper     = upper
+        self.middle    = middle
+        self.lower     = lower
         self.direction = direction
+
 
     def __repr__(self):
         return f"Channel({len(self.middle)} bars)"
@@ -119,10 +123,12 @@ class Trend:
 
     __slots__ = ("adx", "plus", "minus")
 
+
     def __init__(self, adx, plus, minus):
-        self.adx = adx
-        self.plus = plus
+        self.adx   = adx
+        self.plus  = plus
         self.minus = minus
+
 
     def __repr__(self):
         return f"Trend({len(self.adx)} bars)"
@@ -133,10 +139,12 @@ class Macd:
 
     __slots__ = ("line", "signal", "histogram")
 
+
     def __init__(self, line, signal, histogram):
-        self.line = line
-        self.signal = signal
+        self.line      = line
+        self.signal    = signal
         self.histogram = histogram
+
 
     def __repr__(self):
         return f"Macd({len(self.line)} bars)"
@@ -147,9 +155,11 @@ class Stochastic:
 
     __slots__ = ("k", "d")
 
+
     def __init__(self, k, d):
         self.k = k
         self.d = d
+
 
     def __repr__(self):
         return f"Stochastic({len(self.k)} bars)"
@@ -163,13 +173,16 @@ def _series(values, where):
     out = np.asarray(values, dtype=np.float64)
     if out.ndim == 2 and out.shape[1] == 1:
         out = out.ravel()
+
     if out.ndim != 1:
         raise ValueError(
             f"{where} needs one series, but was given an array of shape "
             f"{out.shape}; pass a single column, not the whole frame"
         )
+
     if out.size == 0:
         raise ValueError(f"{where} needs a non-empty series")
+
     # an infinity is not a price, so it is a gap for the same reason a NaN is.
     # Handled once here rather than in thirty places: left alone it survived
     # into arithmetic that produced NaN anyway, but by way of `inf - inf` and
@@ -183,14 +196,17 @@ def _length(length, size, where):
     # other, and silently flooring it answered a question nobody asked
     if length != int(length):
         raise ValueError(f"{where} needs a whole number of bars, got {length}")
+
     length = int(length)
     if length < 1:
         raise ValueError(f"{where} needs a length of at least 1, got {length}")
+
     if length > size:
         raise ValueError(
             f"{where} needs a length no longer than the series, but {length} was "
             f"asked of {size} bars"
         )
+
     return length
 
 
@@ -209,12 +225,14 @@ def _aligned(where, **named):
     # every series a multi-input indicator reads has to describe the same bars,
     # and the error names which one is the odd size rather than reporting a shape
     series = {name: _series(values, where) for name, values in named.items()}
-    sizes = {name: value.size for name, value in series.items()}
+    sizes  = {name: value.size for name, value in series.items()}
+
     if len(set(sizes.values())) > 1:
         shown = ", ".join(f"{name} {size}" for name, size in sizes.items())
         raise ValueError(
             f"{where} needs its series to be one length, got {shown}"
         )
+
     return tuple(series.values())
 
 
@@ -226,11 +244,13 @@ def _against(other, size, where):
         if not np.isfinite(value):
             raise ValueError(f"{where} needs a finite level, got {value}")
         return np.full(size, value, dtype=np.float64)
+
     out = _series(other, where)
     if out.size != size:
         raise ValueError(
             f"{where} needs two series of one length, got {size} and {out.size}"
         )
+
     return out
 
 
@@ -254,13 +274,14 @@ def _smooth(values, alpha, length):
     # entire backtest trial, paid again on every trial of every search. Each clean
     # stretch is a plain geometric decay, so it runs as one vectorized pass and
     # only the seeding and the gaps stay in Python (ADR 0037)
-    size = values.size
-    out = _blank(size)
+    size   = values.size
+    out    = _blank(size)
     finite = np.isfinite(values)
     if not finite.any():
         return out
+
     # the half-open bounds of every maximal run of finite values
-    edges = np.flatnonzero(np.diff(finite.astype(np.int8)))
+    edges  = np.flatnonzero(np.diff(finite.astype(np.int8)))
     starts = np.concatenate((
         np.array([0], dtype=np.int64) if finite[0] else np.empty(0, dtype=np.int64),
         edges[finite[edges + 1]] + 1,
@@ -270,6 +291,7 @@ def _smooth(values, alpha, length):
         np.array([size], dtype=np.int64) if finite[size - 1]
         else np.empty(0, dtype=np.int64),
     ))
+
     for first, last in zip(starts, stops):
         first, last = int(first), int(last)
         if last - first < length:
@@ -278,6 +300,7 @@ def _smooth(values, alpha, length):
         out[seed] = float(values[first:seed + 1].mean())
         if last > seed + 1:
             out[seed + 1:last] = _decay(values[seed + 1:last], out[seed], alpha)
+
     return out
 
 
@@ -308,11 +331,13 @@ def _decay(values, seed, alpha):
     if keep <= 0.0:
         # alpha of exactly 1 keeps nothing, so every value is its own average
         return values * alpha
-    block = max(1, min(values.size, _block(keep)))
-    out = np.empty(values.size, dtype=np.float64)
+
+    block   = max(1, min(values.size, _block(keep)))
+    out     = np.empty(values.size, dtype=np.float64)
     carried = seed
+
     for start in range(0, values.size, block):
-        chunk = values[start:start + block]
+        chunk  = values[start:start + block]
         powers = keep ** np.arange(1.0, chunk.size + 1.0)
         # sum_{j <= k} alpha * values[j] * keep**(k - j), by dividing the weights
         # out of a cumulative sum and multiplying them back in
@@ -320,6 +345,7 @@ def _decay(values, seed, alpha):
             np.cumsum(alpha * chunk / powers) * powers + carried * powers
         )
         carried = out[start + chunk.size - 1]
+
     return out
 
 
@@ -327,7 +353,7 @@ def sma(values, length):
     """The simple moving average over ``length`` bars."""
     values = _series(values, "sma")
     length = _length(length, values.size, "sma")
-    out = _blank(values.size)
+    out    = _blank(values.size)
     out[length - 1:] = _windows(values, length).mean(axis=-1)
     return out
 
@@ -342,6 +368,7 @@ def ema(values, length):
     """
     values = _series(values, "ema")
     length = _length(length, values.size, "ema")
+
     return _smooth(values, 2.0 / (length + 1.0), length)
 
 
@@ -349,10 +376,11 @@ def wma(values, length):
     """The linearly weighted moving average: the newest bar counts ``length``
     times as much as the oldest.
     """
-    values = _series(values, "wma")
-    length = _length(length, values.size, "wma")
+    values  = _series(values, "wma")
+    length  = _length(length, values.size, "wma")
     weights = np.arange(1.0, length + 1.0)
-    out = _blank(values.size)
+    out     = _blank(values.size)
+
     out[length - 1:] = _windows(values, length) @ (weights / weights.sum())
     return out
 
@@ -364,22 +392,25 @@ def vwap(high, low, close, volume, length):
     of a trading day. Priced on the typical price ``(high + low + close) / 3``.
     A window whose volume is zero has no weighted price, so it is a gap.
     """
-    high = _series(high, "vwap")
-    low = _series(low, "vwap")
-    close = _series(close, "vwap")
+    high   = _series(high, "vwap")
+    low    = _series(low, "vwap")
+    close  = _series(close, "vwap")
     volume = _series(volume, "vwap")
+
     if not high.size == low.size == close.size == volume.size:
         raise ValueError(
             f"vwap needs four series of one length, got {high.size}, {low.size}, "
             f"{close.size} and {volume.size}"
         )
-    length = _length(length, close.size, "vwap")
+
+    length  = _length(length, close.size, "vwap")
     typical = (high + low + close) / 3.0
-    paid = _windows(typical * volume, length).sum(axis=-1)
-    traded = _windows(volume, length).sum(axis=-1)
-    out = _blank(close.size)
+    paid    = _windows(typical * volume, length).sum(axis=-1)
+    traded  = _windows(volume, length).sum(axis=-1)
+    out     = _blank(close.size)
     with np.errstate(divide="ignore", invalid="ignore"):
         out[length - 1:] = np.where(traded > 0.0, paid / traded, np.nan)
+
     return out
 
 
@@ -402,12 +433,14 @@ def rsi(values, length=14):
             f"rsi needs more bars than its length, since the first bar makes no "
             f"change to measure; {length} was asked of {values.size} bars"
         )
+
     length = _length(length, values.size, "rsi")
     change = np.diff(values, prepend=np.nan)
-    gain = _smooth(np.maximum(change, 0.0), 1.0 / length, length)
-    loss = _smooth(-np.minimum(change, 0.0), 1.0 / length, length)
+    gain   = _smooth(np.maximum(change, 0.0), 1.0 / length, length)
+    loss   = _smooth(-np.minimum(change, 0.0), 1.0 / length, length)
     with np.errstate(divide="ignore", invalid="ignore"):
         out = np.where(loss > 0.0, 100.0 - 100.0 / (1.0 + gain / loss), 100.0)
+
     moved = (gain > 0.0) | (loss > 0.0)
     return np.where(np.isfinite(gain) & np.isfinite(loss) & moved, out, np.nan)
 
@@ -423,7 +456,8 @@ def macd(values, fast=12, slow=26, signal=9):
     values = _series(values, "macd")
     if not int(fast) < int(slow):
         raise ValueError(f"macd needs fast below slow, got {fast} and {slow}")
-    line = ema(values, fast) - ema(values, slow)
+
+    line     = ema(values, fast) - ema(values, slow)
     smoothed = ema(line, signal)
     return Macd(line, smoothed, line - smoothed)
 
@@ -440,23 +474,27 @@ def stoch(high, low, close, length=14, smooth=3):
     than being clamped, because a clamp would hide the only evidence that the
     data is wrong.
     """
-    high = _series(high, "stoch")
-    low = _series(low, "stoch")
+    high  = _series(high, "stoch")
+    low   = _series(low, "stoch")
     close = _series(close, "stoch")
     if not high.size == low.size == close.size:
         raise ValueError(
             f"stoch needs three series of one length, got {high.size}, "
             f"{low.size} and {close.size}"
         )
+
     length = _length(length, close.size, "stoch")
     _length(smooth, close.size, "stoch")  # named here, not from inside sma
-    top = _blank(close.size)
+
+    top    = _blank(close.size)
     bottom = _blank(close.size)
-    top[length - 1:] = _windows(high, length).max(axis=-1)
+    top[length - 1:]    = _windows(high, length).max(axis=-1)
     bottom[length - 1:] = _windows(low, length).min(axis=-1)
+
     span = top - bottom
     with np.errstate(divide="ignore", invalid="ignore"):
         k = np.where(span > 0.0, (close - bottom) / span * 100.0, np.nan)
+
     return Stochastic(k, sma(k, smooth))
 
 
@@ -464,11 +502,13 @@ def roc(values, length):
     """The rate of change over ``length`` bars, in percent."""
     values = _series(values, "roc")
     length = _length(length, values.size, "roc")
-    out = _blank(values.size)
-    past = values[:-length]
+    out    = _blank(values.size)
+    past   = values[:-length]
+
     with np.errstate(divide="ignore", invalid="ignore"):
         out[length:] = np.where(past != 0.0, (values[length:] / past - 1.0) * 100.0,
                                 np.nan)
+
     return out
 
 
@@ -485,19 +525,22 @@ def true_range(high, low, close):
     range by whatever the gap was, so an ATR-sized stop came out far too tight on
     exactly the data where the gap mattered.
     """
-    high = _series(high, "true_range")
-    low = _series(low, "true_range")
+    high  = _series(high, "true_range")
+    low   = _series(low, "true_range")
     close = _series(close, "true_range")
     if not high.size == low.size == close.size:
         raise ValueError(
             f"true_range needs three series of one length, got {high.size}, "
             f"{low.size} and {close.size}"
         )
+
     previous = np.roll(close, 1)
     previous[0] = np.nan
+
     spans = np.vstack([high - low, np.abs(high - previous), np.abs(low - previous)])
     # propagating, so any missing leg makes the bar a gap
     out = spans.max(axis=0)
+
     # except the first, which has no previous close by construction rather than by
     # accident, and so is its own range
     out[0] = high[0] - low[0]
@@ -512,6 +555,7 @@ def atr(high, low, close, length=14):
     """
     ranges = true_range(high, low, close)
     length = _length(length, ranges.size, "atr")
+
     return _smooth(ranges, 1.0 / length, length)
 
 
@@ -524,11 +568,13 @@ def stdev(values, length):
     """
     values = _series(values, "stdev")
     length = _length(length, values.size, "stdev")
-    out = _blank(values.size)
+    out    = _blank(values.size)
+
     # an infinity in the window makes the deviation undefined, and numpy says so
     # through a warning on the way. The gap is the answer; the warning is noise
     with np.errstate(invalid="ignore"):
         out[length - 1:] = _windows(values, length).std(axis=-1)
+
     return out
 
 
@@ -538,15 +584,14 @@ def bbands(values, length=20, deviations=2.0):
     A simple moving average, with a band ``deviations`` population standard
     deviations either side of it.
     """
-    values = _series(values, "bbands")
-    length = _length(length, values.size, "bbands")
+    values     = _series(values, "bbands")
+    length     = _length(length, values.size, "bbands")
     deviations = float(deviations)
     if not np.isfinite(deviations) or deviations < 0.0:
-        # a negative width turns the bands inside out, upper below lower, and
-        # every comparison written against them then reads backwards
         raise ValueError(
             f"bbands needs a width of at least 0, got {deviations}"
         )
+
     middle = sma(values, length)
     spread = stdev(values, length) * deviations
     return Bands(middle + spread, middle, middle - spread)
@@ -561,16 +606,19 @@ def donchian(high, low, length=20):
     what you mean.
     """
     high = _series(high, "donchian")
-    low = _series(low, "donchian")
+    low  = _series(low, "donchian")
     if high.size != low.size:
         raise ValueError(
             f"donchian needs two series of one length, got {high.size} and {low.size}"
         )
+
     length = _length(length, high.size, "donchian")
-    top = _blank(high.size)
+    top    = _blank(high.size)
     bottom = _blank(low.size)
-    top[length - 1:] = _windows(high, length).max(axis=-1)
+
+    top[length - 1:]    = _windows(high, length).max(axis=-1)
     bottom[length - 1:] = _windows(low, length).min(axis=-1)
+
     return Bands(top, (top + bottom) / 2.0, bottom)
 
 
@@ -604,17 +652,21 @@ def shift(values, bars=1):
     values = _series(values, "shift")
     if bars != int(bars):
         raise ValueError(f"shift needs a whole number of bars, got {bars}")
+
     bars = int(bars)
     if bars < 0:
         raise ValueError(
             f"shift moves values forward in time, so bars is zero or more, got "
             f"{bars}; a negative shift would read the future into the past"
         )
+
     if bars == 0:
         return values.copy()
+
     out = _blank(values.size)
     if bars < values.size:
         out[bars:] = values[:-bars]
+
     return out
 
 
@@ -628,7 +680,7 @@ def highest(values, length):
     """The highest value of the last ``length`` bars, the current one included."""
     values = _series(values, "highest")
     length = _length(length, values.size, "highest")
-    out = _blank(values.size)
+    out    = _blank(values.size)
     out[length - 1:] = _windows(values, length).max(axis=-1)
     return out
 
@@ -637,7 +689,7 @@ def lowest(values, length):
     """The lowest value of the last ``length`` bars, the current one included."""
     values = _series(values, "lowest")
     length = _length(length, values.size, "lowest")
-    out = _blank(values.size)
+    out    = _blank(values.size)
     out[length - 1:] = _windows(values, length).min(axis=-1)
     return out
 
@@ -654,8 +706,9 @@ def crossover(values, other):
     where nothing is known.
     """
     values = _series(values, "crossover")
-    other = _against(other, values.size, "crossover")
-    out = np.zeros(values.size, dtype=bool)
+    other  = _against(other, values.size, "crossover")
+    out    = np.zeros(values.size, dtype=bool)
+
     # a comparison against a missing value is False in numpy, which is the answer
     # wanted here: no evidence of a cross is not a cross
     out[1:] = (values[1:] > other[1:]) & (values[:-1] <= other[:-1])
@@ -667,8 +720,9 @@ def crossunder(values, other):
     of ``crossover``, and boolean for the same reason.
     """
     values = _series(values, "crossunder")
-    other = _against(other, values.size, "crossunder")
-    out = np.zeros(values.size, dtype=bool)
+    other  = _against(other, values.size, "crossunder")
+    out    = np.zeros(values.size, dtype=bool)
+
     out[1:] = (values[1:] < other[1:]) & (values[:-1] >= other[:-1])
     return out
 
@@ -683,9 +737,10 @@ def hma(values, length):
     """
     values = _series(values, "hma")
     length = _length(length, values.size, "hma")
-    half = max(1, length // 2)
-    root = max(1, int(math.sqrt(length)))
-    raw = 2.0 * wma(values, half) - wma(values, length)
+    half   = max(1, length // 2)
+    root   = max(1, int(math.sqrt(length)))
+    raw    = 2.0 * wma(values, half) - wma(values, length)
+
     return wma(raw, root)
 
 
@@ -697,11 +752,12 @@ def vwma(values, volume, length):
     """
     values, volume = _aligned("vwma", values=values, volume=volume)
     length = _length(length, values.size, "vwma")
-    paid = _windows(values * volume, length).sum(axis=-1)
+    paid   = _windows(values * volume, length).sum(axis=-1)
     traded = _windows(volume, length).sum(axis=-1)
-    out = _blank(values.size)
+    out    = _blank(values.size)
     with np.errstate(divide="ignore", invalid="ignore"):
         out[length - 1:] = np.where(traded > 0.0, paid / traded, np.nan)
+
     return out
 
 
@@ -715,8 +771,10 @@ def willr(high, low, close, length=14):
     """
     high, low, close = _aligned("willr", high=high, low=low, close=close)
     length = _length(length, close.size, "willr")
+
     top, bottom = highest(high, length), lowest(low, length)
     span = top - bottom
+
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(span > 0.0, (close - top) / span * 100.0, np.nan)
 
@@ -732,14 +790,16 @@ def cci(high, low, close, length=20):
     at all is a gap.
     """
     high, low, close = _aligned("cci", high=high, low=low, close=close)
-    length = _length(length, close.size, "cci")
+    length  = _length(length, close.size, "cci")
     typical = (high + low + close) / 3.0
-    frames = _windows(typical, length)
+    frames  = _windows(typical, length)
     with np.errstate(invalid="ignore"):
         spread = np.abs(frames - frames.mean(axis=-1, keepdims=True)).mean(axis=-1)
+
     deviation = _blank(close.size)
     deviation[length - 1:] = spread
     middle = sma(typical, length)
+
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(deviation > 0.0,
                         (typical - middle) / (0.015 * deviation), np.nan)
@@ -754,6 +814,7 @@ def natr(high, low, close, length=14):
     different sizes without this.
     """
     high, low, close = _aligned("natr", high=high, low=low, close=close)
+
     ranges = atr(high, low, close, length)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(close > 0.0, ranges / close * 100.0, np.nan)
@@ -775,6 +836,7 @@ def keltner(high, low, close, length=20, atr_length=10, multiplier=2.0):
         raise ValueError(
             f"keltner needs a width of at least 0, got {multiplier}"
         )
+
     middle = ema(close, length)
     spread = atr(high, low, close, atr_length) * multiplier
     return Bands(middle + spread, middle, middle - spread)
@@ -799,19 +861,23 @@ def supertrend(high, low, close, length=10, multiplier=3.0):
         raise ValueError(
             f"supertrend needs a width above 0, got {multiplier}"
         )
-    ranges = atr(high, low, close, length)
+
+    ranges       = atr(high, low, close, length)
     middle_price = (high + low) / 2.0
-    raw_upper = middle_price + multiplier * ranges
-    raw_lower = middle_price - multiplier * ranges
-    size = close.size
+    raw_upper    = middle_price + multiplier * ranges
+    raw_lower    = middle_price - multiplier * ranges
+    size         = close.size
+
     upper, lower, line = _blank(size), _blank(size), _blank(size)
     direction = _blank(size)
-    running = False
+    running   = False
+
     for i in range(size):
         if not (np.isfinite(raw_upper[i]) and np.isfinite(raw_lower[i])
                 and np.isfinite(close[i])):
             running = False
             continue
+
         if not running:
             upper[i], lower[i], direction[i] = raw_upper[i], raw_lower[i], 1.0
             running = True
@@ -824,7 +890,9 @@ def supertrend(high, low, close, length=10, multiplier=3.0):
                 direction[i] = -1.0 if close[i] < lower[i] else 1.0
             else:
                 direction[i] = 1.0 if close[i] > upper[i] else -1.0
+
         line[i] = lower[i] if direction[i] > 0.0 else upper[i]
+
     return Channel(upper, line, lower, direction)
 
 
@@ -840,24 +908,27 @@ def adx(high, low, close, length=14):
     Wilder's smoothing throughout, matching ``rsi`` and ``atr``.
     """
     high, low, close = _aligned("adx", high=high, low=low, close=close)
-    length = _length(length, close.size, "adx")
-    up = high - shift(high, 1)
-    down = shift(low, 1) - low
-    plus_move = np.where((up > down) & (up > 0.0), up, 0.0)
+    length     = _length(length, close.size, "adx")
+    up         = high - shift(high, 1)
+    down       = shift(low, 1) - low
+    plus_move  = np.where((up > down) & (up > 0.0), up, 0.0)
     minus_move = np.where((down > up) & (down > 0.0), down, 0.0)
+
     # a bar with no previous is not a zero move, it is an unknown one
-    missing = ~(np.isfinite(up) & np.isfinite(down))
-    plus_move = np.where(missing, np.nan, plus_move)
-    minus_move = np.where(missing, np.nan, minus_move)
-    alpha = 1.0 / length
-    ranges = _smooth(true_range(high, low, close), alpha, length)
-    plus_smoothed = _smooth(plus_move, alpha, length)
+    missing        = ~(np.isfinite(up) & np.isfinite(down))
+    plus_move      = np.where(missing, np.nan, plus_move)
+    minus_move     = np.where(missing, np.nan, minus_move)
+    alpha          = 1.0 / length
+    ranges         = _smooth(true_range(high, low, close), alpha, length)
+    plus_smoothed  = _smooth(plus_move, alpha, length)
     minus_smoothed = _smooth(minus_move, alpha, length)
+
     with np.errstate(divide="ignore", invalid="ignore"):
-        plus = np.where(ranges > 0.0, plus_smoothed / ranges * 100.0, np.nan)
+        plus  = np.where(ranges > 0.0, plus_smoothed / ranges * 100.0, np.nan)
         minus = np.where(ranges > 0.0, minus_smoothed / ranges * 100.0, np.nan)
         total = plus + minus
-        dx = np.where(total > 0.0, np.abs(plus - minus) / total * 100.0, np.nan)
+        dx    = np.where(total > 0.0, np.abs(plus - minus) / total * 100.0, np.nan)
+
     return Trend(_smooth(dx, alpha, length), plus, minus)
 
 
@@ -874,14 +945,17 @@ def obv(close, volume):
     bar and never silently absorbs a missing day's volume into the running sum.
     """
     close, volume = _aligned("obv", close=close, volume=volume)
-    size = close.size
-    out = _blank(size)
+
+    size    = close.size
+    out     = _blank(size)
     running = None
+
     for i in range(1, size):
         if not (np.isfinite(close[i]) and np.isfinite(volume[i])
                 and np.isfinite(close[i - 1])):
             running = None
             continue
+
         # the first bar of a fresh run has a direction but no history, so the
         # total starts flat there. Bar zero has no previous close at all, which is
         # a warm-up rather than a zero
@@ -892,6 +966,7 @@ def obv(close, volume):
         elif close[i] < close[i - 1]:
             running -= volume[i]
         out[i] = running
+
     return out
 
 
@@ -910,19 +985,22 @@ def mfi(high, low, close, volume, length=14):
     high, low, close, volume = _aligned(
         "mfi", high=high, low=low, close=close, volume=volume
     )
-    length = _length(length, close.size, "mfi")
-    typical = (high + low + close) / 3.0
-    flow = typical * volume
-    rising = typical > shift(typical, 1)
-    falling = typical < shift(typical, 1)
-    known = np.isfinite(flow) & np.isfinite(shift(typical, 1))
+    length   = _length(length, close.size, "mfi")
+    typical  = (high + low + close) / 3.0
+    flow     = typical * volume
+    rising   = typical > shift(typical, 1)
+    falling  = typical < shift(typical, 1)
+    known    = np.isfinite(flow) & np.isfinite(shift(typical, 1))
     positive = np.where(known, np.where(rising, flow, 0.0), np.nan)
     negative = np.where(known, np.where(falling, flow, 0.0), np.nan)
-    up = _blank(close.size)
-    down = _blank(close.size)
-    up[length - 1:] = _windows(positive, length).sum(axis=-1)
+    up       = _blank(close.size)
+    down     = _blank(close.size)
+
+    up[length - 1:]   = _windows(positive, length).sum(axis=-1)
     down[length - 1:] = _windows(negative, length).sum(axis=-1)
+
     with np.errstate(divide="ignore", invalid="ignore"):
         out = np.where(down > 0.0, 100.0 - 100.0 / (1.0 + up / down), 100.0)
+
     moved = (up > 0.0) | (down > 0.0)
     return np.where(np.isfinite(up) & np.isfinite(down) & moved, out, np.nan)

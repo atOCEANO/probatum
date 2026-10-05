@@ -105,11 +105,11 @@ The rest assert nothing when run locally, which is why they are not gates:
 
 ```bash
 docker build --target bench .                                 # engine throughput
-docker build --target bench-surfaces -t emsl-bench-surfaces . # then docker run it
+docker build --target bench-surfaces -t probatum-bench-surfaces . # then docker run it
 docker build --target bench-instructions .                    # step instruction counts
-docker build --target mutants -t emsl-mutants .               # then docker run it, alone
-docker build --target charts -t emsl-charts .                 # the documentation images
-docker build --target diagrams -t emsl-diagrams .             # the hand-made diagrams
+docker build --target mutants -t probatum-mutants .               # then docker run it, alone
+docker build --target charts -t probatum-charts .                 # the documentation images
+docker build --target diagrams -t probatum-diagrams .             # the hand-made diagrams
 ```
 
 `bench` prints the engine's throughput and `bench-surfaces` prints it per surface (`Engine`, `Backtester`, `tune`, `VectorEnv`, `Batch`). Timings depend on the machine, so neither can fail. `bench-instructions` counts the step loop's instructions under Valgrind instead, a number that does not depend on the machine, and CI compares it with the commit before and fails on a rise of more than 10%. It covers the Rust step loop only: a slower indicator or a slower Python surface still passes. `mutants` runs cargo-mutants over the two pure-Rust crates and lists every mutant the tests miss; CI runs it on the lines each push changes and fails on a miss. `charts` rebuilds every chart image the documentation shows, from frozen data so that a rerun redraws rather than redecides; the [Contributor Guide](Contributor_Guide.md) has the recipe. `diagrams` renders the mermaid sources behind the hand-made images, and its recipe and the three settings it depends on are in the [Contributor Guide](Contributor_Guide.md) too.
@@ -125,7 +125,7 @@ The properties that would be easy to break silently are their own tests:
 - **View lifetime and read-only.** A zero-copy observation stays valid after the engine is dropped (its base keeps the buffer alive), and writing through it is rejected, so a view onto the shared candle buffer can never corrupt it.
 - **Trade reconciliation.** The logged trades' realized PnL sums to the account's cumulative realized PnL, and on a run that ends flat the net PnL of the log equals the change in equity ([ADR 0023](Decisions.md)). A forced close is an ordinary row carrying `liquidated: true`, because it is booked through the one path every other fill takes; it used to reach none of that and appear in no trade at all ([ADR 0018](Decisions.md)).
 - **Bad debt is unreachable, not caught.** A perp cannot end a bar owing money, on any path, because the liquidation is a price on the bar rather than a check at the end of it ([ADRs 0017, 0018](Decisions.md)). The guarantee is worth more than the check because it is what the exit price is derived from; when it was only a check, an ordinary `close()` on a bar that gapped past the liquidation stepped around it and booked the whole gap.
-- **A mutation has to fail the suite.** A pass that breaks one line at a time and reruns the tests found 13 of 27 mutations surviving the Python tier, including one that held out the *start* of a series where [ADR 0032](Decisions.md) promises the end. The same pass over the Rust crates is the `mutants` stage, which CI runs on the lines each push changes; a statistic or a fill rule whose defect no test can see is one nobody should quote, so a new one arrives with a test that fails when its arithmetic is wrong rather than one that only checks its shape. Run the Python pass against `python/emsl` after adding a statistic, and pass `-p no:cacheprovider`, or a stale `.pytest_cache` will hide a mutation.
+- **A mutation has to fail the suite.** A pass that breaks one line at a time and reruns the tests found 13 of 27 mutations surviving the Python tier, including one that held out the *start* of a series where [ADR 0032](Decisions.md) promises the end. The same pass over the Rust crates is the `mutants` stage, which CI runs on the lines each push changes; a statistic or a fill rule whose defect no test can see is one nobody should quote, so a new one arrives with a test that fails when its arithmetic is wrong rather than one that only checks its shape. Run the Python pass against `python/probatum` after adding a statistic, and pass `-p no:cacheprovider`, or a stale `.pytest_cache` will hide a mutation.
 
 <br>
 

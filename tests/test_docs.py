@@ -12,9 +12,9 @@ import inspect
 import pathlib
 import re
 
-import emsl
-from emsl import metrics, plot, ta
-from emsl.backtest import Backtester
+import probatum
+from probatum import metrics, plot, ta
+from probatum.backtest import Backtester
 
 # the gate copies the pages to /docs; a source checkout has them beside tests
 _CANDIDATES = (
@@ -42,25 +42,25 @@ _GATE = (
 _INTERNAL_STAGES = {"builder"}
 
 _API = {
-    "chart": emsl.chart,
-    "chart_defaults": emsl.chart_defaults,
-    "to_ohlcv": emsl.to_ohlcv,
-    "Backtester": Backtester,
-    "Line": plot.Line,
-    "Histogram": plot.Histogram,
-    "Band": plot.Band,
-    "Level": plot.Level,
-    "Marker": plot.Marker,
-    "Markers": plot.Markers,
-    "Background": plot.Background,
-    "Panel": plot.Panel,
-    "Recorder": plot.Recorder,
-    "ramp": plot.ramp,
-    "at_bar": plot.at_bar,
-    "at_next": plot.at_next,
-    "tune": emsl.tune,
-    "walk_forward": emsl.walk_forward,
-    "Market": emsl.Market,
+    "chart":          probatum.chart,
+    "chart_defaults": probatum.chart_defaults,
+    "to_ohlcv":       probatum.to_ohlcv,
+    "Backtester":     Backtester,
+    "Line":           plot.Line,
+    "Histogram":      plot.Histogram,
+    "Band":           plot.Band,
+    "Level":          plot.Level,
+    "Marker":         plot.Marker,
+    "Markers":        plot.Markers,
+    "Background":     plot.Background,
+    "Panel":          plot.Panel,
+    "Recorder":       plot.Recorder,
+    "ramp":           plot.ramp,
+    "at_bar":         plot.at_bar,
+    "at_next":        plot.at_next,
+    "tune":           probatum.tune,
+    "walk_forward":   probatum.walk_forward,
+    "Market":         probatum.Market,
 }
 # every public function of the two modules whose examples are all calls. Listed by
 # reflection rather than by hand: the hand-written dict above had gone four
@@ -73,19 +73,18 @@ _API.update({name: getattr(ta, name) for name in ta.__all__
 # a bare name, or an attribute hanging off one of these, is the library function.
 # self.log.at_bar is Recorder.at_bar, which takes **values and shares its name
 # with the module-level helper, so matching on the last word alone is wrong
-_ROOTS = {"emsl", "plot", "metrics", "ta"}
+_ROOTS = {"probatum", "plot", "metrics", "ta"}
 
 
 def pages():
-    # the README counts, and counts most: it is the page nearly everybody reads
-    # and the only one whose examples nobody arrives at through a guide
     for root in _CANDIDATES:
         if root.is_dir():
-            found = sorted(root.glob("*.md"))
+            found   = sorted(root.glob("*.md"))
             outside = root.parent / "README.md"
             if outside.is_file():
                 found.append(outside)
             return found
+
     return []
 
 
@@ -99,20 +98,25 @@ def blocks(text):
             inside = False
         elif inside:
             buf.append(line)
+
     return out
 
 
 def called(func):
     if isinstance(func, ast.Name):
         return func.id
+
     if not isinstance(func, ast.Attribute):
         return None
+
     base = func.value
     if isinstance(base, ast.Name) and base.id in _ROOTS:
         return func.attr
+
     if (isinstance(base, ast.Attribute) and base.attr in _ROOTS
             and isinstance(base.value, ast.Name) and base.value.id in _ROOTS):
         return func.attr
+
     return None
 
 
@@ -135,19 +139,19 @@ def test_the_documentation_has_pages_to_check():
 
 
 def test_every_tool_under_dev_is_named_by_a_page():
-    # dev/ grew three unrelated tools with three different homes for their
-    # explanation, and golden.py had none at all, which made the one tool that has
-    # to run in the same commit as the change it records the one nobody could find
     root = tools()
     assert root is not None, "dev/ was not found in the gate or beside tests"
-    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+
+    text    = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     missing = sorted(str(path.relative_to(root)).replace("\\", "/")
                      for path in root.rglob("*.py") if path.name not in text)
+
     # a directory holding no python of its own still has to be accounted for:
     # dev/diagrams is mermaid sources and two config files and no tool at all
     missing += sorted(f"{child.name}/" for child in root.iterdir()
                       if child.is_dir() and child.name != "__pycache__"
                       and child.name not in text)
+
     assert not missing, f"under dev/ and explained by no page: {missing}"
 
 
@@ -173,15 +177,15 @@ def gate_stages():
 
 
 def test_the_decisions_are_numbered_without_a_gap_or_a_repeat():
-    # the top number was verified by hand with a grep every time one was added,
-    # which is how emsl's record came to skip 0080 without anyone noticing
     declared = declared_decisions(decisions_page())
     assert declared, "no numbered decisions were found"
+
     repeated = sorted({n for n in declared if declared.count(n) > 1})
     assert not repeated, (
         f"{[f'{n:04d}' for n in repeated]} opens more than one decision; each number "
         f"belongs to one"
     )
+
     missing = sorted(set(range(1, max(declared) + 1)) - set(declared))
     assert not missing, (
         f"the decisions run to {max(declared):04d} but {[f'{n:04d}' for n in missing]} "
@@ -193,14 +197,15 @@ def test_the_decisions_are_numbered_without_a_gap_or_a_repeat():
 
 
 def test_every_decision_a_page_cites_is_one_that_exists():
-    # a citation is the load-bearing half of this documentation set: the code
-    # comments and the guides all point at these numbers
     declared = set(declared_decisions(decisions_page()))
-    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
-    cited = set()
+    text     = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+    cited    = set()
+
     for run in re.findall(r"ADRs?\s+((?:\d{4})(?:(?:,|\s+and)\s+\d{4})*)", text):
         cited.update(int(number) for number in re.findall(r"\d{4}", run))
+
     assert cited, "no decisions were cited anywhere, which cannot be right"
+
     dangling = sorted(cited - declared)
     assert not dangling, (
         f"pages cite {[f'{n:04d}' for n in dangling]}, which the decisions page "
@@ -212,13 +217,15 @@ def test_every_link_between_the_pages_names_a_page_that_exists():
     # matched on the file name rather than the path, because the gate lays the
     # pages out flat under /docs while a checkout keeps README.md a level above
     # them, and a link is relative to whichever of those it was written in
-    known = {page.name for page in pages()}
+    known  = {page.name for page in pages()}
     broken = []
+
     for page in pages():
         for target in re.findall(r"\]\(([^)]+\.md)(?:#[^)]*)?\)",
                                  page.read_text(encoding="utf-8")):
             if pathlib.PurePosixPath(target).name not in known:
                 broken.append(f"{page.name} -> {target}")
+
     assert not broken, "\n".join(broken)
 
 
@@ -235,40 +242,40 @@ def test_no_link_leaves_the_repository():
 
 
 def test_the_documented_install_names_the_version_that_is_installed():
-    # emsl is not on PyPI, so the release URL and the git tag in the README are
+    # probatum is not on PyPI, so the release URL and the git tag in the README are
     # the install path rather than a convenience. A version bump is the one edit
     # always made in a hurry, and a stale one here sends a reader to a release
     # that predates everything the page around it describes. The wheel is built
     # from Cargo.toml, so this holds the README to that number without reading it
-    want = f"v{emsl.__version__}"
+    want  = f"v{probatum.__version__}"
     wrong = []
+
     for page in pages():
         for found in re.findall(r"\bv\d+\.\d+\.\d+\b",
                                 page.read_text(encoding="utf-8")):
             if found != want:
                 wrong.append(f"{page.name} says {found}, the wheel is {want}")
+
     assert not wrong, "\n".join(wrong)
 
 
 def test_every_gate_stage_a_contributor_can_run_is_written_down():
-    # a stage nobody documented is a stage nobody runs, and bench-surfaces was
-    # exactly that: it existed, it worked, and no page mentioned it
     stages = gate_stages()
     assert stages is not None, "no Dockerfile in the gate or beside tests"
-    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+
+    text         = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     undocumented = sorted(
         stage for stage in stages - _INTERNAL_STAGES
         if f"--target {stage}" not in text and f"`{stage}`" not in text
     )
+
     assert not undocumented, f"a stage no page tells anyone about: {undocumented}"
 
 
 def test_dev_keeps_no_documentation_of_its_own():
-    # the guide says documentation lives in this set and there are no per-folder
-    # READMEs, and dev/diagrams carried one for as long as it existed. A rule held
-    # by review alone is a rule that rots
     root = tools()
     assert root is not None, "dev/ was not found in the gate or beside tests"
+
     strays = sorted(str(path.relative_to(root)).replace("\\", "/")
                     for path in root.rglob("*.md"))
     assert not strays, (
@@ -279,6 +286,7 @@ def test_dev_keeps_no_documentation_of_its_own():
 
 def test_every_documented_example_parses():
     broken = []
+
     for page in pages():
         for body in blocks(page.read_text(encoding="utf-8")):
             try:
@@ -286,11 +294,13 @@ def test_every_documented_example_parses():
             except SyntaxError as exc:
                 first = (body.strip().splitlines() or [""])[0]
                 broken.append(f"{page.name}: {exc.msg} near {first[:60]!r}")
+
     assert not broken, "\n".join(broken)
 
 
 def test_every_documented_example_names_real_parameters():
     wrong = []
+
     for page in pages():
         for body in blocks(page.read_text(encoding="utf-8")):
             try:
@@ -310,6 +320,7 @@ def test_every_documented_example_names_real_parameters():
                             f"{page.name}: {called(node.func)}"
                             f"({keyword.arg}=) is not a parameter"
                         )
+
     assert not wrong, "\n".join(wrong)
 
 
@@ -321,63 +332,55 @@ def api_page():
 
 
 def test_every_export_the_table_names_actually_exists():
-    # a table row for something that is not there is the worst kind of
-    # documentation: it is authoritative, it is the first thing anybody reads,
-    # and it is wrong. This carried an exemption for sb3, which is exactly the
-    # name it was wrong about: emsl.sb3 raised AttributeError for four releases
-    listed = re.findall(r"^\| `emsl\.(\w+)`", api_page(), re.M)
+    listed = re.findall(r"^\| `probatum.(\w+)`", api_page(), re.M)
     assert listed, "the export table was not found"
+
     for name in listed:
         try:
-            getattr(emsl, name)
+            getattr(probatum, name)
         except AttributeError as exc:
             raise AssertionError(
-                f"the export table names emsl.{name}, which the package does not "
+                f"the export table names probatum.{name}, which the package does not "
                 f"have: {exc}"
             )
         except ImportError as exc:
             # a name behind an optional extra: the package has it, and says which
             # extra to install rather than denying the name exists at all
             assert "pip install" in str(exc), (
-                f"emsl.{name} failed without naming its extra: {exc}"
+                f"probatum.{name} failed without naming its extra: {exc}"
             )
 
 
 def test_nothing_is_exported_without_being_documented():
-    # the other direction: a name added to __all__ and never written about is a
-    # feature nobody will find
-    page = api_page()
-    missing = [name for name in emsl.__all__ if f"`emsl.{name}`" not in page
+    page    = api_page()
+    missing = [name for name in probatum.__all__ if f"`probatum.{name}`" not in page
                and f"`{name}`" not in page]
+
     assert not missing, f"exported but undocumented: {missing}"
 
 
 def test_nothing_a_module_exports_is_undocumented_either():
-    # this test used to walk emsl.__all__ alone, where metrics and ta appear as
-    # MODULES, so nothing ever reached their members. Four public metrics
-    # (skew, kurtosis, value_at_risk, conditional_value_at_risk) were named in no
-    # markdown file in the repository while report() emitted all four
-    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+    text    = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     missing = []
     for name in ("metrics", "ta", "plot"):
-        for export in getattr(emsl, name).__all__:
+        for export in getattr(probatum, name).__all__:
             # named in prose as `export`, called in an example as export(, or
             # reached through its module either way
             if not any(mark in text for mark in
                        (f"`{export}", f"{name}.{export}", f"{export}(")):
                 missing.append(f"{name}.{export}")
+
     assert not missing, f"exported by a module and documented nowhere: {missing}"
 
 
 def test_the_indicator_count_the_docs_claim_is_the_count_there_is():
-    # a written-out number rots the first time one is added, and it has now been
-    # added to twice. The tables are the count, and this checks the prose against
-    # them rather than against a literal
     functions = [n for n in ta.__all__ if not isinstance(getattr(ta, n), type)]
-    page = api_page()
-    listed = set(re.findall(r"`(\w+)\(", page.split("## Indicators")[1]))
+    page      = api_page()
+    listed    = set(re.findall(r"`(\w+)\(", page.split("## Indicators")[1]))
     uncovered = sorted(set(functions) - listed)
+
     assert not uncovered, f"indicators missing from the API table: {uncovered}"
+
     for name in ("Python_API.md", "README.md"):
         text = [p for p in pages() if p.name == name][0].read_text(encoding="utf-8")
         assert f"{len(functions)} functions" in text or f"{len(functions)} indicators" in text, (
@@ -386,17 +389,16 @@ def test_the_indicator_count_the_docs_claim_is_the_count_there_is():
 
 
 def test_every_chart_image_that_ships_was_drawn_by_a_call_in_the_builder():
-    # the count of these was written out in shoot.py and rotted the first time one
-    # was added. Nothing else here would
-    # notice: a keep() cut while its png stayed committed, or a png added by hand
-    # that no run produces, passes every other test on this page
     root = docs_root()
     assert root is not None, "no .Documentation found in the gate or beside tests"
+
     dev = tools()
     assert dev is not None, "dev/ was not found in the gate or beside tests"
+
     shipped = sorted((root / "imgs" / "charts").glob("*.png"))
-    build = (dev / "charts" / "build.py").read_text(encoding="utf-8")
-    drawn = re.findall(r'\bkeep\("', build)
+    build   = (dev / "charts" / "build.py").read_text(encoding="utf-8")
+    drawn   = re.findall(r'\bkeep\("', build)
+
     assert len(shipped) == len(drawn), (
         f"{len(shipped)} chart images ship and build.py draws {len(drawn)}"
     )

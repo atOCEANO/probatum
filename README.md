@@ -27,7 +27,7 @@
 
 ## Introduction
 
-`emsl` is **a bar-level crypto market simulator: a Rust core with a small Python surface.** Give it a table of candles and it stands in for the exchange: you step forward one bar at a time, place the order types a real venue offers, and read back your balance, position, and equity, with the real fees, funding, and slippage charged as you go.
+`probatum` is **a bar-level crypto market simulator: a Rust core with a small Python surface.** Give it a table of candles and it stands in for the exchange: you step forward one bar at a time, place the order types a real venue offers, and read back your balance, position, and equity, with the real fees, funding, and slippage charged as you go.
 
 The point is research speed. A single backtest, a parameter search over thousands of configurations, and a batched reinforcement-learning rollout all run on the same engine through one API, so the simulator is never the part you rebuild between experiments. You write a strategy or an agent once, against one fill model and one set of costs, and move between those jobs without reconciling separate simulators or second-guessing which costs each of them charged. The honest market stays a fixed point; only the question you are asking changes.
 
@@ -53,7 +53,7 @@ It **does not**: model the full order book (L2), latency, or queue position, and
 
 **Who it is for.** Quant and machine-learning researchers. Not market makers or high-frequency desks, who run C++ and FPGA next to the exchange and need the order book this tier does not model. One decision per candle is the resolution most research works at.
 
-**How it differs from what you already use.** If you have driven a vectorized backtester, you know it cannot express a stop or a flip whose fill depends on the path the price took; emsl can, and runs thousands of such paths in parallel. If you have driven a general backtesting framework, you know it owns your loop; here you own it. If you have used an off-the-shelf RL trading env, you know the fills are a toy; here the backtest, the RL env, and the sweep share one fill model and the same costs.
+**How it differs from what you already use.** If you have driven a vectorized backtester, you know it cannot express a stop or a flip whose fill depends on the path the price took; probatum can, and runs thousands of such paths in parallel. If you have driven a general backtesting framework, you know it owns your loop; here you own it. If you have used an off-the-shelf RL trading env, you know the fills are a toy; here the backtest, the RL env, and the sweep share one fill model and the same costs.
 
 <br>
 <br>
@@ -73,10 +73,10 @@ with ExchangeRouterClient("http://localhost:8040") as client:
     candles = client.get_candles("binance", "spot", "BTCUSDT", interval="1h", limit=5000)
 ```
 
-Then step through it. `emsl.to_ohlcv` turns that DataFrame (or a parquet path, or a numpy array you already hold) into the `(T, 5)` array the engine takes, ignoring the router's extra `volume_usd` column and handling its datetime index for you. Here a plain momentum rule: long above the last day's average, flat below it.
+Then step through it. `probatum.to_ohlcv` turns that DataFrame (or a parquet path, or a numpy array you already hold) into the `(T, 5)` array the engine takes, ignoring the router's extra `volume_usd` column and handling its datetime index for you. Here a plain momentum rule: long above the last day's average, flat below it.
 
 ```python
-from emsl import Engine, to_ohlcv
+from probatum import Engine, to_ohlcv
 
 eng = Engine(to_ohlcv(candles), market="spot", quote=10_000)
 close = eng.closes                             # zero-copy view of every close
@@ -99,10 +99,10 @@ print(state["equity"], state["position"])      # account value and position at t
 
 ## Ways to drive it
 
-Every surface below takes the same eleven engine knobs. `emsl.Market` holds them once so they cannot drift apart, and hands out the surfaces itself:
+Every surface below takes the same eleven engine knobs. `probatum.Market` holds them once so they cannot drift apart, and hands out the surfaces itself:
 
 ```python
-binance = emsl.Market(kind="perp", fee_taker=0.0004, slippage_bps=2.0,
+binance = probatum.Market(kind="perp", fee_taker=0.0004, slippage_bps=2.0,
                       leverage=5.0, funding_rate=0.0001, funding_interval=8)
 
 result = binance.backtest(candles).run(MyStrategy())
@@ -123,7 +123,7 @@ The order verbs mirror a real exchange, so a strategy is written against the sam
 A classic `Strategy` class with `init` and `next`, driven over the series, returning stats, the equity curve, and the trade log. Set `warmup` to the longest history a decision reads and `next` is not called until that many bars exist, which replaces the guard every strategy used to open with and closes what that guard was really for: on an early bar `close[i - 50]` is a negative index, numpy resolves it from the **end** of the array, and the rule reads prices from the future without raising anything.
 
 ```python
-from emsl.backtest import Backtester, Strategy
+from probatum.backtest import Backtester, Strategy
 
 class BuyDip(Strategy):
     warmup = 1                                # next() waits until a previous bar exists
@@ -147,14 +147,14 @@ The full stats set (total return, net profit, CAGR, Sharpe, Sortino, Calmar, dra
 
 ### Indicators
 
-`emsl.ta` carries 30 functions, a small closed set rather than an attempt at ta-lib. Every one returns **one value per bar** with the warm-up as a gap and never a shorter array, so the same object drives the rule and draws on the chart with no padding decision in between.
+`probatum.ta` carries 30 functions, a small closed set rather than an attempt at ta-lib. Every one returns **one value per bar** with the warm-up as a gap and never a shorter array, so the same object drives the rule and draws on the chart with no padding decision in between.
 
 ```python
-class Cross(emsl.Strategy):
+class Cross(probatum.Strategy):
     def init(self, engine):
-        fast, slow = emsl.ta.ema(engine.closes, 20), emsl.ta.ema(engine.closes, 60)
-        self.up = emsl.ta.crossover(fast, slow)          # a cross, not a level
-        self.trend = emsl.ta.adx(engine.highs, engine.lows, engine.closes).adx
+        fast, slow = probatum.ta.ema(engine.closes, 20), probatum.ta.ema(engine.closes, 60)
+        self.up = probatum.ta.crossover(fast, slow)          # a cross, not a level
+        self.trend = probatum.ta.adx(engine.highs, engine.lows, engine.closes).adx
         self.warmup = 80
 ```
 
@@ -168,7 +168,7 @@ A Gymnasium-compatible vectorized env. You control the observation (a window of 
 
 ```python
 import numpy as np
-from emsl.rl import VectorEnv
+from probatum.rl import VectorEnv
 
 def reward_fn(state, prev):                       # batched, one value per env
     return (state.equity - prev.equity) - 0.01 * np.abs(state.position)
@@ -191,9 +191,9 @@ Or skip the loop and hand it to Stable-Baselines3, which trains on the same env 
 
 ```python
 from stable_baselines3 import PPO
-from emsl.sb3 import EmslVecEnv
+from probatum.sb3 import ProbatumVecEnv
 
-PPO("MlpPolicy", EmslVecEnv(env)).learn(total_timesteps=100_000)   # A2C, DQN, SAC swap in
+PPO("MlpPolicy", ProbatumVecEnv(env)).learn(total_timesteps=100_000)   # A2C, DQN, SAC swap in
 ```
 
 The observation, reward, action, and autoreset contract, and the full training examples, are in the [RL Guide](.Documentation/RL_Guide.md).
@@ -203,8 +203,8 @@ The observation, reward, action, and autoreset contract, and the full training e
 Search a strategy's parameters for the setting that maximizes an objective. `tune` runs each trial as a full backtest through the same `Backtester`, so the strategy you backtest is the strategy you tune, and the trials run across worker processes, so the search scales over cores. This is the path for a strategy you write.
 
 ```python
-from emsl import tune
-from emsl.backtest import Strategy
+from probatum import tune
+from probatum.backtest import Strategy
 
 class SmaCross(Strategy):
     def __init__(self, fast, slow):           # the tunables, as constructor arguments
@@ -256,10 +256,10 @@ Higher wins by default; pass `direction="minimize"` when your metric is a cost. 
 
 ### Judging the result
 
-`emsl.metrics` is what you read once a run finishes. The first thing to look at is where the money actually went, because a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea.
+`probatum.metrics` is what you read once a run finishes. The first thing to look at is where the money actually went, because a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea.
 
 ```python
-from emsl import metrics
+from probatum import metrics
 
 metrics.summary(result, candles)                  # the headline, printed
 metrics.decompose(result)                         # gross, fees, funding, still open, net
@@ -277,15 +277,15 @@ For the probabilities there are `probabilistic_sharpe`, `sharpe_interval`, `min_
 
 ### Looking at the result
 
-The five paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve with its drawdown shaded onto it, a trade log, and any array of your own beside them.
+The five paths above produce numbers. `probatum.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve with its drawdown shaded onto it, a trade log, and any array of your own beside them.
 
 ```python
 import numpy as np
 
-import emsl
-from emsl.plot import Background, Band, Histogram, Level, Line
+import probatum
+from probatum.plot import Background, Band, Histogram, Level, Line
 
-result = emsl.backtest.Backtester(candles=frame, market="spot").run(strategy)
+result = probatum.backtest.Backtester(candles=frame, market="spot").run(strategy)
 
 # the bars the rule was actually in the market. Ticks index bars, so this is one
 # entry per candle; an equity curve is one shorter and the chart aligns it for you
@@ -293,7 +293,7 @@ held = np.zeros(len(frame), dtype=bool)
 for trade in result.trades:
     held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
 
-emsl.chart(
+probatum.chart(
     frame=frame,
     marks=[                                    # every array here is the strategy's
         Background(values=strategy.uptrend, fill="#2fe0a814"),
@@ -329,7 +329,7 @@ None of it is required. A frame alone is a chart, an array finds its own home, a
 **`save()` writes one HTML file** you open in a browser by double-clicking it, for the people who want the picture without the notebook.
 
 ```python
-emsl.chart(frame=frame, run=result).save(path="reports/run.html")
+probatum.chart(frame=frame, run=result).save(path="reports/run.html")
 ```
 
 It computes nothing and knows no indicator names: pass the strategy's own arrays and the line on screen cannot drift from the line that made the decision.
@@ -349,7 +349,7 @@ Throughput depends on which path you drive, and they differ by orders of magnitu
 | Single-env with a Python strategy | ~77K steps/s | your per-bar Python, not the engine |
 | Batched RL step | ~110-200K env-steps/s | building the observation, GIL released |
 
-The single-env rows say something worth internalizing: the engine steps at about 358K per second with nothing attached, and a strategy that recomputes indicators with numpy on every bar drops that to about 77K, so a single backtest is bound by your own per-bar code, not by emsl. Vectorize the indicators once and the rate climbs back toward the engine. The batched RL step releases the GIL and moves every env together, bound by building the observation rather than by the fill. A parameter search scales the other way, across processes rather than per bar, so its rate is trials per second and it grows with the cores you give it.
+The single-env rows say something worth internalizing: the engine steps at about 358K per second with nothing attached, and a strategy that recomputes indicators with numpy on every bar drops that to about 77K, so a single backtest is bound by your own per-bar code, not by probatum. Vectorize the indicators once and the rate climbs back toward the engine. The batched RL step releases the GIL and moves every env together, bound by building the observation rather than by the fill. A parameter search scales the other way, across processes rather than per bar, so its rate is trials per second and it grows with the cores you give it.
 
 These move with hardware and workload, so treat them as shape, not a promise. Run `benchmarks/throughput.py` for your own machine, and the Criterion bench in `crates/probatum-engine/benches` for the pure-Rust step and the in-core sweep.
 
@@ -366,7 +366,7 @@ From 1.0, a **minor** release will not remove an exported name, remove a keyword
 - A bar reaching both a stop and a target books the **worse** exit.
 - A liquidation is priced where the margin runs out, so bad debt is unreachable rather than clamped after the fact.
 - The statistics are never `NaN` and rank monotonically, so a bad run cannot win a search.
-- `emsl.ta` returns one value per bar, warm-up as a gap, never a shorter array.
+- `probatum.ta` returns one value per bar, warm-up as a gap, never a shorter array.
 - A `T-1` array on a chart maps entry `i` to bar `i + 1`.
 - `tune` holds out the **end** of a series, never a random slice.
 
@@ -408,7 +408,7 @@ The optional extras go in brackets before the `@`, and stack:
 | Extra | Pulls | For |
 | :--- | :--- | :--- |
 | `data` | pandas, pyarrow | DataFrame and parquet input |
-| `tune` | optuna, cloudpickle | the `emsl.tune` parameter search |
+| `tune` | optuna, cloudpickle | the `probatum.tune` parameter search |
 | `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
 
 ```bash

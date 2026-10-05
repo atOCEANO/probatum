@@ -11,8 +11,8 @@ Run it whenever the spec gains, loses, or renames a key, and bump ``schema`` in
 rebuilding the fixture, so the golden can never be recorded against a different
 chart from the one the test checks:
 
-    docker build --target builder -t emsl-builder .
-    docker run --rm -v "${PWD}:/repo" emsl-builder sh -c \
+    docker build --target builder -t probatum-builder .
+    docker run --rm -v "${PWD}:/repo" probatum-builder sh -c \
       "pip install --no-cache-dir /wheels/*.whl numpy pandas pyarrow pytest \
        && python /repo/dev/golden.py"
 
@@ -25,7 +25,7 @@ import json
 import pathlib
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT  = pathlib.Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 
 
@@ -33,22 +33,25 @@ def main():
     sys.path.insert(0, str(TESTS))
     import test_chart
 
-    path = TESTS / "chart_schema.json"
+    path   = TESTS / "chart_schema.json"
     before = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-    after = sorted(set(test_chart.key_paths(test_chart.everything().spec())))
+    after  = sorted(set(test_chart.key_paths(test_chart.everything().spec())))
 
-    added = [k for k in after if k not in before]
+    added   = [k for k in after if k not in before]
     dropped = [k for k in before if k not in after]
+
     if not added and not dropped:
         print(f"{path.name} is already current, {len(after)} key paths")
         return 0
 
     path.write_text(json.dumps(after, indent=2) + "\n", encoding="utf-8")
+
     for key in added:
         print(f"  + {key}")
     for key in dropped:
         print(f"  - {key}")
     print(f"{path.name}: {len(before)} key paths -> {len(after)}")
+
     return 0
 
 

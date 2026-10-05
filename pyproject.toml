@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
-name = "emsl"
+name = "probatum"
 description = "Embeddable market simulation library: a Rust-core crypto market simulator for reinforcement learning, backtests, and parameter search."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -33,5 +33,5 @@ Repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
 [tool.maturin]
 manifest-path = "crates/probatum-py/Cargo.toml"
 python-source = "python"
-module-name = "emsl._emsl"
+module-name = "probatum._probatum"
 features = ["pyo3/extension-module"]

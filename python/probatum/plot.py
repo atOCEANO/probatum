@@ -34,7 +34,7 @@ __all__ = [
 _STYLES = ("solid", "dashed", "dotted")
 _SHAPES = ("circle", "square", "arrow_up", "arrow_down")
 _SCALES = ("linear", "log", "percent")
-_SIDES = ("above", "below")
+_SIDES  = ("above", "below")
 
 # past the point a screen can tell two shades apart, and it keeps the palette a
 # fixed size no matter how many distinct values the input holds
@@ -51,6 +51,7 @@ def _as_array(values, where):
     # dependency that would not have helped (_data.py does the same)
     if type(values).__module__.split(".")[0] == "pandas":
         values = values.to_numpy()
+
     try:
         arr = np.array(values, dtype=np.float64, copy=True)
     except (TypeError, ValueError) as exc:
@@ -58,10 +59,12 @@ def _as_array(values, where):
             f"{where} must be numbers; pass a numpy array, a pandas Series, "
             f"or a list of floats"
         ) from exc
+
     if arr.ndim != 1:
         raise ValueError(f"{where} must be one dimensional, got shape {arr.shape}")
     if arr.size == 0:
         raise ValueError(f"{where} is empty")
+
     return arr
 
 
@@ -71,9 +74,11 @@ def _as_colors(values, where):
     # None, which a float cast would destroy
     if type(values).__module__.split(".")[0] == "pandas":
         values = values.to_numpy()
+
     arr = np.asarray(values, dtype=object)
     if arr.ndim != 1:
         raise ValueError(f"{where} must be one dimensional, got shape {arr.shape}")
+
     out = []
     for value in arr.tolist():
         if value is None or (isinstance(value, float) and math.isnan(value)):
@@ -84,6 +89,7 @@ def _as_colors(values, where):
             raise TypeError(
                 f"{where} must hold colour strings or None, got {value!r}"
             )
+
     return out
 
 
@@ -119,16 +125,20 @@ def _stops(value, where):
             f"{where} takes a colour or a gradient of stops; a "
             f"{{label: colour}} map is only meaningful on Background"
         )
+
     stops = list(value)
     if not stops:
         raise ValueError(f"{where} is empty")
+
     if len(stops) > _MAX_STOPS:
         # more entries than a gradient can have is one per bar. A chart of three
         # bars or fewer is not a chart, so the two forms cannot collide in practice
         return _as_colors(value, where)
+
     for stop in stops:
         if not isinstance(stop, str):
             raise TypeError(f"{where} stops must be colour strings, got {stop!r}")
+
     return stops
 
 
@@ -154,10 +164,12 @@ def _hex_to_rgba(value, where):
         raise ValueError(
             f"{where} stops must be #rrggbb or #rrggbbaa hex strings, got {value!r}"
         )
+
     try:
         parts = tuple(int(value[i:i + 2], 16) for i in range(1, len(value), 2))
     except ValueError as exc:
         raise ValueError(f"{where} stop {value!r} is not valid hex") from exc
+
     return parts if len(parts) == 4 else parts + (255,)
 
 
@@ -175,8 +187,10 @@ class _Mark:
 
     kind = None
 
+
     def __init__(self, name, panel):
         self.name = None if name is None else str(name)
+
         if panel is None:
             self.panel = None
         else:
@@ -189,6 +203,7 @@ class _Mark:
                     f"{type(self).__name__} panel needs a name; leave it out to "
                     f"place the mark automatically"
                 )
+
 
     def __repr__(self):
         label = "" if self.name is None else f" {self.name!r}"
@@ -210,16 +225,15 @@ class Panel:
     never moves it relative to a panel you did not name.
     """
 
+
     def __init__(self, name, *, show=True, weight=1, scale="linear", range=None):
         self.name = str(name)
         if not self.name:
             raise ValueError("a panel needs a name")
-        self.show = bool(show)
+
+        self.show   = bool(show)
         self.weight = float(weight)
-        # hiding used to be weight=0, which is a puzzle rather than a word:
-        # nobody looking for how to drop a panel searches for its stretch factor,
-        # and zero is a legitimate value in that vocabulary overloaded to mean
-        # something categorical. One spelling, and the old one names the new one
+
         if self.weight == 0.0:
             raise ValueError(
                 f"panel {self.name!r} weight is zero, which used to mean hidden; "
@@ -230,7 +244,9 @@ class Panel:
                 f"panel {self.name!r} weight must be a positive number, "
                 f"got {weight}"
             )
+
         self.scale = _one_of(scale, _SCALES, f"panel {self.name!r} scale")
+
         if range is None:
             self.range = None
         else:
@@ -244,6 +260,7 @@ class Panel:
                     f"panel {self.name!r} range low {low} must be below high {high}"
                 )
             self.range = (low, high)
+
 
     def __repr__(self):
         shown = "" if self.show else " hidden"
@@ -262,15 +279,17 @@ class Line(_Mark):
 
     kind = "line"
 
+
     def __init__(
         self, values, name=None, *, panel=None, color=None, fill=None,
         width=2, style="solid", step=False,
     ):
         super().__init__(name, panel)
-        where = f"Line {name!r}" if name else "Line"
+        where       = f"Line {name!r}" if name else "Line"
         self.values = _as_array(values, where)
-        self.color = _color(color, f"{where} color")
-        self.fill = _stops(fill, f"{where} fill")
+        self.color  = _color(color, f"{where} color")
+        self.fill   = _stops(fill, f"{where} fill")
+
         if self.fill is not None and len(self.fill) > _MAX_STOPS:
             # a line's fill is one area under one line, and an area carries one
             # gradient. Two colours means two regions, which is two marks
@@ -278,6 +297,7 @@ class Line(_Mark):
                 f"{where} fill takes a colour or a gradient, not one per bar; "
                 f"for a region that changes colour use two conditional Bands"
             )
+
         if self.fill is not None and not isinstance(self.color, (str, type(None))):
             # a filled line is drawn as an area, and an area carries ONE line
             # colour: the renderer ignores a per-bar colour on it entirely. The
@@ -291,11 +311,13 @@ class Line(_Mark):
                 f"the legend went on reporting it; drop fill, or pass a plain "
                 f"colour, or draw the fill as a Band underneath"
             )
+
         self.width = int(width)
         if self.width < 1:
             raise ValueError(f"{where} width must be at least 1, got {width}")
+
         self.style = _one_of(style, _STYLES, f"{where} style")
-        self.step = bool(step)
+        self.step  = bool(step)
 
 
 class Histogram(_Mark):
@@ -303,12 +325,13 @@ class Histogram(_Mark):
 
     kind = "histogram"
 
+
     def __init__(self, values, name=None, *, panel=None, color=None, base=0):
         super().__init__(name, panel)
-        where = f"Histogram {name!r}" if name else "Histogram"
+        where       = f"Histogram {name!r}" if name else "Histogram"
         self.values = _as_array(values, where)
-        self.color = _color(color, f"{where} color")
-        self.base = _finite(base, f"{where} base")
+        self.color  = _color(color, f"{where} color")
+        self.base   = _finite(base, f"{where} base")
 
 
 class Band(_Mark):
@@ -323,13 +346,15 @@ class Band(_Mark):
 
     kind = "band"
 
+
     def __init__(
         self, upper, lower, name=None, *, panel=None, fill=None, color=None,
         only=None,
     ):
         super().__init__(name, panel)
-        where = f"Band {name!r}" if name else "Band"
+        where      = f"Band {name!r}" if name else "Band"
         self.upper = _as_array(upper, f"{where} upper")
+
         if np.isscalar(lower) or isinstance(lower, (int, float)):
             self.lower = None
             self.level = _finite(lower, f"{where} lower")
@@ -341,15 +366,17 @@ class Band(_Mark):
                     f"{where} edges must be the same length; upper has "
                     f"{self.upper.size} values and lower has {self.lower.size}"
                 )
-        self.fill = _stops(fill, f"{where} fill")
+
+        self.fill  = _stops(fill, f"{where} fill")
         self.color = _color(color, f"{where} color")
-        self.only = None if only is None else _one_of(only, _SIDES, f"{where} only")
+        self.only  = None if only is None else _one_of(only, _SIDES, f"{where} only")
 
 
 class Level(_Mark):
     """A horizontal line at one value, drawn across the whole panel."""
 
     kind = "level"
+
 
     def __init__(
         self, value, name=None, *, panel=None, color=None, width=1,
@@ -361,6 +388,7 @@ class Level(_Mark):
         self.width = int(width)
         if self.width < 1:
             raise ValueError(f"Level width must be at least 1, got {width}")
+
         self.style = _one_of(style, _STYLES, "Level style")
 
 
@@ -376,11 +404,13 @@ class Marker(_Mark):
 
     kind = "marker"
 
+
     def __init__(
         self, bar, *, panel=None, value=None, text=None, shape="circle",
         offset=0, color=None,
     ):
         super().__init__(None, panel)
+
         try:
             self.bar = int(bar)
         except (TypeError, ValueError) as exc:
@@ -391,13 +421,15 @@ class Marker(_Mark):
                 f"meeting a condition use Markers(mask=...), which is the same "
                 f"thing plotshape does. Got {bar!r}"
             ) from exc
+
         if self.bar < 0:
             raise ValueError(f"Marker bar must be zero or positive, got {bar}")
-        self.value = None if value is None else _finite(value, "Marker value")
-        self.text = None if text is None else str(text)
-        self.shape = _one_of(shape, _SHAPES, "Marker shape")
+
+        self.value  = None if value is None else _finite(value, "Marker value")
+        self.text   = None if text is None else str(text)
+        self.shape  = _one_of(shape, _SHAPES, "Marker shape")
         self.offset = int(offset)
-        self.color = _one_color(color, "Marker color")
+        self.color  = _one_color(color, "Marker color")
 
 
 class Markers(_Mark):
@@ -420,13 +452,16 @@ class Markers(_Mark):
 
     kind = "markers"
 
+
     def __init__(
         self, mask, *, panel=None, value=None, text=None, shape="circle",
         offset=0, color=None,
     ):
         super().__init__(None, panel)
+
         if type(mask).__module__.split(".")[0] == "pandas":
             mask = mask.to_numpy()
+
         arr = np.asarray(mask)
         if arr.ndim != 1:
             raise ValueError(
@@ -434,6 +469,7 @@ class Markers(_Mark):
             )
         if arr.size == 0:
             raise ValueError("Markers mask is empty")
+
         if arr.dtype != bool:
             # a float mask is how a comparison arrives after passing through NaN,
             # and a NaN is not a condition being met, for the reason at_bar's
@@ -445,12 +481,13 @@ class Markers(_Mark):
                     f"before it gets here, because NaN is truthy"
                 )
             arr = arr != 0
-        self.mask = arr.copy()
-        self.value = _marker_values(value, arr.size)
-        self.text = None if text is None else str(text)
-        self.shape = _one_of(shape, _SHAPES, "Markers shape")
+
+        self.mask   = arr.copy()
+        self.value  = _marker_values(value, arr.size)
+        self.text   = None if text is None else str(text)
+        self.shape  = _one_of(shape, _SHAPES, "Markers shape")
         self.offset = int(offset)
-        self.color = _one_color(color, "Markers color")
+        self.color  = _one_color(color, "Markers color")
 
 
 def _marker_values(value, size):
@@ -458,12 +495,14 @@ def _marker_values(value, size):
         return None
     if np.ndim(value) == 0:
         return _finite(value, "Markers value")
+
     arr = _as_array(value, "Markers value")
     if arr.size != size:
         raise ValueError(
             f"Markers value has {arr.size} entries and the mask has {size}; one "
             f"anchor per bar, or a single number for all of them"
         )
+
     return arr
 
 
@@ -482,10 +521,13 @@ class Background(_Mark):
 
     kind = "background"
 
+
     def __init__(self, values, name=None, *, panel=None, fill=None):
         super().__init__(name, panel)
+
         if type(values).__module__.split(".")[0] == "pandas":
             values = values.to_numpy()
+
         arr = np.asarray(values, dtype=object)
         if arr.ndim != 1:
             raise ValueError(
@@ -494,6 +536,7 @@ class Background(_Mark):
         if arr.size == 0:
             raise ValueError("Background values is empty")
         self.values = arr.tolist()
+
         if isinstance(fill, dict):
             self.fill = {
                 key: _stops(value, f"Background fill {key!r}")
@@ -520,6 +563,7 @@ def ramp(values, *stops, colors=None, domain=None):
     128 steps, so the result is reproducible and the palette stays small.
     """
     arr = _as_array(values, "ramp values")
+
     if colors is not None:
         if stops:
             raise TypeError(
@@ -527,15 +571,17 @@ def ramp(values, *stops, colors=None, domain=None):
                 f"list; pass them one way or the other"
             )
         stops = tuple(colors)
+
     if len(stops) < 2:
         raise ValueError(f"ramp needs at least two colour stops, got {len(stops)}")
-    rgba = [_hex_to_rgba(stop, "ramp") for stop in stops]
+
+    rgba   = [_hex_to_rgba(stop, "ramp") for stop in stops]
     finite = np.isfinite(arr)
 
     if domain is None:
         if not finite.any():
             return [None] * arr.size
-        low = float(np.nanmin(arr[finite]))
+        low  = float(np.nanmin(arr[finite]))
         high = float(np.nanmax(arr[finite]))
     else:
         low, high = (float(x) for x in domain)
@@ -552,17 +598,18 @@ def ramp(values, *stops, colors=None, domain=None):
     # distinct colours no matter how long the series, so mix them once and index.
     # Mixing per bar meant a 100k series paid 100k tuple builds and 100k string
     # joins to produce 128 different answers
-    span = len(rgba) - 1
+    span    = len(rgba) - 1
     palette = []
     for step in range(_RAMP_STEPS):
         at = (step / (_RAMP_STEPS - 1)) * span
-        k = min(span - 1, int(at))
+        k  = min(span - 1, int(at))
         palette.append(_rgba_to_hex(_mix(rgba[k], rgba[k + 1], at - k)))
 
     # a non-finite entry is scored as zero so the cast has something to bite on;
     # its index is never read, because finite decides the output
     scaled = np.where(finite, (arr - low) / (high - low), 0.0)
-    steps = np.rint(np.clip(scaled, 0.0, 1.0) * (_RAMP_STEPS - 1)).astype(np.int64)
+    steps  = np.rint(np.clip(scaled, 0.0, 1.0) * (_RAMP_STEPS - 1)).astype(np.int64)
+
     return [
         palette[step] if ok else None
         for step, ok in zip(steps.tolist(), finite.tolist())
@@ -584,14 +631,14 @@ class Recorder:
     one that describes the bar after it, like a level the next bar is tested
     against. Reading a key back gives one value per bar, already placed:
 
-        class Carry(emsl.Strategy):
+        class Carry(probatum.Strategy):
             def init(self, engine):
-                self.log = emsl.plot.Recorder(engine)
+                self.log = probatum.plot.Recorder(engine)
 
             def next(self, state, engine):
                 self.log.at_bar(state, lev=..., flat=state["position"] == 0.0)
 
-        emsl.chart(frame, Line(strategy.log["lev"], "leverage"), result).show()
+        probatum.chart(frame, Line(strategy.log["lev"], "leverage"), result).show()
 
     A bar you never reached is a gap, and a boolean one is ``False``, so an early
     return during a warm-up costs nothing and needs no padding. One key holds one
@@ -601,28 +648,35 @@ class Recorder:
     strategy you mean to sweep across hundreds of trials.
     """
 
+
     def __init__(self, bars):
         # an engine, or the number of bars. Knowing the length up front is what
         # lets a bar that was never reached stay a gap instead of shifting
         # everything after it
         if hasattr(bars, "reset") and hasattr(bars, "data"):
             bars = len(bars.data)
+
         self._n = int(bars)
         if self._n < 1:
             raise ValueError(f"Recorder needs at least one bar, got {bars}")
+
         self._series = {}
-        self._shift = {}
+        self._shift  = {}
+
 
     def at_bar(self, at, **values):
         """Record values that were already true on the bar you were handed."""
         self._write(0, at, values)
 
+
     def at_next(self, at, **values):
         """Record values that describe the bar after the one you were handed."""
         self._write(1, at, values)
 
+
     def _write(self, shift, at, values):
         bar = at["tick_index"] if isinstance(at, dict) else int(at)
+
         for key, value in values.items():
             store = self._series.get(key)
             if store is None:
@@ -639,9 +693,11 @@ class Recorder:
                     f"{key!r} was first recorded as a boolean and is now "
                     f"{value!r}; one key holds one kind"
                 )
+
             target = bar + shift
             if 0 <= target < self._n:
                 store[target] = value
+
 
     def _open(self, key, value, shift):
         # a boolean fills with False rather than NaN, because a bar nothing was
@@ -651,8 +707,9 @@ class Recorder:
                  if isinstance(value, (bool, np.bool_))
                  else np.full(self._n, np.nan))
         self._series[key] = blank
-        self._shift[key] = shift
+        self._shift[key]  = shift
         return blank
+
 
     def __getitem__(self, key):
         try:
@@ -663,14 +720,18 @@ class Recorder:
                 f"{sorted(self._series)}"
             ) from None
 
+
     def __contains__(self, key):
         return key in self._series
+
 
     def __len__(self):
         return len(self._series)
 
+
     def keys(self):
         return list(self._series)
+
 
     def __repr__(self):
         return f"<Recorder {self._n} bars, {sorted(self._series)}>"

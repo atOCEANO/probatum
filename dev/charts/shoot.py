@@ -17,12 +17,8 @@ from playwright.sync_api import sync_playwright
 
 CHARTS = pathlib.Path("/work/charts")
 
-# their own folder under imgs: these are generated, so they do not get mixed in
-# with the hand-made diagrams beside them
 IMAGES = pathlib.Path("/out/imgs/charts")
 
-# twice the scale, because these are read on displays that have had twice the
-# pixels for a decade
 SCALE = 2
 
 # the settle is for the renderer, not for the page: lightweight-charts sizes
@@ -37,7 +33,7 @@ def main():
         print(f"no {manifest}, so there is nothing to shoot; run build.py first")
         return 1
 
-    shots = json.loads(manifest.read_text(encoding="utf-8"))
+    shots   = json.loads(manifest.read_text(encoding="utf-8"))
     missing = sorted(name for name in shots
                      if not (CHARTS / f"{name}.html").is_file())
     if missing:
@@ -45,19 +41,18 @@ def main():
         return 1
 
     IMAGES.mkdir(parents=True, exist_ok=True)
+
     with sync_playwright() as play:
         browser = play.chromium.launch()
         for name in sorted(shots):
-            shot = shots[name]
-            width = shot["width"]
-            # the table panel opens under the plot and is no part of the chart's
-            # own height, so a shot that has to show it says how much room to
-            # leave rather than the manifest overstating how tall the chart is
+            shot   = shots[name]
+            width  = shot["width"]
             height = shot["height"] + shot.get("below", 0)
-            page = browser.new_page(
+            page   = browser.new_page(
                 viewport={"width": width, "height": height},
                 device_scale_factor=SCALE,
             )
+
             page.goto((CHARTS / f"{name}.html").as_uri())
             page.wait_for_timeout(SETTLE_MS)
             if shot.get("open"):
@@ -67,15 +62,18 @@ def main():
                 # hover colour. Nothing here retouches, so the pointer moves
                 page.mouse.move(0, 0)
                 page.wait_for_timeout(500)
+
             page.screenshot(path=str(IMAGES / f"{name}.png"))
             page.close()
             size = (IMAGES / f"{name}.png").stat().st_size
             print(f"{name + '.png':<22} {width}x{height} "
                   f"({width / height:.1f}:1) at {SCALE}x {size / 1000:>6.0f} kB"
                   f"   {shot['caption']}")
+
         browser.close()
 
     print(f"\n{len(shots)} images written to {IMAGES}")
+
     return 0
 
 

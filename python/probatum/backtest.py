@@ -13,27 +13,24 @@ import hashlib
 import numpy as np
 
 from ._data import annualization, prepare
-from ._emsl import Engine
+from ._probatum import Engine
 
 
 def _version():
     try:
         from importlib.metadata import version
-
-        return version("emsl")
+        return version("probatum")
     except Exception:
         return "0.0.0"
 
 
 def _name(strategy):
-    # the class name plus whatever the strategy chose to say about itself. A
-    # __repr__ is worth defining on a tunable strategy for exactly this reason:
-    # two rows reading "SmaCross" and "SmaCross" tell you nothing
     kind = type(strategy).__name__
     try:
         shown = repr(strategy)
     except Exception:
         return kind
+
     return kind if shown.startswith("<") else f"{kind} {shown}"
 
 
@@ -71,8 +68,10 @@ class Strategy:
 
     warmup = 0
 
+
     def init(self, engine):
         pass
+
 
     def next(self, state, engine):
         raise NotImplementedError("Strategy.next must be overridden")
@@ -88,7 +87,7 @@ class BacktestResult:
     reading cannot disagree (ADR 0042). It is ``None`` on a result built by hand.
 
     ``periods_per_year`` is the annualization the stats were computed at, carried
-    for the same reason: anything reading the curve again, ``emsl.metrics`` most
+    for the same reason: anything reading the curve again, ``probatum.metrics`` most
     of all, has to reach the same numbers this result already reports, and
     inferring it twice is how two readings come to disagree (ADR 0004).
 
@@ -104,20 +103,22 @@ class BacktestResult:
     and an account drained by fees or funding books nothing at all.
     """
 
+
     def __init__(self, stats, equity_curve, trades, initial=None,
                  periods_per_year=None, risk_free=0.0, config=None,
                  data_hash=None, strategy=None, bust=False):
-        self.stats = stats
-        self.equity_curve = equity_curve
-        self.trades = trades
-        self.initial = initial
+        self.stats            = stats
+        self.equity_curve     = equity_curve
+        self.trades           = trades
+        self.initial          = initial
         self.periods_per_year = periods_per_year
-        self.risk_free = risk_free
-        self.config = dict(config) if config else {}
-        self.data_hash = data_hash
-        self.strategy = strategy
-        self.bust = bool(bust)
-        self.version = _version()
+        self.risk_free        = risk_free
+        self.config           = dict(config) if config else {}
+        self.data_hash        = data_hash
+        self.strategy         = strategy
+        self.bust             = bool(bust)
+        self.version          = _version()
+
 
     def to_dict(self):
         """The run's identity and its headline, as plain JSON-safe data.
@@ -127,23 +128,27 @@ class BacktestResult:
         neither distinguishes anything. ``data_hash`` does, in eight characters.
         """
         out = {
-            "strategy": self.strategy,
-            "data_hash": self.data_hash,
-            "version": self.version,
-            "initial": self.initial,
+            "strategy":         self.strategy,
+            "data_hash":        self.data_hash,
+            "version":          self.version,
+            "initial":          self.initial,
             "periods_per_year": self.periods_per_year,
-            "risk_free": self.risk_free,
-            "bust": self.bust,
-            "bars": len(self.equity_curve) + 1 if self.equity_curve is not None else 0,
+            "risk_free":        self.risk_free,
+            "bust":             self.bust,
+            "bars":             len(self.equity_curve) + 1 if self.equity_curve is not None else 0,
         }
+
         out.update({f"config_{k}": v for k, v in self.config.items()})
         out.update(self.stats or {})
+
         return out
+
 
     def __repr__(self):
         stats = self.stats or {}
-        ret = stats.get("total_return_pct", 0.0)
-        n = stats.get("num_trades", 0)
+        ret   = stats.get("total_return_pct", 0.0)
+        n     = stats.get("num_trades", 0)
+
         return f"BacktestResult(total_return_pct={ret:.2f}, num_trades={n})"
 
 
@@ -160,6 +165,7 @@ class Backtester:
     a number to state it yourself. A numpy input has no index to read, and it
     says so rather than assuming (ADR 0004).
     """
+
 
     def __init__(
         self,
@@ -178,9 +184,8 @@ class Backtester:
         periods_per_year=None,
         risk_free=0.0,
     ):
-        # one read: a parquet path used to be decoded twice, once for the candles
-        # and once for the index
         self._candles, self._index = prepare(candles)
+
         # owned rather than aliased. ascontiguousarray hands back the caller's own
         # object when it is already contiguous float64, and run() builds a fresh
         # Engine off this buffer every call, so editing the array in place between
@@ -189,6 +194,7 @@ class Backtester:
         # exactly the question it was getting wrong (ADR 0026)
         if isinstance(candles, np.ndarray) and np.shares_memory(self._candles, candles):
             self._candles = self._candles.copy()
+
         self._config = dict(
             market=market,
             quote=quote,
@@ -202,35 +208,40 @@ class Backtester:
             funding_rate=funding_rate,
             funding_interval=funding_interval,
         )
+
         self._periods_per_year = annualization(periods_per_year, self._index)
-        self._risk_free = risk_free
+        self._risk_free        = risk_free
+
         # fingerprinted once here rather than per run, so a sweep pays for it a
         # single time no matter how many trials it drives through this backtester
         self._data_hash = _fingerprint(self._candles)
 
+
     def run(self, strategy):
         engine = Engine(self._candles, report=True, **self._config)
         engine.run(strategy)
+
         trades = engine.trades()
         self._stamp_times(trades)
+
         return BacktestResult(
-            stats=engine.stats(self._periods_per_year, self._risk_free),
-            equity_curve=engine.equity_curve(),
-            trades=trades,
-            initial=self._config["quote"],
-            periods_per_year=self._periods_per_year,
-            risk_free=self._risk_free,
-            config=self._config,
-            data_hash=self._data_hash,
-            strategy=_name(strategy),
-            bust=engine.is_bust(),
+            stats            = engine.stats(self._periods_per_year, self._risk_free),
+            equity_curve     = engine.equity_curve(),
+            trades           = trades,
+            initial          = self._config["quote"],
+            periods_per_year = self._periods_per_year,
+            risk_free        = self._risk_free,
+            config           = self._config,
+            data_hash        = self._data_hash,
+            strategy         = _name(strategy),
+            bust             = engine.is_bust(),
         )
 
+
     def _stamp_times(self, trades):
-        # when the input carried a datetime index, map each trade's entry and exit
-        # tick to a timestamp; a numpy input has no index, so trades stay tick-only
         if self._index is None:
             return
+
         n = len(self._index)
         for t in trades:
             entry, exit_ = t["entry_tick"], t["exit_tick"]

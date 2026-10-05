@@ -30,7 +30,7 @@ from .plot import Line, Panel, _Mark, _color
 
 __all__ = ["chart", "chart_defaults", "Chart"]
 
-_HERE = pathlib.Path(__file__).parent
+_HERE   = pathlib.Path(__file__).parent
 _STATIC = _HERE / "_static"
 
 # an explicit ordered tuple rather than a directory glob: nothing here executes at
@@ -53,10 +53,8 @@ _PLACEHOLDER = re.compile(r"__[A-Z_]+__")
 # not in here: that one is escaped on both paths it travels
 _UNSAFE = re.compile(r"[<>\";{}]")
 
-# drawdown was 1.2, which on the flagship layout left it about a seventh of the
-# height: enough for a curve, not enough for an axis, and it resolved to two ticks
 _WEIGHTS = {"price": 5.0, "volume": 1.0, "equity": 2.0, "drawdown": 1.5}
-_AUTO = ("price", "volume", "equity", "drawdown")
+_AUTO    = ("price", "volume", "equity", "drawdown")
 
 # a notebook stores a cell's output verbatim, so a chart's data is paid for once
 # in the .ipynb and again in every copy of it. Measured rather than guessed from
@@ -76,7 +74,7 @@ _BIG_BYTES = 8_000_000
 # the four are blue, amber, violet and grey, which is also the order they read
 # apart in: no adjacent pair shares a hue family, and each clears 5:1 on its ground
 _PALETTES = {
-    "dark": {
+    "dark":  {
         "surface": "#070d13", "plane": "#05090e", "grid": "#131c26",
         "axis": "#1f2a36", "ink": "#e9ebee", "ink2": "#aab1bb",
         "muted": "#717a85", "hairline": "rgba(255,255,255,0.16)",
@@ -116,18 +114,17 @@ def _theme_mode(value):
             f"theme must be 'dark', 'light' or 'auto', got {value!r}; 'auto' "
             f"opens on whichever the reader's system asks for"
         )
+
     return value
 
 
 def _palette(palette):
-    # one validator for chart(palette=) and chart_defaults(palette=), because the
-    # two are the same setting and one refusing what the other accepts is a
-    # difference no caller can see
     merged = {}
     for mode, values in palette.items():
         if mode not in _PALETTES:
             raise ValueError(f"palette keys must be 'dark' or 'light', got {mode!r}")
         merged[mode] = {k: _safe_value(v, "palette") for k, v in values.items()}
+
     return merged
 
 
@@ -148,6 +145,7 @@ def _drawdown_mode(value):
             f"'under' shades the fall on the equity panel and 'panel' gives it "
             f"a pane of its own"
         )
+
     return value
 
 # the four that decide whether a strategy is worth keeping. Formatting lives here
@@ -157,20 +155,20 @@ _HEADLINE = ("total_return_pct", "sharpe", "max_drawdown_pct", "num_trades")
 
 _STAT_LABELS = {
     "total_return_pct": ("return", "{:+.1f}%"),
-    "net_profit_pct": ("net", "{:+.1f}%"),
-    "cagr_pct": ("cagr", "{:+.1f}%"),
-    "sharpe": ("sharpe", "{:.2f}"),
-    "sortino": ("sortino", "{:.2f}"),
-    "calmar": ("calmar", "{:.2f}"),
+    "net_profit_pct":   ("net", "{:+.1f}%"),
+    "cagr_pct":         ("cagr", "{:+.1f}%"),
+    "sharpe":           ("sharpe", "{:.2f}"),
+    "sortino":          ("sortino", "{:.2f}"),
+    "calmar":           ("calmar", "{:.2f}"),
     "max_drawdown_pct": ("max dd", "{:.1f}%"),
-    "volatility_pct": ("vol", "{:.1f}%"),
-    "exposure_pct": ("exposure", "{:.1f}%"),
-    "win_rate": ("win rate", "{:.0%}"),
-    "profit_factor": ("profit factor", "{:.2f}"),
-    "avg_trade_pct": ("avg trade", "{:+.2f}%"),
-    "num_trades": ("trades", "{:.0f}"),
-    "num_fills": ("fills", "{:.0f}"),
-    "funding_paid": ("funding", "{:+.2f}"),
+    "volatility_pct":   ("vol", "{:.1f}%"),
+    "exposure_pct":     ("exposure", "{:.1f}%"),
+    "win_rate":         ("win rate", "{:.0%}"),
+    "profit_factor":    ("profit factor", "{:.2f}"),
+    "avg_trade_pct":    ("avg trade", "{:+.2f}%"),
+    "num_trades":       ("trades", "{:.0f}"),
+    "num_fills":        ("fills", "{:.0f}"),
+    "funding_paid":     ("funding", "{:+.2f}"),
 }
 
 _FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
@@ -214,27 +212,32 @@ _bundled = None
 
 
 def _time_hint(frame):
-    # returns the set_index line that would fix this frame, or None if there is no
-    # column that could plausibly be its clock
     columns = getattr(frame, "columns", None)
     if columns is None:
         return None
+
     found = next((c for c in _TIME_COLUMNS if c in columns), None)
     if found is None:
         return None
+
     column = frame[found]
     if getattr(column, "ndim", 1) != 1:
         return None
+
     if column.dtype.kind == "M":
         return f"frame.set_index({found!r})"
+
     if column.dtype.kind not in "iuf" or not len(column):
         return None
+
     values = np.abs(np.asarray(column, dtype=np.float64))
     values = values[np.isfinite(values)]
     if not values.size:
         return None
+
     biggest = float(values.max())
-    unit = next(u for threshold, u in _EPOCH_UNITS if biggest >= threshold)
+    unit    = next(u for threshold, u in _EPOCH_UNITS if biggest >= threshold)
+
     return (
         f"frame.set_index(pandas.to_datetime(frame[{found!r}], unit={unit!r}))"
     )
@@ -248,8 +251,10 @@ def _needs_time(frame):
         hint = _time_hint(frame)
     except Exception:
         hint = None
+
     if hint is None:
         return TypeError(_NEEDS_TIME)
+
     return TypeError(
         f"{_NEEDS_TIME}. This frame keeps its clock in a column, so it is one "
         f"line away: {hint}"
@@ -258,19 +263,16 @@ def _needs_time(frame):
 
 @functools.lru_cache(maxsize=None)
 def _asset(name):
-    # the assets are static for the life of the process, and the template, the
-    # stylesheet and the 196 KB renderer were being re-read off disk on every
-    # single render
     return (_STATIC / name).read_text(encoding="utf-8")
 
 
 def _bundle():
-    # joined once, for the reason _asset is cached
     global _bundled
     if _bundled is None:
         _bundled = "\n".join(
             "// ---- " + name + "\n" + _asset(name) for name in _ASSETS
         )
+
     return _bundled
 
 
@@ -282,6 +284,7 @@ def _ipython():
             "IPython is required for Chart.show; use Chart.save(path) to write a "
             "file instead, which needs nothing"
         ) from exc
+
     return display, HTML
 
 
@@ -290,17 +293,20 @@ def _in_notebook():
         from IPython import get_ipython
     except ImportError:
         return False
+
     shell = get_ipython()
     return shell is not None and hasattr(shell, "kernel")
 
 
 def _safe(value, where):
     text = str(value)
+
     if _UNSAFE.search(text):
         raise ValueError(
             f"{where} cannot contain <, >, quotes, semicolons or braces; "
             f"got {value!r}"
         )
+
     return text
 
 
@@ -310,19 +316,19 @@ def _safe_value(value, where):
     # the check and ship as one long string where the renderer needs three entries
     if isinstance(value, (list, tuple)):
         return [_safe(item, where) for item in value]
+
     return _safe(value, where)
 
 
 def _height(value):
-    # one floor for both entry points: chart(height=) and chart_defaults(height=)
-    # are the same setting, and one refusing what the other accepts is a
-    # difference no caller can see
     value = int(value)
+
     if value < 120:
         raise ValueError(
             f"height must be at least 120 pixels, got {value}; a shorter chart "
             f"has no room for an axis"
         )
+
     return value
 
 
@@ -330,16 +336,20 @@ def _start_for(size, num_bars, label, ahead=0):
     # the bar index a series of this length begins at (ADR 0042)
     if size == num_bars:
         return 0
+
     if size == num_bars - 1:
         return 1
+
     if ahead and size == num_bars + ahead:
         return 0
+
     lengths = (
         f"{num_bars}, one per bar, or {num_bars - 1}, drawn from bar 1 like an "
         f"equity curve or a diff"
     )
     if ahead:
         lengths += f", or {num_bars + ahead}, running {ahead} bars past the last candle"
+
     raise ValueError(f"{label} has {size} values, frame has {num_bars}; expected {lengths}")
 
 
@@ -353,12 +363,14 @@ def _align(values, num_bars, label, places=8, ahead=0):
     # (ADR 0042). The leading non-finite run folds into i0, so a rolling warm-up
     # costs no bytes and the alignment stays exact; an interior gap stays in place
     # as None, because a hole in the middle is information (ADR 0042)
-    start = _start_for(len(values), num_bars, label, ahead)
+    start  = _start_for(len(values), num_bars, label, ahead)
     finite = np.isfinite(values)
     if not finite.any():
         return start, []
+
     lead = int(np.argmax(finite))
     kept = finite[lead:]
+
     # rounding through numpy and letting tolist build the Python floats is the whole
     # of the work when nothing is missing, which is the ordinary case: an equity
     # curve, a volume column and any rolling feature are gapless once warmed up.
@@ -369,6 +381,7 @@ def _align(values, num_bars, label, places=8, ahead=0):
     rounded = np.round(values[lead:], places)
     if kept.all():
         return start + lead, rounded.tolist()
+
     tail = [
         None if not ok else v
         for v, ok in zip(rounded.tolist(), kept.tolist())
@@ -385,24 +398,26 @@ def _track(values, num_bars, label, places=8, ahead=0):
 
 
 def _encode_color(value, num_bars, label, ahead=0):
-    # a scalar colour passes through; a per-bar one becomes a palette and indices,
-    # which also puts it through the length contract every other array obeys
     if value is None or isinstance(value, str):
         return value
-    start = _start_for(len(value), num_bars, label, ahead)
+
+    start   = _start_for(len(value), num_bars, label, ahead)
     palette = [None]
-    seen = {}
-    keys = []
+    seen    = {}
+    keys    = []
+
     for item in value:
         if item is None:
             keys.append(0)
             continue
+
         at = seen.get(item)
         if at is None:
             at = len(palette)
             palette.append(item)
             seen[item] = at
         keys.append(at)
+
     return {"i0": start, "p": palette, "k": keys}
 
 
@@ -412,8 +427,10 @@ def _truthy(value):
     # answer the question is by definition not a condition being met
     if value is None:
         return False
+
     if isinstance(value, float) and math.isnan(value):
         return False
+
     try:
         return bool(value)
     except TypeError:
@@ -421,9 +438,8 @@ def _truthy(value):
 
 
 def _spans(values, fill, num_bars, label, ahead=0):
-    # run-length a label or mask array into spans plus the fill table they index,
-    # so a background costs one entry per region rather than one per bar
     start = _start_for(len(values), num_bars, label, ahead)
+
     if isinstance(fill, dict):
         table = {}
         fills = []
@@ -431,12 +447,14 @@ def _spans(values, fill, num_bars, label, ahead=0):
         # which region the crosshair is over. A mask has no names to send, and
         # sends none rather than a list of nulls
         keys = []
+
         for key, stops in fill.items():
             # a label mapped to nothing shades nothing, which is what an absent
             # key already means. It must not reach fills: the renderer builds its
             # gradient cache by mapping over every entry
             if stops is None:
                 continue
+
             table[key] = len(fills)
             fills.append(stops)
             keys.append(str(key))
@@ -448,38 +466,43 @@ def _spans(values, fill, num_bars, label, ahead=0):
                 return None
     else:
         fills = [fill if fill else list(_BACKGROUND_FILL)]
-        keys = None
+        keys  = None
 
         def at(value):
             return 0 if _truthy(value) else None
 
-    spans = []
+    spans   = []
     open_at = -1
-    key = None
+    key     = None
+
     for offset in range(len(values) + 1):
         here = at(values[offset]) if offset < len(values) else None
         if here != key:
             if key is not None and open_at >= 0:
                 spans.append([start + open_at, start + offset, key])
-            key = here
+            key     = here
             open_at = offset if here is not None else -1
+
     return spans, fills, keys
 
 
 def _extent(values):
-    arr = np.asarray(values, dtype=np.float64)
+    arr    = np.asarray(values, dtype=np.float64)
     finite = arr[np.isfinite(arr)]
     if not finite.size:
         return None
+
     return float(finite.min()), float(finite.max())
 
 
 def _digits(extent):
     if extent is None:
         return 2
+
     span = extent[1] - extent[0]
     if span <= 0:
         span = abs(extent[1]) or 1.0
+
     places = int(math.ceil(-math.log10(span / 1000.0)))
     return max(0, min(8, places))
 
@@ -491,23 +514,27 @@ def _edges(mark, num_bars, index=0, ahead=0):
     # both need this answer and used to disagree: a band's lower edge moved
     # neither, and a level moved the extent but not the guard
     label = _label(mark, index)
+
     if mark.kind in ("line", "histogram"):
         start = _start_for(len(mark.values), num_bars, label, ahead)
-        out = [(label, mark.values, start)]
+        out   = [(label, mark.values, start)]
         if mark.kind == "histogram":
             out.append((f"{label} base", np.full(1, mark.base), None))
         return out
+
     if mark.kind == "band":
         start = _start_for(len(mark.upper), num_bars, label, ahead)
-        out = [(f"{label} upper", mark.upper, start)]
+        out   = [(f"{label} upper", mark.upper, start)]
         if mark.lower is None:
             out.append((f"{label} lower", np.full(1, mark.level), None))
         else:
             below = _start_for(len(mark.lower), num_bars, label, ahead)
             out.append((f"{label} lower", mark.lower, below))
         return out
+
     if mark.kind == "level":
         return [(label, np.full(1, mark.value), None)]
+
     return []
 
 
@@ -519,17 +546,20 @@ def _place(extent, price):
     # the threshold is the guarantee (ADR 0042)
     if extent is None or price is None or price[1] <= price[0]:
         return True
+
     span = max(price[1], extent[1]) - min(price[0], extent[0])
     return span <= 0 or (price[1] - price[0]) / span >= 0.5
 
 
 def _dead(values):
-    arr = np.asarray(values, dtype=np.float64)
+    arr    = np.asarray(values, dtype=np.float64)
     finite = arr[np.isfinite(arr)]
     if not finite.size:
         return "every value is NaN"
+
     if float(finite.min()) == float(finite.max()):
         return f"every value is {float(finite.min())}"
+
     return None
 
 
@@ -558,10 +588,12 @@ def _flatten(arg):
     if isinstance(arg, (list, tuple)):
         if arg and all(isinstance(x, (int, float, np.number)) for x in arg):
             return [arg]
+
         out = []
         for item in arg:
             out.extend(_flatten(item))
         return out
+
     return [arg]
 
 
@@ -574,9 +606,10 @@ def _is_result(item):
 
 
 def _collect(args):
-    marks = []
+    marks  = []
     result = None
-    spare = 0
+    spare  = 0
+
     for arg in args:
         for item in _flatten(arg):
             if item is None:
@@ -590,6 +623,7 @@ def _collect(args):
                     spare += 1
             else:
                 marks.append(Line(item))
+
     if spare:
         warnings.warn(
             f"chart draws one run and {spare + 1} were given; the first is used. "
@@ -598,6 +632,7 @@ def _collect(args):
             RuntimeWarning,
             stacklevel=3,
         )
+
     return marks, result
 
 
@@ -624,7 +659,8 @@ def chart_defaults(theme=None, height=None, palette=None, drawdown=None):
     line rather than at every call site.
     """
     previous = dict(_DEFAULTS)
-    pending = {}
+    pending  = {}
+
     if theme is not None:
         pending["theme"] = _theme_mode(theme)
     if height is not None:
@@ -633,6 +669,7 @@ def chart_defaults(theme=None, height=None, palette=None, drawdown=None):
         pending["drawdown"] = _drawdown_mode(drawdown)
     if palette is not None:
         pending["palette"] = _palette(palette)
+
     # applied only once every argument has passed. A call that raised halfway
     # through used to leave the theme set and the height not, and the caller never
     # got the previous values back to restore from
@@ -641,13 +678,14 @@ def chart_defaults(theme=None, height=None, palette=None, drawdown=None):
 
 
 def _assign(marks, ohlc):
-    # which panel every mark lands on, in argument order
     price = (float(np.nanmin(ohlc[:, 2])), float(np.nanmax(ohlc[:, 1])))
     names = []
+
     for index, mark in enumerate(marks):
         if mark.panel is not None:
             names.append(mark.panel)
             continue
+
         if mark.kind in ("line", "histogram", "band"):
             values = mark.upper if mark.kind == "band" else mark.values
             extent = _extent(values)
@@ -676,7 +714,9 @@ def _assign(marks, ohlc):
                     RuntimeWarning,
                     stacklevel=3,
                 )
+
             names.append("price")
+
     return names
 
 
@@ -692,9 +732,11 @@ def _order(names, config, has_volume, has_result, drawdown="under"):
     order = ["price"]
     if has_volume:
         order.append("volume")
+
     for name in names:
         if name not in order:
             order.append(name)
+
     if has_result:
         # the drawdown earns a pane of its own only when it was asked for one.
         # Shaded on the equity panel it is a band rather than a panel, so it never
@@ -703,6 +745,7 @@ def _order(names, config, has_volume, has_result, drawdown="under"):
         for name in auto:
             if name not in order:
                 order.append(name)
+
     # panels= fixes the relative order of the panels it names without moving them
     # relative to the panels it does not: take the slots those panels already
     # occupy and write them back in the listed order. Naming one panel therefore
@@ -712,12 +755,14 @@ def _order(names, config, has_volume, has_result, drawdown="under"):
         slots = sorted(order.index(name) for name in listed)
         for slot, name in zip(slots, listed):
             order[slot] = name
+
     return order
 
 
 def _build_panels(order, config, marks, names, num_bars, ohlc, vol, equity, dd,
                   ahead=0):
     by_name = {p.name: p for p in config}
+
     if by_name.get("price") is not None and not by_name["price"].show:
         raise ValueError(
             "panel 'price' carries the candles, so it cannot be hidden; drop the "
@@ -726,11 +771,14 @@ def _build_panels(order, config, marks, names, num_bars, ohlc, vol, equity, dd,
 
     hidden = {p.name for p in config if not p.show}
     panels = []
+
     for name in order:
         if name in hidden:
             continue
-        cfg = by_name.get(name)
+
+        cfg  = by_name.get(name)
         pool = []
+
         if name == "price":
             pool.append((float(np.nanmin(ohlc[:, 2])), float(np.nanmax(ohlc[:, 1]))))
         if name == "volume" and vol is not None:
@@ -739,6 +787,7 @@ def _build_panels(order, config, marks, names, num_bars, ohlc, vol, equity, dd,
             pool.append(_extent(equity))
         if name == "drawdown" and dd is not None:
             pool.append(_extent(dd))
+
         for index, (mark, on) in enumerate(zip(marks, names)):
             if on != name:
                 continue
@@ -746,7 +795,8 @@ def _build_panels(order, config, marks, names, num_bars, ohlc, vol, equity, dd,
                 _extent(values)
                 for _, values, _ in _edges(mark, num_bars, index, ahead)
             )
-        pool = [p for p in pool if p is not None]
+
+        pool   = [p for p in pool if p is not None]
         extent = (min(p[0] for p in pool), max(p[1] for p in pool)) if pool else None
 
         panel = {
@@ -763,15 +813,19 @@ def _build_panels(order, config, marks, names, num_bars, ohlc, vol, equity, dd,
             panel["candles"] = True
         if name == "volume" and vol is not None:
             panel["volume"] = True
+
         panels.append(panel)
+
     return panels, hidden
 
 
 def _check_log(panels, marks, names, ohlc, tracks, ahead=0):
     num_bars = len(ohlc)
+
     for panel in panels:
         if panel["scale"] != "log":
             continue
+
         pools = []
         if panel.get("candles"):
             pools.append(("the candles", ohlc[:, 2], 0))
@@ -782,15 +836,17 @@ def _check_log(panels, marks, names, ohlc, tracks, ahead=0):
         for index, (mark, on) in enumerate(zip(marks, names)):
             if on == panel["name"]:
                 pools.extend(_edges(mark, num_bars, index, ahead))
+
         for label, values, start in pools:
             arr = np.asarray(values, dtype=np.float64)
             bad = np.flatnonzero(np.isfinite(arr) & (arr <= 0))
             if not bad.size:
                 continue
+
             # the index into the array is not the bar it is drawn on: a T-1 series
             # starts at bar 1, and naming a bar one early is exactly the confusion
             # the alignment contract exists to prevent (ADR 0042)
-            at = int(bad[0])
+            at    = int(bad[0])
             where = "" if start is None else f" at bar {start + at}"
             raise ValueError(
                 f"panel {panel['name']!r} is logarithmic but {label} reaches "
@@ -801,8 +857,10 @@ def _check_log(panels, marks, names, ohlc, tracks, ahead=0):
 
 def _focus(value, num_bars, ahead=0):
     last = num_bars + ahead - 1.0
+
     if value is None:
         return None
+
     if isinstance(value, dict) and "entry_tick" in value:
         pad = max(18.0, max(1, value["exit_tick"] - value["entry_tick"]) * 0.7)
         low, high = value["entry_tick"] - pad, value["exit_tick"] + pad
@@ -812,53 +870,59 @@ def _focus(value, num_bars, ahead=0):
         low, high = num_bars - int(value), last
     else:
         low, high = float(value[0]), float(value[1])
+
     # clamped rather than sliced, so every marker stays on its own bar whatever
     # was asked for. The cap goes last: widening to a one bar minimum first and
     # capping second used to emit a range one bar past the end of the axis
     high = min(max(float(high), float(low) + 1.0), last)
-    low = max(0.0, min(float(low), high - 1.0))
+    low  = max(0.0, min(float(low), high - 1.0))
     return [low, high]
 
 
 def _trades(result, num_bars):
     if result is None or not result.trades:
         return []
+
     out = []
     for index, trade in enumerate(result.trades):
         # an explicit key list, never dict(trade): Backtester._stamp_times adds
         # entry_time and exit_time as numpy.datetime64, which json.dumps refuses,
         # and the renderer reads its timestamps off the shared axis anyway
         out.append({
-            "i": index + 1,
-            "in": int(trade["entry_tick"]),
-            "out": int(trade["exit_tick"]),
-            "side": str(trade["side"]),
-            "size": round(float(trade["size"]), 8),
-            "px_in": round(float(trade["entry_price"]), 8),
+            "i":      index + 1,
+            "in":     int(trade["entry_tick"]),
+            "out":    int(trade["exit_tick"]),
+            "side":   str(trade["side"]),
+            "size":   round(float(trade["size"]), 8),
+            "px_in":  round(float(trade["entry_price"]), 8),
             "px_out": round(float(trade["exit_price"]), 8),
-            "fees": round(float(trade["fees"]), 8),
-            "net": round(float(trade["net_pnl"]), 8),
-            "bars": int(trade["bars_held"]),
+            "fees":   round(float(trade["fees"]), 8),
+            "net":    round(float(trade["net_pnl"]), 8),
+            "bars":   int(trade["bars_held"]),
         })
+
         # only when it is set, so an ordinary run spends no bytes on it. A forced
         # close is the one row a reader must not mistake for a decision
         if trade.get("liquidated"):
             out[-1]["liq"] = True
+
     return out
 
 
 def _headline(stats, chosen):
     keys = _HEADLINE if chosen is None else list(chosen)
-    out = []
+    out  = []
     for key in keys:
         if key not in stats:
             raise KeyError(
                 f"stats names {key!r}, which the run does not report; choose "
                 f"from {sorted(stats)}"
             )
+
         value = float(stats[key])
         label, form = _STAT_LABELS.get(key, (key, "{:.2f}"))
         out.append([label, form.format(value) if math.isfinite(value) else "n/a"])
+
     return out
 
 
@@ -896,16 +960,17 @@ def _notes(notes):
             "notes has no columns to draw; pass a DataFrame with columns, or a "
             "list of rows whose first row names them"
         )
+
     for index, row in enumerate(rows):
         if len(row) != len(head):
             raise ValueError(
                 f"notes row {index} has {len(row)} cells and the header names "
                 f"{len(head)}; every row has to match the header"
             )
-    # an empty table draws a header over nothing, which reads as a table that
-    # lost its rows. Nothing to say is said by saying nothing
+
     if not rows:
         return None
+
     return {"head": head, "rows": rows}
 
 
@@ -929,11 +994,13 @@ def _theme(mode, palette):
         for name, base, alpha in _ALPHAS:
             merged[name] = merged[base] + alpha
         out[key] = merged
+
     return out
 
 
 def _render(spec, title):
     payload = json.dumps(spec, separators=(",", ":"), allow_nan=False)
+
     if len(payload) > _BIG_BYTES:
         # gzip was measured before writing this: 3.1x raw, and 2.3x once base64
         # armours it back into a document, which turns 45 MB into 17 MB and solves
@@ -950,6 +1017,7 @@ def _render(spec, title):
             RuntimeWarning,
             stacklevel=4,
         )
+
     # json.dumps does not escape <, so a series named "</script>" would close the
     # script element and take the document with it
     payload = (
@@ -957,13 +1025,15 @@ def _render(spec, title):
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
     )
+
     values = {
-        "__TITLE__": html.escape(title or "emsl chart"),
-        "__CSS__": _asset("chart.css"),
+        "__TITLE__":   html.escape(title or "probatum chart"),
+        "__CSS__":     _asset("chart.css"),
         "__LIBRARY__": _asset("lightweight-charts.js"),
-        "__BUNDLE__": _bundle(),
-        "__SPEC__": payload,
+        "__BUNDLE__":  _bundle(),
+        "__SPEC__":    payload,
     }
+
     # one re.sub pass rather than chained .replace(): the vendored renderer is
     # 196 KB of minified JavaScript, and a chained replace would happily expand a
     # placeholder that appeared inside text already substituted
@@ -973,13 +1043,16 @@ def _render(spec, title):
 class Chart:
     """One built chart: the document, and the spec it was built from."""
 
+
     def __init__(self, spec, title):
-        self._spec = spec
-        self._title = title
+        self._spec     = spec
+        self._title    = title
         self._document = None
+
 
     def __repr__(self):
         return f"Chart(bars={self._spec['n']}, panels={len(self._spec['panels'])})"
+
 
     def spec(self):
         """The underlying document as a plain dict.
@@ -989,6 +1062,7 @@ class Chart:
         says what is drawn where a screenshot only says it looked the same.
         """
         return copy.deepcopy(self._spec)
+
 
     def save(self, path):
         """Write one self-contained HTML file and return ``path``.
@@ -1006,8 +1080,10 @@ class Chart:
         target = pathlib.Path(path)
         if target.parent != pathlib.Path(""):
             target.parent.mkdir(parents=True, exist_ok=True)
+
         target.write_text(self._html(), encoding="utf-8")
         return path
+
 
     def show(self, height=None):
         """Draw the chart in the current notebook cell.
@@ -1034,21 +1110,25 @@ class Chart:
                 "show() draws into a notebook cell and there is no notebook here; "
                 "use save(path) to write a file you can open in a browser"
             )
+
         display, HTML = _ipython()
         srcdoc = html.escape(self._html(), quote=True)
         height = self._spec["height"] if height is None else _height(height)
+
         # wrapped, because IPython warns on output that opens with a bare iframe
         # and points at IPython.display.IFrame, which takes a src url and so
         # cannot carry its document inline, which is the whole point of this one
         display(HTML(
-            f'<div class="emsl-chart">'
+            f'<div class="probatum-chart">'
             f'<iframe srcdoc="{srcdoc}" style="width:100%;height:{height}px;'
             f'border:0"></iframe></div>'
         ))
 
+
     def _html(self):
         if self._document is None:
             self._document = _render(self._spec, self._title)
+
         return self._document
 
 
@@ -1062,7 +1142,7 @@ def chart(
     ``frame`` is a pandas DataFrame with ``open``, ``high``, ``low``, ``close``,
     ``volume`` and a DatetimeIndex, or a parquet path to one. The positional
     arguments are matched by type: a ``BacktestResult`` becomes the run, a mark
-    from ``emsl.plot`` becomes itself, a bare array becomes a ``Line``, and a list
+    from ``probatum.plot`` becomes itself, a bare array becomes a ``Line``, and a list
     is flattened. Returns a ``Chart``; call ``show()`` or ``save(path)`` on it.
 
     Every one of those can be named instead, and the whole call written with no
@@ -1138,16 +1218,19 @@ def chart(
             "chart needs a frame to draw; pass the candles as the first argument "
             "or as frame="
         )
+
     if run is not None and not _is_result(run):
         raise TypeError(
             f"run must be the BacktestResult a Backtester returned, got "
             f"{type(run).__name__}; a series belongs in marks="
         )
+
     args = list(args)
     if marks is not None:
         args.append(marks)
     if run is not None:
         args.append(run)
+
     candles, index = prepare(frame)
     # index_of returns None only for a RangeIndex, so an integer or a float index
     # arrives here as a plain array and a cast would read bar ids as epoch
@@ -1156,12 +1239,14 @@ def chart(
     stamps = None if index is None else np.asarray(index)
     if stamps is None or stamps.dtype.kind in "biufc":
         raise _needs_time(frame)
+
     num_bars = int(candles.shape[0])
     if num_bars == 0:
         raise ValueError(
             "frame has no bars; a chart needs at least one row, so check the "
             "filter or the slice that produced it"
         )
+
     if stamps.dtype == object:
         # index_of hands back frame.index.to_numpy(), and a tz-aware index comes
         # out of that as an object array of Timestamp. Casting one warns that
@@ -1174,6 +1259,7 @@ def chart(
         times = times // 1_000_000_000
     else:
         times = stamps.astype("datetime64[s]").astype("int64")
+
     if num_bars > 1 and int(np.diff(times).min()) <= 0:
         at = int(np.argmin(np.diff(times)))
         raise ValueError(
@@ -1184,25 +1270,28 @@ def chart(
     future = int(future)
     if future < 0:
         raise ValueError(f"future must be zero or positive, got {future}")
+
     if future:
         if num_bars < 2:
             raise ValueError(
                 "future needs at least two bars, because the interval it extends "
                 "the axis by is read off the gaps between them"
             )
+
         # the axis grows and the candles do not. Everything that paints a candle
         # loops the candle count, so nothing can invent a bar that never traded
-        step = int(np.median(np.diff(times)))
+        step  = int(np.median(np.diff(times)))
         times = np.concatenate(
             [times, times[-1] + step * np.arange(1, future + 1, dtype=np.int64)]
         )
 
     marks, result = _collect(args)
+
     config = list(panels or [])
-    seen = set()
+    seen   = set()
     for panel in config:
         if not isinstance(panel, Panel):
-            raise TypeError(f"panels= takes emsl.plot.Panel objects, got {panel!r}")
+            raise TypeError(f"panels= takes probatum.plot.Panel objects, got {panel!r}")
         if panel.name in seen:
             # list.index returns the first match, so a repeated name yields the
             # same slot twice and the second write clobbers the first, deleting a
@@ -1227,7 +1316,7 @@ def chart(
                 f"slice for real, re-run the backtest on it"
             )
 
-    ohlc = candles[:, :4]
+    ohlc   = candles[:, :4]
     broken = np.flatnonzero(~np.isfinite(ohlc).all(axis=1))
     if broken.size:
         at = int(broken[0])
@@ -1235,8 +1324,9 @@ def chart(
             f"frame has a non-finite price at bar {at}; a candle with no value "
             f"cannot be drawn, so drop the row or fill it before charting"
         )
+
     volume = candles[:, 4]
-    dead = _dead(volume)
+    dead   = _dead(volume)
     if dead is not None:
         warnings.warn(
             f"the volume column is not usable ({dead}), so no volume panel is "
@@ -1249,23 +1339,26 @@ def chart(
     dd_mode = _drawdown_mode(
         drawdown if drawdown is not None else _DEFAULTS["drawdown"]
     )
+
     equity = None
-    dd = None
-    peak = None
+    dd     = None
+    peak   = None
     if result is not None and len(result.equity_curve):
         equity = np.asarray(result.equity_curve, dtype=np.float64)
+
         # the curve holds a point per advance, so the balance the run opened with is
         # not in it. Taking the peak from the curve alone loses every fall from that
         # balance, and the engine takes it from the balance, so a first bar that lost
         # money drew a flat zero panel under a headline reading the engine's own
         # number. Capped for the same reason the engine caps it: a bust past zero is
         # 100% down, not more (ADR 0042)
-        start = getattr(result, "initial", None)
+        start  = getattr(result, "initial", None)
         opened = equity if start is None else np.concatenate(([float(start)], equity))
-        peak = np.maximum.accumulate(opened)[-len(equity):]
+        peak   = np.maximum.accumulate(opened)[-len(equity):]
         with np.errstate(divide="ignore", invalid="ignore"):
             fallen = np.maximum((equity / peak - 1.0) * 100.0, -100.0)
-            dd = np.where(peak > 0, fallen, np.nan)
+            dd     = np.where(peak > 0, fallen, np.nan)
+
         # and the panels start from that balance too, rather than from the first
         # advance. Two returns were read off the track's own first value: the one
         # the legend prints on hover, and the axis a Panel(scale="percent") asks
@@ -1277,7 +1370,8 @@ def chart(
         # already seeds the drawdown peak from it
         if start is not None:
             equity = np.concatenate(([float(start)], equity))
-            dd = np.concatenate(([0.0], dd))
+            dd     = np.concatenate(([0.0], dd))
+
         # the same running maximum the fall above is measured against, seeded the
         # same way, so a shaded fall and a reported percentage cannot disagree.
         # Taken from the seeded curve rather than padded onto the earlier one,
@@ -1290,8 +1384,11 @@ def chart(
         order, config, marks, names, num_bars, ohlc, volume, equity, dd,
         future,
     )
+
     _check_log(panels_out, marks, names, ohlc, {
-        "equity": equity, "drawdown": dd, "volume": volume,
+        "equity":   equity,
+        "drawdown": dd,
+        "volume":   volume,
     }, future)
 
     shown = {p["name"]: p["digits"] for p in panels_out}
@@ -1303,10 +1400,12 @@ def chart(
     for index, (mark, on) in enumerate(zip(marks, names)):
         if on in hidden:
             continue
+
         label = _label(mark, index)
         entry = {"kind": mark.kind, "panel": on}
         if mark.name:
             entry["name"] = mark.name
+
         if mark.kind in ("line", "histogram"):
             digits = _digits(_extent(mark.values))
             entry.update(
@@ -1319,7 +1418,7 @@ def chart(
             if mark.kind == "line":
                 entry["width"] = mark.width
                 entry["style"] = mark.style
-                entry["step"] = mark.step
+                entry["step"]  = mark.step
                 if mark.fill:
                     entry["fill"] = mark.fill
             else:
@@ -1336,9 +1435,10 @@ def chart(
                 )
                 # both edges are one shape, so they share one start
                 start = max(entry["i0"], lower["i0"])
-                entry["v"] = entry["v"][start - entry["i0"]:]
+                entry["v"]  = entry["v"][start - entry["i0"]:]
                 entry["v2"] = lower["v"][start - lower["i0"]:]
                 entry["i0"] = start
+
             stops = mark.fill or ["rgba(139,151,165,0.14)"]
             if len(stops) > 3:
                 # one colour per bar, which the renderer draws by splitting the
@@ -1352,7 +1452,8 @@ def chart(
                 if mark.only == "below" and len(stops) > 1:
                     stops = list(reversed(stops))
                 entry["fill"] = stops
-            entry["only"] = mark.only
+
+            entry["only"]  = mark.only
             entry["color"] = _encode_color(
                 mark.color, num_bars, f"{label} color", future
             )
@@ -1369,17 +1470,15 @@ def chart(
                 raise ValueError(
                     f"Marker bar {mark.bar} is outside the chart, which has {where}"
                 )
+
             # both kinds ship a list, so the renderer holds one primitive and one
             # loop rather than one attached primitive per glyph
-            entry["kind"] = "marker"
-            entry["bars"] = [mark.bar]
-            entry["shape"] = mark.shape
+            entry["kind"]   = "marker"
+            entry["bars"]   = [mark.bar]
+            entry["shape"]  = mark.shape
             entry["offset"] = mark.offset
             if mark.value is not None:
                 entry["values"] = [mark.value]
-            # the same two keys the plural branch writes, and for the same reason:
-            # one primitive draws both, so a keyword the constructor accepted on
-            # one of them and dropped on the other is a difference with no cause
             if mark.text:
                 entry["text"] = mark.text
             if mark.color:
@@ -1389,9 +1488,9 @@ def chart(
             # two lists cannot come out of step
             start = _start_for(mark.mask.size, num_bars, label, future)
             where = np.flatnonzero(mark.mask)
-            entry["kind"] = "marker"
-            entry["bars"] = (where + start).tolist()
-            entry["shape"] = mark.shape
+            entry["kind"]   = "marker"
+            entry["bars"]   = (where + start).tolist()
+            entry["shape"]  = mark.shape
             entry["offset"] = mark.offset
             if mark.value is not None:
                 if np.ndim(mark.value) == 0:
@@ -1405,6 +1504,7 @@ def chart(
                         None if not np.isfinite(v) else round(float(v), 8)
                         for v in picked.tolist()
                     ]
+
             if mark.text:
                 entry["text"] = mark.text
             if mark.color:
@@ -1415,10 +1515,9 @@ def chart(
             )
             entry["spans"] = spans
             entry["fills"] = fills
-            # the names ride along only for a background that asked to be read.
-            # An unnamed one draws exactly as it did and costs the same bytes
             if keys is not None and mark.name is not None:
                 entry["keys"] = keys
+
         entry = {k: v for k, v in entry.items() if v is not None}
         series.append(entry)
 
@@ -1436,7 +1535,7 @@ def chart(
             and "equity" not in hidden and "drawdown" not in hidden):
         upper = _track(peak, num_bars, "drawdown peak", places("equity"))
         lower = _track(equity, num_bars, "equity_curve", places("equity"))
-        at = max(upper["i0"], lower["i0"])
+        at    = max(upper["i0"], lower["i0"])
         series.append({
             "kind": "band", "panel": "equity", "name": "drawdown",
             "i0": at,
@@ -1457,11 +1556,6 @@ def chart(
     tint = _palette(palette) if palette is not None else _DEFAULTS["palette"]
 
     spec = {
-        # 2 adds stats.funding_paid, which arrives because the spec mirrors the
-        # whole stats dict and the engine now reports the funding a perp run paid.
-        # 4 adds series.keys on a named background, the region names its legend
-        # row reads back. 5 adds notes, the caller's own table under
-        # the plot
         "schema": 6,
         "n": num_bars,
         # numpy's own tolist() here and on the candles below, never a comprehension
@@ -1485,23 +1579,25 @@ def chart(
         "candles": {"panel": "price"},
         "panels": panels_out,
         "series": series,
-        # an empty list is what the renderer already reads as nothing to draw, so
-        # trades=False costs no branch there and no bytes here
         "trades": _trades(result, num_bars) if trades else [],
         "theme": _theme(mode, tint),
         "height": _height(height) if height is not None else _DEFAULTS["height"],
     }
+
     if title is not None:
         spec["title"] = str(title)
     if notes is not None:
         table = _notes(notes)
         if table is not None:
             spec["notes"] = table
+
     if num_bars > 1:
         gap = int(np.median(np.diff(times)))
         spec["interval"] = _interval(gap)
+
     if volume is not None and "volume" not in hidden:
         spec["vol"] = _track(volume, num_bars, "volume", places("volume"))
+
     if candle_color is not None:
         # the one colour that arrives as raw user input rather than through a
         # mark, so it needs the same coercion every other colour already gets: a
@@ -1509,12 +1605,14 @@ def chart(
         spec["candles"]["color"] = _encode_color(
             _color(candle_color, "candle_color"), num_bars, "candle_color", future
         )
+
     if equity is not None and "equity" not in hidden:
         spec["equity"] = _track(equity, num_bars, "equity_curve", places("equity"))
     # the track ships whether the fall has a pane or a band, because the legend
     # reads the number off it either way; only drawdown=False drops it
     if dd is not None and dd_mode is not False and "drawdown" not in hidden:
         spec["drawdown"] = _track(dd, num_bars, "drawdown", places("drawdown"))
+
     if result is not None and result.stats:
         # a stat is legitimately infinite (profit_factor with no losing trade) or
         # NaN (sharpe over a flat curve), and JSON carries neither, so those
@@ -1531,6 +1629,7 @@ def chart(
             "stats names the numbers to show above the chart, and there is no "
             "run to take them from; pass a BacktestResult too"
         )
+
     window = _focus(focus, num_bars, future)
     if window is not None:
         spec["focus"] = window
@@ -1549,7 +1648,9 @@ def _interval(seconds):
     for low, high, name in _CALENDAR:
         if low <= days <= high:
             return name
+
     for size, suffix in ((86400, "d"), (3600, "h"), (60, "m")):
         if seconds >= size and seconds % size == 0:
             return f"{seconds // size}{suffix}"
+
     return f"{seconds}s"

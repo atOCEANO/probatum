@@ -15,7 +15,7 @@ import sys
 
 import numpy as np
 
-import emsl
+import probatum
 from .reference import Reference
 
 TOL = 1e-6
@@ -24,14 +24,16 @@ TOL = 1e-6
 def walk(rng, n):
     """Consistent OHLC from a random walk, violent enough to liquidate."""
     bars, price = [], 100.0
+
     for _ in range(n):
-        ret = rng.uniform(-0.25, 0.25)
-        close = max(price * (1.0 + ret), 0.01)
-        high = max(price, close) * (1.0 + rng.uniform(0.0, 0.2))
-        low = max(min(price, close) * (1.0 - rng.uniform(0.0, 0.2)), 0.001)
+        ret    = rng.uniform(-0.25, 0.25)
+        close  = max(price * (1.0 + ret), 0.01)
+        high   = max(price, close) * (1.0 + rng.uniform(0.0, 0.2))
+        low    = max(min(price, close) * (1.0 - rng.uniform(0.0, 0.2)), 0.001)
         volume = rng.choice([0.0, rng.uniform(0.001, 5.0), rng.uniform(50.0, 5_000.0)])
         bars.append((price, high, low, close, volume))
         price = close
+
     return bars
 
 
@@ -74,8 +76,10 @@ def plan(rng, bars):
         if rng.random() < 0.45:
             out.append(None)
             continue
+
         kind = rng.choice(KINDS)
         side = rng.choice(["buy", "sell"])
+
         if kind == "market":
             out.append(("market", side, rng.uniform(0.1, 40.0)))
         elif kind == "fok":
@@ -99,21 +103,29 @@ def plan(rng, bars):
             # ignored by both simulators: a replacement keeps the side of the
             # order it moves (ADR 0010), which is the claim this exercises
             out.append((kind, side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
+
     return out
 
 
 def drive_engine(bars, cfg, actions):
-    array = np.array([[b[0], b[1], b[2], b[3], b[4]] for b in bars], dtype=np.float64)
-    engine = emsl.Engine(
-        array, market=cfg["market"], quote=cfg["quote"],
-        fee_taker=cfg["fee_taker"], fee_maker=cfg["fee_maker"],
-        slippage_bps=cfg["slippage_bps"], max_fill_fraction=cfg["max_fill_fraction"],
-        max_open_orders=cfg["max_open_orders"],
-        leverage=cfg["leverage"], impact=cfg["impact"],
-        funding_rate=cfg["funding_rate"], funding_interval=cfg["funding_interval"],
-        report=True,
+    array  = np.array([[b[0], b[1], b[2], b[3], b[4]] for b in bars], dtype=np.float64)
+    engine = probatum.Engine(
+        array,
+        market            = cfg["market"],
+        quote             = cfg["quote"],
+        fee_taker         = cfg["fee_taker"],
+        fee_maker         = cfg["fee_maker"],
+        slippage_bps      = cfg["slippage_bps"],
+        max_fill_fraction = cfg["max_fill_fraction"],
+        max_open_orders   = cfg["max_open_orders"],
+        leverage          = cfg["leverage"],
+        impact            = cfg["impact"],
+        funding_rate      = cfg["funding_rate"],
+        funding_interval  = cfg["funding_interval"],
+        report            = True,
     )
     engine.reset()
+
     seen, live = [], []
     for action in actions:
         place(engine, action, live)
@@ -121,6 +133,7 @@ def drive_engine(bars, cfg, actions):
         seen.append((state["position"], state["equity"], state["funding_paid"]))
         if engine.done():
             break
+
     return seen, engine
 
 
@@ -129,6 +142,7 @@ def place(engine, action, live):
     replace address the same order in each."""
     if action is None:
         return
+
     kind = action[0]
     if kind == "market":
         got = (engine.market_buy if action[1] == "buy" else engine.market_sell)(action[2])
@@ -168,6 +182,7 @@ def place(engine, action, live):
         got = engine.stop(action[1], action[2], action[3], False)
     else:
         got = engine.stop(action[1], action[2], action[3], True)
+
     if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit",
                 "reduce_limit", "stop_entry") and got is not None:
         live.append(got)
@@ -181,8 +196,10 @@ def place_reference(ref, action, live, reached=None):
     which is how trace.py came to handle three of the seven order kinds."""
     if action is None:
         return
+
     kind = action[0]
-    got = None
+    got  = None
+
     if reached is not None:
         # what the action had to act on when it was placed. An action that never
         # meets a live position agrees with anything, and after the fact there is
@@ -198,6 +215,7 @@ def place_reference(ref, action, live, reached=None):
             reached[kind] += 1
         elif kind == "cancel_all" and any(o is not None for o in ref.resting):
             reached[kind] += 1
+
     if kind == "market":
         got = ref.market_order(action[1], action[2])
     elif kind == "limit":
@@ -236,9 +254,11 @@ def place_reference(ref, action, live, reached=None):
         got = ref.stop_order(action[1], action[2], action[3], False)
     elif kind == "stop":
         got = ref.stop_order(action[1], action[2], action[3], True)
+
     if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit",
                 "reduce_limit", "stop_entry") and got is not None:
         live.append(got)
+
     if reached is not None and got is not None and kind in (
         "ioc_limit", "fok_limit", "reduce_limit", "stop_entry"
     ):
@@ -247,6 +267,7 @@ def place_reference(ref, action, live, reached=None):
 
 def drive_reference(bars, cfg, actions, reached=None):
     ref = Reference(bars, **cfg)
+
     seen, live = [], []
     for action in actions:
         place_reference(ref, action, live, reached)
@@ -254,6 +275,7 @@ def drive_reference(bars, cfg, actions, reached=None):
         seen.append((ref.position, ref.equity(ref.bars[ref.tick][3]), ref.funding_paid))
         if ref.tick + 1 >= len(bars):
             break
+
     return seen, ref
 
 
@@ -264,18 +286,20 @@ def close_enough(a, b, scale=1.0):
 
 
 def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
+    argv  = sys.argv[1:] if argv is None else argv
     cases = int(argv[0]) if len(argv) > 0 else 400
-    seed = int(argv[1]) if len(argv) > 1 else 20260813
-    rng = random.Random(seed)
+    seed  = int(argv[1]) if len(argv) > 1 else 20260813
+    rng   = random.Random(seed)
 
     reached = dict(close=0, reduce=0, cancel=0, replace=0, cancel_all=0,
                    ioc_limit=0, fok_limit=0, reduce_limit=0, stop_entry=0)
     agree, disagree = 0, []
+
     for case in range(cases):
-        bars = walk(rng, rng.randint(8, 40))
-        cfg = config(rng)
+        bars    = walk(rng, rng.randint(8, 40))
+        cfg     = config(rng)
         actions = plan(rng, bars)
+
         try:
             mine, engine = drive_engine(bars, cfg, actions)
             theirs, ref = drive_reference(bars, cfg, actions, reached)
@@ -297,6 +321,7 @@ def main(argv=None):
             if not close_enough(fa, fb, cfg["quote"]):
                 where = f"bar {i + 1}: funding_paid {fa:.6f} against {fb:.6f}"
                 break
+
         if where is None:
             agree += 1
         else:
@@ -305,18 +330,22 @@ def main(argv=None):
     print(f"\n{agree} of {cases} agreed, {len(disagree)} disagreed")
     print("actions placed with something to act on: "
           + ", ".join(f"{k} {v}" for k, v in sorted(reached.items())) + "\n")
+
     for kind, count in sorted(reached.items()):
         if kind in KINDS and count == 0:
             print(f"NO {kind} EVER MET A LIVE POSITION OR ORDER: it agrees for free")
             return 1
+
     for case, seed, cfg, bars, actions, why in disagree[:8]:
         print(f"--- case {case} ({cfg['market']}) {why}")
         print(f"    cfg  {cfg}")
         print(f"    bars {[tuple(round(x, 4) for x in b) for b in bars[:6]]}")
         acts = [a for a in actions[:6]]
         print(f"    acts {acts}\n")
+
     if len(disagree) > 8:
         print(f"... and {len(disagree) - 8} more")
+
     return 1 if disagree else 0
 
 

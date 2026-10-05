@@ -1,4 +1,4 @@
-"""Tests for emsl.rl.VectorEnv: it should present the Gymnasium vector API over
+"""Tests for probatum.rl.VectorEnv: it should present the Gymnasium vector API over
 the Rust batch, with batched observations, delta-equity rewards, and same-step
 autoreset carrying the final observation in infos.
 """
@@ -6,7 +6,7 @@ autoreset carrying the final observation in infos.
 import numpy as np
 import pytest
 
-from emsl.rl import VectorEnv
+from probatum.rl import VectorEnv
 
 
 def make_data(t=50):
@@ -26,7 +26,7 @@ def flat_data(t=40, price=100.0):
 def marked_data(t):
     # a series no two bars of which share a price: bar i opens at 100 + 10 * i and
     # closes 5 above that, so a price read anywhere names the bar it came from
-    rise = np.arange(t, dtype=np.float64) * 10.0
+    rise  = np.arange(t, dtype=np.float64) * 10.0
     open_ = 100.0 + rise
     close = open_ + 5.0
     return np.stack(
@@ -40,6 +40,7 @@ def halving_data(t):
     # started from, which is what makes a termination independent of the draw
     open_ = 100.0 * np.power(0.5, np.arange(t, dtype=np.float64))
     close = open_ * 0.5
+
     # the volume is far past anything the position asks for, because the fill cap
     # is a size and the prices here span three orders of magnitude: a cap that bit
     # would leave the late offsets holding a position too small to bankrupt
@@ -64,9 +65,10 @@ def bar_index(mark_price):
 def test_reset_returns_batched_observation_and_spaces():
     env = VectorEnv(make_data(), num_envs=4, window=8, market="spot", seed=0)
     obs, info = env.reset(seed=0)
+
     assert obs.shape == (4, 8, 5)
     assert obs.dtype == np.float32
-    assert info == {}
+    assert info      == {}
     assert env.single_observation_space.shape == (8, 5)
     assert env.single_action_space.n == 3
     assert env.num_envs == 4
@@ -75,10 +77,12 @@ def test_reset_returns_batched_observation_and_spaces():
 def test_step_returns_the_gym_vector_tuple():
     env = VectorEnv(make_data(), num_envs=4, window=8, seed=0)
     env.reset(seed=0)
+
     actions = np.array([1, 2, 0, 1])  # buy, sell, hold, buy
     obs, rewards, terminations, truncations, infos = env.step(actions)
-    assert obs.shape == (4, 8, 5)
-    assert obs.dtype == np.float32
+
+    assert obs.shape     == (4, 8, 5)
+    assert obs.dtype     == np.float32
     assert rewards.shape == (4,)
     assert rewards.dtype == np.float32
     assert terminations.shape == (4,) and terminations.dtype == np.bool_
@@ -89,27 +93,31 @@ def test_step_returns_the_gym_vector_tuple():
 def test_envs_autoreset_at_the_end_with_final_obs_in_infos():
     env = VectorEnv(make_data(12), num_envs=2, window=4, seed=1)
     env.reset(seed=1)
+
     saw_final = False
     for _ in range(60):
         obs, rewards, term, trunc, infos = env.step(np.zeros(2, dtype=np.int64))
         assert obs.shape == (2, 4, 5)  # observation continues across resets
         if "final_observation" in infos:
             saw_final = True
-            mask = infos["_final_observation"]
+            mask      = infos["_final_observation"]
             for i in range(2):
                 if mask[i]:
                     assert infos["final_observation"][i].shape == (4, 5)
                     assert np.isfinite(infos["final_equity"][i])
                 else:
                     assert infos["final_observation"][i] is None
+
     assert saw_final  # a 12-bar series must truncate within 60 steps
 
 
 def test_features_observation_uses_the_feature_columns():
-    data = make_data(30)
+    data     = make_data(30)
     features = np.arange(30 * 3, dtype=np.float64).reshape(30, 3)  # (T, 3)
-    env = VectorEnv(data, features=features, num_envs=4, window=6, seed=0)
+    env      = VectorEnv(data, features=features, num_envs=4, window=6, seed=0)
+
     obs, _ = env.reset(seed=0)
+
     assert obs.shape == (4, 6, 3)  # F = 3, not the 5 candle columns
     assert env.single_observation_space.shape == (6, 3)
 
@@ -120,12 +128,14 @@ def test_custom_reward_fn_is_called_with_batched_state():
     def reward_fn(state, prev):
         seen["ok"] = True
         assert state.equity.shape == (3,)
-        assert prev.equity.shape == (3,)
+        assert prev.equity.shape  == (3,)
         return np.full(state.equity.shape, 7.0, dtype=np.float32)
 
     env = VectorEnv(make_data(30), num_envs=3, window=5, reward_fn=reward_fn, seed=0)
     env.reset(seed=0)
+
     _, rewards, _, _, _ = env.step(np.zeros(3, dtype=np.int64))
+
     assert seen.get("ok")
     assert np.allclose(rewards, 7.0)
 
@@ -147,6 +157,7 @@ def test_window_without_room_to_step_raises():
 def test_episode_len_one_truncates_every_step():
     env = VectorEnv(make_data(200), num_envs=3, window=4, episode_len=1, seed=0)
     env.reset(seed=0)
+
     for _ in range(5):
         _, _, _, trunc, infos = env.step(np.zeros(3, dtype=np.int64))
         assert trunc.all()  # episode_len=1 truncates and resets every step
@@ -159,12 +170,14 @@ def test_custom_action_fn_receives_actions_and_state():
     def action_fn(actions, state):
         seen["called"] = True
         assert np.asarray(actions).shape == (3,)
-        assert state.equity.shape == (3,)
+        assert state.equity.shape        == (3,)
         return np.zeros(3, dtype=np.float64)
 
     env = VectorEnv(make_data(50), num_envs=3, window=4, action_fn=action_fn, seed=0)
+
     env.reset(seed=0)
     env.step(np.array([1, 2, 0]))
+
     assert seen.get("called")
 
 
@@ -174,6 +187,7 @@ def test_per_env_cost_range_varies_reward_across_envs():
     env = VectorEnv(flat_data(), num_envs=8, window=4, fee_taker=(0.001, 0.02), seed=0)
     env.reset(seed=0)
     _, rewards, _, _, _ = env.step(np.ones(8, dtype=np.int64))  # every env buys 1.0
+
     assert rewards.std() > 0.0
 
 
@@ -182,6 +196,7 @@ def test_scalar_cost_gives_identical_reward_on_a_flat_series():
     env = VectorEnv(flat_data(), num_envs=8, window=4, fee_taker=0.01, seed=0)
     env.reset(seed=0)
     _, rewards, _, _, _ = env.step(np.ones(8, dtype=np.int64))
+
     assert rewards.std() == 0.0
 
 
@@ -216,7 +231,7 @@ def test_a_cost_range_that_reaches_below_its_floor_is_refused():
             VectorEnv(halving_data(BARS), num_envs=2, window=2, **{knob: bad})
         # the message names the range the caller typed, not the array it drew
         assert knob in str(caught.value)
-    # a range wholly above the floor is what the knob is for, and still works
+
     VectorEnv(halving_data(BARS), num_envs=2, window=2, fee_taker=(0.001, 0.02))
 
 
@@ -228,21 +243,25 @@ def test_a_per_env_cost_is_drawn_inside_its_range_and_fixed_for_the_envs_life():
     # means, because an env whose costs move underneath it is not a regime
     low, high = 0.001, 0.02
     env = VectorEnv(flat_data(), num_envs=8, window=4, fee_taker=(low, high), seed=0)
+
     env.reset(seed=0)
     _, first, _, _, _ = env.step(np.ones(8, dtype=np.int64))
     fees = drawn_fees(first)
+
     assert ((low <= fees) & (fees <= high)).all(), fees
     assert fees.std() > 0.0            # eight regimes, not one
     assert len(set(np.round(fees, 12))) == 8
 
     # the same env, one bar later: a cost redrawn per step reads differently here
     _, second, _, _, _ = env.step(np.ones(8, dtype=np.int64))
+
     assert np.allclose(drawn_fees(second), fees, rtol=0.0, atol=1e-6)
 
     # and a fresh episode keeps them: reset re-seeds the OFFSET stream only, so an
     # env's costs are its own for its whole life and not for one episode of it
     env.reset(seed=99)
     _, third, _, _, _ = env.step(np.ones(8, dtype=np.int64))
+
     assert np.allclose(drawn_fees(third), fees, rtol=0.0, atol=1e-6)
 
 
@@ -252,8 +271,10 @@ def test_the_cost_fallback_is_the_expensive_end_of_the_range():
     # makes that failure the cheapest possible market, which is the one direction a
     # cost model must never fail in, and nothing anywhere reads this value (ADR 0038)
     env = VectorEnv(flat_data(), num_envs=8, window=4, seed=0)
+
     scalar, drawn = env._cost_arg("fee_taker", (0.001, 0.02))
-    assert scalar == 0.02
+
+    assert scalar      == 0.02
     assert drawn.shape == (8,)
     assert ((0.001 <= drawn) & (drawn <= 0.02)).all()
     # a plain number is passed through with no array beside it
@@ -286,11 +307,13 @@ def test_each_cost_knob_takes_its_own_range():
     assert spread(fee_taker=(0.001, 0.02)) > 0.0
     assert spread(slippage_bps=(1.0, 50.0), fee_taker=0.0) > 0.0
     assert spread(impact=(0.1, 5.0), fee_taker=0.0) > 0.0
+
     # fee_maker is the fourth, and the batched tier takes market orders only
     # (ADR 0038), so no maker fill can happen here and no reward can read it at
     # all. The draw itself is what there is to check
     env = VectorEnv(ranged_data(), num_envs=8, window=4, seed=0)
     scalar, drawn = env._cost_arg("fee_maker", (0.0001, 0.001))
+
     assert scalar == 0.001
     assert drawn.shape == (8,) and drawn.std() > 0.0
 
@@ -308,11 +331,20 @@ def test_a_discrete_action_of_two_sells_and_one_buys():
         return np.zeros(cur.equity.shape, dtype=np.float64)
 
     env = VectorEnv(
-        flat_data(), num_envs=4, window=4, market="perp", trade_size=3.0,
-        fee_taker=0.0, fee_maker=0.0, reward_fn=capture, seed=0,
+        flat_data(),
+        num_envs   = 4,
+        window     = 4,
+        market     = "perp",
+        trade_size = 3.0,
+        fee_taker  = 0.0,
+        fee_maker  = 0.0,
+        reward_fn  = capture,
+        seed       = 0,
     )
+
     env.reset(seed=0)
     env.step(np.array([1, 2, 0, 1], dtype=np.int64))  # buy, sell, hold, buy
+
     assert np.array_equal(seen["position"], [3.0, -3.0, 0.0, 3.0])
 
 
@@ -331,10 +363,10 @@ def test_start_offsets_are_independent_of_cost_ranges():
 def test_perp_liquidation_sets_a_termination():
     # a steep crash on a leveraged long wipes the account; terminations, the only
     # true-terminal path, must fire (nothing else in the suite observes it true)
-    t = 40
+    t     = 40
     close = np.linspace(100.0, 1.0, t)
-    data = np.stack([close, close, close, close, np.full(t, 1.0e9)], axis=1)
-    env = VectorEnv(
+    data  = np.stack([close, close, close, close, np.full(t, 1.0e9)], axis=1)
+    env   = VectorEnv(
         data,
         num_envs=8,
         window=3,
@@ -346,6 +378,7 @@ def test_perp_liquidation_sets_a_termination():
         fee_maker=0.0,
         seed=0,
     )
+
     env.reset(seed=0)
     saw_term = False
     for _ in range(t + 5):
@@ -353,6 +386,7 @@ def test_perp_liquidation_sets_a_termination():
         if bool(term.any()):
             saw_term = True
             break
+
     assert saw_term
 
 
@@ -361,15 +395,19 @@ def test_custom_action_space_and_continuous_actions():
 
     env = VectorEnv(
         make_data(50),
-        num_envs=2,
-        window=4,
-        action_space=spaces.Box(-1.0, 1.0, shape=(1,)),
-        action_fn=lambda a, s: np.asarray(a, dtype=np.float64).reshape(-1),
-        seed=0,
+        num_envs     = 2,
+        window       = 4,
+        action_space = spaces.Box(-1.0, 1.0, shape=(1,)),
+        action_fn    = lambda a,
+        s: np.asarray(a, dtype=np.float64).reshape(-1),
+        seed         = 0,
     )
+
     assert isinstance(env.single_action_space, spaces.Box)
+
     env.reset(seed=0)
     obs, rewards, term, trunc, infos = env.step(np.zeros((2, 1), dtype=np.float64))
+
     assert rewards.shape == (2,)
 
 
@@ -381,7 +419,9 @@ def test_metadata_declares_same_step_autoreset_when_supported():
         from gymnasium.vector import AutoresetMode
     except ImportError:
         pytest.skip("gymnasium without AutoresetMode")
+
     env = VectorEnv(make_data(), num_envs=2, window=4, seed=0)
+
     assert env.metadata.get("autoreset_mode") == AutoresetMode.SAME_STEP
 
 
@@ -393,24 +433,25 @@ def test_the_feature_window_holds_exactly_the_bars_up_to_the_current_one():
     # is read back off the account's mark price, a channel the gather has no part
     # in, so a window off by a row cannot agree with both. A violation looks like
     # features[tick + 1] standing in the window, as its last row
-    t = 60
-    window = 8
+    t        = 60
+    window   = 8
     features = marked_features(t)
-    seen = {}
+    seen     = {}
 
     def reward_fn(state, prev):
-        seen["at_reset"] = np.array(prev.mark_price)
+        seen["at_reset"]   = np.array(prev.mark_price)
         seen["after_step"] = np.array(state.mark_price)
         return np.zeros(state.equity.shape, dtype=np.float32)
 
     env = VectorEnv(
         marked_data(t),
-        features=features,
-        num_envs=4,
-        window=window,
-        reward_fn=reward_fn,
-        seed=11,
+        features  = features,
+        num_envs  = 4,
+        window    = window,
+        reward_fn = reward_fn,
+        seed      = 11,
     )
+
     obs, _ = env.reset(seed=11)
     stepped, _, term, trunc, _ = env.step(np.zeros(4, dtype=np.int64))
 
@@ -421,11 +462,14 @@ def test_the_feature_window_holds_exactly_the_bars_up_to_the_current_one():
         assert not (obs[i] == features[tick + 1][0]).any()  # bar tick + 1 is absent
 
     after_step = bar_index(seen["after_step"])
-    running = ~(term | trunc)
+    running    = ~(term | trunc)
+
     assert running.any()  # a finished env shows the next episode, not this one
+
     for i in range(4):
         if not running[i]:
             continue
+
         tick = int(after_step[i])
         assert tick == int(at_reset[i]) + 1  # one action, one bar
         assert np.array_equal(stepped[i], features[tick - window + 1 : tick + 1])
@@ -438,10 +482,10 @@ def test_the_candle_window_holds_exactly_the_bars_up_to_the_current_one():
     # two are alike and the tick comes back off the account's mark price, so a
     # window holding bar tick + 1 (lookahead) or ending a bar early is caught by
     # value. A violation looks like the last row being data[tick + 1]
-    t = 40
+    t      = 40
     window = 6
-    data = marked_data(t)
-    seen = {}
+    data   = marked_data(t)
+    seen   = {}
 
     def reward_fn(state, prev):
         seen["at_reset"] = np.array(prev.mark_price)
@@ -471,7 +515,7 @@ def feature_bar(row):
 # window, or a window cached at the first reset and re-served forever, was the same
 # array as the right answer and no assertion could tell them apart. Both are live
 # mutants that the shortest series cannot see, so the length is load-bearing
-BARS = 40
+BARS         = 40
 EPISODE_SEED = 0
 
 
@@ -482,18 +526,26 @@ def test_a_finished_envs_step_returns_the_next_episodes_first_observation():
     # nothing else in this file would notice, and the agent would learn from a
     # window its action never led to. episode_len=1 ends both episodes on the first
     # step, from two different offsets, and each window names the bars it came from
-    window = 4
+    window   = 4
     features = marked_features(BARS)
-    env = VectorEnv(
-        marked_data(BARS), features=features, num_envs=2, window=window,
-        episode_len=1, seed=0,
+    env      = VectorEnv(
+        marked_data(BARS),
+        features    = features,
+        num_envs    = 2,
+        window      = window,
+        episode_len = 1,
+        seed        = 0,
     )
+
     first, _ = env.reset(seed=EPISODE_SEED)
     started = [feature_bar(first[i][-1]) for i in range(2)]
+
     assert started[0] != started[1]  # two episodes, not one episode twice
+
     obs, _, term, trunc, _ = env.step(np.zeros(2, dtype=np.int64))
 
     assert trunc.all() and not term.any()
+
     for i in range(2):
         ended = started[i] + 1
         fresh = feature_bar(obs[i][-1])
@@ -511,25 +563,35 @@ def test_final_observation_holds_the_window_the_episode_actually_ended_on():
     # the fresh post-reset window instead would pass. The two envs end on different
     # bars, so handing every finished env the first one's window is wrong for the
     # second and reads as two identical arrays here
-    window = 4
+    window   = 4
     features = marked_features(BARS)
-    env = VectorEnv(
-        marked_data(BARS), features=features, num_envs=2, window=window,
-        episode_len=1, seed=0,
+    env      = VectorEnv(
+        marked_data(BARS),
+        features    = features,
+        num_envs    = 2,
+        window      = window,
+        episode_len = 1,
+        seed        = 0,
     )
+
     first, _ = env.reset(seed=EPISODE_SEED)
     started = [feature_bar(first[i][-1]) for i in range(2)]
+
     assert started[0] != started[1]
+
     obs, _, _, trunc, infos = env.step(np.zeros(2, dtype=np.int64))
 
     assert trunc.all()
+
     for i in range(2):
         assert infos["_final_observation"][i]
+
         final = infos["final_observation"][i]
         ended = started[i] + 1
         assert np.array_equal(final, features[ended - window + 1 : ended + 1])
         assert np.array_equal(final[-1], features[ended])  # ends on the bar stepped to
         assert not np.array_equal(final, obs[i])  # not the fresh one
+
     finals = infos["final_observation"]
     assert not np.array_equal(finals[0], finals[1])  # each env's own, not env 0's
 
@@ -545,39 +607,45 @@ def test_final_equity_is_what_the_episode_ended_with_not_a_fresh_balance():
     # the number is hand computable per env: the market order fills at the next
     # bar's open, 100 + 10 * (offset + 1), pays a percent of that in taker fee, and
     # that bar closes five above it
-    window = 4
+    window   = 4
     features = marked_features(BARS)
-    env = VectorEnv(
+    env      = VectorEnv(
         marked_data(BARS),
-        features=features,
-        num_envs=2,
-        window=window,
-        market="spot",
-        quote=10_000.0,
-        fee_taker=0.01,
-        fee_maker=0.0,
-        slippage_bps=0.0,
-        impact=0.0,
-        trade_size=1.0,
-        reward_fn=lambda cur, prev: np.full(cur.equity.shape, 0.25),
-        episode_len=1,
-        seed=0,
+        features     = features,
+        num_envs     = 2,
+        window       = window,
+        market       = "spot",
+        quote        = 10_000.0,
+        fee_taker    = 0.01,
+        fee_maker    = 0.0,
+        slippage_bps = 0.0,
+        impact       = 0.0,
+        trade_size   = 1.0,
+        reward_fn    = lambda cur,
+        prev: np.full(cur.equity.shape, 0.25),
+        episode_len  = 1,
+        seed         = 0,
     )
+
     first, _ = env.reset(seed=EPISODE_SEED)
     started = [feature_bar(first[i][-1]) for i in range(2)]
+
     assert started[0] != started[1]
+
     _, rewards, term, trunc, infos = env.step(np.ones(2, dtype=np.int64))
 
     assert trunc.all() and not term.any()
     assert (rewards == 0.25).all()  # the reward is not the equity delta here
+
     for i in range(2):
-        fill = 100.0 + 10.0 * (started[i] + 1)
+        fill       = 100.0 + 10.0 * (started[i] + 1)
         ended_with = 10_000.0 - fill * 0.01 - fill + (fill + 5.0)
         assert infos["_final_equity"][i]
         assert abs(float(infos["final_equity"][i]) - ended_with) < 1e-9
         # and the reconstruction really is a different number here, which under the
         # default reward it could not be
         assert abs(ended_with - (10_000.0 + 0.25)) > 1e-6
+
     assert infos["final_equity"][0] != infos["final_equity"][1]
 
 
@@ -597,22 +665,24 @@ def test_a_bankrupt_env_autoresets_and_reports_what_the_episode_ended_with():
 
     env = VectorEnv(
         halving_data(16),
-        num_envs=2,
-        window=window,
-        market="perp",
-        quote=10_000.0,
-        leverage=10.0,
-        fee_taker=0.0,
-        fee_maker=0.0,
-        slippage_bps=0.0,
-        impact=0.0,
-        action_fn=all_in,
-        seed=0,
+        num_envs     = 2,
+        window       = window,
+        market       = "perp",
+        quote        = 10_000.0,
+        leverage     = 10.0,
+        fee_taker    = 0.0,
+        fee_maker    = 0.0,
+        slippage_bps = 0.0,
+        impact       = 0.0,
+        action_fn    = all_in,
+        seed         = 0,
     )
+
     env.reset(seed=EPISODE_SEED)
     obs, rewards, term, trunc, infos = env.step(np.ones(2, dtype=np.int64))
 
     assert term.all() and not trunc.any()  # bankrupt, and nowhere near the last bar
+
     for i in range(2):
         assert infos["_final_observation"][i]
         assert infos["final_observation"][i] is not None
@@ -620,6 +690,7 @@ def test_a_bankrupt_env_autoresets_and_reports_what_the_episode_ended_with():
         assert float(infos["final_equity"][i]) == 0.0  # not the fresh 10000 balance
         # and the env was handed a fresh episode rather than left on the corpse
         assert not np.array_equal(obs[i], infos["final_observation"][i])
+
     # the default reward is the equity delta BY VALUE, which nothing else in this
     # file reads: elsewhere only its shape, its dtype and its spread are asserted,
     # so a reward scaled or signed wrongly would pass every one of them

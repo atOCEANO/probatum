@@ -1,13 +1,13 @@
 [package]
 name = "probatum-py"
-description = "PyO3 bindings for the emsl bar-level market simulator, compiled to the emsl._emsl extension module."
+description = "PyO3 bindings for the probatum bar-level market simulator, compiled to the probatum._probatum extension module."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "_emsl"
+name = "_probatum"
 crate-type = ["cdylib"]
 
 [dependencies]

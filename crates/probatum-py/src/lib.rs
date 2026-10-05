@@ -1,4 +1,4 @@
-//! probatum-py: the PyO3 binding layer, compiled to the `emsl._emsl` extension. This
+//! probatum-py: the PyO3 binding layer, compiled to the `probatum._probatum` extension. This
 //! is the only Python-linked crate, and it is a thin shell over `probatum-engine`: it
 //! parses arguments, copies the candles once from a numpy array into the
 //! Rust-owned series, and hands `State` back as a plain dict. No simulation logic
@@ -419,7 +419,7 @@ fn column_view<'py>(
     array
 }
 
-/// The market simulation engine, exposed to Python as `emsl.Engine`. It wraps one
+/// The market simulation engine, exposed to Python as `probatum.Engine`. It wraps one
 /// single-env bar engine; orders decided on a bar fill on the next.
 #[pyclass]
 struct Engine {
@@ -1033,7 +1033,7 @@ impl Batch {
         states_to_list(py, &states)
     }
 
-    // --- Batched RL surface (used by emsl.rl.VectorEnv) ---
+    // --- Batched RL surface (used by probatum.rl.VectorEnv) ---
 
     /// Reset every env to its own start offset in `offsets` (length num_envs).
     fn reset_at_each(
@@ -1230,9 +1230,9 @@ impl Batch {
     }
 }
 
-/// The `_emsl` extension module, imported by Python as `emsl._emsl`.
+/// The `_probatum` extension module, imported by Python as `probatum._probatum`.
 #[pymodule]
-fn _emsl(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_class::<Batch>()?;
     Ok(())

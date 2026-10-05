@@ -27,7 +27,7 @@
 
 ## RL Guide
 
-`emsl.rl.VectorEnv` is a Gymnasium-compatible vectorized env over the Rust batch. `num_envs` independent envs share one read-only copy of the data; each starts at a random offset and steps in parallel with the GIL released, so the batch walks decorrelated stretches of history. You control three things: what the agent sees, how it is rewarded, and what its actions do.
+`probatum.rl.VectorEnv` is a Gymnasium-compatible vectorized env over the Rust batch. `num_envs` independent envs share one read-only copy of the data; each starts at a random offset and steps in parallel with the GIL released, so the batch walks decorrelated stretches of history. You control three things: what the agent sees, how it is rewarded, and what its actions do.
 
 <br>
 
@@ -40,7 +40,7 @@
 
 ```python
 import numpy as np
-from emsl.rl import VectorEnv
+from probatum.rl import VectorEnv
 
 def reward_fn(state, prev):
     return (state.equity - prev.equity) - 0.01 * np.abs(state.position)
@@ -64,14 +64,14 @@ for _ in range(1000):
 
 You build a cost-accurate, vectorized trading env in one line; training it takes a few more. The env carries the real fill model, fees, funding, and slippage, so an off-the-shelf agent trains against honest costs with no wiring on your part.
 
-The quick path is Stable-Baselines3. `emsl.sb3.EmslVecEnv` presents the batch as an SB3 `VecEnv`, so a stock PPO trains in three lines:
+The quick path is Stable-Baselines3. `probatum.sb3.ProbatumVecEnv` presents the batch as an SB3 `VecEnv`, so a stock PPO trains in three lines:
 
 ```python
 from stable_baselines3 import PPO
-from emsl.rl import VectorEnv
-from emsl.sb3 import EmslVecEnv
+from probatum.rl import VectorEnv
+from probatum.sb3 import ProbatumVecEnv
 
-venv = EmslVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, market="perp", seed=0))
+venv = ProbatumVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, market="perp", seed=0))
 PPO("MlpPolicy", venv).learn(total_timesteps=100_000)
 ```
 
@@ -89,11 +89,11 @@ The standard SB3 vector wrappers compose on top unchanged, to log episodes and n
 ```python
 from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 
-venv = VecNormalize(VecMonitor(EmslVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, seed=0))))
+venv = VecNormalize(VecMonitor(ProbatumVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, seed=0))))
 PPO("MlpPolicy", venv).learn(total_timesteps=100_000)
 ```
 
-`evaluate_policy` runs a trained model over a fresh env the same way. `emsl.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (emsl is not on PyPI, so install from a release as the [README](../README.md#install) shows); because emsl's same-step autoreset already matches SB3's `VecEnv` contract, the adapter is a straight remap, so the GIL-free batch stays intact and an SB3 seed reaches the env.
+`evaluate_policy` runs a trained model over a fresh env the same way. `probatum.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (probatum is not on PyPI, so install from a release as the [README](../README.md#install) shows); because probatum's same-step autoreset already matches SB3's `VecEnv` contract, the adapter is a straight remap, so the GIL-free batch stays intact and an SB3 seed reaches the env.
 
 Save a trained model and reload it later, the usual SB3 way:
 
@@ -225,7 +225,7 @@ env = VectorEnv(
 )
 ```
 
-The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning is in [ADR 0038](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`emsl.Batch`](Python_API.md#batch) directly.
+The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning is in [ADR 0038](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`probatum.Batch`](Python_API.md#batch) directly.
 
 The per-env cost draw and the start offsets come from independent generators, both spawned from the constructor `seed`, so a given `seed` produces the same start offsets whether or not a cost range is passed. The cost draw is fixed for the env's life; `reset(seed=...)` re-seeds only the offset stream.
 

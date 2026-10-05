@@ -72,12 +72,13 @@ def _curve(result):
     # point only on a real advance, so the opening balance is not in the curve and
     # anything reading the curve alone cannot see the first bar's move
     equity = np.asarray(result.equity_curve, dtype=np.float64)
-    start = getattr(result, "initial", None)
+    start  = getattr(result, "initial", None)
     if start is None:
         raise ValueError(
             "this result carries no opening balance, so its returns cannot be "
             "seeded; it was built by hand rather than by a Backtester"
         )
+
     return np.concatenate(([float(start)], equity))
 
 
@@ -88,6 +89,7 @@ def _annualization(result):
             "this result carries no annualization, so nothing here can be scaled "
             "to a year; run it through a Backtester, or set periods_per_year on it"
         )
+
     return float(ppy)
 
 
@@ -98,10 +100,11 @@ def returns(result):
     through zero, matching the engine exactly, which is what lets everything here
     reproduce the numbers the result already reports.
     """
-    series = _curve(result)
+    series   = _curve(result)
     previous = series[:-1]
     with np.errstate(divide="ignore", invalid="ignore"):
         out = np.where(previous > 0.0, series[1:] / previous - 1.0, 0.0)
+
     return out
 
 
@@ -112,13 +115,15 @@ def sharpe(result, risk_free=None):
     paths to one number, and a test asserts they agree. Everything else in this
     module rests on the return series being the same one the engine used.
     """
-    rate = _risk_free(result, risk_free)
+    rate   = _risk_free(result, risk_free)
     values = returns(result)
     if values.size < 2:
         return 0.0
-    ppy = _annualization(result)
+
+    ppy    = _annualization(result)
     excess = float(values.mean()) - rate / ppy
     spread = float(values.std(ddof=1))
+
     if spread > 0.0:
         return excess / spread * math.sqrt(ppy)
     return math.inf if excess > 0.0 else 0.0
@@ -135,10 +140,12 @@ def skew(result):
     values = returns(result)
     if values.size < 3:
         return 0.0
+
     centred = values - values.mean()
-    spread = float(np.sqrt((centred ** 2).mean()))
+    spread  = float(np.sqrt((centred ** 2).mean()))
     if spread == 0.0:
         return 0.0
+
     return float((centred ** 3).mean()) / spread ** 3
 
 
@@ -152,10 +159,12 @@ def kurtosis(result, excess=False):
     values = returns(result)
     if values.size < 4:
         return 0.0 if excess else 3.0
+
     centred = values - values.mean()
-    spread = float(np.sqrt((centred ** 2).mean()))
+    spread  = float(np.sqrt((centred ** 2).mean()))
     if spread == 0.0:
         return 0.0 if excess else 3.0
+
     full = float((centred ** 4).mean()) / spread ** 4
     return full - 3.0 if excess else full
 
@@ -171,18 +180,22 @@ def autocorrelation(result, lag=1):
     lag = int(lag)
     if lag < 0:
         raise ValueError(f"lag must be zero or a positive number of bars, got {lag}")
+
     values = returns(result)
     if lag == 0:
         # a series correlates perfectly with itself, and the general branch below
         # divides the whole sum of squares by itself through an empty slice
         return 1.0 if values.size else 0.0
+
     if values.size <= lag + 1:
         return 0.0
-    a = values[:-lag] - values.mean()
-    b = values[lag:] - values.mean()
+
+    a      = values[:-lag] - values.mean()
+    b      = values[lag:] - values.mean()
     bottom = float((values - values.mean()).dot(values - values.mean()))
     if bottom == 0.0:
         return 0.0
+
     return float(a.dot(b)) / bottom
 
 
@@ -203,12 +216,14 @@ def effective_sample(result):
     to hand any back.
     """
     values = returns(result)
-    size = values.size
+    size   = values.size
     if size < 4:
         return float(size)
+
     rho = autocorrelation(result, lag=1)
     if not math.isfinite(rho) or rho <= 0.0:
         return float(size)
+
     rho = min(rho, 0.99)
     return max(2.0, float(size) * (1.0 - rho) / (1.0 + rho))
 
@@ -222,9 +237,10 @@ def drawdown(result):
     the engine's own maximum.
     """
     series = _curve(result)
-    peak = np.maximum.accumulate(series)
+    peak   = np.maximum.accumulate(series)
     with np.errstate(divide="ignore", invalid="ignore"):
         fall = np.where(peak > 0.0, (series / peak - 1.0) * 100.0, 0.0)
+
     return np.maximum(fall, -100.0)[1:]
 
 
@@ -241,36 +257,40 @@ def drawdown_table(result, top=5):
     straight to the candle or onto a chart. ``recovered_bar`` is ``None`` for a
     fall the run never came back from.
     """
-    falls = drawdown(result)
+    falls    = drawdown(result)
     episodes = []
-    start = None
+    start    = None
+
     for i, value in enumerate(falls):
         if value < 0.0 and start is None:
             start = i
         elif value >= 0.0 and start is not None:
             episodes.append(_episode(falls, start, i))
             start = None
+
     if start is not None:
         episodes.append(_episode(falls, start, None))
+
     episodes.sort(key=lambda e: e["depth_pct"])
     return episodes[:top]
 
 
 def _episode(falls, start, recovered):
-    stop = len(falls) if recovered is None else recovered
+    stop   = len(falls) if recovered is None else recovered
     window = falls[start:stop]
     trough = start + int(np.argmin(window))
+
     # the fall series holds one entry per equity point rather than one per bar, so
     # entry i is bar i + 1 (ADR 0042) and a raw loop offset names the candle
     # BEFORE the one that made it. The two durations below are differences of two
     # positions and are already in bars
     return {
-        "start_bar": start + 1,
-        "trough_bar": trough + 1,
-        "recovered_bar": None if recovered is None else recovered + 1,
-        "depth_pct": float(window.min()),
+        "start_bar":      start + 1,
+        "trough_bar":     trough + 1,
+        "recovered_bar":  None if recovered is None else recovered + 1,
+        "depth_pct":      float(window.min()),
         "bars_to_trough": trough - start,
-        "bars_under": stop - start,
+        "bars_under":     stop - start,
     }
 
 
@@ -281,23 +301,26 @@ def time_under_water(result):
     A strategy that makes its money in two weeks and spends the other fifty below
     the old high is not the one the return figure describes.
     """
-    falls = drawdown(result)
-    under = falls < 0.0
-    runs = []
+    falls  = drawdown(result)
+    under  = falls < 0.0
+    runs   = []
     length = 0
+
     for flag in under:
         if flag:
             length += 1
         elif length:
             runs.append(length)
             length = 0
+
     if length:
         runs.append(length)
+
     return {
         "longest_bars": max(runs) if runs else 0,
         "average_bars": float(np.mean(runs)) if runs else 0.0,
-        "episodes": len(runs),
-        "share_pct": float(under.mean() * 100.0) if under.size else 0.0,
+        "episodes":     len(runs),
+        "share_pct":    float(under.mean() * 100.0) if under.size else 0.0,
     }
 
 
@@ -322,22 +345,23 @@ def decompose(result):
     strategy paying half its gross edge away in costs has a cost problem rather
     than an idea problem, and neither number alone says which one you have.
     """
-    trades = result.trades or []
-    gross = float(sum(t["pnl"] for t in trades))
-    fees = float(sum(t["fees"] for t in trades))
+    trades  = result.trades or []
+    gross   = float(sum(t["pnl"] for t in trades))
+    fees    = float(sum(t["fees"] for t in trades))
     funding = float((result.stats or {}).get("funding_paid", 0.0))
-    series = _curve(result)
-    net = float(series[-1] - series[0])
-    traded = float(sum(t["size"] * (t["entry_price"] + t["exit_price"]) for t in trades))
+    series  = _curve(result)
+    net     = float(series[-1] - series[0])
+    traded  = float(sum(t["size"] * (t["entry_price"] + t["exit_price"]) for t in trades))
+
     return {
-        "gross_pnl": gross,
-        "fees": fees,
-        "funding": funding,
+        "gross_pnl":  gross,
+        "fees":       fees,
+        "funding":    funding,
         "unrealized": net - (gross - fees - funding),
-        "net": net,
-        "net_pct": net / series[0] * 100.0 if series[0] else 0.0,
-        "fee_share": _ratio(fees, abs(gross), 1.0),
-        "turnover": traded / series[0] if series[0] else 0.0,
+        "net":        net,
+        "net_pct":    net / series[0] * 100.0 if series[0] else 0.0,
+        "fee_share":  _ratio(fees, abs(gross), 1.0),
+        "turnover":   traded / series[0] if series[0] else 0.0,
     }
 
 
@@ -357,33 +381,36 @@ def trade_stats(result):
     whether a rule gets switched off.
     """
     trades = result.trades or []
-    nets = [float(t["net_pnl"]) for t in trades]
-    wins = [v for v in nets if v > 0.0]
+    nets   = [float(t["net_pnl"]) for t in trades]
+    wins   = [v for v in nets if v > 0.0]
     losses = [-v for v in nets if v < 0.0]
     streak = worst = 0
+
     for value in nets:
         streak = streak + 1 if value < 0.0 else 0
-        worst = max(worst, streak)
-    average_win = float(np.mean(wins)) if wins else 0.0
+        worst  = max(worst, streak)
+
+    average_win  = float(np.mean(wins)) if wins else 0.0
     average_loss = float(np.mean(losses)) if losses else 0.0
-    opening = getattr(result, "initial", None)
-    expectancy = float(np.mean(nets)) if nets else 0.0
+    opening      = getattr(result, "initial", None)
+    expectancy   = float(np.mean(nets)) if nets else 0.0
+
     return {
-        "trades": len(nets),
-        "wins": len(wins),
-        "losses": len(losses),
-        "avg_win": average_win,
-        "avg_loss": average_loss,
-        "payoff": (average_win / average_loss if average_loss > 0.0
-                   else (math.inf if average_win > 0.0 else 0.0)),
-        "expectancy": expectancy,
-        "expectancy_pct": (expectancy / float(opening) * 100.0
-                           if opening else 0.0),
-        "largest_win": max(nets) if nets else 0.0,
-        "largest_loss": min(nets) if nets else 0.0,
+        "trades":                 len(nets),
+        "wins":                   len(wins),
+        "losses":                 len(losses),
+        "avg_win":                average_win,
+        "avg_loss":               average_loss,
+        "payoff":                 (average_win / average_loss if average_loss > 0.0
+                                   else (math.inf if average_win > 0.0 else 0.0)),
+        "expectancy":             expectancy,
+        "expectancy_pct":         (expectancy / float(opening) * 100.0
+                                   if opening else 0.0),
+        "largest_win":            max(nets) if nets else 0.0,
+        "largest_loss":           min(nets) if nets else 0.0,
         "max_consecutive_losses": worst,
-        "avg_bars_held": (float(np.mean([t["bars_held"] for t in trades]))
-                          if trades else 0.0),
+        "avg_bars_held":          (float(np.mean([t["bars_held"] for t in trades]))
+                                   if trades else 0.0),
     }
 
 
@@ -398,7 +425,8 @@ def omega(result, threshold=0.0):
     values = returns(result)
     if values.size == 0:
         return 0.0
-    bar = float(threshold) / _annualization(result)
+
+    bar   = float(threshold) / _annualization(result)
     above = float(np.maximum(values - bar, 0.0).sum())
     below = float(np.maximum(bar - values, 0.0).sum())
     return _ratio(above, below, 1.0)
@@ -414,9 +442,10 @@ def tail_ratio(result, alpha=0.95):
     values = returns(result)
     if values.size < 2:
         return 0.0
+
     alpha = _confidence(alpha, "tail_ratio")
     right = float(np.quantile(values, alpha))
-    left = float(-np.quantile(values, 1.0 - alpha))
+    left  = float(-np.quantile(values, 1.0 - alpha))
     return _ratio(right, left, 1.0)
 
 
@@ -431,6 +460,7 @@ def ulcer_index(result):
     falls = drawdown(result)
     if falls.size == 0:
         return 0.0
+
     return float(np.sqrt((falls ** 2).mean()))
 
 
@@ -440,25 +470,28 @@ def rolling_sharpe(result, window=252):
 
     Decay is a shape, not a scalar, and a single Sharpe over three years cannot
     show that the whole edge was in the first six months. Aligned and padded on
-    the same rule ``emsl.ta`` uses, so it goes straight into ``emsl.chart``
+    the same rule ``probatum.ta`` uses, so it goes straight into ``probatum.chart``
     beside the equity curve with no padding decision in between.
     """
     values = returns(result)
     window = int(window)
     if window < 2:
         raise ValueError(f"rolling_sharpe needs a window of at least 2, got {window}")
+
     bars = values.size + 1
-    out = np.full(bars, np.nan, dtype=np.float64)
+    out  = np.full(bars, np.nan, dtype=np.float64)
     if window > values.size:
         return out
-    ppy = _annualization(result)
-    per = _risk_free(result, None) / ppy
-    frames = np.lib.stride_tricks.sliding_window_view(values, window)
-    means = frames.mean(axis=-1) - per
+
+    ppy     = _annualization(result)
+    per     = _risk_free(result, None) / ppy
+    frames  = np.lib.stride_tricks.sliding_window_view(values, window)
+    means   = frames.mean(axis=-1) - per
     spreads = frames.std(axis=-1, ddof=1)
     with np.errstate(divide="ignore", invalid="ignore"):
         scored = np.where(spreads > 0.0, means / spreads * math.sqrt(ppy),
                           np.where(means > 0.0, np.inf, 0.0))
+
     # a window ending on return j ends on bar j + 1, and the returns start at bar 1
     out[window:] = scored
     return out
@@ -476,14 +509,17 @@ def period_returns(result, frame, by="month"):
     units = {"month": "M", "quarter": "M", "year": "Y"}
     if by not in units:
         raise ValueError(f"by must be 'month', 'quarter' or 'year', got {by!r}")
+
     stamps = _stamps(frame)
     _same_bars(result, frame, stamps.size, "period_returns")
     keys = stamps.astype(f"datetime64[{units[by]}]")
     if by == "quarter":
         months = keys.astype("int64")
-        keys = (months - months % 3).astype("datetime64[M]")
-    out = []
+        keys   = (months - months % 3).astype("datetime64[M]")
+
+    out   = []
     edges = np.flatnonzero(np.concatenate(([True], keys[1:] != keys[:-1])))
+
     for position, first in enumerate(edges):
         last = int(edges[position + 1]) if position + 1 < edges.size else keys.size
         # a short period is still a period. Dropping the ones under two bars
@@ -496,11 +532,13 @@ def period_returns(result, frame, by="month"):
         # reads as arithmetic
         if last <= int(first):
             continue
+
         block = segment(result, int(first), last)
-        block["period"] = str(keys[int(first)])
+        block["period"]    = str(keys[int(first)])
         block["start_bar"] = int(first)
-        block["bars"] = last - int(first)
+        block["bars"]      = last - int(first)
         out.append(block)
+
     return out
 
 
@@ -516,12 +554,13 @@ def long_short_split(result):
         rows = [t for t in (result.trades or []) if t["side"] == side]
         wins = [t for t in rows if t["net_pnl"] > 0.0]
         out["long" if side == "buy" else "short"] = {
-            "trades": len(rows),
-            "net_pnl": float(sum(t["net_pnl"] for t in rows)),
-            "fees": float(sum(t["fees"] for t in rows)),
-            "win_rate": len(wins) / len(rows) if rows else 0.0,
+            "trades":        len(rows),
+            "net_pnl":       float(sum(t["net_pnl"] for t in rows)),
+            "fees":          float(sum(t["fees"] for t in rows)),
+            "win_rate":      len(wins) / len(rows) if rows else 0.0,
             "avg_bars_held": float(np.mean([t["bars_held"] for t in rows])) if rows else 0.0,
         }
+
     return out
 
 
@@ -544,6 +583,7 @@ def buy_and_hold(result, frame):
     close = _closes(frame)
     if close.size < 2:
         raise ValueError(f"buy_and_hold needs at least 2 bars, got {close.size}")
+
     mine = returns(result)
     if close.size != mine.size + 1:
         raise ValueError(
@@ -552,12 +592,14 @@ def buy_and_hold(result, frame):
             f"asset over the same bars is fine and is what beta is for, a different "
             f"number of bars is not"
         )
-    held = close[1:] / close[:-1] - 1.0
-    ppy = _annualization(result)
-    rate = _risk_free(result, None)
-    spread = mine - held
+
+    held     = close[1:] / close[:-1] - 1.0
+    ppy      = _annualization(result)
+    rate     = _risk_free(result, None)
+    spread   = mine - held
     tracking = float(spread.std(ddof=1)) if spread.size > 1 else 0.0
     variance = float(held.var(ddof=1)) if held.size > 1 else 0.0
+
     return {
         "hold_return_pct": float(close[-1] / close[0] - 1.0) * 100.0,
         # net of the same risk-free rate the run's own sharpe is net of, or the
@@ -574,11 +616,13 @@ def buy_and_hold(result, frame):
 def _closes(frame):
     if hasattr(frame, "close"):
         return np.asarray(frame.close, dtype=np.float64)
+
     data = np.asarray(frame, dtype=np.float64)
     if data.ndim != 2 or data.shape[1] != 5:
         raise TypeError(
             "frame must be a DataFrame with a close column, or a (T, 5) OHLCV array"
         )
+
     return data[:, 3]
 
 
@@ -613,22 +657,25 @@ def segment(result, start=0, stop=None):
     whole run against ``result.stats`` key by key (ADR 0034).
     """
     curve = np.asarray(result.equity_curve, dtype=np.float64)
-    bars = curve.size + 1
+    bars  = curve.size + 1
     start = int(start)
-    stop = bars if stop is None else int(stop)
+    stop  = bars if stop is None else int(stop)
+
     if not 0 <= start < stop <= bars:
         raise ValueError(
             f"segment needs 0 <= start < stop <= {bars}, got start={start} and "
             f"stop={stop}"
         )
+
     # the balance carried INTO bar `start`, so consecutive segments partition the
     # returns exactly: [a, b) owns the returns landing on bars a to b - 1, and the
     # one landing on bar b opens the next. Seeding from the balance AT bar `start`
     # instead loses one return per boundary, which compounds two halves of a run
     # to slightly less than the run
     opening = _curve(result)[max(0, start - 1)]
-    trades = [t for t in (result.trades or []) if start <= t["exit_tick"] < stop]
-    series = np.concatenate(([opening], curve[max(0, start - 1):stop - 1]))
+    trades  = [t for t in (result.trades or []) if start <= t["exit_tick"] < stop]
+    series  = np.concatenate(([opening], curve[max(0, start - 1):stop - 1]))
+
     return _stats(series, trades, _annualization(result), _risk_free(result, None))
 
 
@@ -639,6 +686,7 @@ def _stats(series, trades, ppy, rate):
     # downside, drawdown capped at a total loss, trade metrics net of the fee
     opening, final = float(series[0]), float(series[-1])
     n_returns = series.size - 1
+
     if opening > 0.0 and n_returns > 0:
         total = final / opening - 1.0
         # a float power RAISES where the f64 this mirrors saturates, so the ceiling
@@ -649,43 +697,50 @@ def _stats(series, trades, ppy, rate):
             cagr = (final / opening) ** (ppy / n_returns) - 1.0 if final > 0.0 else -1.0
         except OverflowError:
             cagr = _CAGR_CEILING
+
         cagr = min(cagr, _CAGR_CEILING)
     else:
         total, cagr = 0.0, 0.0
+
     previous = series[:-1]
     with np.errstate(divide="ignore", invalid="ignore"):
         rets = np.where(previous > 0.0, series[1:] / previous - 1.0, 0.0)
+
     rets = np.where(np.isfinite(rets), rets, 0.0)
-    per = rate / ppy
+    per  = rate / ppy
+
     if rets.size >= 2:
-        excess = float(rets.mean()) - per
-        spread = float(rets.std(ddof=1))
+        excess   = float(rets.mean()) - per
+        spread   = float(rets.std(ddof=1))
         downside = float(np.sqrt((np.minimum(rets - per, 0.0) ** 2).mean()))
         sharpe_, sortino = _ratio(excess, spread, ppy), _ratio(excess, downside, ppy)
         volatility = spread * math.sqrt(ppy)
     else:
         sharpe_, sortino, volatility = 0.0, 0.0, 0.0
+
     peak = np.maximum.accumulate(series)
     with np.errstate(divide="ignore", invalid="ignore"):
         falls = np.where(peak > 0.0, np.minimum((peak - series) / peak, 1.0), 0.0)
+
     max_dd = float(falls.max()) if falls.size else 0.0
-    nets = [float(t["net_pnl"]) for t in trades]
-    wins = [v for v in nets if v > 0.0]
+    nets   = [float(t["net_pnl"]) for t in trades]
+    wins   = [v for v in nets if v > 0.0]
     losses = [-v for v in nets if v < 0.0]
+
     return {
         "total_return_pct": total * 100.0,
-        "net_profit_pct": total * 100.0,
-        "cagr_pct": cagr * 100.0,
-        "sharpe": sharpe_,
-        "sortino": sortino,
-        "calmar": cagr * max_dd if cagr < 0.0 else _ratio(cagr, max_dd, 1.0),
+        "net_profit_pct":   total * 100.0,
+        "cagr_pct":         cagr * 100.0,
+        "sharpe":           sharpe_,
+        "sortino":          sortino,
+        "calmar":           cagr * max_dd if cagr < 0.0 else _ratio(cagr, max_dd, 1.0),
         "max_drawdown_pct": max_dd * 100.0,
-        "volatility_pct": volatility * 100.0,
-        "win_rate": len(wins) / len(nets) if nets else 0.0,
-        "profit_factor": _ratio(sum(wins), sum(losses), 1.0),
-        "num_trades": len(nets),
-        "avg_trade_pct": (sum(nets) / len(nets) / opening * 100.0
-                          if nets and opening > 0.0 else 0.0),
+        "volatility_pct":   volatility * 100.0,
+        "win_rate":         len(wins) / len(nets) if nets else 0.0,
+        "profit_factor":    _ratio(sum(wins), sum(losses), 1.0),
+        "num_trades":       len(nets),
+        "avg_trade_pct":    (sum(nets) / len(nets) / opening * 100.0
+                             if nets and opening > 0.0 else 0.0),
     }
 
 
@@ -700,6 +755,7 @@ def _confidence(alpha, where):
             f"{where} takes a confidence, so alpha is at least 0.5 and below 1, "
             f"got {alpha}; for the worst one bar in twenty pass 0.95, not 0.05"
         )
+
     return alpha
 
 
@@ -715,6 +771,7 @@ def value_at_risk(result, alpha=0.95):
     values = returns(result)
     if values.size == 0:
         return 0.0
+
     alpha = _confidence(alpha, "value_at_risk")
     return float(-np.quantile(values, 1.0 - alpha) * 100.0)
 
@@ -731,7 +788,9 @@ def conditional_value_at_risk(result, alpha=0.95):
     values = returns(result)
     if values.size == 0:
         return 0.0
+
     alpha = _confidence(alpha, "conditional_value_at_risk")
+
     # a comparison takes everything at or below the cutoff, and a strategy that is
     # flat most of the time has a mass of returns at exactly zero for the cutoff to
     # land on: at eight percent exposure that swept in 96.1% of the sample instead
@@ -741,7 +800,7 @@ def conditional_value_at_risk(result, alpha=0.95):
     # so a round hundred bars at the default confidence asks for the worst
     # 5.000000004 and takes six. The nudge is far below one bar and cannot round a
     # real fraction down
-    k = max(1, int(math.ceil((1.0 - alpha) * values.size - 1e-9)))
+    k     = max(1, int(math.ceil((1.0 - alpha) * values.size - 1e-9)))
     worst = np.partition(values, k - 1)[:k]
     return float(-worst.mean() * 100.0)
 
@@ -769,6 +828,7 @@ def probabilistic_sharpe(result, benchmark=0.0, independent=False):
         raise ValueError(
             f"probabilistic_sharpe needs at least 4 returns, got {values.size}"
         )
+
     if float(values.std(ddof=1)) == 0.0:
         # a dead-flat account has a sharpe of exactly zero and the arithmetic runs
         # right through to a tidy 0.5, which reads as a coin flip on whether the
@@ -777,12 +837,13 @@ def probabilistic_sharpe(result, benchmark=0.0, independent=False):
             "every return is identical, so this run carries no variation to "
             "estimate from and no probability can be attached to its sharpe"
         )
-    ppy = _annualization(result)
+
+    ppy      = _annualization(result)
     observed = sharpe(result) / math.sqrt(ppy)
-    target = float(benchmark) / math.sqrt(ppy)
+    target   = float(benchmark) / math.sqrt(ppy)
     variance = _psr_variance(result, observed)
-    size = values.size if independent else effective_sample(result)
-    z = (observed - target) * math.sqrt(size - 1) / math.sqrt(variance)
+    size     = values.size if independent else effective_sample(result)
+    z        = (observed - target) * math.sqrt(size - 1) / math.sqrt(variance)
     return _normal_cdf(z)
 
 
@@ -803,20 +864,22 @@ def sharpe_interval(result, confidence=0.95, independent=False):
         raise ValueError(
             f"sharpe_interval needs at least 4 returns, got {values.size}"
         )
-    ppy = _annualization(result)
+
+    ppy      = _annualization(result)
     observed = sharpe(result) / math.sqrt(ppy)
     variance = _psr_variance(result, observed)
-    size = values.size if independent else effective_sample(result)
-    half = _normal_ppf(1.0 - (1.0 - float(confidence)) / 2.0) * math.sqrt(
+    size     = values.size if independent else effective_sample(result)
+    half     = _normal_ppf(1.0 - (1.0 - float(confidence)) / 2.0) * math.sqrt(
         variance / (size - 1)
     )
+
     return {
-        "sharpe": observed * math.sqrt(ppy),
-        "low": (observed - half) * math.sqrt(ppy),
-        "high": (observed + half) * math.sqrt(ppy),
-        "confidence": float(confidence),
+        "sharpe":         observed * math.sqrt(ppy),
+        "low":            (observed - half) * math.sqrt(ppy),
+        "high":           (observed + half) * math.sqrt(ppy),
+        "confidence":     float(confidence),
         "effective_bars": float(size),
-        "bars": int(values.size),
+        "bars":           int(values.size),
     }
 
 
@@ -834,6 +897,7 @@ def _psr_variance(result, observed):
             f"not positive, so this sample cannot support a probability; it means "
             f"the returns are far enough from normal that the approximation breaks"
         )
+
     return variance
 
 
@@ -892,8 +956,10 @@ def deflation_threshold(spread, looks):
     """
     if not looks >= 2:
         raise ValueError(f"looks must be at least 2, got {looks}")
+
     if not spread >= 0.0:
         raise ValueError(f"spread must be at least 0, got {spread}")
+
     return spread * (
         (1.0 - _EULER) * _normal_ppf(1.0 - 1.0 / looks)
         + _EULER * _normal_ppf(1.0 - 1.0 / (looks * math.e))
@@ -906,12 +972,14 @@ def _null_shape(study, null):
             "deflated_sharpe needs the TuneResult a search returned, since it "
             "reads the winner's own returns"
         )
+
     if study.objective != "sharpe":
         raise ValueError(
             f"this search selected on {study.objective!r}, and the deflation is "
             f"about the quantity you selected on, so deflating its sharpe would "
             f"be answering a question nobody asked; tune with objective='sharpe'"
         )
+
     if getattr(study, "direction", None) == "minimize":
         raise ValueError(
             "this search minimized its objective, and a deflation asks how high "
@@ -919,18 +987,21 @@ def _null_shape(study, null):
             "it compares against is the wrong end of the spread; tune with "
             "direction='maximize' to deflate a winner"
         )
+
     if getattr(null, "sampler", None) != "random":
         raise ValueError(
             "null must be a search run with sampler='random'. A TPE search "
             "concentrates its trials, so the spread between them shrinks as it "
             "converges and the threshold would fall the harder you overfit"
         )
+
     if null.data_hash != study.data_hash:
         raise ValueError(
             f"the null ran on different bars ({null.data_hash} against "
             f"{study.data_hash}), so it is not a null for this search; run it "
             f"over the same data and the same space, with the same oos"
         )
+
     # an activity floor fails the thin cells, and the thin cells are where the
     # extreme sharpes live, so the trials that survive one scatter LESS than the
     # space does. Reading the spread off them made the threshold fall the
@@ -943,6 +1014,7 @@ def _null_shape(study, null):
             f"scatter less than the whole space does; run the null at "
             f"min_trades=0. The search being deflated may still use one"
         )
+
     scored = [t["stats"]["sharpe"] for t in null.trials if t["stats"]]
     scored = [s for s in scored if math.isfinite(s)]
     if len(scored) < 2:
@@ -950,6 +1022,7 @@ def _null_shape(study, null):
             f"the null produced {len(scored)} usable trials, and the spread "
             f"across them is what sets the threshold; it needs at least 2"
         )
+
     # every trial of the SEARCH is a look, including one that failed: a
     # configuration you evaluated and rejected was still one you evaluated.
     # Counting the null's trials instead answered about the wrong search
@@ -961,6 +1034,7 @@ def _null_shape(study, null):
             f"this search ran {looks} trial(s), and a deflation is a correction "
             f"for having looked more than once; it needs at least 2"
         )
+
     if len(null.trials) < looks:
         warnings.warn(
             f"the null drew {len(null.trials)} trials to estimate the spread that "
@@ -968,6 +1042,7 @@ def _null_shape(study, null):
             f"than the thing it is judging; run the null at the same n_trials",
             stacklevel=3,
         )
+
     return looks, float(np.std(np.asarray(scored, dtype=np.float64), ddof=1))
 
 
@@ -985,30 +1060,34 @@ def min_track_record_length(result, benchmark=0.0, confidence=0.95,
     Read ``num_trades`` beside it either way: three thousand bars carrying forty
     round trips is forty bets, and it is the bets that carry the information.
     """
-    values = returns(result)
-    ppy = _annualization(result)
+    values   = returns(result)
+    ppy      = _annualization(result)
     observed = sharpe(result) / math.sqrt(ppy)
-    target = float(benchmark) / math.sqrt(ppy)
+    target   = float(benchmark) / math.sqrt(ppy)
+
     if not math.isfinite(observed) or observed <= target:
         raise ValueError(
             f"the observed sharpe is not above the benchmark, so no sample length "
             f"makes it distinguishable; observed {observed * math.sqrt(ppy):.4g} "
             f"annualized against a benchmark of {benchmark:.4g}"
         )
-    variance = _psr_variance(result, observed)
-    needed = 1.0 + variance * (_normal_ppf(confidence) / (observed - target)) ** 2
-    have = float(values.size)
+
+    variance  = _psr_variance(result, observed)
+    needed    = 1.0 + variance * (_normal_ppf(confidence) / (observed - target)) ** 2
+    have      = float(values.size)
     effective = have if independent else effective_sample(result)
+
     # the answer comes out in independent bets, and the caller asked in bars, so
     # scale by however many bars this run spends per bet
     bars = needed * (have / effective) if effective > 0.0 else needed
+
     return {
-        "bars": bars,
-        "years": bars / ppy,
-        "have_bars": int(values.size),
+        "bars":           bars,
+        "years":          bars / ppy,
+        "have_bars":      int(values.size),
         "effective_bars": effective,
-        "enough": have >= bars,
-        "num_trades": int((result.stats or {}).get("num_trades", 0)),
+        "enough":         have >= bars,
+        "num_trades":     int((result.stats or {}).get("num_trades", 0)),
     }
 
 
@@ -1023,6 +1102,7 @@ def _normal_ppf(p):
     # become one for one function
     if not 0.0 < p < 1.0:
         raise ValueError(f"confidence must be above 0 and below 1, got {p}")
+
     a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
          1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
     b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
@@ -1032,14 +1112,17 @@ def _normal_ppf(p):
     d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
          3.754408661907416e+00)
     low, high = 0.02425, 1.0 - 0.02425
+
     if p < low:
         q = math.sqrt(-2.0 * math.log(p))
         return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
                ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+
     if p > high:
         q = math.sqrt(-2.0 * math.log(1.0 - p))
         return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
                 ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+
     q = p - 0.5
     r = q * q
     return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
@@ -1063,22 +1146,27 @@ def cost_curve(strategy, data, costs=(0.0, 2.0, 5.0, 10.0, 20.0), **config):
     that only the fee moved (ADR 0024).
     """
     from .backtest import Backtester
-
     _own_the_fees(config, "cost_curve")
+
     rebuild = _rebuilder(strategy)
-    out = []
+    out     = []
+
     for bps in costs:
-        rate = float(bps) / 2.0 / 10_000.0
+        rate   = float(bps) / 2.0 / 10_000.0
         result = Backtester(
-            data, fee_taker=rate, fee_maker=rate, **config
+            data,
+            fee_taker = rate,
+            fee_maker = rate,
+            **config,
         ).run(rebuild())
         out.append({
-            "round_trip_bps": float(bps),
+            "round_trip_bps":   float(bps),
             "total_return_pct": result.stats["total_return_pct"],
-            "sharpe": result.stats["sharpe"],
-            "num_trades": result.stats["num_trades"],
-            "fees": float(sum(t["fees"] for t in result.trades)),
+            "sharpe":           result.stats["sharpe"],
+            "num_trades":       result.stats["num_trades"],
+            "fees":             float(sum(t["fees"] for t in result.trades)),
         })
+
     return out
 
 
@@ -1092,19 +1180,20 @@ def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
     real and how much is the absence of friction.
     """
     from .backtest import Backtester
-
     _own_the_fees(config, "breakeven_bps")
     rebuild = _rebuilder(strategy)
 
     def earned(bps):
         rate = float(bps) / 2.0 / 10_000.0
-        run = Backtester(data, fee_taker=rate, fee_maker=rate, **config)
+        run  = Backtester(data, fee_taker=rate, fee_maker=rate, **config)
         return run.run(rebuild()).stats["total_return_pct"]
 
     if earned(0.0) <= 0.0:
         return None
+
     if earned(ceiling) > 0.0:
         return float(ceiling)
+
     # bisect: the return is monotone in the cost for a fixed set of decisions, and
     # not quite monotone once the costs change which trades happen, so this finds
     # a crossing rather than the crossing. It is the honest kind of answer anyway
@@ -1115,6 +1204,7 @@ def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
             low = middle
         else:
             high = middle
+
     return (low + high) / 2.0
 
 
@@ -1130,6 +1220,7 @@ def _rebuilder(strategy):
     """
     if isinstance(strategy, type):
         return lambda: _built(strategy)
+
     kept = dict(vars(strategy))
 
     def restore():
@@ -1188,6 +1279,7 @@ def excursions(result, frame):
     """
     opens, high, low, closes = _bar_prices(frame)
     _same_bars(result, frame, len(high), "excursions")
+
     out = []
     for trade in result.trades or []:
         first, last = trade["entry_tick"], trade["exit_tick"]
@@ -1196,27 +1288,31 @@ def excursions(result, frame):
             # end is never logged as a trade (ADR 0022). The guard above is what
             # makes that true rather than hoped for
             continue
+
         entry = trade["entry_price"]
-        seen = [entry, float(trade["exit_price"])]
+        seen  = [entry, float(trade["exit_price"])]
         if last > first:
             seen.append(float(closes[first]))
             seen.append(float(opens[last]))
             if last - first > 1:
                 seen.append(float(high[first + 1:last].max()))
                 seen.append(float(low[first + 1:last].min()))
+
         peak, trough = max(seen), min(seen)
         if trade["side"] == "buy":
             best, worst = peak - entry, trough - entry
         else:
             best, worst = entry - trough, entry - peak
+
         out.append({
             "entry_tick": first,
-            "exit_tick": last,
-            "side": trade["side"],
-            "net_pnl": trade["net_pnl"],
-            "best_pct": best / entry * 100.0 if entry else 0.0,
-            "worst_pct": worst / entry * 100.0 if entry else 0.0,
+            "exit_tick":  last,
+            "side":       trade["side"],
+            "net_pnl":    trade["net_pnl"],
+            "best_pct":   best / entry * 100.0 if entry else 0.0,
+            "worst_pct":  worst / entry * 100.0 if entry else 0.0,
         })
+
     return out
 
 
@@ -1234,19 +1330,22 @@ def session_buckets(result, frame, by="hour"):
     """
     if by not in ("hour", "weekday"):
         raise ValueError(f"by must be 'hour' or 'weekday', got {by!r}")
+
     stamps = _stamps(frame)
     _same_bars(result, frame, stamps.size, "session_buckets")
     unit = stamps.astype("datetime64[h]").astype("int64")
+
     # epoch day zero is a Thursday, so +3 puts Monday at 0 and matches
     # datetime.weekday, pandas dayofweek and day_name. It used to be +4, which is
     # Sunday-first, stated in no docstring and on no page, so buckets[0] read as
     # Monday and was Sunday (ADR 0030)
-    keys = (unit % 24) if by == "hour" else ((unit // 24 + 3) % 7)
+    keys    = (unit % 24) if by == "hour" else ((unit // 24 + 3) % 7)
     buckets = {}
     for trade in result.trades or []:
         exit_tick = trade["exit_tick"]
         if not 0 <= exit_tick < keys.size:
             continue
+
         slot = buckets.setdefault(
             int(keys[exit_tick]), {"trades": 0, "net_pnl": 0.0, "wins": 0}
         )
@@ -1255,6 +1354,7 @@ def session_buckets(result, frame, by="hour"):
         slot["wins"] += 1 if trade["net_pnl"] > 0.0 else 0
     for slot in buckets.values():
         slot["win_rate"] = slot["wins"] / slot["trades"] if slot["trades"] else 0.0
+
     return dict(sorted(buckets.items()))
 
 
@@ -1264,8 +1364,6 @@ def _ran_on(result):
 
 
 def _fingerprint_of(frame):
-    # the frame's own fingerprint, on the identical rule the Backtester stamps a
-    # result with, or None when it carries too few columns to compute one
     from ._data import to_ohlcv
     from .backtest import _fingerprint
 
@@ -1295,8 +1393,9 @@ def _same_bars(result, frame, bars, where):
             f"into the original series, so each one would be read against the "
             f"wrong bar. To look at a slice, re-run the backtest on it"
         )
+
     stamped = getattr(result, "data_hash", None)
-    seen = _fingerprint_of(frame)
+    seen    = _fingerprint_of(frame)
     if stamped and seen and seen != stamped:
         raise ValueError(
             f"{where} was given a different series ({seen}) from the one the run "
@@ -1312,6 +1411,7 @@ def _bar_prices(frame):
     if all(hasattr(frame, name) for name in ("open", "high", "low", "close")):
         return tuple(np.asarray(getattr(frame, name), dtype=np.float64)
                      for name in ("open", "high", "low", "close"))
+
     data = np.asarray(frame, dtype=np.float64)
     if data.ndim != 2 or data.shape[1] != 5:
         raise TypeError(
@@ -1319,6 +1419,7 @@ def _bar_prices(frame):
             "low, so frame must be a DataFrame carrying the four, or a (T, 5) "
             "OHLCV array"
         )
+
     return data[:, 0], data[:, 1], data[:, 2], data[:, 3]
 
 
@@ -1332,14 +1433,15 @@ def _stamps(frame):
             "session_buckets needs the timestamps, so pass the DataFrame the "
             "backtest ran on rather than the (T, 5) array"
         )
-    from ._data import _epoch_seconds
 
+    from ._data import _epoch_seconds
     seconds = _epoch_seconds(np.asarray(index))
     if seconds is None:
         raise TypeError(
             "the frame's index carries no timestamps, so its bars cannot be "
             "grouped by hour or by weekday"
         )
+
     return seconds.astype("int64").astype("datetime64[s]")
 
 
@@ -1352,15 +1454,17 @@ def report(result, frame=None):
     out.update({f"decompose_{k}": v for k, v in decompose(result).items()})
     out.update({f"under_water_{k}": v for k, v in time_under_water(result).items()})
     out.update({f"trade_{k}": v for k, v in trade_stats(result).items()})
-    out["skew"] = skew(result)
-    out["kurtosis"] = kurtosis(result)
-    out["autocorr_1"] = autocorrelation(result)
-    out["effective_bars"] = effective_sample(result)
+
+    out["skew"]              = skew(result)
+    out["kurtosis"]          = kurtosis(result)
+    out["autocorr_1"]        = autocorrelation(result)
+    out["effective_bars"]    = effective_sample(result)
     out["value_at_risk_pct"] = value_at_risk(result)
     out["conditional_value_at_risk_pct"] = conditional_value_at_risk(result)
-    out["omega"] = omega(result)
-    out["tail_ratio"] = tail_ratio(result)
+    out["omega"]       = omega(result)
+    out["tail_ratio"]  = tail_ratio(result)
     out["ulcer_index"] = ulcer_index(result)
+
     # what the return is worth per unit of time actually at risk. Twenty percent
     # made while in the market a twelfth of the time and twenty percent made fully
     # invested are the same row without it
@@ -1368,23 +1472,28 @@ def report(result, frame=None):
     out["return_per_exposure"] = (
         float(out.get("total_return_pct", 0.0)) / exposure * 100.0 if exposure else 0.0
     )
+
     sides = long_short_split(result)
     for name, block in sides.items():
         out.update({f"{name}_{k}": v for k, v in block.items()})
+
     try:
         out["probabilistic_sharpe"] = probabilistic_sharpe(result)
     except ValueError:
         out["probabilistic_sharpe"] = None
+
     try:
         out.update({f"sharpe_{k}": v for k, v in sharpe_interval(result).items()
                     if k in ("low", "high")})
     except ValueError:
         out["sharpe_low"], out["sharpe_high"] = None, None
+
     if frame is not None:
         # `hold_return_pct` and `hold_sharpe` already carry the prefix, and
         # prefixing them again produced `hold_hold_return_pct`
         for key, value in buy_and_hold(result, frame).items():
             out[key if key.startswith("hold_") else f"hold_{key}"] = value
+
     return out
 
 
@@ -1403,10 +1512,13 @@ def compare(results, keys=None):
         named = list(results.items())
     else:
         named = [(r.strategy or f"run {i}", r) for i, r in enumerate(results)]
+
     if not named:
         return []
+
     shown = list(keys) if keys else ["total_return_pct", "sharpe",
                                      "max_drawdown_pct", "num_trades"]
+
     # a key nothing reports printed as the word None in every row, which reads as
     # a run that scored nothing rather than as a column that does not exist.
     # `tune` checks its objective against the same set before it searches
@@ -1419,6 +1531,7 @@ def compare(results, keys=None):
             f"compare was asked for {unknown}, which no result reports; choose "
             f"from {sorted(available)}"
         )
+
     width = max(len(str(name)) for name, _ in named)
     # two wider than the longest label, so a label that exactly fills the column
     # cannot run into its neighbour; "max drawdown %" is precisely 14 characters
@@ -1427,18 +1540,21 @@ def compare(results, keys=None):
     for key in shown:
         header += f"{_short(key):>{column}}"
     print(header)
+
     rows = []
     for name, result in named:
         stats = result.stats or {}
-        line = f"  {name:<{width}}  {result.data_hash or '':<8}"
+        line  = f"  {name:<{width}}  {result.data_hash or '':<8}"
         for key in shown:
             value = stats.get(key)
             line += (f"{value:>{column},.3f}" if isinstance(value, float)
                      else f"{value!s:>{column}}")
         print(line)
+
         row = {"name": name}
         row.update(result.to_dict())
         rows.append(row)
+
     return rows
 
 
@@ -1455,10 +1571,12 @@ def summary(result, frame=None):
     water = time_under_water(result)
     sides = long_short_split(result)
     shape = trade_stats(result)
+
     try:
         band = sharpe_interval(result)
     except ValueError:
         band = None
+
     rows = [
         ("return", f"{stats.get('total_return_pct', 0.0):>12,.2f} %"),
         ("sharpe", f"{stats.get('sharpe', 0.0):>12,.2f}"),
@@ -1485,9 +1603,12 @@ def summary(result, frame=None):
         ("under water", f"{water['share_pct']:>12,.1f} % of bars"),
         ("longest", f"{water['longest_bars']:>12,} bars"),
     ]
+
     if frame is not None:
         hold = buy_and_hold(result, frame)
         rows += [("", ""), ("vs holding", f"{hold['excess_return_pct']:>12,.2f} %")]
+
     for label, value in rows:
         print(f"  {label:<14}{value}" if label else "")
+
     return report(result, frame)

@@ -38,11 +38,11 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | A fidelity-neutral primitive (a unit, an order, position or account math, a cost model) | `crates/probatum-core` |
 | A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/probatum-engine` |
 | A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/probatum-py` |
-| A convenience over the bindings (a new runner, a wrapper) | `python/emsl` |
-| A statistic read off a finished run | `python/emsl/metrics.py` |
-| An indicator, which is a function of arrays and never sees the engine | `python/emsl/ta.py` |
-| Anything a chart draws (a mark, a guard, a panel rule) | `python/emsl/_chart.py` and `plot.py` |
-| How a chart is painted (a primitive, the legend, the controls) | `python/emsl/_static` |
+| A convenience over the bindings (a new runner, a wrapper) | `python/probatum` |
+| A statistic read off a finished run | `python/probatum/metrics.py` |
+| An indicator, which is a function of arrays and never sees the engine | `python/probatum/ta.py` |
+| Anything a chart draws (a mark, a guard, a panel rule) | `python/probatum/_chart.py` and `plot.py` |
+| How a chart is painted (a primitive, the legend, the controls) | `python/probatum/_static` |
 
 A good test of placement: could a future tick or L2 engine reuse it? If yes, it is a core primitive and belongs in `probatum-core`, which holds no candle series and no bar-level logic. If it only makes sense per candle, it belongs in `probatum-engine`. The Python crate and package hold no simulation logic at all; they parse, convert, and orchestrate.
 
@@ -62,20 +62,20 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Python-facing work (anything in `probatum-py` or `python/emsl`) is validated on the Docker gate that builds the one abi3 wheel and runs the suite across Python versions; the full split is in the [Validation Guide](Validation_Guide.md). Four test stages sit outside that gate because each is much heavier; CI runs them, and a change to what they cover should run them locally before it is pushed: `--target test-browser` executes the chart's JavaScript in a real browser, `--target test-sb3` installs torch and exercises the Stable-Baselines3 adapter, `--target test-sdist` installs the source archive and runs the suite against it, and `--target miri` checks the candle memory behind every zero-copy view under Miri. Anything under `_static/` needs the first one, since nothing else in the project runs that code at all. The `probatum-py` crate is an `extension-module` cdylib, so it cannot be unit-tested with `cargo test` (there is no interpreter to link); it is checked with `cargo build` and `clippy`, then exercised through the wheel.
+Python-facing work (anything in `probatum-py` or `python/probatum`) is validated on the Docker gate that builds the one abi3 wheel and runs the suite across Python versions; the full split is in the [Validation Guide](Validation_Guide.md). Four test stages sit outside that gate because each is much heavier; CI runs them, and a change to what they cover should run them locally before it is pushed: `--target test-browser` executes the chart's JavaScript in a real browser, `--target test-sb3` installs torch and exercises the Stable-Baselines3 adapter, `--target test-sdist` installs the source archive and runs the suite against it, and `--target miri` checks the candle memory behind every zero-copy view under Miri. Anything under `_static/` needs the first one, since nothing else in the project runs that code at all. The `probatum-py` crate is an `extension-module` cdylib, so it cannot be unit-tested with `cargo test` (there is no interpreter to link); it is checked with `cargo build` and `clippy`, then exercised through the wheel.
 
 <br>
 
 ### The dev directory
 
-`dev/` holds the tools that check the library rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/emsl` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are three, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows. The second simulator the engine is compared with asserts rather than produces, so it is a test, in `tests/reference/`, and the [Validation Guide](Validation_Guide.md) is where it is explained.
+`dev/` holds the tools that check the library rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/probatum` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are three, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows. The second simulator the engine is compared with asserts rather than produces, so it is a test, in `tests/reference/`, and the [Validation Guide](Validation_Guide.md) is where it is explained.
 
 `dev/charts/` produces every chart image the documentation shows. `build.py` runs the documented examples for real against a frozen parquet and saves each one as a chart, and `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn. Nothing is cropped or retouched, so what a reader sees is what the library drew, and the snippet printed beside a picture is the snippet that produced it. Both run in one opt-in stage, which needs the published [sample dataset](https://github.com/atOCEANO/sample-market-data) mounted because a picture built from live candles cannot be regenerated, only redrawn differently:
 
 ```bash
-docker build --target charts -t emsl-charts .
+docker build --target charts -t probatum-charts .
 docker run --rm -v "<sample-market-data>/data:/data:ro" \
-  -v "${PWD}/.Documentation:/out" emsl-charts
+  -v "${PWD}/.Documentation:/out" probatum-charts
 ```
 
 Regenerating should change nothing unless the drawing changed, and that is the check worth making: thirteen of the fourteen that existed when the stage was introduced survived the move byte for byte, and fifteen ship today. If a rerun rewrites images you did not touch, something moved that you did not mean to move, and the fonts are the first place to look.
@@ -85,11 +85,11 @@ Regenerating should change nothing unless the drawing changed, and that is the c
 `dev/diagrams/` holds the mermaid source for every hand-made diagram in `.Documentation/imgs/`, one `.mmd` per image, and its own stage renders all of them:
 
 ```bash
-docker build --target diagrams -t emsl-diagrams .
+docker build --target diagrams -t probatum-diagrams .
 docker run --rm --shm-size=1g \
   -v "${PWD}/dev/diagrams:/diagrams" \
   -v "${PWD}/.Documentation/imgs:/out" \
-  emsl-diagrams
+  probatum-diagrams
 ```
 
 The sources are mounted rather than built into the image, so editing one and rerunning draws what is on disk. The router renders its set with the same two mounts and the same flags against the same digest, so the recipes differ only in that this one names a stage and that one names the image.
@@ -130,7 +130,7 @@ Run the build loop above green before you submit, and the Docker gate too for an
 Releases are built by CI, never by hand. Pushing a `v*` tag runs the release workflow, which builds the `abi3` wheels for Linux (x86_64 and aarch64), macOS (one universal2 file covering Intel and Apple silicon), and Windows, plus an sdist, and attaches them all to a GitHub Release:
 
 ```bash
-git tag -a vX.Y.Z -m "emsl X.Y.Z: one line on what changed"
+git tag -a vX.Y.Z -m "probatum X.Y.Z: one line on what changed"
 git push origin vX.Y.Z
 ```
 
@@ -138,13 +138,13 @@ Two things before you tag. The version in `Cargo.toml` is what names the wheels,
 
 To rehearse without releasing, run the workflow by hand from the Actions tab. A manual dispatch builds every wheel and stops there; only a tag creates the Release. That distinction is worth using, because the macOS and Windows legs exist nowhere but the runners, so a tag is the first time they are exercised.
 
-Those wheels are the install path for anyone without a Rust toolchain, so a release is what makes a version usable at all. emsl is not published to PyPI.
+Those wheels are the install path for anyone without a Rust toolchain, so a release is what makes a version usable at all. probatum is not published to PyPI.
 
 <br>
 
 ### Adding a wrapper
 
-A new way to drive the engine (say a different backtest style, or a distributed runner) is a Python module under `python/emsl/`, built on the compiled `Engine` or `Batch`. It holds no simulation logic: it configures the engine, drives the loop, and shapes the results. Re-export it from `python/emsl/__init__.py` if it belongs on the top level, and add a test file under `tests/` so the Docker gate covers it. Keep documentation in this `.Documentation/` set and the top-level README; there are no per-folder READMEs.
+A new way to drive the engine (say a different backtest style, or a distributed runner) is a Python module under `python/probatum/`, built on the compiled `Engine` or `Batch`. It holds no simulation logic: it configures the engine, drives the loop, and shapes the results. Re-export it from `python/probatum/__init__.py` if it belongs on the top level, and add a test file under `tests/` so the Docker gate covers it. Keep documentation in this `.Documentation/` set and the top-level README; there are no per-folder READMEs.
 
 <br>
 

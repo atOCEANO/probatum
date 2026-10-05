@@ -20,26 +20,28 @@ batched path is compared one env at a time by ``batch_differential.py``.
 
 import math
 
-DUST = 1e-9          # ADR 0014: a fill at or below this moves neither cash nor position
+DUST     = 1e-9      # ADR 0014: a fill at or below this moves neither cash nor position
 MAX_SLIP = 0.99      # ADR 0013: the total adverse slip is held just under one
 
 
 class Reference:
+
     def __init__(self, bars, market="spot", quote=10_000.0, fee_taker=0.0006,
                  fee_maker=0.0002, slippage_bps=0.0, max_fill_fraction=1.0,
                  leverage=10.0, impact=0.0, funding_rate=0.0, funding_interval=0,
                  max_open_orders=8, start=0):
-        self.bars = bars
-        self.market = market
-        self.quote = float(quote)
-        self.fee_taker = float(fee_taker)
-        self.fee_maker = float(fee_maker)
-        self.slip = float(slippage_bps) / 10_000.0
-        self.cap = float(max_fill_fraction)
-        self.leverage = float(leverage)
-        self.impact = float(impact)
-        self.funding_rate = float(funding_rate)
+        self.bars             = bars
+        self.market           = market
+        self.quote            = float(quote)
+        self.fee_taker        = float(fee_taker)
+        self.fee_maker        = float(fee_maker)
+        self.slip             = float(slippage_bps) / 10_000.0
+        self.cap              = float(max_fill_fraction)
+        self.leverage         = float(leverage)
+        self.impact           = float(impact)
+        self.funding_rate     = float(funding_rate)
         self.funding_interval = int(funding_interval)
+
         # ADR 0010 bounds both the resting book and the pending queue, and once
         # either is full every further placement is REJECTED rather than queued.
         # Leaving it unbounded here was the second thing this reference got wrong:
@@ -49,22 +51,24 @@ class Reference:
         self.slots = int(max_open_orders)
 
         self.position = 0.0
-        self.entry = 0.0
+        self.entry    = 0.0
         self.realized = 0.0
         self.open_fee = 0.0          # ADR 0023: the entry-side fee of what is held
+
         # ADR 0020: the funding schedule belongs to the SERIES, so an
         # episode started part way in funds the same absolute bars every other
         # episode does. Which is why an offset start is a starting tick over the
         # whole series here, and not a slice of it: `bars[start:]` would fund on
         # bars counted from the episode, and the two readings only part company
         # once something starts somewhere other than zero
-        self.entry_tick = int(start)
-        self.tick = int(start)
-        self.fills = 0
+        self.entry_tick   = int(start)
+        self.tick         = int(start)
+        self.fills        = 0
         self.funding_paid = 0.0
-        self.bust = False
-        self.trades = []
-        self.pending = []            # market orders, filling at the next open
+        self.bust         = False
+        self.trades       = []
+        self.pending      = []       # market orders, filling at the next open
+
         # ADR 0011: the book is SLOTS, not a queue. A freed slot is reused by the
         # next placement, so an order placed later can resolve before one placed
         # earlier, and that decides which of them gets the room when a cash or
@@ -74,46 +78,52 @@ class Reference:
         self.resting = [None] * self.slots
         self.next_id = 1
 
+
     def free_slot(self):
         for i, order in enumerate(self.resting):
             if order is None:
                 return i
+
         return None
 
-    # ---------------------------------------------------------------- reading
 
     def equity(self, mark):
         if self.market == "spot":
             return self.quote + self.position * mark
         return self.quote + self.position * (mark - self.entry)
 
-    # ---------------------------------------------------------------- placing
 
     def market_order(self, side, size, reduce_only=False, fok=False):
         # ADR 0007: a size that can never fill is refused a slot rather than taking one
         if not math.isfinite(size) or size <= 0.0:
             return None
+
         if len(self.pending) >= self.slots:
             return None
+
         order = dict(id=self.next_id, side=side, size=size, kind="market",
                      reduce_only=reduce_only, fok=fok)
         self.next_id += 1
         self.pending.append(order)
         return order["id"]
 
+
     def cancel(self, order_id):
         for i, order in enumerate(self.resting):
             if order is not None and order["id"] == order_id:
                 self.resting[i] = None
                 return True
+
         return False
+
 
     def cancel_all(self):
         """Every RESTING order. A pending market order is not resting and fills on
         the next step regardless, which is the distinction worth keeping."""
-        dropped = sum(1 for order in self.resting if order is not None)
+        dropped      = sum(1 for order in self.resting if order is not None)
         self.resting = [None] * self.slots
         return dropped
+
 
     def is_resting(self, order_id):
         """Whether ``order_id`` still names a live resting order.
@@ -124,6 +134,7 @@ class Reference:
         """
         return any(o is not None and o["id"] == order_id for o in self.resting)
 
+
     def replace(self, order_id, size=None, price=None, trigger=None):
         """ADR 0010: cancel and re-rest, and place NOTHING when the id is gone.
 
@@ -131,16 +142,19 @@ class Reference:
         itself refused, the original goes back, because `None` means nothing
         happened and a caller trailing a stop reads it as "it already filled".
         """
-        old = None
+        old  = None
         slot = None
         for i, order in enumerate(self.resting):
             if order is not None and order["id"] == order_id:
                 old, slot = order, i
                 break
+
         if old is None:
             return None
+
         self.resting[slot] = None
         size = old["size"] - old["filled"] if size is None else size
+
         if old["kind"] == "limit":
             # the tif rides along with the side and the flags: a replacement is the
             # same order moved, so moving an IOC must not quietly make it a GTC
@@ -152,24 +166,30 @@ class Reference:
             placed = self.stop_order(old["side"], size,
                                      old["trigger"] if trigger is None else trigger,
                                      old["reduce_only"])
+
         if placed is None:
             self.resting[slot] = old
+
         return placed
+
 
     def limit_order(self, side, size, price, post_only=False, tif="gtc",
                     reduce_only=False):
         if not math.isfinite(size) or size <= 0.0 or not math.isfinite(price):
             return None
+
         # ADR 0011 by way of order.rs: a post_only limit that would cross the
         # market as it stands is REFUSED rather than turned taker
         if post_only:
             reference = self.bars[self.tick][3]
-            crosses = price >= reference if side == "buy" else price <= reference
+            crosses   = price >= reference if side == "buy" else price <= reference
             if crosses:
                 return None
+
         slot = self.free_slot()
         if slot is None:
             return None
+
         order = dict(id=self.next_id, side=side, size=size, kind="limit",
                      price=price, filled=0.0, reduce_only=reduce_only,
                      post_only=post_only, fok=(tif == "fok"), tif=tif)
@@ -177,34 +197,39 @@ class Reference:
         self.resting[slot] = order
         return order["id"]
 
+
     def stop_order(self, side, size, trigger, reduce_only=True):
         if not math.isfinite(size) or size <= 0.0 or not math.isfinite(trigger):
             return None
+
         slot = self.free_slot()
         if slot is None:
             return None
+
         order = dict(id=self.next_id, side=side, size=size, kind="stop",
                      trigger=trigger, filled=0.0, reduce_only=reduce_only,
                      post_only=False, fok=False, tif="gtc")
+
         self.next_id += 1
         self.resting[slot] = order
         return order["id"]
 
-    # ----------------------------------------------------------------- prices
 
     def taker_slip(self, size, volume):
         # ADR 0013 flat slippage, ADR 0013 impact proportional to the bar taken,
         # ADR 0013 both adverse and the total held under one
-        flat = max(self.slip, 0.0)
+        flat  = max(self.slip, 0.0)
         extra = max(self.impact, 0.0) * (size / volume) if volume > 0.0 else 0.0
         total = flat + extra
         if not math.isfinite(total):
             return MAX_SLIP
         return min(total, MAX_SLIP)
 
+
     def within(self, side, price, bar):
         # ADR 0013: a taker price never leaves the bar that produced it
         return min(price, bar[1]) if side == "buy" else max(price, bar[2])
+
 
     def fillable(self, remaining, bar):
         # ADR 0013: one order takes at most this fraction of the bar's volume
@@ -213,7 +238,6 @@ class Reference:
             return 0.0
         return min(remaining, available)
 
-    # ---------------------------------------------------------------- clamping
 
     def clamp(self, side, size, price, reduce_only, is_taker=True):
         """Every risk rule, applied in the order the decisions state them."""
@@ -229,14 +253,14 @@ class Reference:
         # an over-cap position may be kept but not grown, a flip must fit outright,
         # and with no equity nothing may open
         if self.market == "perp" and self.leverage > 0.0:
-            equity = self.equity(price)
-            allowed = self.leverage * equity / price if equity > 0.0 else 0.0
-            after = self.position + signed
+            equity   = self.equity(price)
+            allowed  = self.leverage * equity / price if equity > 0.0 else 0.0
+            after    = self.position + signed
             flipping = (self.position != 0.0 and after != 0.0
                         and (after > 0.0) != (self.position > 0.0))
             ceiling = allowed if flipping else max(allowed, abs(self.position))
             if abs(after) > ceiling:
-                size = abs(ceiling * (1.0 if after > 0.0 else -1.0) - self.position)
+                size   = abs(ceiling * (1.0 if after > 0.0 else -1.0) - self.position)
                 signed = size if side == "buy" else -size
 
         # ADR 0008: spot cannot short, so a sell is clamped to what is held
@@ -248,10 +272,10 @@ class Reference:
         # resting limit is a maker, and using the taker rate here bought fractionally
         # less than the balance affords
         if self.market == "spot" and side == "buy":
-            rate = self.fee_taker if is_taker else self.fee_maker
-            per_unit = price * (1.0 + rate)
+            rate       = self.fee_taker if is_taker else self.fee_maker
+            per_unit   = price * (1.0 + rate)
             affordable = self.quote / per_unit if per_unit > 0.0 else 0.0
-            size = min(size, max(affordable, 0.0))
+            size       = min(size, max(affordable, 0.0))
 
         # ADR 0010: reduce_only may only shrink, and never past flat
         if reduce_only:
@@ -265,19 +289,18 @@ class Reference:
             return 0.0
         return size
 
-    # ----------------------------------------------------------------- booking
 
     def apply(self, side, size, price, is_taker, liquidated=False):
         """ADR 0014 flip splitting, ADR 0023 the round-trip fee, ADR 0022 the log."""
         size = float(size)
         if size <= DUST:
             return 0.0
-        rate = self.fee_taker if is_taker else self.fee_maker
-        fee = size * price * rate
+
+        rate   = self.fee_taker if is_taker else self.fee_maker
+        fee    = size * price * rate
         signed = size if side == "buy" else -size
         before = self.position
-        after = before + signed
-
+        after  = before + signed
         closed = 0.0
         if before != 0.0 and (before > 0.0) != (signed > 0.0):
             closed = min(size, abs(before))
@@ -285,10 +308,10 @@ class Reference:
         booked = 0.0
         if closed > DUST:
             direction = 1.0 if before > 0.0 else -1.0
-            pnl = closed * (price - self.entry) * direction
+            pnl       = closed * (price - self.entry) * direction
             self.realized += pnl
-            booked = pnl
-            share = self.open_fee * (closed / abs(before))
+            booked   = pnl
+            share    = self.open_fee * (closed / abs(before))
             exit_fee = fee * (closed / size)
             self.trades.append(dict(
                 entry_tick=self.entry_tick, exit_tick=self.tick,
@@ -304,12 +327,12 @@ class Reference:
             after, self.entry, self.open_fee = 0.0, 0.0, 0.0
         elif closed > DUST and opened > DUST:
             # ADR 0014: the remainder opens fresh at the fill price
-            self.entry = price
-            self.open_fee = fee * (opened / size)
+            self.entry      = price
+            self.open_fee   = fee * (opened / size)
             self.entry_tick = self.tick
         elif opened > DUST and before == 0.0:
-            self.entry = price
-            self.open_fee = fee * (opened / size)
+            self.entry      = price
+            self.open_fee   = fee * (opened / size)
             self.entry_tick = self.tick
         elif opened > DUST:
             # a same-side add volume weights the entry (ADR 0014) and keeps its clock
@@ -325,22 +348,25 @@ class Reference:
             self.quote -= signed * price + fee
         else:
             self.quote += booked - fee
+
         self.position = after
         self.fills += 1
         return size
 
-    # -------------------------------------------------------------- the bar
 
     def bankruptcy_price(self):
         """ADR 0018: where closing the whole position leaves exactly nothing."""
         qty, size = self.position, abs(self.position)
         if size <= DUST:
             return None
+
         denominator = qty - size * self.fee_taker
         if abs(denominator) <= 2.2e-16:
             return None
+
         price = (qty * self.entry - self.quote) / denominator
         return price if math.isfinite(price) and price > 0.0 else None
+
 
     def bound_by_margin(self, side, price):
         """ADR 0018: no fill closes a perp past the point its margin ran out.
@@ -351,18 +377,23 @@ class Reference:
         """
         if self.market != "perp":
             return price
+
         reduces = ((self.position > 0.0 and side == "sell")
                    or (self.position < 0.0 and side == "buy"))
         if not reduces:
             return price
+
         bound = self.bankruptcy_price()
         if bound is None:
             return price
+
         return max(price, bound) if self.position > 0.0 else min(price, bound)
+
 
     def step(self):
         if self.tick + 1 >= len(self.bars):
             return
+
         self.tick += 1
         bar = self.bars[self.tick]
         o, h, l, c, v = bar
@@ -375,11 +406,10 @@ class Reference:
             if self.equity(adverse) <= 0.0:
                 fence = self.bankruptcy_price()
 
-        long = self.position >= 0.0
+        long   = self.position >= 0.0
         gapped = fence is not None and (o <= fence if long else o >= fence)
         if gapped:
             self.liquidate(fence)
-
         if fence is not None and not gapped:
             clip = (lambda p: max(p, fence)) if long else (lambda p: min(p, fence))
             o, h, l, c = clip(o), clip(h), clip(l), clip(c)
@@ -390,10 +420,10 @@ class Reference:
             size = self.fillable(order["size"], seen)
             if size <= 0.0:
                 continue
-            slip = self.taker_slip(size, v)
-            raw = o * (1.0 + slip) if order["side"] == "buy" else o * (1.0 - slip)
+            slip  = self.taker_slip(size, v)
+            raw   = o * (1.0 + slip) if order["side"] == "buy" else o * (1.0 - slip)
             price = self.within(order["side"], raw, seen)
-            size = self.clamp(order["side"], size, price, order["reduce_only"], True)
+            size  = self.clamp(order["side"], size, price, order["reduce_only"], True)
             # ADR 0010: all or nothing is decided AFTER the clamps, because the
             # size that can actually fill is not the one the fill model offered:
             # the margin cap, the cash and short clamps and reduce_only all shrink
@@ -431,7 +461,7 @@ class Reference:
                 base = (max(o, order["trigger"]) if order["side"] == "buy"
                         else min(o, order["trigger"]))
                 slip = self.taker_slip(size, v)
-                raw = base * (1.0 + slip) if order["side"] == "buy" else base * (1.0 - slip)
+                raw  = base * (1.0 + slip) if order["side"] == "buy" else base * (1.0 - slip)
                 offers.append((order, size, self.within(order["side"], raw, seen), True))
 
         offers = self.worst_first(offers)
@@ -445,9 +475,11 @@ class Reference:
                                  self.bound_by_margin(order["side"], price), taker)
             # ADR 0010: consumed by what it filled, and it rests until there is none left
             order["filled"] += applied
+
         for i, order in enumerate(self.resting):
             if order is not None and order["size"] - order["filled"] <= DUST:
                 self.resting[i] = None
+
         # ADR 0010: an IOC or FOK limit gets ONE bar of exposure and is cancelled
         # after it, filled or not, where a GTC limit waits for the next bar. This
         # is the whole difference between the three, and it lives here because a
@@ -475,6 +507,7 @@ class Reference:
         if self.equity(bar[3]) <= 0.0:      # ADR 0008
             self.bust = True
 
+
     def worst_first(self, offers):
         """ADR 0012: only the exits reorder, among their own slots."""
         position, entry = self.position, self.entry
@@ -490,16 +523,20 @@ class Reference:
         slots = [i for i, x in enumerate(offers) if math.isfinite(adversity(x))]
         if len(slots) < 2:
             return offers
+
         ordered = sorted(slots, key=lambda i: adversity(offers[i]))
-        out = list(offers)
+        out     = list(offers)
         for slot, take in zip(slots, ordered):
             out[slot] = offers[take]
+
         return out
+
 
     def liquidate(self, price):
         size = abs(self.position)
         if size <= DUST:
             return
+
         side = "sell" if self.position > 0.0 else "buy"
         self.apply(side, size, price, True, liquidated=True)
         self.bust = True

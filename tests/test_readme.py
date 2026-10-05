@@ -9,7 +9,7 @@ This turns that into a failing build at the moment the version is bumped.
 import pathlib
 import re
 
-import emsl
+import probatum
 
 # the gate copies it beside the docs; a source checkout has it above tests
 _CANDIDATES = (
@@ -27,6 +27,7 @@ def readme():
     for path in _CANDIDATES:
         if path.is_file():
             return path.read_text(encoding="utf-8")
+
     return None
 
 
@@ -36,8 +37,9 @@ def test_the_readme_is_where_the_tests_can_see_it():
 
 def test_every_pinned_version_in_the_readme_is_the_one_shipping():
     found = sorted(set(_PINNED.findall(readme())))
+
     assert found, "no pinned version found; the install commands may have moved"
-    assert found == [emsl.__version__], (
-        f"README pins {found} and the package is {emsl.__version__}; "
+    assert found == [probatum.__version__], (
+        f"README pins {found} and the package is {probatum.__version__}; "
         f"bump the install commands in the same commit as the version"
     )
