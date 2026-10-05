@@ -80,6 +80,11 @@ impl Engine {
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
         self.book_fill(size, price.get(), fee, before, true);
+        // That price leaves nothing in exact arithmetic and a hair either side of it
+        // in floating point, and a hair above zero is equity the cap levers: with the
+        // cap off, an account closed out here opened a position again on the next
+        // bar. So the wallet ends at exactly zero (ADRs 0015, 0018).
+        self.account.quote = 0.0;
     }
 
     /// No fill closes a perp past the point the margin behind it ran out.
@@ -307,6 +312,42 @@ mod tests {
                 "a low of {low} left quote {}",
                 s.quote
             );
+        }
+    }
+
+    #[test]
+    fn a_forced_close_leaves_the_wallet_at_exactly_zero() {
+        // the bankruptcy price leaves nothing in exact arithmetic and a hair either
+        // side of it in floating point, and a hair above zero is equity the cap
+        // levers: with the cap off, an account the engine had just closed out
+        // opened a position again, which the next bar liquidated (ADRs 0015, 0018)
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 150.0, 50.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+        ]);
+        for fee in [0.0006, 0.002] {
+            for size in [23.289_100_547_331_138, 38.434_488_167_935_7, 61.7] {
+                for long in [true, false] {
+                    let config = EngineConfig {
+                        market: Market::Perp,
+                        quote: 1_000.0,
+                        fee_taker: fee,
+                        max_leverage: 0.0,
+                        ..cfg()
+                    };
+                    let mut e = Engine::new(bars.clone(), config);
+                    e.reset();
+                    if long {
+                        e.market_buy(size);
+                    } else {
+                        e.market_sell(size);
+                    }
+                    let s = e.step();
+                    assert!(e.is_bust(), "fee {fee} size {size} long {long}");
+                    assert_eq!(s.quote, 0.0, "fee {fee} size {size} long {long}");
+                }
+            }
         }
     }
 

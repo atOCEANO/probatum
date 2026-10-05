@@ -251,10 +251,16 @@ class Reference:
 
         # ADR 0015: a perp's notional is capped at leverage times equity,
         # an over-cap position may be kept but not grown, a flip must fit outright,
-        # and with no equity nothing may open
-        if self.market == "perp" and self.leverage > 0.0:
-            equity   = self.equity(price)
-            allowed  = self.leverage * equity / price if equity > 0.0 else 0.0
+        # and with no equity nothing may open, whether or not there is a cap
+        if self.market == "perp":
+            equity = self.equity(price)
+            if equity <= 0.0:
+                allowed = 0.0
+            elif self.leverage > 0.0:
+                allowed = self.leverage * equity / price
+            else:
+                allowed = math.inf
+
             after    = self.position + signed
             flipping = (self.position != 0.0 and after != 0.0
                         and (after > 0.0) != (self.position > 0.0))
@@ -539,4 +545,7 @@ class Reference:
 
         side = "sell" if self.position > 0.0 else "buy"
         self.apply(side, size, price, True, liquidated=True)
-        self.bust = True
+
+        # ADR 0018: that price leaves nothing, so the wallet ends at exactly zero
+        self.quote = 0.0
+        self.bust  = True

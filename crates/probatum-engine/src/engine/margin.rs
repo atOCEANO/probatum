@@ -12,9 +12,10 @@ impl Engine {
     /// Clamp a fill so it does not grow the position past the perp margin cap
     /// (`max_leverage` times equity in notional). Reductions are never capped, and
     /// a position already over the cap (from an equity drop) is not force-reduced,
-    /// only blocked from growing. No-op on spot or with no cap set.
+    /// only blocked from growing. With no cap set only an insolvent account is
+    /// held, to reductions. No-op on spot.
     fn cap_leverage(&self, fill: &mut Fill) {
-        if self.config.market != Market::Perp || self.config.max_leverage <= 0.0 {
+        if self.config.market != Market::Perp {
             return;
         }
         let mark = fill.price.get();
@@ -26,11 +27,15 @@ impl Engine {
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
         // opened from negative equity was closed at the bar's adverse extreme and
-        // deepened the bad debt instead of being refused (ADR 0015).
-        let max_size = if equity > 0.0 {
+        // deepened the bad debt instead of being refused. That holds with the cap
+        // off as well: the cap bounds how far equity is levered, and an account
+        // with none has nothing to lever (ADR 0015).
+        let max_size = if equity <= 0.0 {
+            0.0
+        } else if self.config.max_leverage > 0.0 {
             self.config.max_leverage * equity / mark
         } else {
-            0.0
+            f64::INFINITY
         };
         let pos = self.account.position.qty.get();
         let new_pos = pos + fill.side.sign() * fill.size.get();
@@ -144,7 +149,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use crate::candles::Candles;
-    use crate::engine::fixtures::{cfg, flat_series, ohlc, perp_cfg, series};
+    use crate::engine::fixtures::{cfg, crash_series, flat_series, ohlc, perp_cfg, series};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use probatum_core::{Candle, OrderType, Side, TimeInForce};
 
@@ -375,6 +380,31 @@ mod tests {
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1, "a phantom position was opened and closed");
         assert!(trades[0].liquidated);
+    }
+
+    #[test]
+    fn an_insolvent_perp_cannot_open_a_position_with_the_cap_off() {
+        // the refusal lived inside the cap, so switching the cap off switched it off
+        // too, and a dead account opened positions that the same bar liquidated,
+        // once for a profit. The cap bounds how far equity is levered, and an
+        // account with none has nothing to lever (ADR 0015)
+        let config = EngineConfig {
+            max_leverage: 0.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(crash_series(), config);
+        e.reset();
+        e.market_buy(10.0);
+        let busted = e.step(); // 10 on 100 of margin, liquidated on the low of 80
+        assert!(e.is_bust());
+        assert!(busted.equity.abs() < CLOSE_EPS, "left {}", busted.equity);
+        e.market_buy(1.0);
+        let after = e.step();
+        assert_eq!(after.position, 0.0);
+        assert_eq!(e.num_fills(), 2, "the dead account opened a position");
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert_eq!(trades.len(), 1, "a phantom position was opened and closed");
     }
 
     #[test]
