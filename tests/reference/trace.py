@@ -4,22 +4,22 @@ The differential run says WHERE the two simulators part company. This says as
 little as possible around that point, so the question can be argued from the
 decisions rather than from a forty bar random walk.
 
-  python trace.py <seed> [cases]
+  python -m reference.trace <seed> [cases]     (from tests/)
 
 It writes the shrunk case to /diff, which no stage creates, so that has to be a
 mount or the run ends on a missing directory after the search it just did:
 
-  docker build --target test-differential -t emsl-differential .
-  docker run --rm -v "${PWD}/diff:/diff" -w /differential emsl-differential \
-      python trace.py 42
+  docker build --target test-slow -t emsl-slow .
+  docker run --rm -v "${PWD}/diff:/diff" -w /tests emsl-slow \
+      python -m reference.trace 42
 """
 
 import json
 import random
 import sys
 
-import differential as D
-from reference import Reference
+from . import differential as D
+from .reference import Reference
 
 
 def diverges(bars, cfg, actions):

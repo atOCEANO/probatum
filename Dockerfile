@@ -106,15 +106,17 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium optuna cloudpickle
 COPY benchmarks /benchmarks
 CMD ["python", "/benchmarks/surfaces.py"]
 
-# The differential gate: the engine against a second implementation of the same
-# decisions, over randomised paths. `dev/differential/reference.py` is written from
-# Decisions.md and never from the Rust, which is the whole point of it, so a rule
-# the engine gets wrong is a rule the reference gets right and the two part company
-# on a number. It found the slot leak of ADR 0010, which had survived every test
-# written against the implementation because none of them thought to ask.
+# The tests marked slow, which run at length. Chief among them is the engine
+# against a second implementation of the same decisions, over randomised paths.
+# `tests/reference/reference.py` is written from Decisions.md and never from the
+# Rust, which is the whole point of it, so a rule the engine gets wrong is a rule
+# the reference gets right and the two part company on a number. It found the slot
+# leak of ADR 0010, which had survived every test written against the
+# implementation because none of them thought to ask.
 #
 # Six seeds of five hundred cases is about ninety seconds and has to be exact: the
-# tolerance is relative 1e-6 and any disagreement fails the build.
+# tolerance is relative 1e-6 and any disagreement fails the build. Every gate
+# stage above runs the same comparison over a few hundred cases.
 #
 # `batch_differential.py` is the same idea one tier up, over `Batch`: every
 # reinforcement learning number comes out of `reset_at_each`, `advance` and
@@ -124,19 +126,18 @@ CMD ["python", "/benchmarks/surfaces.py"]
 # offset, because an episode beginning part way into the series still funds on
 # the bars the SERIES funds on (ADR 0020) and nothing that starts
 # every env at bar zero can see that rule at all.
-#   docker build --target test-differential .
-FROM python:3.11-slim AS test-differential
+#   docker build --target test-slow .
+FROM python:3.11-slim AS test-slow
 COPY --from=builder /wheels /wheels
-COPY dev/differential /differential
+COPY tests /tests
+COPY .Documentation /docs
+COPY README.md /README.md
+COPY Dockerfile /Dockerfile
+COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
-RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl numpy \
-    && cd /differential \
-    && for seed in 1 7 42 1337 20260813 99991; do \
-         python differential.py 500 $seed || exit 1; \
-       done \
-    && for seed in 7 42 20260814; do \
-         python batch_differential.py 200 $seed || exit 1; \
-       done
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
+    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+    && pytest -q --slow -m slow /tests
 
 # The chart layer's other half. Every assertion in the correctness gate reads the
 # JSON spec, because the gate has no browser and a spec assertion is the sharper

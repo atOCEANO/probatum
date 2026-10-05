@@ -14,7 +14,7 @@ its own book, and still reach the end of the data when the data ends rather than
 when its own step count runs out. All three are invisible when every env starts
 at bar zero, which is what the batched tests do.
 
-  python batch_differential.py [cases] [seed]
+  python -m reference.batch_differential [cases] [seed]     (from tests/)
 """
 
 import random
@@ -23,8 +23,8 @@ import sys
 import numpy as np
 
 import emsl
-from differential import close_enough, config, walk
-from reference import Reference
+from .differential import close_enough, config, walk
+from .reference import Reference
 
 
 def offsets_for(rng, bars, num_envs):
@@ -130,9 +130,10 @@ def compare(mine, theirs, cfg, num_envs):
     return None
 
 
-def main():
-    cases = int(sys.argv[1]) if len(sys.argv) > 1 else 200
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 20260814
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    cases = int(argv[0]) if len(argv) > 0 else 200
+    seed = int(argv[1]) if len(argv) > 1 else 20260814
     rng = random.Random(seed)
 
     # what the cases actually reached. "0 disagreed" over a hundred flat accounts

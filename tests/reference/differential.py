@@ -5,7 +5,7 @@ reading of the same decisions and can be the wrong one. What it buys is that
 somebody has to decide which, and that question is never asked by a test written
 against the implementation.
 
-  python differential.py [cases] [seed]
+  python -m reference.differential [cases] [seed]     (from tests/)
 """
 
 import math
@@ -16,7 +16,7 @@ import sys
 import numpy as np
 
 import emsl
-from reference import Reference
+from .reference import Reference
 
 TOL = 1e-6
 
@@ -263,9 +263,10 @@ def close_enough(a, b, scale=1.0):
     return abs(a - b) <= TOL * max(1.0, abs(a), abs(b), scale)
 
 
-def main():
-    cases = int(sys.argv[1]) if len(sys.argv) > 1 else 400
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 20260813
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    cases = int(argv[0]) if len(argv) > 0 else 400
+    seed = int(argv[1]) if len(argv) > 1 else 20260813
     rng = random.Random(seed)
 
     reached = dict(close=0, reduce=0, cancel=0, replace=0, cancel_all=0,
