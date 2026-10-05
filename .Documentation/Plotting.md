@@ -305,9 +305,9 @@ The rule is about when a value belongs, never about making a number fit.
 
 ## The one rule
 
-The layer computes nothing and knows no indicator names ([ADR 0073](Decisions.md)). There is no `sma` here, no `rsi`, no registry and no way to ask for one. You bring arrays; it turns them into marks.
+The layer computes nothing and knows no indicator names ([ADR 0042](Decisions.md)). There is no `sma` here, no `rsi`, no registry and no way to ask for one. You bring arrays; it turns them into marks.
 
-That is the one rule worth knowing before you write anything. Everything is computed once, in Python, before a pixel is drawn, which is also why a chart keeps working when the kernel is gone: there is no live process to ask ([ADR 0072](Decisions.md)).
+That is the one rule worth knowing before you write anything. Everything is computed once, in Python, before a pixel is drawn, which is also why a chart keeps working when the kernel is gone: there is no live process to ask ([ADR 0042](Decisions.md)).
 
 <br>
 
@@ -389,13 +389,13 @@ emsl.chart(
 ).show()
 ```
 
-This is the whole of the organisational answer. There is no registration hook, no `Strategy.plot`, and nothing to switch off, for the reasons in [ADR 0075](Decisions.md).
+This is the whole of the organisational answer. There is no registration hook, no `Strategy.plot`, and nothing to switch off, for the reasons in [ADR 0042](Decisions.md).
 
 <br>
 
 ### The length contract
 
-Two lengths are accepted, and they mean different things ([ADR 0068](Decisions.md)).
+Two lengths are accepted, and they mean different things ([ADR 0042](Decisions.md)).
 
 | Length | Drawn from |
 | :--- | :--- |
@@ -444,7 +444,7 @@ A `Background` mask is guarded for you too: a NaN or a `pandas.NA` shades nothin
 
 ### A NaN is a gap
 
-A value that does not exist stops the line ([ADR 0069](Decisions.md)). It is never dropped, because dropping it makes the two neighbours adjacent: a trailing stop that existed on bars 0 to 40 and again on bars 900 to 940 would appear as a smooth line through 860 bars where there was no stop at all. Pine users know this as `plot.style_linebr` rather than `plot()`, which joins across `na`.
+A value that does not exist stops the line ([ADR 0042](Decisions.md)). It is never dropped, because dropping it makes the two neighbours adjacent: a trailing stop that existed on bars 0 to 40 and again on bars 900 to 940 would appear as a smooth line through 860 bars where there was no stop at all. Pine users know this as `plot.style_linebr` rather than `plot()`, which joins across `na`.
 
 Not dropping the row is necessary and it is not sufficient, which took a browser to find out. The document carries a null for every missing bar, exactly as it should, and lightweight-charts joins straight across that too, on both the line and the area series. So the hole is cut rather than merely marked: a gapped series is drawn as one renderer series per contiguous run. The cost is one of those per hole, so a mask that alternates every few bars is a real payload rather than a cosmetic one, and a rolling warm-up still costs nothing, because a leading run of non-finite values is carried as an offset rather than as data.
 
@@ -517,7 +517,7 @@ emsl.chart(
 
 `"price"` always exists, comes first and carries the candles. `"volume"` appears when the frame has a usable volume column, `"equity"` when a result is passed, and any other name is created the first time a `panel=` mentions it. `"drawdown"` is shaded onto the equity panel rather than given one of its own, unless you ask for one with `drawdown="panel"`.
 
-**A bare array overlays the candles unless doing so would cost them more than half the price panel** ([ADR 0070](Decisions.md)). Otherwise it gets its own panel. That is a guess about the picture, never about your intent: it may put a series somewhere you would not have, but it can never quietly flatten the candles to get it there. Override it with `panel=`, including `panel="price"`.
+**A bare array overlays the candles unless doing so would cost them more than half the price panel** ([ADR 0042](Decisions.md)). Otherwise it gets its own panel. That is a guess about the picture, never about your intent: it may put a series somewhere you would not have, but it can never quietly flatten the candles to get it there. Override it with `panel=`, including `panel="price"`.
 
 `panels=` **configures** panels; it never creates or removes one. A name it does not recognise configures nothing, so a typo costs you nothing rather than manufacturing a blank pane. Listing panels also fixes their order relative to each other, without moving them relative to the panels you did not list.
 
@@ -635,7 +635,7 @@ Give it a `name` and it takes a legend row reading the region under the crosshai
 ```python
 # emsl.ta.crossover, not a hand-rolled comparison: it pads with False rather
 # than NaN, because bool(nan) is True and a float warm-up fires the rule on
-# precisely the bars where nothing is known (ADR 0060). Hand-rolling it also
+# precisely the bars where nothing is known (ADR 0037). Hand-rolling it also
 # aligns two pandas slices on their index rather than by position, which is a
 # different array of a different length
 crossed = emsl.ta.crossover(fast, slow)
@@ -774,7 +774,7 @@ One run is rich and the others are curves, and that asymmetry is on purpose: two
 
 ```python
 # neighbours is a dict of {label: BacktestResult}: a run carries what produced
-# it (ADR 0039) but not what you decided to call it, so the name comes from your
+# it (ADR 0026) but not what you decided to call it, so the name comes from your
 # own bookkeeping rather than off the result
 stack = numpy.stack([run.equity_curve for run in neighbours.values()])
 
@@ -896,4 +896,4 @@ A negative displacement needs nothing at all: Chikou is `close.shift(-26)`, whic
 
 ## Where it sits
 
-One module, `python/emsl/_chart.py`, the marks in `python/emsl/plot.py`, and a vendored renderer under `python/emsl/_static/`. No new dependency: everything it needs is the standard library plus numpy, pandas is duck-typed and never imported unless you pass a DataFrame, and IPython is imported only inside `show`. `BacktestResult` gained one field, `initial`, the balance the run opened with, because the drawn fall and the reported `max_drawdown_pct` have to be the same number ([ADR 0073](Decisions.md)); nothing else that already existed was touched.
+One module, `python/emsl/_chart.py`, the marks in `python/emsl/plot.py`, and a vendored renderer under `python/emsl/_static/`. No new dependency: everything it needs is the standard library plus numpy, pandas is duck-typed and never imported unless you pass a DataFrame, and IPython is imported only inside `show`. `BacktestResult` gained one field, `initial`, the balance the run opened with, because the drawn fall and the reported `max_drawdown_pct` have to be the same number ([ADR 0042](Decisions.md)); nothing else that already existed was touched.

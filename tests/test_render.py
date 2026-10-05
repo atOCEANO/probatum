@@ -2,7 +2,7 @@
 
 Everything in ``test_chart.py`` reads ``Chart.spec()``, because the correctness
 gate has no browser and a spec assertion is the sharper test of what Python
-decided (ADR 0074). What that cannot reach is the other half of the seam: whether
+decided (ADR 0042). What that cannot reach is the other half of the seam: whether
 the shipped JavaScript parses, runs, and turns that document into a picture. This
 file is the half that needs a browser, so it skips wherever one is absent and is
 run by its own Docker stage rather than by the gate.
@@ -806,7 +806,7 @@ def test_the_log_button_toggles_its_panel_and_says_so(tmp_path):
 
 def test_the_theme_toggle_rewrites_the_palette_in_a_saved_file(tmp_path):
     # a saved chart carries both palettes so the toggle works with no process
-    # behind it (ADR 0072), and the toggle writes the css variables the stylesheet
+    # behind it (ADR 0042), and the toggle writes the css variables the stylesheet
     # reads, which is what keeps the chart and its frame from drifting apart
     candles = frame()
     built = emsl.chart(candles, run(candles))
@@ -888,7 +888,7 @@ def test_a_ramped_line_never_shows_the_vendored_default_colour(tmp_path):
     # undefined key, so lightweight-charts' own #2196f3 survived: a bar the ramp
     # left uncoloured was painted library blue while the legend reported it grey.
     # The asset grep for colours cannot see that, because the literal is in the
-    # vendored bundle rather than in ours (ADR 0074)
+    # vendored bundle rather than in ours (ADR 0042)
     candles = frame()
     close = candles["close"].to_numpy()
     tint = np.where(np.arange(len(close)) % 2 == 0, "#ff00ff", None).astype(object)
@@ -897,7 +897,7 @@ def test_a_ramped_line_never_shows_the_vendored_default_colour(tmp_path):
 
 
 def test_a_gap_is_drawn_as_whitespace_rather_than_bridged(tmp_path):
-    # ADR 0069's claim is about pixels, and this is the only place it can be
+    # ADR 0042's claim is about pixels, and this is the only place it can be
     # checked as pixels. A flat line with a hole in the middle: the columns either
     # side carry the line's colour and a run of columns between them carries none,
     # which is exactly what "the line stops" means. Counted per column rather than

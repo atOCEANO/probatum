@@ -5,7 +5,7 @@
 // test in a gate with no browser assert what a chart shows. What it does decide is
 // what only the renderer knows: the grain a given width of axis can carry, the
 // locale and the stamp a number is written in, and the type scale in device
-// pixels (ADRs 0074, 0076)
+// pixels (ADR 0042)
 
 let SPEC = null;
 let THEME = null;
@@ -35,7 +35,7 @@ const T = function () {
   return THEME[MODE];
 };
 
-// "auto" is answered here and not in Python, and that is not a hole in ADR 0074:
+// "auto" is answered here and not in Python, and that is not a hole in ADR 0042:
 // the choice is between two palettes Python already shipped, on an input Python
 // was not in the room to see. The limit is worth knowing, because it reads the
 // operating system and not JupyterLab: a light machine running a dark notebook
@@ -162,7 +162,7 @@ const remeasureAxis = function () {
 // with no value, rather than a dropped row, because dropping would make the
 // neighbours adjacent. That is necessary and it is not sufficient: the renderer
 // joins straight across whitespace too, so the hole is cut in `paint` by splitting
-// the track into one series per run (ADR 0069)
+// the track into one series per run (ADR 0042)
 const track = function (tr) {
   if (!tr) return [];
   const out = new Array(tr.v.length);
@@ -267,7 +267,7 @@ const addLine = function (spec, panel, index) {
   // `undefined` is not "no opinion", it is the vendored bundle's opinion: its
   // merge skips an undefined key, so the library's own default blue survives and
   // a bar the ramp left uncoloured is painted in it while the legend reports it
-  // grey. That is the colour rule of ADR 0074 leaking out through a hole the
+  // grey. That is the colour rule of ADR 0042 leaking out through a hole the
   // asset grep cannot see, since the literal lives in the vendored bundle rather
   // than in ours
   return chart.addSeries(LWC.LineSeries, Object.assign({

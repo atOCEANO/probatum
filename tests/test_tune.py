@@ -282,7 +282,7 @@ def test_the_winner_is_scored_on_bars_no_trial_ever_saw():
 
 
 def test_the_holdout_is_the_end_of_the_series_and_never_the_start():
-    # the load-bearing claim of ADR 0053: a strategy is a claim about what comes
+    # the load-bearing claim of ADR 0032: a strategy is a claim about what comes
     # NEXT. Asserting the holdout's length alone is satisfied just as well by an
     # inverted split, so this pins which bars each half actually saw
     from emsl._tune import _split
@@ -334,7 +334,7 @@ def test_every_trial_was_fitted_on_the_first_seventy_percent_and_saw_no_more():
     # still be scored on its own. The claim is about what the TRIALS were given, so
     # this strategy records the series each run was handed. A violation reads as a
     # trial that saw 300 bars, or one whose last close is bar 299 and not bar 209,
-    # which is a fit that already knows how the test period ends (ADR 0053)
+    # which is a fit that already knows how the test period ends (ADR 0032)
     data = series()
     seen = []
 
@@ -403,7 +403,7 @@ DEFAULTS = dict(
 def thin_series(n=300):
     # a venue-sensitive series: the volume is small enough that one order exhausts
     # the fill cap, and the bar is wide enough that the whole taker slip stays
-    # inside it, since a price clipped to the bar (ADR 0005) is the same price
+    # inside it, since a price clipped to the bar (ADR 0013) is the same price
     # whatever the slippage was and neither knob would move a number. The swing is
     # small enough that the venue's own position never busts, which would flatten
     # every stat into agreement for a reason that has nothing to do with the knobs
@@ -459,7 +459,7 @@ def test_the_whole_venue_reaches_every_trial_and_not_only_the_fees():
     # value out of a parallel search. Every trial's own stats are matched against
     # a Backtester built here at the same venue, which pins the config onto the
     # TRIALS: best_result is rebuilt from the config afterwards and agrees with it
-    # whatever the trials were scored at (ADR 0051)
+    # whatever the trials were scored at (ADR 0032)
     data = thin_series()
     result = tuned(Crowd, DEPTH, data, objective="total_return_pct", n_trials=8,
                    n_jobs=2, seed=0, sampler="random", **VENUE)
@@ -496,7 +496,7 @@ def test_a_trade_floor_refuses_the_thin_winner_an_unfloored_search_takes():
     # count, so the thinnest configuration wins by construction and the floor is
     # the only thing that can stop it. A violation reads as the floored search
     # returning pulses=1 as well, or scoring those trials instead of failing them
-    # (ADR 0052). The space carries a middle choice whose FILLS clear the floor
+    # (ADR 0032). The space carries a middle choice whose FILLS clear the floor
     # while its closed trades do not, so reading num_fills for num_trades scores
     # it and wins with it; and the floored search is run on both drivers, because
     # the floor reaches a worker through _worker_init and a search that dropped it
@@ -553,7 +553,7 @@ def test_a_trade_floor_refuses_the_thin_winner_an_unfloored_search_takes():
 
 
 def test_a_search_over_a_frame_reads_its_annualization_from_the_candles():
-    # ADR 0044 resolves this once here, because a trial runs on the bare array and
+    # ADR 0004 resolves this once here, because a trial runs on the bare array and
     # in a parallel search runs in a worker that never saw the frame. Nothing
     # tested it: every tune and walk_forward fixture passes periods_per_year
     # explicitly, so deleting the line leaves the whole suite green and a search

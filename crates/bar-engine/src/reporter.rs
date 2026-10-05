@@ -22,7 +22,7 @@ pub struct Trade {
     /// position's entry fee belonging to this size, plus the closing fill's fee on
     /// it. Charging only the exit side understated the cost by about half and let a
     /// strategy whose edge is smaller than its costs read as profitable per trade
-    /// (ADR 0037).
+    /// (ADR 0023).
     pub fees: f64,
     /// Gross realized price PnL booked on the close, in quote, before fees.
     pub pnl: f64,
@@ -33,7 +33,7 @@ pub struct Trade {
     /// True when the position was force-closed by a liquidation rather than by an
     /// order. A forced close used to be booked nowhere at all, so a death and an
     /// ordinary exit were not merely alike in the log, one of them was absent
-    /// (ADR 0032).
+    /// (ADR 0017).
     pub liquidated: bool,
 }
 
@@ -75,7 +75,7 @@ impl Reporter {
     }
 
     /// The closed trades, in the order they closed. A forced close is logged here
-    /// like any other, carrying `liquidated` (ADR 0032).
+    /// like any other, carrying `liquidated` (ADR 0017).
     pub fn trades(&self) -> &[Trade] {
         &self.trades
     }
@@ -93,7 +93,7 @@ impl Reporter {
     }
 
     /// Performance statistics over the recorded curve and trades. `initial` is the
-    /// starting equity and `num_fills` the engine's fill counter; see ADR 0040 for
+    /// starting equity and `num_fills` the engine's fill counter; see ADR 0030 for
     /// the conventions.
     pub fn stats(
         &self,

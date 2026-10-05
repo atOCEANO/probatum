@@ -190,7 +190,7 @@ def test_a_window_is_scored_on_the_run_that_happened():
     # the score used to come from a fresh isolated Backtester over the window
     # alone, which opens its own account and restarts every warm-up inside the
     # window. It is read off the composite curve now, so it must agree with
-    # metrics.segment over the same bars and with nothing else (ADR 0057)
+    # metrics.segment over the same bars and with nothing else (ADR 0034)
     out = forward(windows=3)
     for record in out.windows:
         first, last = record["traded_on"]
@@ -202,7 +202,7 @@ def test_a_window_keeps_the_history_before_it_rather_than_restarting():
     # the failure this replaced: each window used to be scored by a fresh
     # Backtester over its own bars, which restarts the warm-up inside the window,
     # so a winner needing 150 bars of history never had `next` called on a
-    # 60-bar stretch and the window reported a tidy 0.0 (ADR 0057)
+    # 60-bar stretch and the window reported a tidy 0.0 (ADR 0034)
     data = series(n=600)
     space = {"fast": (3, 10), "slow": (150, 170)}
     out = emsl.walk_forward(SmaCross, space, data, windows=4, train=0.6,

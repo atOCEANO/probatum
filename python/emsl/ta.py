@@ -20,7 +20,7 @@ and into ``emsl.chart`` with no padding decision in between. The two functions
 that answer a yes-or-no question, ``crossover`` and ``crossunder``, return
 booleans and pad with ``False`` rather than ``NaN``, because ``bool(nan)`` is
 ``True`` and a warm-up that reads as a signal is the one shape of this rule that
-would be dangerous (ADR 0060).
+would be dangerous (ADR 0037).
 
 **The convention is written down.** Where implementations differ, and they differ
 most on how an exponential average is seeded and which smoothing an oscillator
@@ -29,7 +29,7 @@ curve that quietly disagrees with the chart you trust is worse than no curve.
 
 **Nothing here knows about the engine.** These are functions of arrays. They hold
 no state, take no engine, need no pandas, and the chart still computes nothing
-(ADR 0073): you compute once in ``init``, trade on that array, and hand the same
+(ADR 0042): you compute once in ``init``, trade on that array, and hand the same
 object to the chart, so the line on screen cannot drift from the line that made
 the decision.
 
@@ -253,7 +253,7 @@ def _smooth(values, alpha, length):
     # average of the same length, which made two EMAs computed in `init` 42% of an
     # entire backtest trial, paid again on every trial of every search. Each clean
     # stretch is a plain geometric decay, so it runs as one vectorized pass and
-    # only the seeding and the gaps stay in Python (ADR 0061)
+    # only the seeding and the gaps stay in Python (ADR 0037)
     size = values.size
     out = _blank(size)
     finite = np.isfinite(values)
@@ -286,7 +286,7 @@ def _block(keep):
     # keep**-block held under about 1e150, ten orders of magnitude inside the
     # largest finite double. A function rather than a line inside `_decay` so a
     # test can read the size the module actually uses instead of recomputing the
-    # formula beside it and agreeing with itself (ADR 0061)
+    # formula beside it and agreeing with itself (ADR 0037)
     return max(1, int(150.0 / -math.log10(keep)))
 
 
@@ -592,11 +592,11 @@ def shift(values, bars=1):
     The safe way to look back. Written by hand, ``values[i - bars]`` on an early
     bar is a NEGATIVE index, which numpy resolves from the END of the array, so
     the rule reads a price from the far future, produces a spectacular result and
-    raises nothing at all. ``Strategy.warmup`` (ADR 0049) closes that only when
+    raises nothing at all. ``Strategy.warmup`` (ADR 0025) closes that only when
     the declared warm-up is at least as deep as the lookback, and the natural
     error is declaring the indicator's warm-up and then reaching further back
     than it inside ``next``. Computed once here, the array is padded rather than
-    wrapped, and there is no index to get wrong (ADR 0060).
+    wrapped, and there is no index to get wrong (ADR 0037).
 
     A negative ``bars`` is refused rather than read as a lead: shifting the other
     way is lookahead by construction, and this module has no honest use for it.

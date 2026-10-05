@@ -98,7 +98,7 @@ def test_the_looks_are_the_searchs_own_trials_and_not_the_nulls():
     # the null estimates how far a sharpe scatters over this space. It does not
     # decide how hard YOU searched, and reading the count off it meant a small
     # null flattered the winner: the same 12-trial study scored as though it had
-    # looked 6 times against one null and 48 times against another (ADR 0055)
+    # looked 6 times against one null and 48 times against another (ADR 0032)
     study = search(n_trials=12)
     few = search(sampler="random", seed=3, n_trials=12)
     many = search(sampler="random", seed=3, n_trials=48)
@@ -127,7 +127,7 @@ def test_a_null_carrying_an_activity_floor_is_refused():
     # an activity floor fails the thin cells, and the thin cells hold the extreme
     # sharpes, so the survivors scatter less than the space does. Reading the
     # spread off them lowered the bar the stricter the floor, which is the
-    # inversion ADR 0054 was written to prevent arriving through the other term
+    # inversion ADR 0032 was written to prevent arriving through the other term
     study = search()
     floored = search(sampler="random", seed=1, n_trials=20, min_trades=3)
     assert floored.min_trades == 3

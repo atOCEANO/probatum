@@ -13,14 +13,14 @@ to decode your own.
 
 Episodes terminate on liquidation and truncate at the last bar, or at
 ``episode_len`` steps if set; finished envs auto-reset on the same step, with the
-pre-reset observation and equity in ``infos`` (see ADR 0064).
+pre-reset observation and equity in ``infos`` (see ADR 0038).
 
 Each cost knob (``fee_taker``, ``fee_maker``, ``slippage_bps``, ``impact``) takes
 a scalar shared across envs, or a ``(low, high)`` pair sampled uniformly per env
-so the batch trains across a spread of cost regimes (ADR 0066). The draw uses the
+so the batch trains across a spread of cost regimes (ADR 0038). The draw uses the
 constructor ``seed`` and is fixed for each env's life. A per-fill ``cost_fn`` is
 deliberately not offered; the ``impact`` coefficient is its fast-path substitute
-(ADR 0004).
+(ADR 0013).
 
 ``data`` and ``features`` accept a numpy array, a pandas DataFrame, or a parquet
 path.
@@ -39,7 +39,7 @@ from ._data import to_float2d, to_ohlcv
 from ._emsl import Batch
 
 # gymnasium's newer vector API tags a vector env's autoreset style so wrappers
-# treat it correctly; emsl resets on the same step (ADR 0064), which older
+# treat it correctly; emsl resets on the same step (ADR 0038), which older
 # gymnasium has no enum to name, so declare it when present and skip it otherwise
 try:
     from gymnasium.vector import AutoresetMode as _AutoresetMode
@@ -106,7 +106,7 @@ class VectorEnv(gym.vector.VectorEnv):
         # independent streams: the per-env cost draw and the start offsets come from
         # separate generators, so a fixed seed gives the same offsets whether or not
         # a (low, high) cost knob is passed. Costs are drawn once here and fixed for
-        # the env's life; reset(seed=...) re-seeds only the offset stream (ADR 0066)
+        # the env's life; reset(seed=...) re-seeds only the offset stream (ADR 0038)
         cost_seed, offset_seed = np.random.SeedSequence(seed).spawn(2)
         self._cost_rng = np.random.default_rng(cost_seed)
         self._rng = np.random.default_rng(offset_seed)
@@ -158,7 +158,7 @@ class VectorEnv(gym.vector.VectorEnv):
         self._steps = np.zeros(self.num_envs, dtype=np.int64)
 
     # the floor each cost knob respects, and whether the floor itself is allowed.
-    # Slippage and impact are adverse by definition (ADR 0002) so zero is fine; a
+    # Slippage and impact are adverse by definition (ADR 0013) so zero is fine; a
     # fee at or below -1 is a rebate larger than the notional, which mints equity
     _FLOORS = {
         "fee_taker": (-1.0, False),

@@ -11,9 +11,9 @@ back already aligned.
 
 Nothing in this module computes anything. There is no ``sma``, no ``rsi``, no
 ``zscore`` and no indicator registry, because a chart that computes is a chart that
-can disagree with the run it is drawing (ADR 0073). It also does not know how many
+can disagree with the run it is drawing (ADR 0042). It also does not know how many
 bars the frame has, so the length of a series is checked by ``chart`` rather than
-here (ADR 0068).
+here (ADR 0042).
 
 Three functions come with them. ``ramp`` turns numbers into colours so a line can
 carry a second variable in its own colour, and ``at_bar`` and ``at_next`` pad a
@@ -257,7 +257,7 @@ class Line(_Mark):
     in its own colour; ``fill`` shades from the line to the panel edge and takes a
     colour or a ``(bottom, top)`` pair. ``step`` holds each value until the next
     one, which is right for a position or a discrete action. A ``NaN`` is a gap,
-    never a dropped row (ADR 0069).
+    never a dropped row (ADR 0042).
     """
 
     kind = "line"
@@ -577,7 +577,7 @@ class Recorder:
     contract catches a wrong count and can never catch a wrong phase, because
     both wrong forms are legal lengths. Worse, a series passed one bar late lands
     exactly on the engine's own fill arrows, so the wrong chart looks more
-    internally consistent than the right one (ADR 0068).
+    internally consistent than the right one (ADR 0042).
 
     This moves the choice to where the meaning is obvious. ``at_bar`` is for a
     number that was already true on the bar you were handed. ``at_next`` is for
@@ -683,7 +683,7 @@ def at_bar(values):
     inside it is ``T - 1`` long. Those numbers were known **on** bar ``i``, so
     they belong at bar ``i``, and passing one short instead draws the whole
     series one bar right of the candles it is meant to explain. Neither raises,
-    because both are legal lengths, which is why this exists (ADR 0068).
+    because both are legal lengths, which is why this exists (ADR 0042).
 
     A boolean array pads with ``False``. ``numpy.array([nan]).astype(bool)`` is
     ``True``, so padding a mask the way a float is padded makes it report the

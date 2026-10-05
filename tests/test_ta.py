@@ -49,7 +49,7 @@ LINES = {
 }
 
 # the crossings are boolean by design, so they take the same causality checks and
-# not the NaN ones (ADR 0060)
+# not the NaN ones (ADR 0037)
 FLAGS = {
     "crossover": lambda h, l, c, v: [ta.crossover(ta.sma(c, 3), ta.sma(c, 5))],
     "crossunder": lambda h, l, c, v: [ta.crossunder(ta.sma(c, 3), 10.0)],
@@ -532,7 +532,7 @@ def test_ta_is_exported_from_the_package():
 
 def test_shift_pads_rather_than_wrapping():
     # the whole reason it exists: values[i - n] on an early bar is a negative
-    # index, which numpy resolves from the END of the array (ADR 0060)
+    # index, which numpy resolves from the END of the array (ADR 0037)
     out = ta.shift(RAMP, 3)
     assert np.isnan(out[:3]).all()
     assert np.array_equal(out[3:], RAMP[:-3])
@@ -787,7 +787,7 @@ def rolled_ema(values, length):
     # the first clean window seeds it, one multiply-add carries it, and a gap ends
     # the run so the next clean window seeds a fresh one. Written out here rather
     # than taken from the module, since a reference computed by the code under test
-    # agrees with it however wrong both are (ADR 0061)
+    # agrees with it however wrong both are (ADR 0037)
     alpha = 2.0 / (length + 1.0)
     keep = 1.0 - alpha
     plain = values.tolist()
@@ -816,7 +816,7 @@ def test_the_exponential_pass_matches_the_plain_recurrence_across_many_blocks():
     # hand-off between blocks, `carried`, has never been taken once: drop it, seed
     # every block from zero, or from the original seed, and every bar of a real 100k
     # frame after the first seam is wrong, worst at the seam and fading over the
-    # next hundred bars, and no test in this file would move (ADR 0061)
+    # next hundred bars, and no test in this file would move (ADR 0037)
     length = 5
     alpha = 2.0 / (length + 1.0)
     keep = 1.0 - alpha
@@ -828,7 +828,7 @@ def test_the_exponential_pass_matches_the_plain_recurrence_across_many_blocks():
     out = ta.ema(close, length)
     expected = rolled_ema(close, length)
 
-    # ADR 0061 measured the reassociation at 2.1e-15 relative at worst and ADR 0050
+    # ADR 0037 measured the reassociation at 2.1e-15 relative at worst and ADR 0001
     # declines to promise the last bit, so the tolerance sits three orders above the
     # noise and twelve below anything a mishandled carry produces
     assert np.isfinite(out[length - 1:]).all()
@@ -852,7 +852,7 @@ def test_a_gap_between_two_multi_block_stretches_reseeds_and_carries_correctly()
     # first stretch's. No test has ever run a stretch past one block, let alone two
     # stretches at two phases, so a `_decay` blocking the whole array rather than
     # each stretch, or carrying the value from before the gap across it, passes
-    # everything else in this file (ADR 0061)
+    # everything else in this file (ADR 0037)
     length = 5
     alpha = 2.0 / (length + 1.0)
     keep = 1.0 - alpha
@@ -891,10 +891,10 @@ def test_a_gap_between_two_multi_block_stretches_reseeds_and_carries_correctly()
 def test_a_short_length_over_a_hundred_thousand_bars_stays_finite_throughout():
     # the whole reason `_decay` is not a one-liner. Written as a single cumulative
     # sum the recurrence needs (1 - alpha)**-k, which passes 1e308 within a few
-    # thousand bars and takes the rest of the output with it: ADR 0061 records
+    # thousand bars and takes the rest of the output with it: ADR 0037 records
     # length 20 over 100k bars returning 7,045 finite values out of 99,981, in
     # silence. That is the size this suite has never run, so the overflow the
-    # blocking exists to prevent has never actually been put to it (ADR 0061)
+    # blocking exists to prevent has never actually been put to it (ADR 0037)
     length = 20
     size = 100000
     alpha = 2.0 / (length + 1.0)
@@ -906,7 +906,7 @@ def test_a_short_length_over_a_hundred_thousand_bars_stays_finite_throughout():
 
     assert np.isnan(out[:length - 1]).all()
     assert np.isfinite(out[length - 1:]).all(), "the weights overflowed"
-    # size less the warm-up, and the number ADR 0061 quotes against the one-liner's
+    # size less the warm-up, and the number ADR 0037 quotes against the one-liner's
     assert int(np.isfinite(out).sum()) == 99981
     # an exponential average of a bounded series is a convex combination of it, its
     # weights summing to one, so a weight multiplied back wrong leaves the series
@@ -926,7 +926,7 @@ def test_no_single_block_size_suits_both_a_short_length_and_a_long_one():
     # a third to the minus thousandth is 1e477. So a block picked to suit the test
     # above overflows here, silently, from the first seam on: the output is NaN
     # from bar 1001 and the shape, the dtype and the warm-up are all still right.
-    # Both lengths run over the same series, so no constant can pass this (ADR 0061)
+    # Both lengths run over the same series, so no constant can pass this (ADR 0037)
     size = 100000
     step = np.arange(float(size))
     close = 100.0 + 10.0 * np.sin(step / 500.0) + 0.5 * np.cos(step / 7.0)

@@ -140,7 +140,7 @@ def test_a_series_without_times_says_so_instead_of_assuming_daily():
 def test_a_row_whose_prices_are_not_a_bar_is_refused():
     # the taker clamp bounds a fill by price.min(high) on a buy and price.max(low)
     # on a sell, so on an unordered row those move the fill toward the account
-    # rather than away from it, silently and always favourably (ADR 0025)
+    # rather than away from it, silently and always favourably (ADR 0007)
     import emsl
 
     data = np.array([
@@ -160,7 +160,7 @@ def test_a_column_order_that_keeps_the_high_above_the_low_is_refused_too():
     # high and low are the real high and the real OPEN, so the high is at or
     # above the low on every row, every value is finite, and a high >= low check
     # passes it untouched while the fill model still prices off a bar that never
-    # traded. Only the full ordering catches it (ADR 0025)
+    # traded. Only the full ordering catches it (ADR 0007)
     import emsl
 
     real = [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)]

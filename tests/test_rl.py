@@ -202,7 +202,7 @@ def drawn_fees(rewards, price=100.0, size=1.0):
 
 
 def test_a_cost_range_that_reaches_below_its_floor_is_refused():
-    # the scalar handed to the engine's guard is the HIGH end (ADR 0066), so a
+    # the scalar handed to the engine's guard is the HIGH end (ADR 0038), so a
     # range straddling the floor passed it and handed the negative draws to the
     # per-env array, which checked nothing. VectorEnv(fee_taker=(-2.0, 0.0)) built
     # happily and paid its envs to trade
@@ -221,7 +221,7 @@ def test_a_cost_range_that_reaches_below_its_floor_is_refused():
 
 
 def test_a_per_env_cost_is_drawn_inside_its_range_and_fixed_for_the_envs_life():
-    # ADR 0066 says the pair is sampled ONCE PER ENV, and the only thing asserted
+    # ADR 0038 says the pair is sampled ONCE PER ENV, and the only thing asserted
     # about it was that the rewards have a spread. A draw taken per step, or per
     # episode, or from a range twice as wide as the one asked for, all produce a
     # spread: none of them is what "a batch trains across a spread of cost regimes"
@@ -250,7 +250,7 @@ def test_the_cost_fallback_is_the_expensive_end_of_the_range():
     # _cost_arg hands back a scalar beside the per-env array, and the scalar is only
     # what would stand if the array ever failed to apply. Handing back the low end
     # makes that failure the cheapest possible market, which is the one direction a
-    # cost model must never fail in, and nothing anywhere reads this value (ADR 0066)
+    # cost model must never fail in, and nothing anywhere reads this value (ADR 0038)
     env = VectorEnv(flat_data(), num_envs=8, window=4, seed=0)
     scalar, drawn = env._cost_arg("fee_taker", (0.001, 0.02))
     assert scalar == 0.02
@@ -262,7 +262,7 @@ def test_the_cost_fallback_is_the_expensive_end_of_the_range():
 
 def ranged_data(t=40, price=100.0, width=10.0):
     # flat in open and close but with a real high and low, because a taker price is
-    # clipped to its own bar (ADR 0005) and flat_data prints ONE price: slippage and
+    # clipped to its own bar (ADR 0013) and flat_data prints ONE price: slippage and
     # impact are both clipped away to nothing there, so a test of either on that
     # series reads zero however the knob is wired
     col = np.full(t, price, dtype=np.float64)
@@ -275,7 +275,7 @@ def test_each_cost_knob_takes_its_own_range():
     # "each cost knob accepts a (low, high) pair" is four claims and only fee_taker
     # was ever read. A range wired to one knob and ignored on the others leaves this
     # file green, and a cost silently pinned to its default is the worst kind of
-    # wrong number: it is plausible (ADR 0066)
+    # wrong number: it is plausible (ADR 0038)
     def spread(**kw):
         env = VectorEnv(ranged_data(), num_envs=8, window=4, seed=0, **kw)
         env.reset(seed=0)
@@ -287,7 +287,7 @@ def test_each_cost_knob_takes_its_own_range():
     assert spread(slippage_bps=(1.0, 50.0), fee_taker=0.0) > 0.0
     assert spread(impact=(0.1, 5.0), fee_taker=0.0) > 0.0
     # fee_maker is the fourth, and the batched tier takes market orders only
-    # (ADR 0067), so no maker fill can happen here and no reward can read it at
+    # (ADR 0038), so no maker fill can happen here and no reward can read it at
     # all. The draw itself is what there is to check
     env = VectorEnv(ranged_data(), num_envs=8, window=4, seed=0)
     scalar, drawn = env._cost_arg("fee_maker", (0.0001, 0.001))
@@ -296,7 +296,7 @@ def test_each_cost_knob_takes_its_own_range():
 
 
 def test_a_discrete_action_of_two_sells_and_one_buys():
-    # ADR 0067's decoder: 1 buys, 2 sells, anything else holds. The sign is asserted
+    # ADR 0038's decoder: 1 buys, 2 sells, anything else holds. The sign is asserted
     # NOWHERE, in Rust or Python, and flipping it leaves every test in this file
     # green: the shapes, the dtypes and the spread of the rewards are all identical
     # under a decoder that shorts on 1 and buys on 2. An agent would then learn a
@@ -376,7 +376,7 @@ def test_custom_action_space_and_continuous_actions():
 def test_metadata_declares_same_step_autoreset_when_supported():
     # gymnasium's newer vector API has AutoresetMode; when present, the env declares
     # SAME_STEP so a vector wrapper does not assume the next-step default and misread
-    # the same-step reset (ADR 0064). Older gymnasium has no enum, so the tag is absent
+    # the same-step reset (ADR 0038). Older gymnasium has no enum, so the tag is absent
     try:
         from gymnasium.vector import AutoresetMode
     except ImportError:
@@ -387,7 +387,7 @@ def test_metadata_declares_same_step_autoreset_when_supported():
 
 def test_the_feature_window_holds_exactly_the_bars_up_to_the_current_one():
     # The observation is the whole of what an agent sees, and every other test here
-    # reads only its shape (ADR 0064). A window reaching one row further would hand
+    # reads only its shape (ADR 0038). A window reaching one row further would hand
     # the agent bar tick + 1, the lookahead this library exists to prevent, and it
     # would ship green. Each feature value names the bar it came from, and the tick
     # is read back off the account's mark price, a channel the gather has no part
@@ -434,7 +434,7 @@ def test_the_feature_window_holds_exactly_the_bars_up_to_the_current_one():
 
 def test_the_candle_window_holds_exactly_the_bars_up_to_the_current_one():
     # The default observation, the raw candles, carries the same risk and the same
-    # blind spot: only its shape is ever read (ADR 0064). The bars are priced so no
+    # blind spot: only its shape is ever read (ADR 0038). The bars are priced so no
     # two are alike and the tick comes back off the account's mark price, so a
     # window holding bar tick + 1 (lookahead) or ending a bar early is caught by
     # value. A violation looks like the last row being data[tick + 1]
@@ -477,7 +477,7 @@ EPISODE_SEED = 0
 
 def test_a_finished_envs_step_returns_the_next_episodes_first_observation():
     # Same-step autoreset: the observation a finished env hands back belongs to the
-    # NEXT episode, not to the one that just ended (ADR 0064). Returning the
+    # NEXT episode, not to the one that just ended (ADR 0038). Returning the
     # terminal window instead leaves every shape, dtype and flag identical, so
     # nothing else in this file would notice, and the agent would learn from a
     # window its action never led to. episode_len=1 ends both episodes on the first
@@ -507,7 +507,7 @@ def test_a_finished_envs_step_returns_the_next_episodes_first_observation():
 
 def test_final_observation_holds_the_window_the_episode_actually_ended_on():
     # infos["final_observation"] is the only place the terminal window survives the
-    # same-step reset, and today only its shape is read (ADR 0064), so handing back
+    # same-step reset, and today only its shape is read (ADR 0038), so handing back
     # the fresh post-reset window instead would pass. The two envs end on different
     # bars, so handing every finished env the first one's window is wrong for the
     # second and reads as two identical arrays here
@@ -536,7 +536,7 @@ def test_final_observation_holds_the_window_the_episode_actually_ended_on():
 
 def test_final_equity_is_what_the_episode_ended_with_not_a_fresh_balance():
     # infos["final_equity"] is the finished episode's equity, read before the reset
-    # (ADR 0064); a post-reset read hands back the starting 10000.0, which is finite
+    # (ADR 0038); a post-reset read hands back the starting 10000.0, which is finite
     # and passes the only assertion made about it today. The reward here is a
     # constant, not the equity delta, so reconstructing the final equity as the
     # previous equity plus the reward reads 10000.0 as well: under the DEFAULT
@@ -587,7 +587,7 @@ def test_a_bankrupt_env_autoresets_and_reports_what_the_episode_ended_with():
     # the series, reporting neither its final observation nor its final equity, and
     # every other test in this file stays green: the only one that sees a
     # termination reads bool(term.any()) and never the observation or the infos
-    # (ADR 0064, 0029)
+    # (ADRs 0008, 0038)
     window = 4
 
     def all_in(actions, prev):

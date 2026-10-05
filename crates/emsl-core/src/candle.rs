@@ -7,7 +7,7 @@
 /// `repr(C)` fixes the layout to the five fields in declaration order with no
 /// padding (five 8-byte floats, 40 bytes, 8-byte aligned). That is what lets the
 /// Python layer reinterpret a `&[Candle]` window as a contiguous `(T, 5)` float
-/// buffer and hand it back as a zero-copy numpy view (ADR 0062). The layout test
+/// buffer and hand it back as a zero-copy numpy view (ADR 0040). The layout test
 /// below guards that contract.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,13 +20,13 @@ pub struct Candle {
     /// volume cap compares one against the other and the impact term divides one
     /// by the other, so both are meaningless if this arrives denominated in quote:
     /// the cap stops binding and impact goes to zero, silently and in the caller's
-    /// favour (ADRs 0003, 0004).
+    /// favour (ADR 0013).
     pub volume: f64,
 }
 
 /// The bars as one row-major run of floats, five to a bar in field order, with no
 /// copy. Every zero-copy view the Python layer hands out is built on this, so it is
-/// the one place the library reinterprets memory (ADR 0062).
+/// the one place the library reinterprets memory (ADR 0040).
 pub fn floats(bars: &[Candle]) -> &[f64] {
     // SAFETY: Candle is repr(C) with five f64 fields and no padding (the layout test
     // below asserts it), so `bars` covers exactly `bars.len() * 5` f64s, aligned as

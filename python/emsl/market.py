@@ -16,7 +16,7 @@ identically. ``Market`` holds them once and hands out the surfaces itself::
 
 Each method takes only the arguments that are not the venue, so there is nothing
 to reconcile: a knob cannot be passed twice, and no rule about which copy wins is
-needed because there is only ever one copy (ADR 0048).
+needed because there is only ever one copy (ADR 0002).
 
 The keyword form still works everywhere and is the right thing for a one-off.
 This is for when the venue is fixed and the surfaces are many.

@@ -430,7 +430,7 @@ def test_trades_bucket_by_the_hour_they_closed_on():
 def test_weekdays_are_numbered_from_monday_like_every_other_clock():
     # epoch day zero is a Thursday, and the offset was one out, so this numbered
     # from Sunday while datetime.weekday and pandas.dayofweek number from Monday.
-    # buckets[0] read as Monday and was Sunday, and nothing said so (ADR 0047)
+    # buckets[0] read as Monday and was Sunday, and nothing said so (ADR 0030)
     pd = pytest.importorskip("pandas")
     raw = series(n=400)
     data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
@@ -466,7 +466,7 @@ def test_an_unknown_bucket_is_refused():
 def test_a_metric_that_takes_a_frame_refuses_one_the_run_never_saw():
     # excursions silently returned 35 rows of 1,516 given a slice of its own
     # frame, and buy_and_hold trimmed the two series from opposite ends, comparing
-    # the run's last returns against the frame's first bars (ADR 0047)
+    # the run's last returns against the frame's first bars (ADR 0030)
     data = series(n=200)
     result = Backtester(data, periods_per_year=365.0).run(Alternate())
     short = data[:80]
@@ -525,7 +525,7 @@ def test_the_benchmark_sharpe_is_net_of_the_same_rate_the_run_is():
 
 def test_a_segment_of_the_whole_run_is_the_run():
     # segment is a second path to arithmetic the engine owns, which is the drift
-    # this codebase keeps paying for, so it is pinned key by key (ADR 0057)
+    # this codebase keeps paying for, so it is pinned key by key (ADR 0034)
     result = run()
     whole = metrics.segment(result)
     for key, value in whole.items():
@@ -750,7 +750,7 @@ def test_the_probability_uses_plain_kurtosis_and_not_the_excess_kind():
 def test_confidence_is_counted_in_bets_rather_than_bars():
     # the module reported autocorrelation, said in prose that every confidence
     # figure computed from the bar count was overstated, and then computed them
-    # from the bar count (ADR 0045)
+    # from the bar count (ADR 0031)
     result = run()
     assert metrics.effective_sample(result) <= len(metrics.returns(result))
     adjusted = metrics.probabilistic_sharpe(result)
@@ -869,7 +869,7 @@ def test_the_effective_sample_counts_n_times_one_minus_r_over_one_plus_r():
     # which n(1 - r), n(1 - r^2) and n / (1 + 2r) all satisfy on a persistent
     # series. This one has a first autocorrelation of exactly 61/120 by
     # construction, so the correction has exactly one answer, 120 * 59 / 181 or
-    # 39.116, where those three wrong readings give 59, 88.99 and 59.50 (ADR 0045)
+    # 39.116, where those three wrong readings give 59, 88.99 and 59.50 (ADR 0031)
     result = blocked()
     assert metrics.autocorrelation(result, lag=1) == pytest.approx(61.0 / 120.0)
     assert metrics.effective_sample(result) == pytest.approx(7080.0 / 181.0)
@@ -880,7 +880,7 @@ def test_the_sharpe_interval_is_the_sharpe_plus_and_minus_a_hand_computed_half()
     # a missing square root or a variance read off the wrong estimator all passed
     # "low < sharpe < high". Here the skew is 0 and the kurtosis is 1, so the
     # estimator variance is exactly 1 and the half width is the normal quantile
-    # over the root of size - 1 with nothing else in it (ADR 0045)
+    # over the root of size - 1 with nothing else in it (ADR 0031)
     result = blocked()
     assert metrics.skew(result) == pytest.approx(0.0, abs=1e-9)
     assert metrics.kurtosis(result) == pytest.approx(1.0)
@@ -934,7 +934,7 @@ def test_the_sharpe_interval_carries_the_non_normality_correction():
     # and the whole Bailey and Lopez de Prado correction can be deleted, or have
     # its skew term flipped in sign, without moving a number. This sample is
     # skewed, so the correction is a real factor and each wrong reading of it
-    # gives a different half width (ADR 0045)
+    # gives a different half width (ADR 0031)
     result = skewed()
     assert metrics.skew(result) == pytest.approx(-2.0 / math.sqrt(3.0))
     assert metrics.kurtosis(result) == pytest.approx(7.0 / 3.0)
@@ -965,7 +965,7 @@ def test_the_track_record_length_converts_bets_back_into_bars_exactly_once():
     # which a SQUARED factor also satisfies: on this series it asks for 112.12
     # bars where the truth is 36.55, and both clear that floor. The answer comes
     # out in bets and the caller asked in bars, so it is multiplied by the bars
-    # spent per bet once and only once (ADR 0045)
+    # spent per bet once and only once (ADR 0031)
     result = blocked()
     spread = 1.0 / 64.0 * math.sqrt(120.0 / 119.0)
     observed = 1.0 / 128.0 / spread
@@ -1009,7 +1009,7 @@ def test_a_tail_probability_passed_as_a_confidence_is_refused():
 
 def test_the_drawdown_cannot_report_worse_than_a_total_loss():
     # bad debt takes equity below zero, and an uncapped fall gave a deeper bust a
-    # larger number than a wipeout (ADR 0041)
+    # larger number than a wipeout (ADR 0030)
     dead = BacktestResult(stats={}, equity_curve=np.array([100.0, 50.0, -80.0]),
                           trades=[], initial=100.0, periods_per_year=365.0)
     falls = metrics.drawdown(dead)
@@ -1062,7 +1062,7 @@ def test_a_fall_the_run_never_came_back_from_has_no_recovery_bar():
 
 def test_the_side_split_counts_a_win_after_its_fee_like_everything_else():
     # on gross PnL a scalper whose edge is smaller than its costs reported a
-    # perfect win rate beside a negative return, per side (ADR 0041)
+    # perfect win rate beside a negative return, per side (ADR 0030)
     data = series()
     dear = Backtester(data, fee_taker=0.02, periods_per_year=365.0).run(Alternate())
     sides = metrics.long_short_split(dear)
@@ -1191,7 +1191,7 @@ def test_the_decay_is_the_mean_gap_and_a_flat_window_never_counts_as_a_win():
     # scores metrics.segment produces, and both were pinned as "a float" and
     # "between 0 and 1", which the gap the other way round, the median of the gaps
     # and a >= 0.0 comparison all satisfy. A window scoring exactly 0.0 is the one
-    # ADR 0057 exists for, a stretch nobody could trade, and it must not be
+    # ADR 0034 exists for, a stretch nobody could trade, and it must not be
     # counted as a window that cleared zero; a window with no score at all, which
     # is what a callable objective leaves behind, is skipped by both rather than
     # counted as a failure
@@ -1291,7 +1291,7 @@ def test_every_calendar_period_of_hourly_candles_reports_a_growth_rate():
 def test_an_excursion_does_not_read_the_bar_the_trade_left_on_whole():
     # exit_tick is the bar the closing fill resolved on, so everything it printed
     # after the exit was folded in. The engine already disagreed: bars_held is
-    # exit_tick minus entry_tick, one fewer bar than this used to span (ADR 0038)
+    # exit_tick minus entry_tick, one fewer bar than this used to span (ADR 0023)
     data = np.array([
         [100.0, 100.0, 100.0, 100.0, 1e6],
         [100.0, 100.0, 100.0, 100.0, 1e6],
@@ -1322,7 +1322,7 @@ def test_an_excursion_does_not_credit_a_limit_entry_with_the_bar_before_it_fille
     # a maker bid rests BELOW the market, so the bar has to come down to it and
     # everything it printed on the way is above the entry. Reading the entry bar
     # whole put that into what a target could have caught, which is the flattering
-    # direction and it happens by construction rather than by accident (ADR 0038)
+    # direction and it happens by construction rather than by accident (ADR 0023)
     data = np.array([
         [100.0, 100.0, 100.0, 100.0, 1e6],
         [130.0, 130.0, 100.0, 101.0, 1e6],
@@ -1389,7 +1389,7 @@ def flat_with_a_few_losses(n=100, losses=4, size=0.01):
 def test_the_expected_shortfall_is_not_diluted_by_a_mass_of_flat_bars():
     # taken by comparison against the quantile, the cutoff landed on the zero mass
     # and swept in almost the whole sample, so the reported shortfall was the
-    # average of every bar rather than of the worst one in twenty (ADR 0046)
+    # average of every bar rather than of the worst one in twenty (ADR 0030)
     result = flat_with_a_few_losses()
     values = metrics.returns(result)
     assert (values == 0.0).sum() == 96                 # the mass the cutoff lands on
@@ -1431,7 +1431,7 @@ class Capped(Strategy):
 def test_a_cost_sweep_starts_every_run_from_the_same_strategy():
     # only the fee is supposed to move. An instance carried its spent budget from
     # one cost level into the next, so every level after the first traded nothing
-    # and the curve read as an edge that dies at the first basis point (ADR 0058)
+    # and the curve read as an edge that dies at the first basis point (ADR 0024)
     rows = metrics.cost_curve(Capped(4), series(), costs=(0.0, 2.0, 5.0, 10.0),
                               periods_per_year=365.0)
     counts = [row["num_trades"] for row in rows]

@@ -10,7 +10,7 @@ Every function that reads a finished run takes the ``BacktestResult`` itself rat
 than an equity curve, so it can read the annualization and the opening balance the
 run recorded rather than being told them again. Two readings of one number are how
 two numbers come to disagree, which is the whole reason ``initial`` and
-``periods_per_year`` are carried on the result at all (ADR 0044).
+``periods_per_year`` are carried on the result at all (ADR 0004).
 
 Four exports read something else. ``cost_curve`` and ``breakeven_bps`` take a
 ``strategy`` and its ``data`` and run the backtest themselves, once per cost level.
@@ -195,7 +195,7 @@ def effective_sample(result):
     hourly candles does not have a few thousand of those, it has a few hundred.
     This is the standard effective sample size for a persistent series,
     ``n (1 - r) / (1 + r)`` at the first autocorrelation ``r``, and it is what
-    ``probabilistic_sharpe`` and ``min_track_record_length`` count in (ADR 0045).
+    ``probabilistic_sharpe`` and ``min_track_record_length`` count in (ADR 0031).
 
     Negative autocorrelation is floored away rather than credited. It would make
     this larger than the bar count, which reads as free confidence bought by
@@ -261,7 +261,7 @@ def _episode(falls, start, recovered):
     window = falls[start:stop]
     trough = start + int(np.argmin(window))
     # the fall series holds one entry per equity point rather than one per bar, so
-    # entry i is bar i + 1 (ADR 0068) and a raw loop offset names the candle
+    # entry i is bar i + 1 (ADR 0042) and a raw loop offset names the candle
     # BEFORE the one that made it. The two durations below are differences of two
     # positions and are already in bars
     return {
@@ -539,7 +539,7 @@ def buy_and_hold(result, frame):
     an ETH strategy against holding BTC is a supported question. A different
     NUMBER of bars is a mistake, and used to be absorbed by trimming the two
     series to a common length, from opposite ends: the run's last returns against
-    the frame's first (ADR 0047).
+    the frame's first (ADR 0030).
     """
     close = _closes(frame)
     if close.size < 2:
@@ -584,7 +584,7 @@ def _closes(frame):
 
 # where an annualized growth rate saturates, mirroring bar-engine/src/stats.rs:
 # on minute candles the exponent leaves the float range and CAGR escapes to
-# infinity, which is a meaning ADR 0042 reserves for something else (ADR 0043)
+# infinity, which is a meaning ADR 0030 reserves for something else (ADR 0030)
 _CAGR_CEILING = 1e12
 
 
@@ -610,7 +610,7 @@ def segment(result, start=0, stop=None):
 
     This is a second path to numbers the engine already produces, which is the
     drift this codebase pays for elsewhere, so a test pins ``segment`` over the
-    whole run against ``result.stats`` key by key (ADR 0057).
+    whole run against ``result.stats`` key by key (ADR 0034).
     """
     curve = np.asarray(result.equity_curve, dtype=np.float64)
     bars = curve.size + 1
@@ -635,7 +635,7 @@ def segment(result, start=0, stop=None):
 def _stats(series, trades, ppy, rate):
     # the engine's own arithmetic, from bar-engine/src/stats.rs, over an equity
     # path that already includes the balance it started from. Every convention is
-    # ADR 0040's: sample deviation under sharpe, population under sortino's
+    # ADR 0030's: sample deviation under sharpe, population under sortino's
     # downside, drawdown capped at a total loss, trade metrics net of the fee
     opening, final = float(series[0]), float(series[-1])
     n_returns = series.size - 1
@@ -726,7 +726,7 @@ def conditional_value_at_risk(result, alpha=0.95):
     the bad days are, where the quantile only says where they start.
 
     Taken by rank, as the worst ``ceil((1 - alpha) * n)`` of them, rather than by
-    comparing each against the quantile (ADR 0046).
+    comparing each against the quantile (ADR 0030).
     """
     values = returns(result)
     if values.size == 0:
@@ -758,11 +758,11 @@ def probabilistic_sharpe(result, benchmark=0.0, independent=False):
     The published estimator counts bars and assumes they are independent bets.
     They are usually not, and this library is pointed at hourly crypto where a
     position is routinely held for days, so the sample size counted here is
-    ``effective_sample`` rather than the bar count (ADR 0045). Pass
+    ``effective_sample`` rather than the bar count (ADR 0031). Pass
     ``independent=True`` for the published formula unadjusted, which is the right
     thing when the returns really are independent and the wrong thing by a wide
     margin when they are not. Raises rather than returning NaN when the sample
-    cannot support the estimate (ADR 0040).
+    cannot support the estimate (ADR 0030).
     """
     values = returns(result)
     if values.size < 4:
@@ -792,7 +792,7 @@ def sharpe_interval(result, confidence=0.95, independent=False):
     "Sharpe 1.4, 95% interval 0.2 to 2.6" is the sentence a reader wants and the
     one nothing here could produce: ``probabilistic_sharpe`` answers a yes-or-no
     question about a benchmark, which is a different question. Same estimator,
-    same non-normality correction, same effective sample size (ADR 0045), read as
+    same non-normality correction, same effective sample size (ADR 0031), read as
     an interval instead of a tail.
 
     ``low`` at or below zero says the run does not distinguish itself from nothing
@@ -868,7 +868,7 @@ def deflated_sharpe(study, null):
     them **shrinks as the search converges**. Computed from the search's own
     trials, this number would grow more permissive the harder you overfit, which
     is exactly backwards. A random search over the same space is an honest "best
-    of N looks at this space" and cannot do that (ADR 0054).
+    of N looks at this space" and cannot do that (ADR 0032).
 
     The two arguments answer different halves of the threshold, and the null
     answers only one of them: how far a sharpe scatters over this space. How many
@@ -935,7 +935,7 @@ def _null_shape(study, null):
     # extreme sharpes live, so the trials that survive one scatter LESS than the
     # space does. Reading the spread off them made the threshold fall the
     # stricter the floor, which is the same inversion this decision exists to
-    # prevent, arriving through the other term (ADR 0055)
+    # prevent, arriving through the other term (ADR 0032)
     if getattr(null, "min_trades", 0):
         raise ValueError(
             f"the null was searched with min_trades={null.min_trades}, and an "
@@ -977,7 +977,7 @@ def min_track_record_length(result, benchmark=0.0, confidence=0.95,
     ``benchmark`` at ``confidence``, in bars and in wall time.
 
     Answers "is this backtest long enough" with a number. It counts independent
-    bets rather than bars (``effective_sample``, ADR 0045) and then converts back,
+    bets rather than bars (``effective_sample``, ADR 0031) and then converts back,
     so a strategy holding a position for days needs proportionally more hourly
     candles than the published formula would ask for, which is the truth of it.
     ``independent=True`` gives the unadjusted version.
@@ -1060,7 +1060,7 @@ def cost_curve(strategy, data, costs=(0.0, 2.0, 5.0, 10.0, 20.0), **config):
     ``strategy`` is a ``Strategy`` subclass, which is rebuilt for each run, or an
     instance, whose attributes are put back as they were before each one. Either
     way every run starts from the same strategy, since the point of the sweep is
-    that only the fee moved (ADR 0058).
+    that only the fee moved (ADR 0024).
     """
     from .backtest import Backtester
 
@@ -1126,7 +1126,7 @@ def _rebuilder(strategy):
     the whole reason to pass one, and anything a previous run left does not.
     ``copy.deepcopy`` is the wrong tool here, because a strategy that followed the
     documented idiom holds ``engine.closes``, a zero-copy view that keeps a whole
-    Engine alive behind it (ADR 0058).
+    Engine alive behind it (ADR 0024).
     """
     if isinstance(strategy, type):
         return lambda: _built(strategy)
@@ -1184,7 +1184,7 @@ def excursions(result, frame):
     its close, and the bar it left on only from its open up to the fill; the bars
     strictly between were lived through whole. A market entry fills at its bar's
     open and so did live through that whole bar, which this does not credit,
-    because nothing in a trade row says which kind of order opened it (ADR 0038).
+    because nothing in a trade row says which kind of order opened it (ADR 0023).
     """
     opens, high, low, closes = _bar_prices(frame)
     _same_bars(result, frame, len(high), "excursions")
@@ -1193,7 +1193,7 @@ def excursions(result, frame):
         first, last = trade["entry_tick"], trade["exit_tick"]
         if not 0 <= first <= last < len(high):
             # unreachable on the right frame, since a position still open at the
-            # end is never logged as a trade (ADR 0036). The guard above is what
+            # end is never logged as a trade (ADR 0022). The guard above is what
             # makes that true rather than hoped for
             continue
         entry = trade["entry_price"]
@@ -1240,7 +1240,7 @@ def session_buckets(result, frame, by="hour"):
     # epoch day zero is a Thursday, so +3 puts Monday at 0 and matches
     # datetime.weekday, pandas dayofweek and day_name. It used to be +4, which is
     # Sunday-first, stated in no docstring and on no page, so buckets[0] read as
-    # Monday and was Sunday (ADR 0047)
+    # Monday and was Sunday (ADR 0030)
     keys = (unit % 24) if by == "hour" else ((unit // 24 + 3) % 7)
     buckets = {}
     for trade in result.trades or []:
@@ -1285,7 +1285,7 @@ def _same_bars(result, frame, bars, where):
     ``excursions`` silently returned 35 rows out of 1,516 and said nothing. The
     fingerprint catches what length cannot: given another asset of the same
     length, a losing trade came back with both its excursions positive. The chart
-    refuses the first of these and not the second (ADR 0047).
+    refuses the first of these and not the second (ADR 0030).
     """
     ran_on = _ran_on(result)
     if ran_on is not None and bars != ran_on:
@@ -1308,7 +1308,7 @@ def _same_bars(result, frame, bars, where):
 
 def _bar_prices(frame):
     # all four, because the two an excursion can trust on a partly held bar are the
-    # open and the close rather than the extremes (ADR 0038)
+    # open and the close rather than the extremes (ADR 0023)
     if all(hasattr(frame, name) for name in ("open", "high", "low", "close")):
         return tuple(np.asarray(getattr(frame, name), dtype=np.float64)
                      for name in ("open", "high", "low", "close"))

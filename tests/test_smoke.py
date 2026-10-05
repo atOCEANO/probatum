@@ -457,7 +457,7 @@ def test_non_finite_candles_are_rejected():
 
 def test_non_finite_config_scalars_are_rejected():
     # the candle array was always checked for non-finite values; every other knob
-    # crossing the boundary poisons the same things and is now checked too (ADR 0023)
+    # crossing the boundary poisons the same things and is now checked too (ADR 0007)
     for kwargs in (
         {"quote": float("nan")},
         {"fee_taker": float("nan")},
@@ -547,7 +547,7 @@ def test_stats_reject_a_non_positive_annualization():
 
 def test_stop_takes_reduce_only_so_it_cannot_open_the_other_side():
     # a fall that crosses the trigger while flat: a protective stop fills nothing,
-    # a bare one opens a short on a perp (ADR 0014)
+    # a bare one opens a short on a perp (ADR 0010)
     data = np.array(
         [
             [100.0, 101.0, 99.0, 100.0, 1000.0],
@@ -580,7 +580,7 @@ def test_order_ids_do_not_restart_on_reset():
 
 def test_a_fok_market_blocked_by_the_cash_clamp_fills_nothing():
     # the bar has the volume, but the cash affords 50 of the 1000; FOK is all or
-    # nothing against every clamp, not just liquidity (ADR 0008)
+    # nothing against every clamp, not just liquidity (ADR 0010)
     e = engine()
     e.reset()
     e.order("buy", 1000.0, type="market", tif="FOK")
@@ -591,7 +591,7 @@ def test_a_fok_market_blocked_by_the_cash_clamp_fills_nothing():
 
 def test_a_trade_carries_both_sides_of_its_fee():
     # charging only the closing fill left about half the round trip attributed to
-    # nothing, so the metrics built on it stayed optimistic (ADR 0037)
+    # nothing, so the metrics built on it stayed optimistic (ADR 0023)
     e = emsl.Engine(series(), market="spot", quote=10_000.0, fee_taker=0.01,
                     fee_maker=0.01, report=True)
     e.reset()
@@ -653,7 +653,7 @@ def test_num_fills_separates_a_dead_feed_from_a_quiet_strategy():
 
 def test_replace_moves_one_order_and_will_not_arm_a_second():
     # the trailing-stop trap: stop() per bar rests a new order every time, and the
-    # one that fills leaves its siblings live (ADR 0015)
+    # one that fills leaves its siblings live (ADR 0010)
     e = emsl.Engine(series(), market="perp", quote=10_000.0, fee_taker=0.0)
     e.reset()
     first = e.stop("sell", 1.0, 50.0, reduce_only=True)
@@ -680,7 +680,7 @@ def test_is_bust_reports_a_dead_account():
 
 def test_trade_metrics_are_net_of_fees():
     # a creeping series whose per-trade gross edge is smaller than the round trip
-    # cost: gross it wins every trade, net it loses money (ADR 0041)
+    # cost: gross it wins every trade, net it loses money (ADR 0030)
     data = np.array(
         [[100.0 + i * 0.01] * 4 + [1000.0] for i in range(40)], dtype=np.float64
     )
@@ -716,7 +716,7 @@ def test_spot_buy_cannot_spend_more_quote_than_held():
 def costed_bars():
     # bar 1 is the one a decision on bar 0 fills against: its open is the fill
     # price, its volume is what an impact fraction is taken of, and its high sits
-    # far enough above both that the taker clamp of ADR 0005 never binds and the
+    # far enough above both that the taker clamp of ADR 0013 never binds and the
     # slip can be read straight off the price
     return np.array([
         [100.0, 200.0, 90.0, 100.0, 1000.0],

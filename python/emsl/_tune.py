@@ -22,14 +22,14 @@ extreme.
 ``min_trades`` fails any trial that closed fewer trades than that. A search ranking
 on a point estimate walks to the thinnest cell it can find, where a handful of
 samples produces the widest interval and the best-looking number, so a floor is the
-cheapest defence against a winner that is really noise (ADR 0052).
+cheapest defence against a winner that is really noise (ADR 0032).
 
 ``oos=0.3`` fits every trial on the first 70% of the bars and scores the winner on
 the last 30%, which no trial ever saw, into ``TuneResult.oos_stats``. Without it
 the search fits everything, and ``best_stats`` is then the maximum of a noisy score
 over every trial: biased upward by the act of searching, by more the harder you
 searched. The tail is always the END of the series, never a random slice, because a
-strategy is a claim about what comes next (ADR 0053). The winner warms up inside
+strategy is a claim about what comes next (ADR 0032). The winner warms up inside
 the held-out bars rather than being handed history across the boundary, so a
 strategy with a long warm-up gives up its first few bars there.
 
@@ -38,17 +38,17 @@ or ``"random"``, which draws independently over the whole space. The second is n
 just a weaker search: ``metrics.deflated_sharpe`` refuses a null built with
 anything else, because a converging search leaves its trials neither independent
 nor scattered the way the space is, and those are the two quantities the deflation
-threshold is computed from (ADR 0054). ``verbose=True`` turns optuna's per-trial
+threshold is computed from (ADR 0032). ``verbose=True`` turns optuna's per-trial
 logging back on, which is worth having on a long search.
 
 ``periods_per_year`` is read once from the candles' own timestamps and handed to
 every trial, so a parallel search cannot end up with workers annualizing
 differently from the one that inferred it. Pass a number to state it; a numpy input
-has no timestamps and says so (ADR 0044).
+has no timestamps and says so (ADR 0004).
 
 ``n_jobs=1`` runs in this process; ``n_jobs>1`` (or ``-1`` for every core) runs
 trials in worker processes, rebuilding the engine in each worker rather than
-shipping a live one across the boundary (ADR 0051). Only ``n_jobs=1`` is
+shipping a live one across the boundary (ADR 0032). Only ``n_jobs=1`` is
 reproducible from ``seed``: a parallel run asks for trials before earlier ones have
 reported, so the order results reach the sampler depends on which worker finishes
 first and the search follows a different path each time. Pin ``n_jobs=1`` when a
@@ -108,7 +108,7 @@ __all__ = ["tune", "Int", "Float", "Categorical", "TuneResult"]
 
 # the stats keys the engine reports, so a string objective can be checked before the
 # search rather than failing every trial; kept in step with bar-engine stats.rs and
-# ADR 0040, the one place the set is defined
+# ADR 0030, the one place the set is defined
 _STAT_KEYS = frozenset(
     {
         "total_return_pct",
@@ -209,7 +209,7 @@ class _CloudPickled:
     ``__main__`` or a notebook. A strategy or objective wrapped in this makes the
     stdlib pickler call ``__reduce__``, which serializes the payload with cloudpickle
     instead; the worker restores it the same way. A fork worker inherits the wrapper
-    directly, so it stays wrapped either way and the worker reads ``.obj`` (ADR 0051).
+    directly, so it stays wrapped either way and the worker reads ``.obj`` (ADR 0032).
     """
 
     def __init__(self, obj):
@@ -223,7 +223,7 @@ class _CloudPickled:
 
 # per-worker state, populated once by _worker_init and read by each _worker_eval, so
 # the candles and the strategy cross the process boundary once per worker rather than
-# once per trial (ADR 0051)
+# once per trial (ADR 0032)
 _WORKER = {}
 
 
@@ -256,7 +256,7 @@ def _evaluate(backtester, strategy, objective, params, min_trades=0):
     result = backtester.run(strategy(**params))
     # a configuration that barely traded is scored on a handful of samples, and the
     # best point estimate in a search walks straight to the thinnest cell. Failing it
-    # is the same treatment a NaN objective gets (ADR 0052)
+    # is the same treatment a NaN objective gets (ADR 0032)
     if min_trades > 0 and result.stats["num_trades"] < min_trades:
         raise ValueError(
             f"only {result.stats['num_trades']} trades, below min_trades={min_trades}, "
@@ -434,13 +434,13 @@ class TuneResult:
     trial, on the bars the search was allowed to see, so it is biased upward by
     the act of searching and by exactly as much as the search worked. ``oos_stats``
     is the same strategy scored on bars no trial ever saw, and it is the number to
-    quote. It is ``None`` when nothing was held out (ADR 0053).
+    quote. It is ``None`` when nothing was held out (ADR 0032).
 
     ``sampler``, ``direction``, ``min_trades`` and ``data_hash`` record how the
     search was run, because a number computed about a search has to know which
     search it is talking about: ``metrics.deflated_sharpe`` reads all four and
     refuses a null drawn by TPE, one that minimized, one carrying an activity floor,
-    or one that ran on other bars (ADR 0055).
+    or one that ran on other bars (ADR 0032).
     """
 
     def __init__(self, study, strategy, best_result=None, oos_result=None,

@@ -1,12 +1,12 @@
 //! Performance statistics derived from a recorded equity curve and trade log.
-//! The conventions are fixed in ADR 0040.
+//! The conventions are fixed in ADR 0030.
 
 use crate::reporter::Trade;
 
 /// A run's performance summary. Percent fields are in percent (10.0 is 10%);
 /// ratios (sharpe, sortino, calmar, profit_factor) are unitless, and each is
 /// infinite when it earned something against no measured risk at all, so the set
-/// stays orderable (ADR 0042). Nothing here is ever NaN (ADR 0040).
+/// stays orderable (ADR 0030). Nothing here is ever NaN (ADR 0030).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stats {
     pub total_return_pct: f64,
@@ -22,15 +22,15 @@ pub struct Stats {
     /// Fraction of recorded steps spent holding a position, in percent.
     pub exposure_pct: f64,
     /// Fraction of closed trades whose PnL net of the recorded fee is positive
-    /// (ADR 0041).
+    /// (ADR 0030).
     pub win_rate: f64,
     /// Net profit over net loss across the closed trades, both after the recorded
-    /// fee; infinite when nothing lost (ADR 0041).
+    /// fee; infinite when nothing lost (ADR 0030).
     pub profit_factor: f64,
     pub num_trades: usize,
     /// Mean net trade PnL as a percent of STARTING equity, not of the equity the
     /// trade opened with, so later trades in a drawn-down account count for their
-    /// nominal size rather than their real one (ADR 0040).
+    /// nominal size rather than their real one (ADR 0030).
     pub avg_trade_pct: f64,
     /// Fills applied over the run. Zero beside orders you know you placed means they
     /// never filled, which a zero-volume series does silently; without this a dead
@@ -39,7 +39,7 @@ pub struct Stats {
     /// Funding paid over the run, in quote: positive is paid away, negative is
     /// received. Zero on spot. It is the one cost unique to a perp, and until it
     /// was kept a carry strategy and a directional one could not be told apart in
-    /// the result (ADR 0030).
+    /// the result (ADR 0020).
     pub funding_paid: f64,
 }
 
@@ -53,10 +53,10 @@ const CAGR_CEILING: f64 = 1e12;
 /// is, so it goes to the top. Returning zero instead ranked a run that never
 /// fell BELOW one that dipped a single percent and recovered: same start, same
 /// end, same CAGR, calmar 0 against 10.05. Sortino did the same to a run with no
-/// losing bar at all. That is the argmax inversion ADR 0041 exists to prevent,
+/// losing bar at all. That is the argmax inversion ADR 0030 exists to prevent,
 /// surviving in the branch its drawdown cap could not reach, while
 /// `profit_factor` had answered the identical question correctly all along
-/// (ADR 0042).
+/// (ADR 0030).
 fn ranked(reward: f64, risk: f64, annualizer: f64) -> f64 {
     if risk > 0.0 {
         reward / risk * annualizer
@@ -84,8 +84,8 @@ impl Stats {
     ) -> Stats {
         // A non-positive or non-finite annualization has no per-period rate and no
         // square root: `risk_free / periods_per_year` would be NaN and poison sharpe,
-        // which is the one thing ADR 0040 says this set must never return. Fall back
-        // to no annualization rather than propagating it (ADR 0041).
+        // which is the one thing ADR 0030 says this set must never return. Fall back
+        // to no annualization rather than propagating it (ADR 0030).
         let (periods_per_year, risk_free) =
             if periods_per_year.is_finite() && periods_per_year > 0.0 && risk_free.is_finite() {
                 (periods_per_year, risk_free)
@@ -105,7 +105,7 @@ impl Stats {
             let tr = final_equity / initial - 1.0;
             // A wipeout (final equity at or below zero, e.g. a perp bust past zero)
             // annualizes to -100%; computing it as powf of a non-positive ratio
-            // would be NaN and poison a sweep's argmax (ADR 0040).
+            // would be NaN and poison a sweep's argmax (ADR 0030).
             //
             // At the other end it overflows. Annualizing raises the ratio to
             // one-over-the-years, and on high-frequency candles that exponent
@@ -118,7 +118,7 @@ impl Stats {
             // are not an exotic input. The value saturates rather than
             // escaping; `total_return_pct` is what to rank a sub-year run on,
             // because an annualized rate off a few hours is an extrapolation
-            // and not a measurement (ADR 0043).
+            // and not a measurement (ADR 0030).
             let cagr = if final_equity > 0.0 {
                 let raw = (final_equity / initial).powf(periods_per_year / n_returns as f64) - 1.0;
                 raw.min(CAGR_CEILING)
@@ -136,7 +136,7 @@ impl Stats {
         // would be `inf - inf`, and `volatility_pct` is the one number here that is
         // not routed through `ranked`, whose comparisons against NaN are all false
         // and fall through to zero. So volatility alone came back NaN, which is
-        // exactly what ADR 0040 promises never happens (ADR 0043).
+        // exactly what ADR 0030 promises never happens (ADR 0030).
         let returns: Vec<f64> = series
             .windows(2)
             .map(|w| {
@@ -180,10 +180,10 @@ impl Stats {
             }
             if peak > 0.0 {
                 // A drawdown is bounded by the peak it falls from: losing everything
-                // is 100%. Bad debt takes equity below zero (ADR 0032), and leaving
+                // is 100%. Bad debt takes equity below zero (ADR 0017), and leaving
                 // that uncapped reported drawdowns above 100% whose larger divisor
                 // gave a DEEPER bust a HIGHER calmar than a shallower one, exactly
-                // the argmax poisoning ADR 0040 exists to prevent (ADR 0041).
+                // the argmax poisoning ADR 0030 exists to prevent (ADR 0030).
                 max_dd = max_dd.max(((peak - e) / peak).min(1.0));
             }
         }
@@ -196,7 +196,7 @@ impl Stats {
         // it for busts, because the cap only equalizes busts against each other. A
         // negative return is scaled by its drawdown instead of divided by it, which
         // is the identical number at a total loss, so the two branches meet, and it
-        // orders the whole losing half the right way round (ADR 0043).
+        // orders the whole losing half the right way round (ADR 0030).
         let calmar = if cagr < 0.0 {
             cagr * max_dd
         } else {
@@ -212,9 +212,9 @@ impl Stats {
         // The trade metrics read `net_pnl`, the whole round trip after fees. On gross
         // PnL a scalper whose edge is smaller than its costs reported a perfect win
         // rate and an infinite profit factor beside a negative total return, the most
-        // flattering way a backtest can lie (ADR 0041), and netting only the exit
-        // side left half that error in place (ADR 0037). `Trade.pnl` stays gross
-        // (ADR 0036), so the log carries both and either can be recomputed.
+        // flattering way a backtest can lie (ADR 0030), and netting only the exit
+        // side left half that error in place (ADR 0023). `Trade.pnl` stays gross
+        // (ADR 0022), so the log carries both and either can be recomputed.
         let num_trades = trades.len();
         let mut wins = 0usize;
         let mut net_profit = 0.0;
@@ -347,7 +347,7 @@ mod tests {
     fn full_scenario_matches_hand_computed_stats() {
         // initial 100, curve [110, 99, 121], ppy 3, rf 0. Returns 0.10, -0.10,
         // 0.222222; mean 0.0740741, sample std 0.1626681, downside dev 0.0577350,
-        // all worked out by hand from ADR 0040, independent of the code.
+        // all worked out by hand from ADR 0030, independent of the code.
         let trades = [trade(30.0), trade(-10.0), trade(5.0)];
         let s = compute(100.0, &[110.0, 99.0, 121.0], &trades, 3.0, 0.0, 3);
         assert!(approx(s.total_return_pct, 21.0)); // 121/100 - 1
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn a_non_positive_annualization_does_not_produce_nan() {
-        // risk_free / periods_per_year would be 0/0; ADR 0040 says the set is always
+        // risk_free / periods_per_year would be 0/0; ADR 0030 says the set is always
         // defined, so a degenerate annualization falls back rather than propagating
         for ppy in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let s = compute(100.0, &[110.0, 99.0, 121.0], &[], ppy, 0.02, 3);
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn drawdown_is_capped_at_a_hundred_percent_so_calmar_stays_ordered() {
         // bad debt takes equity below zero; an uncapped drawdown gave the deeper
-        // bust the larger divisor and therefore the BETTER calmar (ADR 0041)
+        // bust the larger divisor and therefore the BETTER calmar (ADR 0030)
         let shallow = compute(100.0, &[100.0, 0.0], &[], 252.0, 0.0, 2);
         let deep = compute(100.0, &[100.0, -80.0], &[], 252.0, 0.0, 2);
         assert!(approx(shallow.max_drawdown_pct, 100.0));
@@ -487,7 +487,7 @@ mod tests {
     fn a_run_that_never_fell_outranks_one_that_dipped() {
         // the same run with a single 0.9% loss added: same start, same end, same
         // CAGR. Ranking a zero drawdown at zero put the clean run BELOW it, which
-        // is the inversion the drawdown cap was written to prevent (ADR 0042)
+        // is the inversion the drawdown cap was written to prevent (ADR 0030)
         let clean = compute(100.0, &[110.0, 120.0, 130.0], &[], 1.0, 0.0, 3);
         let dipped = compute(100.0, &[110.0, 109.0, 130.0], &[], 1.0, 0.0, 3);
         assert!(approx(clean.cagr_pct, dipped.cagr_pct));
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn a_gain_at_no_measured_risk_ranks_at_the_top_on_sharpe_too() {
-        // ADR 0042 sends a positive reward earned against no risk to the top, and
+        // ADR 0030 sends a positive reward earned against no risk to the top, and
         // sortino's half of that is pinned by the rising fixture above. Sharpe's
         // is not: every fixture with a positive excess has a non-zero deviation,
         // and the only zero-deviation one is a constant LOSER, so special-casing
@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn a_bust_past_zero_yields_finite_stats_not_nan() {
         // equity goes negative (a perp bust past zero) and stays negative; CAGR
-        // floors at -100%, post-bust returns are zeroed, nothing is NaN (ADR 0040)
+        // floors at -100%, post-bust returns are zeroed, nothing is NaN (ADR 0030)
         let s = compute(100.0, &[50.0, -20.0, -10.0], &[], 252.0, 0.0, 3);
         assert!(s.total_return_pct.is_finite());
         assert!(s.cagr_pct.is_finite());
@@ -583,7 +583,7 @@ mod tests {
         // a loss: the deeper the bust the larger the divisor, so a wipeout scored
         // -1.00 and a run that lost 20% scored -3.71, and an argmax picked the
         // wipeout. The 100% cap only equalizes busts against each other, so this
-        // survived underneath it (ADR 0043)
+        // survived underneath it (ADR 0030)
         let wipeout: Vec<f64> = (0..60).map(|i| 1000.0 * (1.0 - i as f64 / 59.0)).collect();
         let mild: Vec<f64> = (0..60).map(|i| 1000.0 - 200.0 * i as f64 / 59.0).collect();
         let bust = compute(1000.0, &wipeout, &[], 365.0, 0.0, 0);
@@ -600,10 +600,10 @@ mod tests {
 
     #[test]
     fn a_high_annualization_saturates_rather_than_reaching_infinity() {
-        // ADR 0044 derives the annualization from the candles, so minute bars are an
+        // ADR 0004 derives the annualization from the candles, so minute bars are an
         // ordinary input, and 200 of them is 0.00038 of a year: the exponent leaves
         // the float range and CAGR came back infinite. Infinity is reserved for a
-        // reward earned against no measured risk (ADR 0042), and a run that ties
+        // reward earned against no measured risk (ADR 0030), and a run that ties
         // with every other overflowing run at the top of a sweep is not that
         let mut curve: Vec<f64> = (0..200).map(|i| 1000.0 + i as f64).collect();
         for (i, point) in curve.iter_mut().enumerate() {
@@ -627,7 +627,7 @@ mod tests {
         // every other statistic goes through `ranked`, whose comparisons against a
         // NaN are all false and fall through to zero. Volatility is the one that
         // does not, so an `inf - inf` variance surfaced there alone, which is the
-        // single thing ADR 0040 promises the set never does (ADR 0043)
+        // single thing ADR 0030 promises the set never does (ADR 0030)
         let s = compute(1.0, &[1e-320, 1e300], &[], 252.0, 0.0, 2);
         assert!(
             s.volatility_pct.is_finite(),
@@ -677,7 +677,7 @@ mod tests {
     #[test]
     fn a_run_with_no_closed_trades_reports_zeros_rather_than_nan() {
         // both trade ratios divide by the trade count. Reaching that division with
-        // no trades is 0/0, and ADR 0040 says nothing here is ever NaN
+        // no trades is 0/0, and ADR 0030 says nothing here is ever NaN
         let s = compute(100.0, &[110.0, 120.0], &[], 252.0, 0.0, 2);
         assert_eq!(s.num_trades, 0);
         assert!(approx(s.win_rate, 0.0), "win_rate {}", s.win_rate);
