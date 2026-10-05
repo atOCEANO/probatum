@@ -11,6 +11,7 @@
 <sub>
   <a href="../README.md">Introduction</a> &nbsp;•&nbsp;
   <a href="Python_API.md">Python API</a> &nbsp;•&nbsp;
+  <a href="Specification.md">Specification</a> &nbsp;•&nbsp;
   <a href="RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
   <b>Plotting</b> &nbsp;•&nbsp;
   <a href="Architecture.md">Architecture</a> &nbsp;•&nbsp;

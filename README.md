@@ -11,6 +11,7 @@
 <sub>
   <b>Introduction</b> &nbsp;•&nbsp;
   <a href=".Documentation/Python_API.md">Python API</a> &nbsp;•&nbsp;
+  <a href=".Documentation/Specification.md">Specification</a> &nbsp;•&nbsp;
   <a href=".Documentation/RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
   <a href=".Documentation/Plotting.md">Plotting</a> &nbsp;•&nbsp;
   <a href=".Documentation/Architecture.md">Architecture</a> &nbsp;•&nbsp;
