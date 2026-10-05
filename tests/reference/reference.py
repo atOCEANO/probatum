@@ -1,7 +1,7 @@
 """A deliberately slow, obviously correct bar simulator, written from the ADRs.
 
 It exists to disagree with the engine. So it is written from the rules as the
-decisions page states them and NOT from `engine.rs`: reading the implementation
+decisions page states them and NOT from the engine's source: reading the implementation
 while writing this would reproduce whatever the implementation does, including
 its mistakes, and the whole value here is being an independent second opinion.
 
