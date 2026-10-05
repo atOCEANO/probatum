@@ -35,19 +35,19 @@ The library is a cargo workspace: a pure-Rust core exposed to Python through one
 
 Three crates, each building only on the one beneath it:
 
-1. **`emsl-core`** (pure Rust; no Python, no candle series, no parallelism). The fidelity-neutral primitives: unit newtypes, the OHLCV bar, the order and fill types, the netted position, and the account (spot and perp equity, funding, liquidation, realized and unrealized PnL), the cost model, and the fixed-slot resting order book. This is the reuse seam a future tick or L2 engine would share, so nothing here holds the candle series, the windows over it, or any bar-level fill logic.
-2. **`bar-engine`** (pure Rust; no Python). The bar-level realization: the shared candle series with zero-copy windows, the next-bar fill model, the single `step()` state machine, the optional reporter and its stats, and the Rayon batched runner. It builds only on `emsl-core`.
-3. **`emsl-py`** (the only Python-linked crate; PyO3, compiled to `emsl._emsl`). A thin shell over `bar-engine`: it parses arguments, copies candles once from numpy, hands state back as dicts, vends the zero-copy observation view, and releases the GIL around the batched step. It holds no simulation logic.
+1. **`probatum-core`** (pure Rust; no Python, no candle series, no parallelism). The fidelity-neutral primitives: unit newtypes, the OHLCV bar, the order and fill types, the netted position, and the account (spot and perp equity, funding, liquidation, realized and unrealized PnL), the cost model, and the fixed-slot resting order book. This is the reuse seam a future tick or L2 engine would share, so nothing here holds the candle series, the windows over it, or any bar-level fill logic.
+2. **`probatum-engine`** (pure Rust; no Python). The bar-level realization: the shared candle series with zero-copy windows, the next-bar fill model, the single `step()` state machine, the optional reporter and its stats, and the Rayon batched runner. It builds only on `probatum-core`.
+3. **`probatum-py`** (the only Python-linked crate; PyO3, compiled to `emsl._emsl`). A thin shell over `probatum-engine`: it parses arguments, copies candles once from numpy, hands state back as dicts, vends the zero-copy observation view, and releases the GIL around the batched step. It holds no simulation logic.
 
 The Python package `emsl` re-exports the compiled `Engine` and `Batch` and adds everything that is not simulation. Four of those are drivers, and they hold no simulation logic of their own: `emsl.backtest` and `emsl.rl` wrap the engine's loop, and `emsl.tune` and `emsl.walk_forward` orchestrate many backtests, across worker processes for the first and as one composite pass for the second (ADRs 0032, 0034). `emsl.Market` carries the eleven engine knobs once and hands out those surfaces so they cannot drift apart (ADR 0002). The rest look at a run rather than producing one: `emsl.metrics` evaluates a finished result, `emsl.ta` is functions of arrays that never see the engine, and `emsl.chart` draws. These are the larger half of the package by line count and none of them simulates anything, which is the line that matters: a defect here is a wrong number about a correct run.
 
-`bar-engine` also carries an in-core sweep that drives compiled Rust strategies over a parameter grid; it is not exposed to Python, since it can only run strategies compiled into the engine, and it survives as the Criterion benchmark of the GIL-free path (ADR 0003).
+`probatum-engine` also carries an in-core sweep that drives compiled Rust strategies over a parameter grid; it is not exposed to Python, since it can only run strategies compiled into the engine, and it survives as the Criterion benchmark of the GIL-free path (ADR 0003).
 
 <br>
 
 <div align="center">
   <img src="imgs/205312.png" alt="Crate layering" width="100%" />
-  <p style="margin: 0;"><i>The dependency order is bottom-up and logic flows up, never sideways: the <code>emsl-core</code> primitives, then <code>bar-engine</code>, then the one Python-linked crate <code>emsl-py</code>, then the thin <code>python/emsl</code> wrappers.</i></p>
+  <p style="margin: 0;"><i>The dependency order is bottom-up and logic flows up, never sideways: the <code>probatum-core</code> primitives, then <code>probatum-engine</code>, then the one Python-linked crate <code>probatum-py</code>, then the thin <code>python/emsl</code> wrappers.</i></p>
 </div>
 
 <br>
@@ -97,4 +97,4 @@ By default the engine records nothing but the running state, so its memory does 
 
 ### Why the seam
 
-The bar engine is the approximate, bar-level member of a planned family. A future sibling is a high-precision tick and L2 engine; the members differ by fidelity tier, not by brand. `emsl-core` is where they meet: the position, the account, the costs, and the order book are the same regardless of how a fill is resolved, so a tick engine reuses them and only replaces the resolution layer that `bar-engine` provides. That is why L2 is refused at this tier rather than bolted on.
+The bar engine is the approximate, bar-level member of a planned family. A future sibling is a high-precision tick and L2 engine; the members differ by fidelity tier, not by brand. `probatum-core` is where they meet: the position, the account, the costs, and the order book are the same regardless of how a fill is resolved, so a tick engine reuses them and only replaces the resolution layer that `probatum-engine` provides. That is why L2 is refused at this tier rather than bolted on.

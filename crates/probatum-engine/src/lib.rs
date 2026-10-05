@@ -1,6 +1,6 @@
-//! bar-engine: the bar-level realization of the market simulator. It owns the
+//! probatum-engine: the bar-level realization of the market simulator. It owns the
 //! shared candle series, the next-bar fill model, the single step state machine,
-//! and the batched runner. Pure Rust, no Python; it builds on emsl-core's
+//! and the batched runner. Pure Rust, no Python; it builds on probatum-core's
 //! fidelity-neutral primitives.
 
 pub mod batch;

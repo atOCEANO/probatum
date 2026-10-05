@@ -283,7 +283,7 @@ impl Stats {
 mod tests {
     use super::Stats;
     use crate::reporter::Trade;
-    use emsl_core::Side;
+    use probatum_core::Side;
 
     fn trade(pnl: f64) -> Trade {
         Trade {

@@ -33,10 +33,10 @@ Validation is split by where the risk lives. Every line of simulation is pure Ru
 
 ### Pure Rust, locally
 
-`emsl-core` and `bar-engine` hold the simulation, so they carry the bulk of the tests and every core-correctness invariant. They validate with cargo:
+`probatum-core` and `probatum-engine` hold the simulation, so they carry the bulk of the tests and every core-correctness invariant. They validate with cargo:
 
 ```bash
-cargo test -p emsl-core -p bar-engine
+cargo test -p probatum-core -p probatum-engine
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -47,7 +47,7 @@ This needs no interpreter, so it is the inner loop for anything below the Python
 
 ### The Python wheel, in Docker
 
-The `emsl-py` crate is an `extension-module` cdylib: it cannot be unit-tested with `cargo test`, because the test binary has no interpreter to link. So the binding is checked two ways. The Rust side compiles and lints with `cargo build -p emsl-py` and `clippy`. The behavior is checked through the built wheel on a Docker gate that builds one `abi3` wheel and installs it on Python 3.13 and 3.14, running the `tests/` suite on each:
+The `probatum-py` crate is an `extension-module` cdylib: it cannot be unit-tested with `cargo test`, because the test binary has no interpreter to link. So the binding is checked two ways. The Rust side compiles and lints with `cargo build -p probatum-py` and `clippy`. The behavior is checked through the built wheel on a Docker gate that builds one `abi3` wheel and installs it on Python 3.13 and 3.14, running the `tests/` suite on each:
 
 ```bash
 docker build --target test313 .
@@ -97,7 +97,7 @@ docker build --target miri .            # the zero-copy views' memory, under Mir
 
 `test-sdist` builds the source archive a release ships, installs it the way pip does on a platform with no wheel, and runs the whole suite against it, so a file left out of the archive fails there rather than for the first user on an unusual platform.
 
-`miri` runs the candle tests under Miri, an interpreter that checks every memory access a test makes. Every zero-copy view reads the candles through `floats` in emsl-core, the library's one reinterpretation of memory ([ADR 0040](Decisions.md)), and a mistake there can read past the buffer and still return the right values, which an ordinary test cannot see. The stage needs a nightly compiler, pinned by date.
+`miri` runs the candle tests under Miri, an interpreter that checks every memory access a test makes. Every zero-copy view reads the candles through `floats` in probatum-core, the library's one reinterpretation of memory ([ADR 0040](Decisions.md)), and a mistake there can read past the buffer and still return the right values, which an ordinary test cannot see. The stage needs a nightly compiler, pinned by date.
 
 `test-browser` is the other half of the chart layer. Everything in `tests/test_chart.py` reads `Chart.spec()`, because the gate has no browser and a spec assertion is the sharper test of what Python decided ([ADR 0042](Decisions.md)). What that cannot reach is whether the shipped JavaScript parses, runs and draws, and roughly 1,250 lines of it had never been executed by anything in the project. The first run of it found that the vendored renderer joins a line straight across whitespace, so ADR 0042's central claim was false in the artifact while true in the document. `tests/test_render.py` skips wherever playwright is absent, so the correctness gate stays green without one.
 

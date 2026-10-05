@@ -1,15 +1,15 @@
 //! Instruction counts for the step loop, measured under Valgrind. A count, unlike a
 //! timing, does not depend on the machine, so CI compares it with the commit before
 //! and fails when it rises by more than 10%. Run with
-//! `cargo bench -p bar-engine --bench step_instructions` where Valgrind and
+//! `cargo bench -p probatum-engine --bench step_instructions` where Valgrind and
 //! `gungraun-runner` 0.20.0 are installed, or through the `bench-instructions`
 //! Docker stage.
 
 use std::hint::black_box;
 
-use bar_engine::{Candles, Engine, EngineConfig};
-use emsl_core::{Candle, Market};
 use gungraun::{library_benchmark, library_benchmark_group, main};
+use probatum_core::{Candle, Market};
+use probatum_engine::{Candles, Engine, EngineConfig};
 
 /// The same oscillating series and perp config the wall-clock bench steps over.
 fn engine(bars: usize) -> Engine {

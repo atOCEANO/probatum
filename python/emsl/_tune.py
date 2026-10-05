@@ -107,7 +107,7 @@ from .backtest import Backtester
 __all__ = ["tune", "Int", "Float", "Categorical", "TuneResult"]
 
 # the stats keys the engine reports, so a string objective can be checked before the
-# search rather than failing every trial; kept in step with bar-engine stats.rs and
+# search rather than failing every trial; kept in step with probatum-engine stats.rs and
 # ADR 0030, the one place the set is defined
 _STAT_KEYS = frozenset(
     {

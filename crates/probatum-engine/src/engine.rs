@@ -17,7 +17,7 @@
 //! bar and one grown or opened during the bar has none of its own
 //! (ADRs 0017, 0018).
 
-use emsl_core::{
+use probatum_core::{
     Account, Bps, Candle, CostModel, Fill, FlatCostModel, Market, Order, OrderId, OrderType, Price,
     Qty, RestingOrderBook, Side, State, TimeInForce,
 };
@@ -90,7 +90,7 @@ impl Default for EngineConfig {
 /// The single-env bar engine: candles, an account, a resting book, the fill and
 /// cost models, and an optional reporter.
 pub struct Engine {
-    // Set once in `new` and never reassigned or mutated. emsl-py hands out
+    // Set once in `new` and never reassigned or mutated. probatum-py hands out
     // zero-copy, read-only numpy views into this buffer (ADR 0040), so its
     // address and contents must stay stable for the engine's whole life; do not
     // add a method that reallocates it or vends a mutable candle view.
@@ -1191,7 +1191,7 @@ impl Engine {
 mod tests {
     use super::{adversity, Engine, EngineConfig, CLOSE_EPS};
     use crate::candles::Candles;
-    use emsl_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, State, TimeInForce};
+    use probatum_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, State, TimeInForce};
     use proptest::prelude::*;
 
     fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {

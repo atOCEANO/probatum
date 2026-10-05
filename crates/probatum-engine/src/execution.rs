@@ -3,7 +3,7 @@
 //! seen. Market fills are takers, limit fills are makers, and a stop triggers and
 //! then fills as a taker. See ADR 0013 (slippage) and ADR 0013 (volume cap).
 
-use emsl_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
+use probatum_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
 
 /// The most a taker fill may be moved against itself, as a fraction of the
 /// reference price. A slip of 1.0 would price a sell at zero and anything beyond
@@ -193,7 +193,7 @@ fn taker(side: Side, size: f64, price: f64) -> Fill {
 #[cfg(test)]
 mod tests {
     use super::FillModel;
-    use emsl_core::{Bps, Candle, Order, OrderId, Price, Qty, Side, TimeInForce};
+    use probatum_core::{Bps, Candle, Order, OrderId, Price, Qty, Side, TimeInForce};
 
     fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
         Candle {

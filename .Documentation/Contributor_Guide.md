@@ -35,16 +35,16 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 
 | If it is... | It goes in... |
 | :--- | :--- |
-| A fidelity-neutral primitive (a unit, an order, position or account math, a cost model) | `crates/emsl-core` |
-| A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/bar-engine` |
-| A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/emsl-py` |
+| A fidelity-neutral primitive (a unit, an order, position or account math, a cost model) | `crates/probatum-core` |
+| A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/probatum-engine` |
+| A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/probatum-py` |
 | A convenience over the bindings (a new runner, a wrapper) | `python/emsl` |
 | A statistic read off a finished run | `python/emsl/metrics.py` |
 | An indicator, which is a function of arrays and never sees the engine | `python/emsl/ta.py` |
 | Anything a chart draws (a mark, a guard, a panel rule) | `python/emsl/_chart.py` and `plot.py` |
 | How a chart is painted (a primitive, the legend, the controls) | `python/emsl/_static` |
 
-A good test of placement: could a future tick or L2 engine reuse it? If yes, it is a core primitive and belongs in `emsl-core`, which holds no candle series and no bar-level logic. If it only makes sense per candle, it belongs in `bar-engine`. The Python crate and package hold no simulation logic at all; they parse, convert, and orchestrate.
+A good test of placement: could a future tick or L2 engine reuse it? If yes, it is a core primitive and belongs in `probatum-core`, which holds no candle series and no bar-level logic. If it only makes sense per candle, it belongs in `probatum-engine`. The Python crate and package hold no simulation logic at all; they parse, convert, and orchestrate.
 
 The chart layer splits on the same principle one layer further out: Python decides what is drawn and where, and the JavaScript decides only how it is painted ([ADR 0042](Decisions.md)). That is the rule the seam is held to, not a description of what the assets already contain, and four exceptions ship. The axis grain thresholds decide when a tick set is ragged, the number locale carries its own grouping, the timestamp format is written there in full, and two precision maps keep a trade caption and its table row one number rather than two opinions about it. Each of those is a question about the surface being painted rather than about the run being drawn, and Python cannot answer it without knowing the viewport; a colour, an alpha, or a threshold measured in bars is the other kind and belongs on the Python side ([ADR 0042](Decisions.md)). Two tests hold that half: one greps the shipped assets for a colour and allows only full transparency, and one refuses an alpha composed onto a theme colour, which is the shape that walked past the first for the life of the layer. Every asset is a plain script that declares and executes nothing at load, which is what lets the same files run as separate script tags in the development harness and as one bundle in the wheel; there is no npm and no build step anywhere in the project.
 
@@ -57,12 +57,12 @@ Pure-Rust work needs no Python, so the loop is short. `rust-toolchain.toml` pins
 ```bash
 rustup component add rustfmt clippy     # once per checkout
 
-cargo test -p emsl-core -p bar-engine
+cargo test -p probatum-core -p probatum-engine
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Python-facing work (anything in `emsl-py` or `python/emsl`) is validated on the Docker gate that builds the one abi3 wheel and runs the suite across Python versions; the full split is in the [Validation Guide](Validation_Guide.md). Four test stages sit outside that gate because each is much heavier; CI runs them, and a change to what they cover should run them locally before it is pushed: `--target test-browser` executes the chart's JavaScript in a real browser, `--target test-sb3` installs torch and exercises the Stable-Baselines3 adapter, `--target test-sdist` installs the source archive and runs the suite against it, and `--target miri` checks the candle memory behind every zero-copy view under Miri. Anything under `_static/` needs the first one, since nothing else in the project runs that code at all. The `emsl-py` crate is an `extension-module` cdylib, so it cannot be unit-tested with `cargo test` (there is no interpreter to link); it is checked with `cargo build` and `clippy`, then exercised through the wheel.
+Python-facing work (anything in `probatum-py` or `python/emsl`) is validated on the Docker gate that builds the one abi3 wheel and runs the suite across Python versions; the full split is in the [Validation Guide](Validation_Guide.md). Four test stages sit outside that gate because each is much heavier; CI runs them, and a change to what they cover should run them locally before it is pushed: `--target test-browser` executes the chart's JavaScript in a real browser, `--target test-sb3` installs torch and exercises the Stable-Baselines3 adapter, `--target test-sdist` installs the source archive and runs the suite against it, and `--target miri` checks the candle memory behind every zero-copy view under Miri. Anything under `_static/` needs the first one, since nothing else in the project runs that code at all. The `probatum-py` crate is an `extension-module` cdylib, so it cannot be unit-tested with `cargo test` (there is no interpreter to link); it is checked with `cargo build` and `clippy`, then exercised through the wheel.
 
 <br>
 
@@ -150,4 +150,4 @@ A new way to drive the engine (say a different backtest style, or a distributed 
 
 ### Adding a fidelity tier
 
-The larger extension the workspace is built for is a second engine at a different fidelity, a tick or L2 sibling. It would be a new crate beside `bar-engine`, reusing `emsl-core` for the position, account, costs, and book, and replacing only the resolution layer (how a fill is decided). Nothing in `emsl-core` should assume bars, so that reuse stays clean; if a change to core starts to assume a candle, it belongs in `bar-engine` instead.
+The larger extension the workspace is built for is a second engine at a different fidelity, a tick or L2 sibling. It would be a new crate beside `probatum-engine`, reusing `probatum-core` for the position, account, costs, and book, and replacing only the resolution layer (how a fill is decided). Nothing in `probatum-core` should assume bars, so that reuse stays clean; if a change to core starts to assume a candle, it belongs in `probatum-engine` instead.

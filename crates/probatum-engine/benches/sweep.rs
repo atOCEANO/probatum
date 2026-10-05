@@ -3,13 +3,13 @@
 //! (`run_sweep`), which forks one full backtest per parameter row across the Rayon
 //! pool. The sweep is the coarse-grained parallel path, one long task per core
 //! rather than one dispatch per bar, so it is where parameter-search throughput
-//! actually comes from. Run with `cargo bench -p bar-engine`.
+//! actually comes from. Run with `cargo bench -p probatum-engine`.
 
 use std::hint::black_box;
 
-use bar_engine::{builtin_strategy, run, run_sweep, Candles, Engine, EngineConfig, SmaCross};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use emsl_core::{Candle, Market};
+use probatum_core::{Candle, Market};
+use probatum_engine::{builtin_strategy, run, run_sweep, Candles, Engine, EngineConfig, SmaCross};
 
 const BARS: usize = 1_000;
 

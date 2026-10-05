@@ -1,5 +1,5 @@
 """Type stubs for the compiled ``emsl._emsl`` extension: ``Engine`` and ``Batch``.
-Hand-maintained; keep in sync with ``crates/emsl-py/src/lib.rs``. State and order
+Hand-maintained; keep in sync with ``crates/probatum-py/src/lib.rs``. State and order
 records come back as plain dicts, typed here as ``dict[str, Any]``.
 """
 

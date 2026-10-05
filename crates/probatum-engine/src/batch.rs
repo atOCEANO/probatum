@@ -7,7 +7,7 @@
 
 use rayon::prelude::*;
 
-use emsl_core::State;
+use probatum_core::State;
 
 use crate::candles::Candles;
 use crate::engine::{Engine, EngineConfig};
@@ -204,7 +204,7 @@ mod tests {
     use super::EnvBatch;
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig};
-    use emsl_core::{Candle, Market, State};
+    use probatum_core::{Candle, Market, State};
     use proptest::prelude::*;
 
     fn series() -> Candles {

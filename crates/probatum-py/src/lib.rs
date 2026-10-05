@@ -1,5 +1,5 @@
-//! emsl-py: the PyO3 binding layer, compiled to the `emsl._emsl` extension. This
-//! is the only Python-linked crate, and it is a thin shell over `bar-engine`: it
+//! probatum-py: the PyO3 binding layer, compiled to the `emsl._emsl` extension. This
+//! is the only Python-linked crate, and it is a thin shell over `probatum-engine`: it
 //! parses arguments, copies the candles once from a numpy array into the
 //! Rust-owned series, and hands `State` back as a plain dict. No simulation logic
 //! lives here.
@@ -19,9 +19,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use bar_engine::{Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
-use emsl_core::candle::floats;
-use emsl_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
+use probatum_core::candle::floats;
+use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
+use probatum_engine::{Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 
 /// Parse a market string into the core enum, case-insensitively.
 fn parse_market(market: &str) -> PyResult<Market> {
@@ -373,7 +373,7 @@ fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyD
 /// engine's immutable candle buffer. `container` (the engine pyobject, which owns
 /// the `Arc`) becomes the array's base so the data outlives the view, and the array
 /// is made read-only because the buffer is shared across envs. Both `observation`
-/// and `data` go through it, and the floats come from emsl-core's `floats`, the
+/// and `data` go through it, and the floats come from probatum-core's `floats`, the
 /// library's one reinterpretation of candle memory (ADR 0040).
 fn candle_view<'py>(window: &[Candle], container: Bound<'py, PyAny>) -> Bound<'py, PyArray2<f64>> {
     let rows = window.len();

@@ -31,7 +31,7 @@ sb3 = ["stable-baselines3>=2.0"]
 Repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
 
 [tool.maturin]
-manifest-path = "crates/emsl-py/Cargo.toml"
+manifest-path = "crates/probatum-py/Cargo.toml"
 python-source = "python"
 module-name = "emsl._emsl"
 features = ["pyo3/extension-module"]

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use emsl_core::Candle;
+use probatum_core::Candle;
 
 /// An immutable OHLCV series shared cheaply across envs.
 #[derive(Clone, Debug)]
@@ -52,7 +52,7 @@ impl Candles {
 #[cfg(test)]
 mod tests {
     use super::Candles;
-    use emsl_core::Candle;
+    use probatum_core::Candle;
 
     fn series(n: usize) -> Candles {
         let bars: Vec<Candle> = (0..n)

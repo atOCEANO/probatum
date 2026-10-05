@@ -1,14 +1,14 @@
 //! Throughput benchmarks for the bar engine. Two paths are measured over a
 //! synthetic series: a single `Engine::step` loop, the pure-Rust hot path with no
 //! Python boundary, and `EnvBatch::step_all` across many envs, the batched path
-//! the RL throughput rests on. Run with `cargo bench -p bar-engine`. The figures
+//! the RL throughput rests on. Run with `cargo bench -p probatum-engine`. The figures
 //! it prints are the only evidence any speed claim in the docs may cite.
 
 use std::hint::black_box;
 
-use bar_engine::{Candles, Engine, EngineConfig, EnvBatch};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use emsl_core::{Candle, Market};
+use probatum_core::{Candle, Market};
+use probatum_engine::{Candles, Engine, EngineConfig, EnvBatch};
 
 const BARS: usize = 1_000;
 

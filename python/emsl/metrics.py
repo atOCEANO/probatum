@@ -582,7 +582,7 @@ def _closes(frame):
     return data[:, 3]
 
 
-# where an annualized growth rate saturates, mirroring bar-engine/src/stats.rs:
+# where an annualized growth rate saturates, mirroring probatum-engine/src/stats.rs:
 # on minute candles the exponent leaves the float range and CAGR escapes to
 # infinity, which is a meaning ADR 0030 reserves for something else (ADR 0030)
 _CAGR_CEILING = 1e12
@@ -633,7 +633,7 @@ def segment(result, start=0, stop=None):
 
 
 def _stats(series, trades, ppy, rate):
-    # the engine's own arithmetic, from bar-engine/src/stats.rs, over an equity
+    # the engine's own arithmetic, from probatum-engine/src/stats.rs, over an equity
     # path that already includes the balance it started from. Every convention is
     # ADR 0030's: sample deviation under sharpe, population under sortino's
     # downside, drawdown capped at a total loss, trade metrics net of the fee

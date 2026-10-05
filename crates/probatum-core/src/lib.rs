@@ -1,4 +1,4 @@
-//! emsl-core: fidelity-neutral primitives for the market simulation engine.
+//! probatum-core: fidelity-neutral primitives for the market simulation engine.
 //!
 //! Pure Rust: no candle series, no Python, no parallelism. These primitives are
 //! the reuse seam shared across fidelity tiers (the bar engine here, a future

@@ -351,7 +351,7 @@ Throughput depends on which path you drive, and they differ by orders of magnitu
 
 The single-env rows say something worth internalizing: the engine steps at about 358K per second with nothing attached, and a strategy that recomputes indicators with numpy on every bar drops that to about 77K, so a single backtest is bound by your own per-bar code, not by emsl. Vectorize the indicators once and the rate climbs back toward the engine. The batched RL step releases the GIL and moves every env together, bound by building the observation rather than by the fill. A parameter search scales the other way, across processes rather than per bar, so its rate is trials per second and it grows with the cores you give it.
 
-These move with hardware and workload, so treat them as shape, not a promise. Run `benchmarks/throughput.py` for your own machine, and the Criterion bench in `crates/bar-engine/benches` for the pure-Rust step and the in-core sweep.
+These move with hardware and workload, so treat them as shape, not a promise. Run `benchmarks/throughput.py` for your own machine, and the Criterion bench in `crates/probatum-engine/benches` for the pure-Rust step and the in-core sweep.
 
 <br>
 <br>
@@ -450,7 +450,7 @@ pip install dist/*.whl
 The pure-Rust crates validate locally with cargo; the Python surface validates on a Docker gate that builds the one abi3 wheel and runs the test suite across Python 3.13 and 3.14. The riskiest code is adversarially verified, a process that has caught real bugs before they shipped; the full workflow is in the [Validation Guide](.Documentation/Validation_Guide.md).
 
 ```bash
-cargo test -p emsl-core -p bar-engine     # pure-Rust core
+cargo test -p probatum-core -p probatum-engine    # pure-Rust core
 cargo clippy --workspace --all-targets -- -D warnings
-docker build --target test313 .           # wheel + pytest on Python 3.13
+docker build --target test313 .                   # wheel + pytest on Python 3.13
 ```

@@ -31,7 +31,7 @@ RUN maturin build --release --locked --out /wheels
 # The pure-Rust half of CI. rust-toolchain.toml pins only the channel, so the two
 # components are added here; declaring them in that file makes rustup install them
 # into an already-provisioned toolchain, which conflicts on some CI runners. The
-# base carries Python because clippy over emsl-py needs an interpreter for pyo3's
+# base carries Python because clippy over probatum-py needs an interpreter for pyo3's
 # build config.
 FROM python:3.13-slim AS rust-checks
 RUN apt-get update \
@@ -45,7 +45,7 @@ WORKDIR /src
 COPY . .
 RUN cargo fmt --all --check \
     && cargo clippy --locked --workspace --all-targets -- -D warnings \
-    && cargo test --locked -p emsl-core -p bar-engine
+    && cargo test --locked -p probatum-core -p probatum-engine
 
 FROM python:3.13-slim AS test313
 COPY --from=builder /wheels /wheels
@@ -243,7 +243,7 @@ RUN PIP_CONSTRAINT=/constraints.txt pip install --no-cache-dir /sdist/*.tar.gz \
 # CI runs it on the lines each push changes, where a missed mutant fails the job.
 FROM rust-checks AS mutants
 RUN cargo install --locked cargo-mutants --version 27.1.0
-CMD ["cargo", "mutants", "--package", "emsl-core", "--package", "bar-engine", "--jobs", "4"]
+CMD ["cargo", "mutants", "--package", "probatum-core", "--package", "probatum-engine", "--jobs", "4"]
 
 # Instruction counts for the step loop under Valgrind. A count does not depend on
 # the machine the way a timing does, so CI compares it with the commit before and
@@ -261,7 +261,7 @@ RUN cargo install --locked gungraun-runner --version 0.20.0
 ENV GUNGRAUN_ALLOW_ASLR=yes
 WORKDIR /src
 COPY . .
-RUN cargo bench --locked -p bar-engine --bench step_instructions
+RUN cargo bench --locked -p probatum-engine --bench step_instructions
 
 # Miri runs the candle tests in an interpreter that reports undefined behaviour,
 # which checks the library's one reinterpretation of memory, the floats behind
@@ -279,4 +279,4 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo +nightly-2026-10-01 miri setup
 WORKDIR /src
 COPY . .
-RUN cargo +nightly-2026-10-01 miri test --locked -p emsl-core candle::
+RUN cargo +nightly-2026-10-01 miri test --locked -p probatum-core candle::

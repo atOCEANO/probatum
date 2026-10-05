@@ -3,7 +3,7 @@
 //! classic backtester), distinct from the own-the-loop and RL paths where the
 //! caller drives the engine.
 
-use emsl_core::State;
+use probatum_core::State;
 
 use crate::engine::Engine;
 
@@ -38,7 +38,7 @@ mod tests {
     use super::{run, Strategy};
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig};
-    use emsl_core::{Candle, Market, State};
+    use probatum_core::{Candle, Market, State};
 
     fn series() -> Candles {
         Candles::new(vec![

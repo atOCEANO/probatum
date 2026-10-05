@@ -21,11 +21,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.13" # pyo3 builds emsl-py against an interpreter at the floor
+          python-version: "3.13" # pyo3 builds probatum-py against an interpreter at the floor
       - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
         with:
           components: rustfmt, clippy
-      - run: cargo test --locked -p emsl-core -p bar-engine
+      - run: cargo test --locked -p probatum-core -p probatum-engine
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
@@ -93,7 +93,7 @@ jobs:
       - run: cargo install --locked cargo-mutants --version 27.1.0
       - run: git diff "$BASE" HEAD > changes.diff || true > changes.diff
       - run: |
-          cargo mutants --package emsl-core --package bar-engine \
+          cargo mutants --package probatum-core --package probatum-engine \
             --in-diff changes.diff --jobs 4
 
   instructions:
@@ -110,11 +110,11 @@ jobs:
       - run: cargo install --locked gungraun-runner --version 0.20.0
       - run: |
           if git checkout --quiet "$BASE" 2>/dev/null \
-              && [ -f crates/bar-engine/benches/step_instructions.rs ]; then
-            cargo bench --locked -p bar-engine --bench step_instructions \
+              && [ -f crates/probatum-engine/benches/step_instructions.rs ]; then
+            cargo bench --locked -p probatum-engine --bench step_instructions \
               -- --save-baseline=base
           fi
           git checkout --quiet "$GITHUB_SHA"
       - run: |
-          cargo bench --locked -p bar-engine --bench step_instructions \
+          cargo bench --locked -p probatum-engine --bench step_instructions \
             -- --baseline=base --callgrind-limits='ir=10%'

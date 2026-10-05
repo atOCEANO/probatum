@@ -3,7 +3,7 @@
 //! RL hot path allocates nothing; the backtester turns it on. Stats are derived
 //! from these later.
 
-use emsl_core::Side;
+use probatum_core::Side;
 
 use crate::stats::Stats;
 
@@ -119,7 +119,7 @@ impl Reporter {
 #[cfg(test)]
 mod tests {
     use super::{Reporter, Trade};
-    use emsl_core::Side;
+    use probatum_core::Side;
 
     fn a_trade() -> Trade {
         Trade {

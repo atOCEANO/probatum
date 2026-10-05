@@ -1,5 +1,5 @@
 [package]
-name = "emsl-py"
+name = "probatum-py"
 description = "PyO3 bindings for the emsl bar-level market simulator, compiled to the emsl._emsl extension module."
 version.workspace = true
 edition.workspace = true
@@ -13,5 +13,5 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { workspace = true, features = ["abi3-py313", "extension-module"] }
 numpy = { workspace = true }
-emsl-core = { path = "../emsl-core" }
-bar-engine = { path = "../bar-engine" }
+probatum-core = { path = "../probatum-core" }
+probatum-engine = { path = "../probatum-engine" }

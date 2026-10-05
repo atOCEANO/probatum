@@ -11,7 +11,7 @@
 
 use rayon::prelude::*;
 
-use emsl_core::State;
+use probatum_core::State;
 
 use crate::candles::Candles;
 use crate::engine::{Engine, EngineConfig};
@@ -113,7 +113,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig};
     use crate::strategy::run;
-    use emsl_core::{Candle, Market};
+    use probatum_core::{Candle, Market};
 
     fn rising(n: usize) -> Candles {
         let bars: Vec<Candle> = (0..n)
