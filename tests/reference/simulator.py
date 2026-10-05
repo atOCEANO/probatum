@@ -19,10 +19,10 @@ budget, the spread, slippage, impact, sizes and dust), fees, funding, the spot a
 margin wallets with transfers, the margin cap with leverage tiers, maintenance
 tiers, the liquidation path with its trigger, close and clip points, the
 liquidation rule, takeover and book then backstop, the margin bound, exits held
-on a liquidating bar, listing and delisting, round trips and the ledger. The other
-legs at a fill's fraction for the cap and the margin bound, the optimistic corners
-of several instruments, a flip's old side on the check and inverse contracts are
-not here.
+on a liquidating bar, inverse contracts settled in their coin, listing and
+delisting, round trips and the ledger. The other legs at a fill's fraction for the
+cap and the margin bound, the optimistic corners of several instruments and a
+flip's old side on the check are not here.
 """
 
 import collections
@@ -57,18 +57,27 @@ def first_zero(f, lo=0.0, hi=1.0):
 
 class Instrument:
 
-    def __init__(self, name, kind="linear", lot=0.0, tick=0.0, sigfigs=None,
-                 decimals=None, min_notional=0.0, max_qty=math.inf,
+    def __init__(self, name, kind="linear", contract=None, lot=0.0, tick=0.0,
+                 sigfigs=None, decimals=None, min_notional=0.0, max_qty=math.inf,
                  reduce_only_exempt=False, tiers=None, tiers_by="notional",
                  delist=None):
-        if kind not in ("spot", "linear"):
-            raise ValueError(f"kind: {kind!r} is not modelled; use spot or linear")
+        if kind not in ("spot", "linear", "inverse"):
+            raise ValueError(f"kind: {kind!r} is not modelled; use spot, linear or "
+                             f"inverse")
+
+        if (kind == "inverse") != (contract is not None):
+            raise ValueError(f"contract: {contract!r}; an inverse instrument takes "
+                             f"the dollars a contract is worth, and no other does")
+
+        if kind == "inverse" and not float(contract) > 0.0:
+            raise ValueError(f"contract: {contract!r} is not a positive value")
 
         if tiers_by not in ("notional", "quantity"):
             raise ValueError(f"tiers_by: {tiers_by!r}; use notional or quantity")
 
         self.name               = name
         self.kind               = kind
+        self.contract           = None if contract is None else float(contract)
         self.lot                = float(lot)
         self.tick               = float(tick)
         self.sigfigs            = sigfigs   # Hyperliquid's rule: significant figures,
@@ -100,6 +109,41 @@ class Instrument:
                                      f"continuity needs {wanted}")
 
             previous = tier
+
+
+    # Inverse contracts: every quantity the account counts, for either kind, in the
+    # currency the account is kept in
+
+    def notional(self, q, p):
+        """A position's notional, signed: `q * p`, or `q * V / p` for an inverse
+        contract."""
+        return q * self.contract / p if self.kind == "inverse" else q * p
+
+
+    def profit(self, q, e, p):
+        """The profit from `e` to `p`: `q * (p - e)`, or `u * (1 / e - 1 / p)`."""
+        if q == 0.0:
+            return 0.0
+
+        if self.kind == "inverse":
+            return q * self.contract * (1.0 / e - 1.0 / p)
+        return q * (p - e)
+
+
+    def average(self, size, entry, added, p):
+        """The average entry once `added` joins `size` at `entry`: weighted by size, or
+        the harmonic mean weighted by contracts."""
+        if size == 0.0:
+            return p
+
+        if self.kind == "inverse":
+            return (size + added) / (size / entry + added / p)
+        return (entry * size + p * added) / (size + added)
+
+
+    def units(self, amount, p):
+        """The size a value order of `amount` fills at `p`."""
+        return amount / self.contract if self.kind == "inverse" else amount / p
 
 
 class Venue:
@@ -196,41 +240,52 @@ class Trip:
     returns it to zero or flips it (Accounting, Round trips)."""
 
 
-    def __init__(self, instrument, side, bar, time):
+    def __init__(self, instrument, inst, side, bar, time):
         self.instrument = instrument
+        self.inst       = inst
         self.side       = side
         self.open_bar   = bar
         self.open_time  = time
 
-        self.close_bar    = None
-        self.close_time   = None
-        self.size         = 0.0
-        self.opened       = 0.0
-        self.opened_value = 0.0
-        self.closed       = 0.0
-        self.closed_value = 0.0
-        self.realized     = 0.0
-        self.fees         = 0.0
-        self.funding      = 0.0
-        self.reason       = None
+        self.close_bar  = None
+        self.close_time = None
+        self.size       = 0.0
+        self.opened     = 0.0
+        self.entry      = 0.0
+        self.closed     = 0.0
+        self.exit       = 0.0
+        self.realized   = 0.0
+        self.fees       = 0.0
+        self.funding    = 0.0
+        self.reason     = None
+
+
+    def open(self, size, price):
+        self.entry = self.inst.average(self.opened, self.entry, size, price)
+        self.opened += size
+
+
+    def close(self, size, price):
+        self.exit = self.inst.average(self.closed, self.exit, size, price)
+        self.closed += size
 
 
     def report(self, mark=None, entry=None, held=0.0):
         """The round trip's row. An open one is marked at the last close."""
-        entry_price = self.opened_value / self.opened
-        exit_price  = self.closed_value / self.closed if self.closed > 0.0 else math.nan
-        unrealized  = 0.0
+        unrealized = 0.0
         if self.close_bar is None and mark is not None:
-            unrealized = held * (mark - entry)
+            unrealized = self.inst.profit(held, entry, mark)
 
         pnl = self.realized + unrealized - self.fees - self.funding
+
         return dict(
             instrument=self.instrument, side=self.side, size=self.size,
-            entry=entry_price, exit=exit_price,
+            entry=self.entry, exit=self.exit if self.closed > 0.0 else math.nan,
             open_bar=self.open_bar, close_bar=self.close_bar,
             open_time=self.open_time, close_time=self.close_time,
-            pnl=pnl, ret=pnl / (self.size * entry_price), fees=self.fees,
-            funding=self.funding, reason=self.reason, open=self.close_bar is None,
+            pnl=pnl, ret=pnl / abs(self.inst.notional(self.size, self.entry)),
+            fees=self.fees, funding=self.funding, reason=self.reason,
+            open=self.close_bar is None,
         )
 
 
@@ -260,7 +315,11 @@ class Simulator:
 
         # Wallets: a number funds the one wallet a universe of one kind uses, and
         # a universe holding both kinds names each
-        kinds   = {inst.kind for inst in self.instruments}
+        kinds = {inst.kind for inst in self.instruments}
+        if "inverse" in kinds and n > 1:
+            raise ValueError("instruments: an inverse account holds its one perpetual "
+                             "alone, since it settles in that perpetual's coin")
+
         balance = self.venue.balance
         if isinstance(balance, dict):
             self.spot_cash   = float(balance.get("spot", 0.0))
@@ -328,9 +387,9 @@ class Simulator:
             if self.position[i] == 0.0:
                 continue
             if inst.kind == "spot":
-                spot += self.position[i] * self.mark[i]
+                spot += inst.notional(self.position[i], self.mark[i])
             else:
-                margin += self.position[i] * (self.mark[i] - self.entry[i])
+                margin += inst.profit(self.position[i], self.entry[i], self.mark[i])
 
         return spot, margin
 
@@ -384,9 +443,10 @@ class Simulator:
                 continue
 
             price    = self.mark[i] if prices is None else prices.get(i, self.mark[i])
-            leverage = self.leverage_of(i, size, size * price)
+            notional = abs(self.instruments[i].notional(size, price))
+            leverage = self.leverage_of(i, size, notional)
             if leverage > 0.0:
-                total += size * price / leverage
+                total += notional / leverage
 
         return total
 
@@ -397,7 +457,8 @@ class Simulator:
         for i in self.perps():
             if self.position[i] != 0.0:
                 price = self.mark[i] if prices is None else prices.get(i, self.mark[i])
-                equity += self.position[i] * (price - self.entry[i])
+                equity += self.instruments[i].profit(self.position[i], self.entry[i],
+                                                     price)
 
         return equity
 
@@ -434,17 +495,23 @@ class Simulator:
 
         spot, margin = self.wallet_equity()
         equity = spot + margin
-        out    = dict(time=self.times[t], equity=equity, spot_cash=self.spot_cash,
-                      margin_cash=self.margin_cash, terminal=equity <= 0.0,
-                      liquidations=self.liquidations, instruments=[], **costs)
 
-        for i in range(len(self.instruments)):
+        # Inverse contracts: an inverse account's equity is in its coin, and valued in
+        # dollars at the close beside it
+        inverse = self.instruments[0].kind == "inverse"
+        out     = dict(time=self.times[t], equity=equity, spot_cash=self.spot_cash,
+                       margin_cash=self.margin_cash, terminal=equity <= 0.0,
+                       equity_in_quote=equity * self.mark[0] if inverse else equity,
+                       liquidations=self.liquidations, instruments=[], **costs)
+
+        for i, inst in enumerate(self.instruments):
             q, mark = self.position[i], self.mark[i]
+            held     = q != 0.0
+            exposure = inst.notional(q, mark) if held else 0.0
             out["instruments"].append(dict(
-                position=q, entry=self.entry[i], mark=mark,
-                notional=abs(q) * mark if q != 0.0 else 0.0,
-                upnl=q * (mark - self.entry[i]) if q != 0.0 else 0.0,
-                weight=q * mark / equity if q != 0.0 and equity > 0.0 else 0.0,
+                position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
+                upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
+                weight=exposure / equity if held and equity > 0.0 else 0.0,
             ))
 
         return out
@@ -549,7 +616,7 @@ class Simulator:
 
         order["size"] = rounded
         exempt = order["reduce_only"] and inst.reduce_only_exempt
-        if rounded * self.mark[i] < inst.min_notional and not exempt:
+        if abs(inst.notional(rounded, self.mark[i])) < inst.min_notional and not exempt:
             return (f"size: {rounded} is below the minimum notional of "
                     f"{inst.min_notional}")
 
@@ -815,11 +882,14 @@ class Simulator:
                 raise ValueError(f"weights: {weight} for {inst.name}, which cannot be "
                                  f"short; trade a perpetual instead")
 
+            # the wanted position is the one whose notional at the close is the
+            # weight's share of equity: base units, or contracts on an inverse
             close = self.mark[i]
-            leg   = weight * equity / close - self.position[i]
+            unit  = inst.notional(1.0, close)
+            leg   = weight * equity / unit - self.position[i]
             if inst.lot > 0.0:
                 leg = math.trunc(round(leg / inst.lot, 9)) * inst.lot
-            if abs(leg) * close < tolerance * equity or abs(leg) <= DUST:
+            if abs(leg) * unit < tolerance * equity or abs(leg) <= DUST:
                 continue
 
             q = self.position[i]
@@ -833,7 +903,7 @@ class Simulator:
                 grow = leg
 
             # a growing leg below the minimum notional is skipped
-            small = self.venue.sizes and abs(grow) * close < inst.min_notional
+            small = self.venue.sizes and abs(grow) * unit < inst.min_notional
             if grow != 0.0 and not small:
                 growing.append((i, grow))
 
@@ -850,6 +920,10 @@ class Simulator:
         """Wallets: applied at the start of the next bar, before any fill."""
         if to not in ("spot", "margin"):
             raise ValueError(f"to: {to!r} is not a wallet; use spot or margin")
+
+        if self.instruments[0].kind == "inverse":
+            raise ValueError("transfer: an inverse account has one wallet, in its "
+                             "coin, and nothing to transfer to")
 
         self.transfers.append(dict(amount=float(amount), to=to))
 
@@ -990,8 +1064,9 @@ class Simulator:
 
 
     def funding_due(self, events, t, at_close):
-        """Funding, The charge: q * p * r for each perpetual held, at the close of the
-        row that owns the event, or at the last mark where there is none."""
+        """Funding, The charge: the signed notional times the rate for each perpetual
+        held, `q * p * r` or `u / p * r`, at the close of the row that owns the event,
+        or at the last mark where there is none."""
         due = []
         for _, instrument, rate, inside in events:
             held = self.perps() if instrument is None else [instrument]
@@ -1002,7 +1077,7 @@ class Simulator:
 
                 bar   = self.bars[t][i]
                 price = bar.close if at_close and bar is not None else self.mark[i]
-                due.append((i, q * price * rate, inside))
+                due.append((i, self.instruments[i].notional(q, price) * rate, inside))
 
         return due
 
@@ -1027,10 +1102,11 @@ class Simulator:
         notionals = collections.defaultdict(float)
 
         for leg in piece:
+            inst  = self.instruments[leg.instrument]
             price = leg.start + s * (leg.end - leg.start)
-            equity += leg.q * (price - leg.entry)
+            equity += inst.profit(leg.q, leg.entry, price)
             sizes[leg.instrument] += abs(leg.q)
-            notionals[leg.instrument] += abs(leg.q) * price
+            notionals[leg.instrument] += abs(inst.notional(leg.q, price))
 
         requirement = sum(self.maintenance_of(i, sizes[i], notionals[i]) for i in sizes)
         return equity, requirement, sum(notionals.values())
@@ -1040,8 +1116,8 @@ class Simulator:
         """Liquidation, The trigger, close and clip points: the first point on the
         path where margin equity falls to `share` of the requirement, and the point
         the account leaves the market. Both are found by bisection: on a piece, equity
-        less the requirement is concave and the close level linear, so each crosses
-        once."""
+        less the requirement is concave for linear legs, and both it and the close
+        level are monotone for an inverse account's one leg, so each crosses once."""
         maintained = any(self.has_maintenance(leg.instrument)
                          for piece in path for leg in piece)
         fee = self.venue.taker if maintained else self.venue.liquidation_fee
@@ -1274,8 +1350,11 @@ class Simulator:
                 sold, costs = self.taker_price(i, side, price, abs(q), self.bars[t][i])
                 sales.append((i, q, sold, costs))
 
-            paid = sum(abs(q) * (abs(sold - price) + sold * self.venue.taker)
-                       for (i, q, price), (_, _, sold, _) in zip(closes, sales))
+            paid = 0.0
+            for (i, q, price), (_, _, sold, _) in zip(closes, sales):
+                inst = self.instruments[i]
+                paid += abs(inst.profit(q, price, sold))
+                paid += abs(inst.notional(q, sold)) * self.venue.taker
 
             k, s = trigger
             equity, requirement, _ = self.state_at(path[k], wallet, s)
@@ -1283,7 +1362,7 @@ class Simulator:
             if not reached and equity - paid >= share * requirement:
                 for i, q, sold, costs in sales:
                     side = "sell" if q > 0.0 else "buy"
-                    self.book(abs(q), costs)
+                    self.book(i, abs(q), sold, costs)
                     self.apply(i, side, abs(q), sold, self.venue.taker, True, None,
                                "liquidation", reference=costs["reference"],
                                costs=costs)
@@ -1392,17 +1471,18 @@ class Simulator:
         return price, costs
 
 
-    def book(self, size, costs):
-        """What a run records: a fill's costs are what it paid beyond its reference,
-        so a price the bar's range held back pays each of them in proportion."""
+    def book(self, i, size, price, costs):
+        """What a run records: a fill's costs are what it paid beyond its reference, in
+        the account's currency, and its spread, slippage and impact share that in
+        proportion to their parts of the price, so a price the bar's range held back
+        pays each of them in proportion too."""
         computed = costs["spread"] + costs["slippage"] + costs["impact"]
         if computed <= 0.0:
             return
 
-        paid = (computed - abs(costs["adjustment"])) / computed
-        self.costs["spread"] += size * costs["spread"] * paid
-        self.costs["slippage"] += size * costs["slippage"] * paid
-        self.costs["impact"] += size * costs["impact"] * paid
+        paid = abs(self.instruments[i].profit(size, costs["reference"], price))
+        for name in ("spread", "slippage", "impact"):
+            self.costs[name] += paid * costs[name] / computed
 
 
     def fill_market_orders(self, t):
@@ -1415,16 +1495,17 @@ class Simulator:
                 continue
 
             side   = order["side"]
+            inst   = self.instruments[i]
             budget = self.budget_left.get(i, 0.0)
             if order["value"] is not None:
-                wanted = order["value"] / bar.open
+                wanted = inst.units(order["value"], bar.open)
             else:
                 wanted = order["size"] - order["filled"]
 
             allowed = min(wanted, budget)
             price, costs = self.taker_price(i, side, bar.open, allowed, bar)
             if order["value"] is not None:
-                wanted  = order["value"] / price
+                wanted  = inst.units(order["value"], price)
                 allowed = min(wanted, budget)
 
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
@@ -1442,7 +1523,7 @@ class Simulator:
                          size=size)
 
             self.budget_left[i] = budget - size
-            self.book(size, costs)
+            self.book(i, size, price, costs)
             price, costs = self.bound(i, side, size, price, bar, self.venue.taker,
                                       costs)
             self.apply(i, side, size, price, self.venue.taker, True, order,
@@ -1572,7 +1653,7 @@ class Simulator:
                          size=size)
 
             self.budget_left[i] = budget - size
-            self.book(size, costs)
+            self.book(i, size, price, costs)
             price, costs = self.bound(i, side, size, price, bar, rate, costs)
             reason = order["leg"] or order["reason"]
             self.apply(i, side, size, price, rate, taker, order, reason,
@@ -1610,7 +1691,9 @@ class Simulator:
             reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
             if not reduces:
                 return None
-            return (price - self.entry[i]) * (1.0 if q > 0.0 else -1.0)
+
+            return self.instruments[i].profit(1.0 if q > 0.0 else -1.0, self.entry[i],
+                                              price)
 
         reverse = self.venue.intrabar == "optimistic"
         out     = list(offers)
@@ -1674,9 +1757,10 @@ class Simulator:
         limit = growing
         inst  = self.instruments[i]
         if inst.tiers:
-            last  = inst.tiers[-1].up_to
-            room  = last / price if inst.tiers_by == "notional" else last
-            limit = min(limit, max(room - base, 0.0))
+            last = inst.tiers[-1].up_to
+            if inst.tiers_by == "notional":
+                last /= abs(inst.notional(1.0, price))
+            limit = min(limit, max(last - base, 0.0))
 
         if need(limit) <= equity:
             return reducing + limit
@@ -1693,27 +1777,36 @@ class Simulator:
         fee it moves, is paid into the wallet; both are a negative liquidation charge,
         and the fill log records the lift."""
         q       = self.position[i]
+        inst    = self.instruments[i]
         reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
-        if self.instruments[i].kind == "spot" or not reduces:
+        if inst.kind == "spot" or not reduces:
             return price, costs
 
         closed     = min(size, abs(q))
+        part       = math.copysign(closed, q)    # what the fill closes, signed
         maintained = self.account_maintained()
         fee        = self.venue.taker if maintained else self.venue.liquidation_fee
 
+        def own_fee(p):
+            return abs(inst.notional(closed, p)) * rate
+
+        def kept(p):
+            """What closing that part at `p` realizes, net of the fill's own fee."""
+            return inst.profit(part, self.entry[i], p) - own_fee(p)
+
         def level(p):
-            rest = sum(abs(self.position[j]) * self.mark[j] for j in self.perps()
-                       if j != i) + (abs(q) - closed) * p
-            return self.margin_equity({i: p}) - rate * closed * p - fee * rest
+            rest = sum(abs(self.instruments[j].notional(self.position[j], self.mark[j]))
+                       for j in self.perps() if j != i)
+            rest += abs(inst.notional(abs(q) - closed, p))
+            return self.margin_equity({i: p}) - own_fee(p) - fee * rest
 
         if level(price) >= 0.0:
             return price, costs
 
         up   = 1.0 if q > 0.0 else -1.0
-        span = abs(price)
-        while level(price + up * span) < 0.0 and span < 1e12:
+        span = price                 # a purchase is lowered toward zero, never past it
+        while up > 0.0 and level(price + span) < 0.0 and span < 1e12:
             span *= 2.0
-
         star = price + up * first_zero(lambda d: -level(price + up * d), 0.0, span)
         if q > 0.0:
             goal   = min(star, self.entry[i])
@@ -1722,11 +1815,9 @@ class Simulator:
             goal   = max(star, self.entry[i])
             lifted = min(price, max(goal, bar.low))
 
-        # a sale lifted by d takes d more and pays d * rate more in fee; a purchase
-        # lowered by d pays d less and d * rate less in fee
-        credit = max(up * (goal - lifted), 0.0) * closed * (1.0 - up * rate)
+        credit = max(kept(goal) - kept(lifted), 0.0)
         self.margin_cash += credit
-        self.costs["liquidation"] -= abs(lifted - price) * size + credit
+        self.costs["liquidation"] -= abs(inst.profit(size, price, lifted)) + credit
         return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price)
 
 
@@ -1742,9 +1833,9 @@ class Simulator:
                 continue
 
             if inst.kind == "spot":
-                value = q * self.mark[i]
+                value = inst.notional(q, self.mark[i])
             else:
-                value = q * (self.mark[i] - self.entry[i])
+                value = inst.profit(q, self.entry[i], self.mark[i])
 
             self.costs["dust"] += value
             self.position[i], self.entry[i] = 0.0, 0.0
@@ -1761,21 +1852,21 @@ class Simulator:
               costs=None):
         """Accounting: a fill's fee, its cash, its position and its round trip."""
         t     = self.t
+        inst  = self.instruments[i]
         costs = costs or dict(spread=0.0, slippage=0.0, impact=0.0, adjustment=0.0)
-        fee   = size * price * rate
+        fee   = abs(inst.notional(size, price)) * rate
         self.costs["fees"] += fee
 
-        signed    = size if side == "buy" else -size
-        before    = self.position[i]
-        closed    = min(size, abs(before)) if before * signed < 0.0 else 0.0
-        opened    = size - closed
-        direction = 1.0 if before > 0.0 else -1.0
-        realized  = closed * (price - self.entry[i]) * direction
+        signed   = size if side == "buy" else -size
+        before   = self.position[i]
+        closed   = min(size, abs(before)) if before * signed < 0.0 else 0.0
+        opened   = size - closed
+        realized = inst.profit(math.copysign(closed, before), self.entry[i], price)
 
         # Accounting, Positions: on spot the notional itself changes hands, on a
         # perpetual only the realized PnL and the fee move the margin wallet
-        if self.instruments[i].kind == "spot":
-            self.spot_cash -= signed * price + fee
+        if inst.kind == "spot":
+            self.spot_cash -= inst.notional(signed, price) + fee
         else:
             self.margin_cash += realized - fee
 
@@ -1785,8 +1876,7 @@ class Simulator:
 
         if closed > 0.0:
             trip = self.trip[i]
-            trip.closed += closed
-            trip.closed_value += closed * price
+            trip.close(closed, price)
             trip.realized += realized
             trip.fees += fee * closed / size
             if after == 0.0 or after * before < 0.0:
@@ -1799,15 +1889,14 @@ class Simulator:
         elif before == 0.0 or after * before < 0.0:
             self.entry[i] = price
         elif opened > 0.0:
-            self.entry[i] = (self.entry[i] * abs(before) + price * opened) / abs(after)
+            self.entry[i] = inst.average(abs(before), self.entry[i], opened, price)
 
         if opened > DUST and after != 0.0:
             if self.trip[i] is None:
-                self.trip[i] = Trip(i, "long" if after > 0.0 else "short", t,
+                self.trip[i] = Trip(i, inst, "long" if after > 0.0 else "short", t,
                                     self.times[t])
             trip = self.trip[i]
-            trip.opened += opened
-            trip.opened_value += opened * price
+            trip.open(opened, price)
             trip.fees += fee * opened / size
 
         if self.trip[i] is not None:

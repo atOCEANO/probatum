@@ -43,6 +43,19 @@ def half_a_bitcoin(later, script=None, tiers=None, times=None, interval=None,
                Venue(**settings), script=script, interval=interval, funding=events)
 
 
+def btcusd(later, script, balance, events=None, **venue):
+    """An inverse account on contracts of 100 dollars with a maintenance rate of
+    0.5%, no fees unless asked, on two rows at 60,000 and then the bars in
+    ``later``."""
+    bars     = [[flat(60_000.0)], [flat(60_000.0)]] + [[bar] for bar in later]
+    settings = dict(balance=balance, maker=0.0, taker=0.0)
+    settings.update(venue)
+    inverse = Instrument("BTCUSD", kind="inverse", contract=100.0, tiers=MAINTAINED)
+
+    return run(hourly(len(bars)), bars, [inverse], Venue(**settings), script=script,
+               funding=events)
+
+
 def test_hourly_bars_over_a_year_annualise_at_8760():
     assert periods_per_year(hourly(8_761)) == 8_760.0
 
@@ -96,6 +109,12 @@ def test_a_target_of_half_on_ten_thousand_buys_0_083_of_bitcoin():
     assert order["side"]   == "buy"
     assert order["size"]   == pytest.approx(0.083, abs=1e-12)
     assert sim.position[0] == pytest.approx(0.083, abs=1e-12)
+
+
+def test_one_coin_targeting_minus_one_of_an_inverse_perpetual_wants_600_contracts():
+    sim = btcusd([], {0: [("target", dict(weights=-1.0))]}, balance=1.0)
+
+    assert sim.position[0] == pytest.approx(-600.0, abs=1e-9)
 
 
 def test_a_flip_realizes_the_old_side_and_opens_the_rest_at_the_fill():
@@ -646,3 +665,67 @@ def test_a_sale_past_the_close_point_fills_at_95_and_books_0_45_back():
     assert sale["price"]                 == 95.0
     assert sim.ledger[-1]["liquidation"] == pytest.approx(-0.45, abs=0.005)
     assert sim.margin_cash               == pytest.approx(0.0, abs=1e-9)
+
+
+SHORT_ONE_COIN = {0: [("sell", dict(instrument=0, size=600.0))]}
+
+
+def test_a_coin_short_its_own_value_is_worth_60_000_dollars_at_every_price():
+    later = [flat(30_000.0), flat(120_000.0),
+             Bar(120_000.0, 600_000.0, 110_000.0, 500_000.0, 1_000.0)]
+
+    sim = btcusd(later, SHORT_ONE_COIN, balance=1.0)
+
+    for row in sim.ledger[2:]:
+        close = row["instruments"][0]["mark"]
+        assert row["equity"] == pytest.approx(60_000.0 / close, rel=1e-12)
+        assert row["equity_in_quote"] == pytest.approx(60_000.0, rel=1e-12)
+        assert sim.maintenance_of(0, 600.0, 60_000.0 / close) == pytest.approx(
+            300.0 / close, rel=1e-12)
+
+    assert sim.liquidations == 0
+
+
+def test_a_coin_short_its_own_value_collects_0_0001_bitcoin_a_funding_event():
+    sim = btcusd([flat(60_000.0)], SHORT_ONE_COIN, balance=1.0, funding="data",
+                 events=[(3 * HOUR, 0, 0.0001)])
+
+    assert sim.ledger[2]["funding"] == pytest.approx(-0.0001, rel=1e-12)
+    assert sim.margin_cash == pytest.approx(1.0001, rel=1e-12)
+
+
+def test_half_a_coin_long_600_contracts_from_60_000_is_liquidated_at_40_200():
+    sim = btcusd([Bar(41_000.0, 41_000.0, 40_000.0, 40_500.0, 1_000.0)],
+                 {0: [("buy", dict(instrument=0, size=600.0))]}, balance=0.5)
+
+    close = sim.fills[-1]
+    assert close["reason"]               == "liquidation"
+    assert close["price"]                == pytest.approx(40_200.0, abs=0.005)
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(0.0074627, abs=5e-8)
+    assert 300.0 / 40_200.0              == pytest.approx(0.0074627, abs=5e-8)
+
+
+def test_two_buys_of_300_contracts_average_48_000_and_gain_0_05_at_50_000():
+    later = [flat(40_000.0), flat(50_000.0)]
+    sim   = btcusd(later, {
+        0: [("buy", dict(instrument=0, size=300.0))],
+        1: [("buy", dict(instrument=0, size=300.0))],
+    }, balance=1.0)
+
+    row = sim.ledger[-1]["instruments"][0]
+    assert row["entry"] == pytest.approx(48_000.0, rel=1e-12)
+    assert row["upnl"]  == pytest.approx(0.05, rel=1e-12)
+
+    lots = [30_000.0 * (1.0 / f["price"] - 1.0 / 50_000.0) for f in sim.fills]
+    assert lots == pytest.approx([-0.10, 0.15], rel=1e-12)
+
+
+def test_a_value_order_buys_60_contracts_and_a_fee_is_paid_in_the_coin():
+    sim = btcusd([flat(50_000.0)], {0: [("buy", dict(instrument=0, size=600.0))],
+                                    1: [("buy_value", dict(instrument=0,
+                                                           amount=6_000.0))]},
+                 balance=1.0, taker=0.0005)
+
+    first, second = sim.fills
+    assert first["fee"]   == pytest.approx(0.0005, rel=1e-12)
+    assert second["size"] == pytest.approx(60.0, rel=1e-12)

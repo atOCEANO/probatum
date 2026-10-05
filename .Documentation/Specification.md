@@ -124,7 +124,7 @@ A bar gives four prices and no order between them. The venue's `intrabar` settin
 
 ### Units
 
-`buy(size)` and `sell(size)` take base units, or contracts on an inverse instrument. `buy_value(amount)` and `sell_value(amount)` take the quote currency, and the size such an order fills is its amount over its fill price, so it spends or raises that amount before its fee. `target(weights)` takes signed weights of account equity: `1.0` is fully long unlevered, `-0.5` half short.
+`buy(size)` and `sell(size)` take base units, or contracts on an inverse instrument. `buy_value(amount)` and `sell_value(amount)` take the quote currency, and the size such an order fills is its amount over its fill price, or over the contract's value on an inverse instrument, so it spends or raises that amount before its fee. `target(weights)` takes signed weights of account equity: `1.0` is fully long unlevered, `-0.5` half short.
 
 ### Target
 
@@ -496,15 +496,20 @@ An inverse perpetual is quoted in dollars and settled in its coin. A contract is
 | notional | `abs(q) * p` | `abs(u) / p` |
 | a fee at rate `f` | `abs(q) * p * f` | `abs(u) / p * f` |
 | a funding charge at rate `r` | `q * p * r` | `u / p * r` |
+| the average entry of fills `k` | `sum(q_k * p_k) / sum(q_k)` | `sum(n_k) / sum(n_k / p_k)` |
+| the size a value order of `A` fills | `A / p` | `A / V` contracts |
 
 - Every inverse quantity is linear in `1 / p`, so the tiers, the three points and the margin bound are solved as for linear contracts, in the reciprocal of the price, and each crossing is read back as a price. The tiers are by notional in the coin.
-- An inverse account holds one perpetual, its margin wallet holds the coin, and its path has one leg.
+- The average entry is the harmonic mean of the fill prices, weighted by contracts, which keeps a position's profit `u * (1 / e - 1 / p)` equal to the sum of its fills' profits.
+- What a fill paid beyond its reference is counted in the coin, `abs(u * (1 / ref - 1 / price))`, and its spread, slippage and impact share it in proportion to their parts of the price.
+- An inverse account holds one perpetual, its margin wallet holds the coin, it has no spot wallet to transfer to, and its path has one leg.
 - Results are in the coin. The ledger also values equity in dollars at each close, as `equity_in_quote`.
 - For one position in one tier, the trigger is `p = u * (1 + m) / (W + u / e + c)` for a long and `p = u * (1 - m) / (W + u / e + c)` for a short; with no maintenance the close point takes `f` in place of `m` and drops `c`.
 
 **Worked example.** Contracts of 100 dollars and a maintenance rate of 0.5%.
 - A wallet of 1 BTC with a short of 600 contracts from 60,000, which is 60,000 dollars, one coin's worth. Its equity is `1 - 60,000 * (1 / 60,000 - 1 / p) = 60,000 / p` coins, worth 60,000 dollars at every price, and its requirement, `300 / p`, is always below it, so it is never liquidated. At a rate of 0.01% and a price of 60,000 each funding event pays it 0.0001 BTC.
 - A wallet of 0.5 BTC with a long of 600 contracts from 60,000 has equity `1.5 - 60,000 / p` and requirement `300 / p`, so its trigger is `60,000 * 1.005 / 1.5 = 40,200`, where both are 0.0074627 BTC.
+- A buy of 300 contracts at 60,000 and another at 40,000 make a long of 600 with an average entry of `600 / (300 / 60,000 + 300 / 40,000) = 48,000`. At 50,000 its profit is `60,000 * (1 / 48,000 - 1 / 50,000) = 0.05` BTC, the sum of the fills' own, `-0.10 + 0.15`. A `buy_value(6,000)` buys 60 contracts at any price, and a taker fee of 0.05% on 600 contracts filled at 60,000 is `60,000 / 60,000 * 0.0005 = 0.0005` BTC.
 
 <br>
 <br>
