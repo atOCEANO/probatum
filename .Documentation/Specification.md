@@ -344,6 +344,10 @@ At an event with rate `r` and price `p`, the margin wallet falls by `q * p * r` 
 | `{"every_bars": n, "rate": r}` | at the close of bars `n`, `2n` and so on |
 | `"none"` | no events |
 
+An `every` or `every_bars` event is charged on every perpetual held, and a `data` event on its own instrument.
+
+**Worked example of the sources.** On hourly bars that begin at 00:00, `{"every": 8, "rate": r}` stamps events at 08:00, 16:00 and the next 00:00, each owned by the bar that ends there, and `{"every_bars": 3, "rate": r}` charges at the closes of rows 3, 6, 9 and on, counted from the first row as row 0. On daily bars, a long stopped out during a day pays nothing for that day's 08:00 event, which is charged on the position after the day's fills, and a long held through the day pays it at the day's close.
+
 **Worked example.** Hourly bars and 8-hour funding. An event stamped 08:00:00.003 is taken as 08:00 and belongs to the bar that opened at 07:00. At a rate of 0.01%, a long of 0.5 BTC and a close of 60,000, the long pays `0.0001 * 0.5 * 60,000 = 3.00`.
 
 **Worked example of the order.** A margin wallet of 10,000 USDT holds a long of 0.5 BTC from 60,000 at a maintenance rate of 0.5%, so its trigger is 40,201.01. The 07:00 bar falls to 40,210 and closes at 41,000, and the 08:00 event has a rate of 0.05%. The path never reaches the trigger, so the check passes; the debit of `0.0005 * 0.5 * 41,000 = 10.25` is then charged at the close, where equity is 489.75 against a requirement of 102.50, and the account survives. Counted toward the bar's low, the debit would have moved the trigger to 40,221.61 and liquidated the account on a payment it had not yet made.

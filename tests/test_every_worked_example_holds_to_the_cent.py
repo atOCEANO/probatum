@@ -368,3 +368,54 @@ def test_a_bar_that_carries_half_a_bitcoin_and_buys_a_tenth_gains_266_0815():
     assert row["slippage"] == pytest.approx(0.603, abs=1e-9)
     assert row["fees"]     == pytest.approx(3.0155, abs=5e-5)
     assert row["equity"] - sim.ledger[1]["equity"] == pytest.approx(266.0815, abs=5e-5)
+
+
+def test_a_stamp_three_milliseconds_after_8_is_charged_on_the_bar_that_ends_at_8():
+    sim = run(hourly(10), [[flat(60_000.0)] for _ in range(10)],
+              [Instrument("BTCUSDT")], Venue(funding="data"),
+              script={0: [("buy", dict(instrument=0, size=0.5))]},
+              funding=[(8 * HOUR + 3_000_000, 0, 0.0001)])
+
+    assert [round(row["funding"], 2) for row in sim.ledger] == [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize("source, rows", [
+    (("every", 8, 0.0001), [7, 15, 23]),
+    (("every_bars", 3, 0.0001), [3, 6, 9, 12, 15, 18, 21, 24]),
+])
+def test_each_source_stamps_its_events_where_the_page_says(source, rows):
+    sim = run(hourly(25), [[flat(100.0)] for _ in range(25)],
+              [Instrument("BTCUSDT")], Venue(funding=source),
+              script={0: [("buy", dict(instrument=0, size=1.0))]})
+
+    assert [t for t, row in enumerate(sim.ledger) if row["funding"] != 0.0] == rows
+
+
+@pytest.mark.parametrize("stopped, paid", [(True, 0.0), (False, 0.0001 * 101.0)])
+def test_an_event_inside_a_daily_bar_is_paid_by_the_position_after_its_fills(
+        stopped, paid):
+    decisions = [("buy", dict(instrument=0, size=1.0))]
+    if stopped:
+        decisions.append(("sell", dict(instrument=0, size=1.0, stop=95.0)))
+
+    bars = [[flat(100.0)], [Bar(100.0, 102.0, 94.0, 101.0, 1_000.0)], [flat(101.0)]]
+    sim  = run([0, DAY, 2 * DAY], bars, [Instrument("BTCUSDT")],
+               Venue(maker=0.0, taker=0.0, funding="data"), script={0: decisions},
+               funding=[(DAY + 8 * HOUR, 0, 0.0001)])
+
+    assert sim.ledger[1]["funding"] == pytest.approx(paid, abs=1e-12)
+
+
+def test_an_event_during_a_closure_is_charged_at_the_next_open_at_the_last_mark():
+    # 1 January 1970 was a Thursday, so these rows are Thursday, Friday and Monday
+    bars = [[flat(60_000.0)], [Bar(60_000.0, 60_000.0, 41_000.0, 41_000.0, 1_000.0)],
+            [flat(41_000.0)]]
+    sim = run([0, DAY, 4 * DAY], bars, [Instrument("BTCUSDT")],
+              Venue(maker=0.0, taker=0.0, funding="data"), interval=DAY,
+              script={0: [("buy", dict(instrument=0, size=0.5))]},
+              funding=[(2 * DAY + 8 * HOUR, 0, 0.0005)])
+
+    assert sim.ledger[1]["funding"] == 0.0
+    assert sim.ledger[1]["equity"]  == pytest.approx(500.0)
+    assert sim.ledger[2]["funding"] == pytest.approx(10.25)

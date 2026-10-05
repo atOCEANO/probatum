@@ -14,10 +14,11 @@ Scope: the clock, the step's order of events, market, value, limit and stop
 orders with their time in force, `post_only`, `reduce_only`, brackets, `replace`
 and cancels, `target`, the slot table, maker after the first bar, self-trade
 refusal, the worse exit first, the fill model (the trailing window, the liquidity
-budget, the spread, slippage, impact, sizes and dust), fees, the spot and margin
-wallets with transfers, listing and delisting, round trips and the ledger.
-Funding, the margin cap and liquidation, inverse contracts and several
-instruments on one path are not here.
+budget, the spread, slippage, impact, sizes and dust), fees, funding, the spot
+and margin wallets with transfers, listing and delisting, round trips and the
+ledger. The margin cap and liquidation, and so the check a funding event inside a
+bar counts toward, inverse contracts and several instruments on one path are not
+here.
 """
 
 import collections
@@ -26,6 +27,7 @@ import statistics
 
 DUST     = 1e-9      # Sizes and dust: with sizes off, a fill this small moves nothing
 MAX_COST = 0.99      # Fills, A taker's price: s / 2 + slip + imp at most
+SNAP     = 10**9     # Funding: a stamp within a second of a row boundary is on it
 
 Bar = collections.namedtuple("Bar", "open high low close volume")
 
@@ -54,7 +56,8 @@ class Venue:
 
     def __init__(self, balance=10_000.0, maker=0.0002, taker=0.0006, leverage=10.0,
                  max_open_orders=8, limit="touch", window=24, budget=1.0, spread=None,
-                 slippage=0.0, impact=None, sizes=False, intrabar="pessimistic"):
+                 slippage=0.0, impact=None, sizes=False, intrabar="pessimistic",
+                 funding="none"):
         if limit not in ("touch", "through"):
             raise ValueError(f"limit: {limit!r}; use touch or through")
 
@@ -69,11 +72,15 @@ class Venue:
         self.limit           = limit
         self.window          = int(window)
         self.budget          = float(budget)
-        self.spread          = spread  # None, ("fixed", bps) or "estimated"
+        self.spread          = spread   # None, ("fixed", bps) or "estimated"
         self.slippage        = float(slippage)
-        self.impact          = impact  # None, ("linear", k) or ("sqrt", k)
+        self.impact          = impact   # None, ("linear", k) or ("sqrt", k)
         self.sizes           = sizes
         self.intrabar        = intrabar
+        self.funding         = funding  # "none", "data", ("every", hours, rate) or
+
+
+                                        # ("every_bars", n, rate)
 
 
 def periods_per_year(times):
@@ -170,14 +177,16 @@ class Trip:
 
 class Simulator:
 
-    def __init__(self, times, bars, instruments, venue=None, interval=None):
+    def __init__(self, times, bars, instruments, venue=None, interval=None,
+                 funding=None):
         self.times       = [int(time) for time in times]
         self.bars        = bars                   # bars[t][i]: a Bar, or None
         self.instruments = list(instruments)
         self.venue       = venue or Venue()
         gaps             = [b - a for a, b in zip(self.times, self.times[1:])]
-        self.interval    = interval or (statistics.median(gaps) if gaps else 0)
+        self.interval    = int(interval or (statistics.median(gaps) if gaps else 0))
         n                = len(self.instruments)
+        self.schedule_funding(funding)
 
         # Wallets: a number funds the one wallet a universe of one kind uses, and
         # a universe holding both kinds names each
@@ -275,7 +284,8 @@ class Simulator:
 
 
     def row(self, t, costs=None):
-        costs = costs or dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0, dust=0.0)
+        costs = costs or dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0,
+                              funding=0.0, dust=0.0)
 
         spot, margin = self.wallet_equity()
         equity = spot + margin
@@ -693,7 +703,8 @@ class Simulator:
 
         self.t += 1
         t = self.t
-        self.costs = dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0, dust=0.0)
+        self.costs = dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0,
+                          funding=0.0, dust=0.0)
 
         # Fills, The liquidity budget: what each instrument's fills may take this bar
         self.budget_left = {}
@@ -703,18 +714,90 @@ class Simulator:
                 self.budget_left[i] = self.venue.budget * volume
 
         self.apply_transfers()                   # 1
-        # 2 funding between rows and 3 the liquidation path are not in this scope
+        self.charge_funding(self.between[t], t, at_close=False)     # 2
+        # 3 the liquidation path is not in this scope
         self.delist(t)
         self.fill_market_orders(t)               # 4
 
         self.arm()
         self.fill_resting_orders(t)              # 5
-        # 6 to 8, exits on a liquidating bar, the check and funding, are not here
+        # 6 and 7, exits on a liquidating bar and the check, are not in this scope
+        self.charge_funding(self.owned[t], t, at_close=True)        # 8
         self.see_row(t)                          # 9
 
         self.sweep_dust()
         self.ledger.append(self.row(t, self.costs))
         return True
+
+
+    def schedule_funding(self, events):
+        """Funding, When an event is charged: a row owns the events stamped after its
+        open and up to its end, and one stamped between rows is charged at the start
+        of the next. A stamp within a second of a row boundary is on it."""
+        self.owned   = collections.defaultdict(list)
+        self.between = collections.defaultdict(list)
+        source       = self.venue.funding
+        if source == "none":
+            return
+
+        stamps = []
+        if source == "data":
+            if events is None:
+                raise ValueError("data: no funding series, and the venue charges from "
+                                 "data; pass the events or a venue with funding none")
+            stamps = [(int(time), instrument, float(rate))
+                      for time, instrument, rate in events]
+        elif source[0] == "every":
+            every = int(source[1] * 3_600 * 10**9)
+            stamp = (self.times[0] // every + 1) * every
+            while stamp <= self.times[-1] + self.interval:
+                stamps.append((stamp, None, float(source[2])))
+                stamp += every
+        elif source[0] == "every_bars":
+            for r in range(source[1], len(self.times), source[1]):
+                stamps.append((self.times[r] + self.interval, None, float(source[2])))
+        else:
+            raise ValueError(f"funding: {source!r}; use none, data, every or "
+                             f"every_bars")
+
+        boundaries = sorted(set(self.times) | {t + self.interval for t in self.times})
+
+        for stamp, instrument, rate in stamps:
+            nearest = min(boundaries, key=lambda b: abs(b - stamp))
+            if abs(nearest - stamp) <= SNAP:
+                stamp = nearest
+            for r, start in enumerate(self.times):
+                end = start + self.interval
+                if start < stamp <= end:
+                    self.owned[r].append((stamp, instrument, rate, stamp < end))
+                    break
+                if r + 1 < len(self.times) and end < stamp <= self.times[r + 1]:
+                    self.between[r + 1].append((stamp, instrument, rate, False))
+                    break
+
+
+    def charge_funding(self, events, t, at_close):
+        """Funding, The charge: q * p * r for each perpetual held, at the close of the
+        row that owns the event, or at the last mark where there is none."""
+        for _, instrument, rate, _ in events:
+            if instrument is None:
+                held = [i for i, inst in enumerate(self.instruments)
+                        if inst.kind != "spot"]
+            else:
+                held = [instrument]
+
+            for i in held:
+                q = self.position[i]
+                if q == 0.0 or self.instruments[i].kind == "spot":
+                    continue
+
+                bar    = self.bars[t][i]
+                price  = bar.close if at_close and bar is not None else self.mark[i]
+                charge = q * price * rate
+                self.margin_cash -= charge
+                self.costs["funding"] += charge
+                if self.trip[i] is not None:
+                    self.trip[i].funding += charge
 
 
     def apply_transfers(self):
@@ -1138,13 +1221,16 @@ class Simulator:
         return out
 
 
-def run(times, bars, instruments, venue=None, script=None, interval=None):
+def run(times, bars, instruments, venue=None, script=None, interval=None,
+        funding=None):
     """Steps a simulator through every row, making the decisions `script` holds.
 
     `script` maps a row to the calls made at its close, each a verb and its keyword
     arguments, so a decision made at row t is filled on a later row, never on t.
+    `funding` holds the venue's events, as (time, instrument, rate), when it charges
+    from data.
     """
-    sim    = Simulator(times, bars, instruments, venue, interval)
+    sim    = Simulator(times, bars, instruments, venue, interval, funding)
     script = script or {}
 
     while True:
