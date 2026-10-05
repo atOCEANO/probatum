@@ -250,6 +250,15 @@ def test_a_buy_limit_at_99_40_fills_on_touch_and_through_only_a_tick_past(limit,
     assert bool(sim.fills) is fills
 
 
+def test_a_buy_limit_at_110_that_no_trade_since_the_close_reached_fills_at_100():
+    sim = run(hourly(2), [[flat(100.0)], [Bar(96.0, 98.0, 95.0, 97.0, 1_000.0)]],
+              [Instrument("BTCUSDT")],
+              script={0: [("buy", dict(instrument=0, size=1.0, limit=110.0))]})
+    [fill] = sim.fills
+
+    assert (fill["price"], fill["taker"]) == (100.0, True)
+
+
 def test_a_replace_keeps_its_id_and_takes_the_first_free_slot():
     sim = run(hourly(2), [[flat(100.0)], [flat(100.0)]], [Instrument("BTCUSDT")],
               script={0: [("buy", dict(instrument=0, size=1.0, limit=95.0)),

@@ -161,7 +161,7 @@ inverse, V dollars  wanted = weight * equity_t * close_t / V            contract
 
 ### Maker, taker and the book
 
-- A limit is a taker only on the first bar after its placement, when that bar opens at or through it, and it then fills at its own price at the taker rate. A limit that has rested through a bar is on the book and fills as a maker at its price. A `replace` that moves a limit's price is a new placement for this rule and for `post_only`.
+- A limit is a taker only on the first bar after its placement, when that bar opens at or through it, and it then fills at the taker rate. A limit that has rested through a bar is on the book and fills as a maker. Either fills at the price [Limits](#limits) gives. A `replace` that moves a limit's price is a new placement for this rule and for `post_only`.
 - A limit whose price reaches the account's own resting limit of the other side on the same instrument, a buy at or above its own sell or a sell at or below its own buy, is refused, as a venue refuses an order that would trade against the same account.
 - Resting orders across every instrument share one slot table and resolve in slot order, and a freed slot is taken by the next placement on any instrument.
 
@@ -212,9 +212,9 @@ price = ref * (1 + side * (s / 2 + slip + imp)), held inside [low, high]
 
 ### Limits
 
-A limit fills at its own price. Under `touch` a buy fills when the bar's low reaches its price; under `through` the low must be a tick below it. A sell is the mirror.
+A limit fills at its own price, unless no trade from the last close through its bar reached that price, as when it was placed through the market or a bar that filled nothing left it there: then a buy fills at the highest of those trades and a sell at the lowest. Under `touch` a buy fills when the bar's low reaches its price; under `through` the low must be a tick below it. A sell is the mirror.
 
-**Worked example.** A buy limit at 99.40, with a tick of 0.01, fills under `touch` on a low of 99.40, and under `through` only on a low of 99.39 or lower.
+**Worked example.** A buy limit at 99.40, with a tick of 0.01, fills under `touch` on a low of 99.40, and under `through` only on a low of 99.39 or lower. A buy limit at 110 placed at a close of 100 fills as a taker on a next bar that opens at 96 with a high of 98, and since no trade from that close through the bar reached 110, it fills at 100.
 
 ### The liquidity budget
 

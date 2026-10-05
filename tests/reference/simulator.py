@@ -732,7 +732,7 @@ class Simulator:
         spared = set() if filling is None else {filling["id"], filling["pair"]}
 
         for order in self.resting(i):
-            if order["leg"] is not None and order["armed"] and order["id"] not in spared:
+            if order["leg"] and order["armed"] and order["id"] not in spared:
                 self.cancel(order["id"], "its position closed")
 
 
@@ -1490,6 +1490,13 @@ class Simulator:
             opened_through = bar.open <= price if side == "buy" else bar.open >= price
             if not reached:
                 return None
+
+            # never past every price traded from the last close through the bar
+            close = self.mark[order["instrument"]]
+            if side == "buy":
+                price = min(price, max(close, bar.high))
+            else:
+                price = max(price, min(close, bar.low))
             return price, order["seen"] == 0 and opened_through
 
         trigger = order["trigger"]
