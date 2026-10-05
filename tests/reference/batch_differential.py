@@ -1,12 +1,12 @@
 """Run the BATCHED path against one independent reference per env.
 
-`Batch` is the tier nothing independent has ever checked, and every reinforcement
-learning number comes out of it: `VectorEnv` drives `reset_at_each`, `advance`
-and `snapshot` and nothing else. What stood behind those was a Rust test
-comparing the batch against the engine it is built from, which is worth having
-and shares every mistake the engine makes. Here each env is compared against a
-`Reference` started at that env's own offset, written from the decisions and
-knowing nothing about either implementation.
+`Batch` is the tier every reinforcement learning number comes out of: `VectorEnv`
+drives `reset_at_each`, `advance` and `snapshot` and nothing else. What stood behind
+those was a Rust test comparing the batch against the engine it is built from, which
+is worth having and shares every mistake the engine makes. Here each env is compared
+against a reference run over the bars from that env's own offset, written from the
+Specification and knowing nothing about either implementation, over the cases both
+model as `differential` decides them.
 
 The offsets are the point. An episode that starts part way into the series must
 still fund on the bars the SERIES funds on (ADR 0020), still hold
@@ -17,14 +17,15 @@ at bar zero, which is what the batched tests do.
   python -m reference.batch_differential [cases] [seed]     (from tests/)
 """
 
+import collections
 import random
 import sys
 
 import numpy as np
 
 import probatum
-from .differential import close_enough, config, walk
-from .reference import Reference
+from .differential import (HOUR, close_enough, config, funding_of, make_reference,
+                           set_aside, walk)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -49,7 +50,7 @@ def plan(rng, num_envs, steps):
 
 
 def drive_batch(bars, cfg, offsets, actions):
-    array = np.array(bars, dtype=np.float64)
+    array = np.array([list(bar) for bar in bars], dtype=np.float64)
     batch = probatum.Batch(
         array,
         num_envs          = len(offsets),
@@ -58,10 +59,10 @@ def drive_batch(bars, cfg, offsets, actions):
         fee_taker         = cfg["fee_taker"],
         fee_maker         = cfg["fee_maker"],
         slippage_bps      = cfg["slippage_bps"],
-        max_fill_fraction = cfg["max_fill_fraction"],
+        max_fill_fraction = 1.0,
         max_open_orders   = cfg["max_open_orders"],
         leverage          = cfg["leverage"],
-        impact            = cfg["impact"],
+        impact            = 0.0,
         funding_rate      = cfg["funding_rate"],
         funding_interval  = cfg["funding_interval"],
         report            = False,
@@ -85,28 +86,46 @@ def drive_batch(bars, cfg, offsets, actions):
 
 
 def drive_references(bars, cfg, offsets, actions):
-    refs = [Reference(bars, start=off, **cfg) for off in offsets]
-    seen = []
+    """One reference per env over the bars from its offset. Funding is passed as the
+    venue's own events, stamped where the whole series funds, since a schedule of
+    every n bars counts from each reference's first row."""
+    times  = [k * HOUR for k in range(len(bars))]
+    events = None
 
-    for row in actions:
-        for ref, size in zip(refs, row):
+    if funding_of(cfg) != "none":
+        n      = cfg["funding_interval"]
+        events = [(times[r] + HOUR, None, cfg["funding_rate"])
+                  for r in range(n, len(bars), n)]
+
+    refs = [make_reference(bars[off:], cfg, funding=events, times=times[off:])
+            for off in offsets]
+    seen, ran_out = [], [set() for _ in offsets]
+
+    for sizes in actions:
+        for env, (sim, size) in enumerate(zip(refs, sizes)):
             # `advance` skips a zero outright rather than placing an empty order
             if size > 0.0:
-                ref.market_order("buy", size)
+                sim.order(0, "buy", size)
             elif size < 0.0:
-                ref.market_order("sell", -size)
-            ref.step()
+                sim.order(0, "sell", -size)
+
+            before = sim.liquidations
+            sim.step()
+            if sim.liquidations != before or sim.clipped:
+                ran_out[env].add(offsets[env] + sim.t)
 
         seen.append({
-            "position":     np.array([r.position for r in refs]),
-            "equity":       np.array([r.equity(r.bars[r.tick][3]) for r in refs]),
-            "mark_price":   np.array([r.bars[r.tick][3] for r in refs]),
-            "funding_paid": np.array([r.funding_paid for r in refs]),
-            "bust":         np.array([r.bust for r in refs]),
-            "done":         np.array([r.tick + 1 >= len(bars) for r in refs]),
+            "position":     np.array([sim.position[0] for sim in refs]),
+            "equity":       np.array([sim.equity() for sim in refs]),
+            "mark_price":   np.array([sim.mark[0] for sim in refs]),
+            "funding_paid": np.array([sum(line["funding"] for line in sim.ledger)
+                                      for sim in refs]),
+            "bust":         np.array([any(line["terminal"] for line in sim.ledger)
+                                      for sim in refs]),
+            "done":         np.array([sim.t + 1 >= len(sim.times) for sim in refs]),
         })
 
-    return seen, refs
+    return seen, refs, ran_out
 
 
 def observation_disagreement(batch, bars, offsets, window):
@@ -121,7 +140,7 @@ def observation_disagreement(batch, bars, offsets, window):
     for env, tick in enumerate(offsets):
         want  = np.zeros((window, 5), dtype=np.float64)
         first = max(0, tick - window + 1)
-        rows  = np.array(bars[first:tick + 1], dtype=np.float64)
+        rows  = np.array([list(bar) for bar in bars[first:tick + 1]], dtype=np.float64)
         want[window - rows.shape[0]:] = rows
         if not np.allclose(seen[env], want, rtol=0.0, atol=1e-9):
             return f"env {env} at bar {tick}: observation is not the window ending there"
@@ -129,7 +148,7 @@ def observation_disagreement(batch, bars, offsets, window):
     return None
 
 
-def compare(mine, theirs, cfg, num_envs):
+def compare_runs(mine, theirs, cfg, num_envs):
     for step, (a, b) in enumerate(zip(mine, theirs)):
         for env in range(num_envs):
             for key, scale in (("position", 1.0), ("equity", cfg["quote"]),
@@ -145,23 +164,40 @@ def compare(mine, theirs, cfg, num_envs):
     return None
 
 
-def main(argv=None):
-    argv  = sys.argv[1:] if argv is None else argv
-    cases = int(argv[0]) if len(argv) > 0 else 200
-    seed  = int(argv[1]) if len(argv) > 1 else 20260814
-    rng   = random.Random(seed)
+def deaths(mine, offsets, last):
+    """The bars each env's engine died on, where its bust flag first rose."""
+    out    = [set() for _ in offsets]
+    before = [False] * len(offsets)
+    for step, row in enumerate(mine):
+        for env, bust in enumerate(row["bust"]):
+            if bust and not before[env]:
+                out[env].add(min(offsets[env] + step + 1, last))
+            before[env] = bool(bust)
+
+    return out
+
+
+Outcome = collections.namedtuple(
+    "Outcome", "compared agreed disagreed set_aside reached")
+
+
+def compare(cases, seed):
+    rng = random.Random(seed)
 
     # what the cases actually reached. "0 disagreed" over a hundred flat accounts
     # that never funded and never died is a pass that means nothing, and there is
     # no way to tell one from the other after the fact
-    reached = dict(traded=0, funded=0, busted=0, finished=0)
-    agree, disagree = 0, []
+    reached = collections.Counter(traded=0, funded=0, busted=0, finished=0)
+    aside   = collections.Counter()
+    agreed, disagreed = 0, []
+
     for case in range(cases):
         bars     = walk(rng, rng.randint(12, 40))
         cfg      = config(rng)
         num_envs = rng.randint(2, 5)
         offsets  = offsets_for(rng, bars, num_envs)
         window   = rng.randint(1, 6)
+
         # past the end for the earliest env, so a finished episode is asked to
         # keep going and has to sit still rather than wrap or run on
         steps   = len(bars) - min(offsets)
@@ -169,9 +205,17 @@ def main(argv=None):
 
         try:
             mine, batch = drive_batch(bars, cfg, offsets, actions)
-            theirs, refs = drive_references(bars, cfg, offsets, actions)
+            theirs, refs, ran_out = drive_references(bars, cfg, offsets, actions)
+            died    = deaths(mine, offsets, len(bars) - 1)
+            reasons = [set_aside(sim, cfg, ran_out[env] | died[env])
+                       for env, sim in enumerate(refs)]
+            why = next((reason for reason in reasons if reason is not None), None)
+            if why is not None:
+                aside[why] += 1
+                continue
+
             fresh = probatum.Batch(
-                np.array(bars, dtype=np.float64),
+                np.array([list(bar) for bar in bars], dtype=np.float64),
                 num_envs = num_envs,
                 market   = cfg["market"],
                 quote    = cfg["quote"],
@@ -185,8 +229,10 @@ def main(argv=None):
                 # from the wrong end of the series still looks right at warmup
                 ended = [min(off + len(actions), len(bars) - 1) for off in offsets]
                 where = observation_disagreement(batch, bars, ended, window)
+
             if where is None:
-                where = compare(mine, theirs, cfg, num_envs)
+                where = compare_runs(mine, theirs, cfg, num_envs)
+
             last = mine[-1]
             reached["traded"] += any(
                 abs(p) > 0.0 for step in mine for p in step["position"]
@@ -198,29 +244,43 @@ def main(argv=None):
             where = f"raised: {type(exc).__name__}: {exc}"
 
         if where is None:
-            agree += 1
+            agreed += 1
         else:
-            disagree.append((case, cfg, offsets, bars, where))
+            disagreed.append((case, cfg, offsets, bars, where))
 
-    print(f"\n{agree} of {cases} agreed, {len(disagree)} disagreed")
-    print(f"cases that traded {reached['traded']}, funded {reached['funded']}, "
-          f"busted {reached['busted']}, ran out of bars {reached['finished']}\n")
+    return Outcome(agreed + len(disagreed), agreed, disagreed, aside, reached)
 
-    for name, count in reached.items():
-        if count == 0:
-            print(f"NOTHING {name}: this run proves less than it looks like it does")
-            return 1
 
-    for case, cfg, offsets, bars, why in disagree[:8]:
-        print(f"--- case {case} ({cfg['market']}) {why}")
-        print(f"    cfg     {cfg}")
-        print(f"    offsets {offsets}")
-        print(f"    bars    {[tuple(round(x, 4) for x in b) for b in bars[:6]]}\n")
+def render(out, cases):
+    lines = [f"\n{out.compared} of {cases} compared, {out.agreed} agreed, "
+             f"{len(out.disagreed)} disagreed",
+             "set aside: " + (", ".join(f"{why} {n}" for why, n in
+                                        sorted(out.set_aside.items())) or "none"),
+             f"cases that traded {out.reached['traded']}, funded "
+             f"{out.reached['funded']}, busted {out.reached['busted']}, ran out of "
+             f"bars {out.reached['finished']}\n"]
 
-    if len(disagree) > 8:
-        print(f"... and {len(disagree) - 8} more")
+    for case, cfg, offsets, bars, why in out.disagreed[:8]:
+        lines.append(f"--- case {case} ({cfg['market']}) {why}")
+        lines.append(f"    cfg     {cfg}")
+        lines.append(f"    offsets {offsets}")
+        shown = [tuple(round(x, 4) for x in b) for b in bars[:6]]
+        lines.append(f"    bars    {shown}\n")
 
-    return 1 if disagree else 0
+    if len(out.disagreed) > 8:
+        lines.append(f"... and {len(out.disagreed) - 8} more")
+
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    argv  = sys.argv[1:] if argv is None else argv
+    cases = int(argv[0]) if len(argv) > 0 else 200
+    seed  = int(argv[1]) if len(argv) > 1 else 20261005
+    out   = compare(cases, seed)
+
+    print(render(out, cases))
+    return 1 if out.disagreed else 0
 
 
 if __name__ == "__main__":

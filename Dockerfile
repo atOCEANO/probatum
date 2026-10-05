@@ -93,16 +93,17 @@ COPY benchmarks /benchmarks
 CMD ["python", "/benchmarks/surfaces.py"]
 
 # The tests marked slow, which run at length. Chief among them is the engine
-# against a second implementation of the same decisions, over randomised paths.
-# `tests/reference/reference.py` is written from Decisions.md and never from the
-# Rust, which is the whole point of it, so a rule the engine gets wrong is a rule
-# the reference gets right and the two part company on a number. It found the slot
-# leak of ADR 0010, which had survived every test written against the
-# implementation because none of them thought to ask.
+# against a second implementation of the same rules, over randomised paths.
+# `tests/reference/simulator.py` is written from the Specification and never from
+# the Rust, which is the whole point of it, so a rule the engine gets wrong is a
+# rule the reference gets right and the two part company on a number. A case is
+# compared only where the reference applied no rule the engine has yet to take up,
+# which the reference's own count of the rules it applied decides.
 #
-# Six seeds of five hundred cases is about ninety seconds and has to be exact: the
-# tolerance is relative 1e-6 and any disagreement fails the build. Every gate
-# stage above runs the same comparison over a few hundred cases.
+# Six seeds of five hundred cases has to be exact: the tolerance is relative 1e-6,
+# any disagreement fails the build, and so does a rule the two share that no
+# compared case reached. Every gate stage above runs the same comparison over a
+# few hundred cases.
 #
 # `batch_differential.py` is the same idea one tier up, over `Batch`: every
 # reinforcement learning number comes out of `reset_at_each`, `advance` and

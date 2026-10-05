@@ -1831,6 +1831,9 @@ class Simulator:
             else:
                 self.hit("a limit filled as a taker" if taker
                          else "a limit filled as a maker")
+                if not taker and (bar.open <= order["price"] if side == "buy"
+                                  else bar.open >= order["price"]):
+                    self.hit("a limit on the book its bar opened through")
                 if reference != order["price"]:
                     self.hit("a limit held to the prices traded since the last close")
 

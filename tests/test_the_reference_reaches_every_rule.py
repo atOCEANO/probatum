@@ -37,6 +37,7 @@ RULES = [
     "a limit filled as a maker",
     "a limit filled as a taker",
     "a limit held to the prices traded since the last close",
+    "a limit on the book its bar opened through",
     "a liquidation at the closes",
     "a liquidation before the bar opens",
     "a liquidation by the check",

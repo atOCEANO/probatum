@@ -2,7 +2,7 @@
 
 The differential run says WHERE the two simulators part company. This says as
 little as possible around that point, so the question can be argued from the
-decisions rather than from a forty bar random walk.
+Specification rather than from a forty bar random walk.
 
   python -m reference.trace <seed> [cases]     (from tests/)
 
@@ -19,24 +19,21 @@ import random
 import sys
 
 from . import differential as D
-from .reference import Reference
 
 
 def diverges(bars, cfg, actions):
-    """The first bar the two disagree on, or None."""
+    """The first bar the two disagree on, or None. A case outside what both model
+    is not a disagreement, so a shrink that wanders out of it is not one either."""
     try:
-        mine, _ = D.drive_engine(bars, cfg, actions)
-        theirs, _ = D.drive_reference(bars, cfg, actions)
+        rows, _, sim, ran_out = D.run(bars, cfg, actions)
     except Exception:
         return None
 
-    for i, ((pa, ea, fa), (pb, eb, fb)) in enumerate(zip(mine, theirs)):
-        if not D.close_enough(pa, pb) or not D.close_enough(ea, eb, cfg["quote"]):
-            return i
-        if not D.close_enough(fa, fb, cfg["quote"]):
-            return i
+    if D.set_aside(sim, cfg, ran_out) is not None:
+        return None
 
-    return None
+    found = D.first_difference(rows, cfg)
+    return None if found is None else found[0]
 
 
 def shrink(bars, cfg, actions):
@@ -69,59 +66,52 @@ def shrink(bars, cfg, actions):
     return bars, actions, diverges(bars, cfg, actions)
 
 
+def rounded(value):
+    return round(value, 6) if isinstance(value, float) else value
+
+
 def trace(bars, cfg, actions):
     """Bar by bar, both sides, so the exact step that parts them is visible."""
-    array  = D.np.array([list(b) for b in bars], dtype=D.np.float64)
-    engine = D.probatum.Engine(
-        array, market=cfg["market"], quote=cfg["quote"], fee_taker=cfg["fee_taker"],
-        fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
-        max_fill_fraction=cfg["max_fill_fraction"],
-        # without it the traced engine takes the default eight slots while the
-        # reference below takes the drawn one, so a case that diverged because the
-        # book filled at one or two is traced as a pair that never disagrees
-        max_open_orders=cfg["max_open_orders"],
-        leverage=cfg["leverage"],
-        impact=cfg["impact"], funding_rate=cfg["funding_rate"],
-        funding_interval=cfg["funding_interval"], report=True,
-    )
+    engine, sim = D.make_engine(bars, cfg), D.make_reference(bars, cfg)
     engine.reset()
 
-    ref = Reference(bars, **cfg)
-
-    rows = []
-    mine, theirs = [], []
-    for action in actions:
-        D.place(engine, action, mine)
-        D.place_reference(ref, action, theirs)
+    mine, theirs, rows = [], [], []
+    for t, action in enumerate(actions):
+        D.place(engine, sim, action, bars[t].close, mine, theirs)
         state = engine.step()
-        ref.step()
+        sim.step()
+
+        ledger = sim.ledger[-1]
         rows.append(dict(
-            bar=ref.tick,
-            ohlcv=[round(x, 4) for x in bars[ref.tick]],
+            bar=sim.t,
+            ohlcv=[round(x, 4) for x in bars[sim.t]],
             placed=action,
-            engine=dict(position=round(state["position"], 6),
-                        equity=round(state["equity"], 6),
-                        entry=round(state["avg_entry"], 6),
-                        quote=round(state["quote"], 6),
-                        funding=round(state["funding_paid"], 6),
+            engine=dict(position=rounded(state["position"]),
+                        equity=rounded(state["equity"]),
+                        entry=rounded(state["avg_entry"]),
+                        quote=rounded(state["quote"]),
+                        funding=rounded(state["funding_paid"]),
+                        bust=engine.is_bust(),
                         live=list(mine)),
-            reference=dict(position=round(ref.position, 6),
-                           equity=round(ref.equity(bars[ref.tick][3]), 6),
-                           entry=round(ref.entry, 6),
-                           quote=round(ref.quote, 6),
-                           funding=round(ref.funding_paid, 6),
+            reference=dict(position=rounded(sim.position[0]),
+                           equity=rounded(sim.equity()),
+                           entry=rounded(sim.entry[0]),
+                           spot_cash=rounded(sim.spot_cash),
+                           margin_cash=rounded(sim.margin_cash),
+                           costs={k: rounded(ledger[k]) for k in (
+                               "fees", "slippage", "funding", "liquidation")},
+                           liquidations=sim.liquidations,
                            live=list(theirs),
-                           resting=[None if o is None else
-                                    dict(id=o["id"], kind=o["kind"], side=o["side"],
-                                         size=round(o["size"], 6),
-                                         filled=round(o["filled"], 6),
-                                         price=o.get("price"), trigger=o.get("trigger"))
-                                    for o in ref.resting]),
+                           resting=[dict(id=o["id"], kind=o["kind"], side=o["side"],
+                                         size=rounded(o["size"]),
+                                         filled=rounded(o["filled"]),
+                                         price=o["price"], trigger=o["trigger"])
+                                    for o in sim.resting()]),
         ))
         if engine.done():
             break
 
-    return rows, engine, ref
+    return rows, engine, sim
 
 
 def main():
@@ -132,20 +122,21 @@ def main():
     for case in range(cases):
         bars    = D.walk(rng, rng.randint(8, 40))
         cfg     = D.config(rng)
-        actions = D.plan(rng, bars)
+        actions = D.plan(rng, bars, cfg)
         if diverges(bars, cfg, actions) is None:
             continue
 
         bars, actions, at = shrink(bars, cfg, actions)
-        rows, engine, ref = trace(bars, cfg, actions)
+        rows, engine, sim = trace(bars, cfg, actions)
 
         out = dict(
             seed=seed, case=case, config=cfg, diverges_at_row=at,
             bars=[list(b) for b in bars], actions=actions, rows=rows,
-            engine_trades=[{k: (round(v, 6) if isinstance(v, float) else v)
-                            for k, v in t.items()} for t in (engine.trades() or [])],
-            reference_trades=[{k: (round(v, 6) if isinstance(v, float) else v)
-                               for k, v in t.items()} for t in ref.trades],
+            engine_trades=[{k: rounded(v) for k, v in trade.items()}
+                           for trade in (engine.trades() or [])],
+            reference_fills=[{k: rounded(v) for k, v in fill.items()}
+                             for fill in sim.fills],
+            reference_events=sim.events,
         )
 
         path = f"/diff/case-seed{seed}.json"
