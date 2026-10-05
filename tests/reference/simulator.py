@@ -717,10 +717,23 @@ class Simulator:
 
 
     def arm(self):
+        """A bracket's legs arm on the position they find and keep its side."""
         for order in self.resting():
-            if not order["armed"] and self.position[order["instrument"]] != 0.0:
+            q = self.position[order["instrument"]]
+            if not order["armed"] and q != 0.0:
                 order["armed"] = True
+                order["side"]  = "sell" if q > 0.0 else "buy"
                 self.log("armed", order, order["leg"])
+
+
+    def disarm(self, i, filling):
+        """A bracket goes with the position it armed on. The leg that closed it and
+        that leg's partner are left to the OCO rule."""
+        spared = set() if filling is None else {filling["id"], filling["pair"]}
+
+        for order in self.resting(i):
+            if order["leg"] is not None and order["armed"] and order["id"] not in spared:
+                self.cancel(order["id"], "its position closed")
 
 
     def cancel(self, order_id, reason="cancelled by the account"):
@@ -1805,6 +1818,11 @@ class Simulator:
         ))
         if order is not None:
             self.log("filled", order, reason, size=size, price=price)
+
+        # a liquidation cancels every perpetual order itself, with its own reason
+        if before != 0.0 and (after == 0.0 or before * after < 0.0) \
+                and reason != "liquidation":
+            self.disarm(i, order)
 
         return fee
 
