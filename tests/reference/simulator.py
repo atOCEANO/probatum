@@ -9,7 +9,8 @@ liquidation path in closed form, this finds its crossings by bisection.
 
 It takes what the low-level binding takes, the bars on a clock, the instruments,
 the venue and the decisions made at each close, and it returns what the binding
-returns: the ledger, the fill log, the order log and the round trips.
+returns: the ledger, the fill log, the order log and the round trips. It also counts
+each rule as it applies it, so a test of random cases can show what they reached.
 
 Scope: the clock, the step's order of events, market, value, limit and stop
 orders with their time in force, `post_only`, `reduce_only`, brackets, `replace`
@@ -296,7 +297,7 @@ class Trip:
 # the account's state a bar can be resolved twice from (The rule, 4)
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
-           "legs", "next_id", "target_legs", "liquidations")
+           "legs", "next_id", "target_legs", "liquidations", "reached")
 
 
 class Simulator:
@@ -360,6 +361,7 @@ class Simulator:
         self.clipped      = {}
         self.legs         = {}
         self.liquidations = 0
+        self.reached      = collections.Counter()    # how often each rule applied
 
         self.see_row(0)
         self.ledger = [self.row(0)]
@@ -369,6 +371,10 @@ class Simulator:
     def no_costs():
         return dict(fees=0.0, spread=0.0, slippage=0.0, impact=0.0, funding=0.0,
                     liquidation=0.0, dust=0.0)
+
+
+    def hit(self, rule):
+        self.reached[rule] += 1
 
 
     def see_row(self, t):
@@ -549,6 +555,14 @@ class Simulator:
             q, mark = self.position[i], self.mark[i]
             held     = q != 0.0
             exposure = inst.notional(q, mark) if held else 0.0
+
+            if held and inst.tiers:
+                tier = self.tier_of(i, abs(q), abs(exposure))
+                if tier is not inst.tiers[0]:
+                    self.hit("a tier above the first")
+                if inst.tiers_by == "quantity":
+                    self.hit("tiers by quantity")
+
             out["instruments"].append(dict(
                 position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
                 upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
@@ -572,7 +586,11 @@ class Simulator:
         lot = self.instruments[i].lot
         if not self.venue.sizes or lot <= 0.0:
             return size
-        return math.floor(round(size / lot, 9)) * lot
+
+        rounded = math.floor(round(size / lot, 9)) * lot
+        if rounded < size - DUST:
+            self.hit("a size rounded down to the lot")
+        return rounded
 
 
     def round_price(self, i, price):
@@ -649,8 +667,8 @@ class Simulator:
         rounded = self.lot_down(i, order["size"])
         if rounded <= 0.0:
             return f"size: {order['size']} rounds to nothing at a lot of {inst.lot}"
-
         if rounded > inst.max_qty:
+            self.hit("an order held to the maximum quantity")
             self.log("clamped", order, f"size: {rounded} held to {inst.max_qty}",
                      size=inst.max_qty)
             rounded = inst.max_qty
@@ -658,6 +676,7 @@ class Simulator:
         order["size"] = rounded
         exempt = order["reduce_only"] and inst.reduce_only_exempt
         if abs(inst.notional(rounded, self.mark[i])) < inst.min_notional and not exempt:
+            self.hit("an order below the minimum notional refused")
             return (f"size: {rounded} is below the minimum notional of "
                     f"{inst.min_notional}")
 
@@ -711,6 +730,7 @@ class Simulator:
                     continue
                 if (side == "buy" and order["price"] >= own["price"]) or \
                         (side == "sell" and order["price"] <= own["price"]):
+                    self.hit("an order trading against the account's own refused")
                     return f"it would trade against the account's own order {own['id']}"
 
             # Order types: post_only is checked against the last close
@@ -718,6 +738,7 @@ class Simulator:
                 close = self.mark[i]
                 if (side == "buy" and order["price"] >= close) or \
                         (side == "sell" and order["price"] <= close):
+                    self.hit("a post_only order refused at the last close")
                     return "post_only: it would take liquidity at the last close"
 
         return None
@@ -829,6 +850,7 @@ class Simulator:
         for order in self.resting():
             q = self.position[order["instrument"]]
             if not order["armed"] and q != 0.0:
+                self.hit("a bracket armed")
                 order["armed"] = True
                 order["side"]  = "sell" if q > 0.0 else "buy"
                 self.log("armed", order, order["leg"])
@@ -841,6 +863,7 @@ class Simulator:
 
         for order in self.resting(i):
             if order["leg"] and order["armed"] and order["id"] not in spared:
+                self.hit("a bracket cancelled with its position")
                 self.cancel(order["id"], "its position closed")
 
 
@@ -892,6 +915,7 @@ class Simulator:
             self.log("refused", old, f"replace: {why}")
             return None
 
+        self.hit("a replace")
         self.slots[self.slots.index(old)] = None
         old.update(moved)
         self.rest(old)
@@ -915,6 +939,7 @@ class Simulator:
                 if order["status"] == "pending":
                     self.cancel(order["id"], "replaced by a later target")
 
+        self.hit("a target")
         self.decided, self.target_legs = self.t, []
         equity = self.equity()
         reducing, growing = [], []
@@ -964,8 +989,8 @@ class Simulator:
                 if self.instruments[i].kind == "spot":
                     cost = leg * self.mark[i]
                     needed += cost + abs(cost) * self.venue.taker
-
             if needed > 0.0:
+                self.hit("a target's spot shortfall moved across")
                 self.transfer(needed, to="spot")
 
         return [order["id"] for order in self.target_legs]
@@ -1039,6 +1064,7 @@ class Simulator:
             saved = self.snapshot()
             self.fill_resting_orders(t, hold_favourable=True)
             if self.check(t):
+                self.hit("a favourable exit held back on a liquidating bar")
                 return
 
             self.restore(saved)
@@ -1148,6 +1174,8 @@ class Simulator:
 
     def charge_funding(self, events, t, at_close):
         for i, charge, _ in self.funding_due(events, t, at_close):
+            self.hit("funding at the close of its row" if at_close
+                     else "funding between rows")
             self.pay_funding(i, charge)
 
 
@@ -1228,6 +1256,7 @@ class Simulator:
             bar = self.bars[t][i]
             if bar is None:
                 # an instrument unavailable on the bar keeps its last mark
+                self.hit("a position held through a row without its bar")
                 still = Leg(i, q, self.entry[i], self.mark[i], self.mark[i])
                 gap.append(still)
                 bar_piece.append(still)
@@ -1261,11 +1290,13 @@ class Simulator:
             return
 
         if k == 0:
+            self.hit("a liquidation before the bar opens")
             closes = [(leg.instrument, leg.q, leg.start + s * (leg.end - leg.start))
                       for leg in path[0]]
             self.liquidate(closes, t, path, self.margin_cash, trigger)
             return
 
+        self.hit("a bar clipped")
         for leg in path[1]:
             bar = self.bars[t][leg.instrument]
             if bar is None:
@@ -1305,8 +1336,10 @@ class Simulator:
                          prices[leg.instrument]) for leg in legs]
             equity, requirement, _ = self.state_at(piece, wallet, 0.0)
             if equity - requirement <= 0.0:
+                self.hit("a corner or the closes reaching the trigger")
                 return True
 
+        self.hit("a path inside the bars that never reaches the trigger")
         return False
 
 
@@ -1404,6 +1437,13 @@ class Simulator:
                         else charge < 0.0)]
         wallet = self.margin_cash - sum(charge for _, charge in counted)
 
+        if counted:
+            self.hit("funding inside a bar counted toward the check")
+        if any(leg.leave is not None for leg in legs):
+            self.hit("a flip's old side on the check")
+        if any(leg.frac > 0.0 for leg in legs):
+            self.hit("a leg joining the check after the open")
+
         path, spans = self.pieces(legs)
         result = self.solve(path, wallet)
         if result is None or not self.reached_by_every_path(held, wallet, t):
@@ -1413,6 +1453,7 @@ class Simulator:
         a, b = spans[k]
         s = a + u * (b - a)
 
+        self.hit("a liquidation by the check")
         for i, charge in counted:
             self.pay_funding(i, charge)          # an event counted is an event paid
 
@@ -1428,6 +1469,7 @@ class Simulator:
         held = [i for i in self.perps() if self.position[i] != 0.0]
         if not held:
             if self.margin_cash < 0.0:
+                self.hit("a wallet that fees left below zero set to zero")
                 self.costs["liquidation"] += self.margin_cash
                 self.margin_cash = 0.0
             return
@@ -1439,6 +1481,7 @@ class Simulator:
         equity, requirement, _ = self.state_at(piece, self.margin_cash, 0.0)
 
         if equity - requirement <= 0.0:
+            self.hit("a liquidation at the closes")
             self.liquidate([(i, self.position[i], prices[i]) for i in held], t)
 
 
@@ -1467,6 +1510,7 @@ class Simulator:
             equity, requirement, _ = self.state_at(path[k], wallet, s)
             reached = self.solve(path, wallet, share=share) is not None
             if not reached and equity - paid >= share * requirement:
+                self.hit("book then backstop selling on the book")
                 for i, q, sold, costs in sales:
                     side = "sell" if q > 0.0 else "buy"
                     self.book(i, abs(q), sold, costs)
@@ -1476,6 +1520,9 @@ class Simulator:
                 self.after_liquidation()
                 return
 
+            self.hit("book then backstop falling back to takeover")
+
+        self.hit("a takeover")
         rate = 0.0 if maintained else self.venue.liquidation_fee
         for i, q, price in closes:
             self.apply(i, "sell" if q > 0.0 else "buy", abs(q), price, rate, False,
@@ -1506,7 +1553,9 @@ class Simulator:
                               self.margin_equity() - self.cap_requirement())
 
             moved = max(0.0, min(amount, allowed))
+            self.hit("a transfer")
             if moved < amount:
+                self.hit("a transfer clamped")
                 self.log("clamped", None, f"transfer: {moved} of the {amount} asked",
                          size=moved)
 
@@ -1531,6 +1580,7 @@ class Simulator:
                           if o["instrument"] == i]:
                 self.cancel(order["id"], "delist")
 
+            self.hit("a delisting")
             self.delisted[i] = True
 
             q = self.position[i]
@@ -1587,8 +1637,13 @@ class Simulator:
         if computed <= 0.0:
             return
 
+        if costs["adjustment"] != 0.0:
+            self.hit("a taker's price held inside the bar")
+
         paid = abs(self.instruments[i].profit(size, costs["reference"], price))
         for name in ("spread", "slippage", "impact"):
+            if costs[name] > 0.0:
+                self.hit(f"{name} paid")
             self.costs[name] += paid * costs[name] / computed
 
 
@@ -1598,6 +1653,7 @@ class Simulator:
             i   = order["instrument"]
             bar = self.bar_for(t, i)
             if bar is None:
+                self.hit("an order waiting for its instrument's next bar")
                 waiting.append(order)       # Time, The clock: it waits for its bar
                 continue
 
@@ -1614,22 +1670,30 @@ class Simulator:
             if order["value"] is not None:
                 wanted  = inst.units(order["value"], price)
                 allowed = min(wanted, budget)
+            if budget < wanted:
+                self.hit("the liquidity budget")
 
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
                                                order["reduce_only"], self.venue.taker))
             whole         = size >= self.lot_down(i, wanted) - DUST
             refused_whole = order["tif"] == "fok" and not whole
+
             if bar.volume <= 0.0 or size <= DUST or refused_whole:
+                self.hit("a fok order filling nothing" if refused_whole
+                         else "a market order filling nothing")
                 order["status"] = "expired"
                 self.log("not_filled", order, "nothing could fill on its bar"
                          if order["tif"] != "fok" else "fok: the whole size could not")
                 continue
 
+            self.hit("a value order" if order["value"] is not None
+                     else "a market order")
             if not whole:
                 self.log("clamped", order, f"{size} of the {wanted} asked fits",
                          size=size)
 
-            self.budget_left[i] = budget - size
+            # what is left can round to a hair below zero, and a bar never owes volume
+            self.budget_left[i] = max(budget - size, 0.0)
             self.book(i, size, price, costs)
             price, costs = self.bound(i, side, size, price, bar, self.venue.taker,
                                       costs)
@@ -1713,6 +1777,7 @@ class Simulator:
                 side = order["side"]
                 if (side == "buy" and bar.open <= order["price"]) or \
                         (side == "sell" and bar.open >= order["price"]):
+                    self.hit("a post_only limit its first bar opened through")
                     self.cancel(order["id"], "post_only: the first bar opened through")
                     continue
             if bar.volume <= 0.0:
@@ -1741,7 +1806,8 @@ class Simulator:
                          else order["size"] - order["filled"])
             budget  = self.budget_left.get(i, 0.0)
             allowed = min(remaining, budget)
-
+            if budget < remaining:
+                self.hit("the liquidity budget")
             if order["kind"] == "stop":
                 price, costs = self.taker_price(i, side, reference, allowed, bar)
             else:
@@ -1759,15 +1825,28 @@ class Simulator:
                 self.log("clamped", order, f"{size} of the {remaining} asked fits",
                          size=size)
 
-            self.budget_left[i] = budget - size
+            self.budget_left[i] = max(budget - size, 0.0)
+            if order["kind"] == "stop":
+                self.hit("a stop triggered")
+            else:
+                self.hit("a limit filled as a taker" if taker
+                         else "a limit filled as a maker")
+                if reference != order["price"]:
+                    self.hit("a limit held to the prices traded since the last close")
+
+            if order["leg"]:
+                self.hit("a bracket leg filled")
+
             self.book(i, size, price, costs)
             price, costs = self.bound(i, side, size, price, bar, rate, costs)
             reason = order["leg"] or order["reason"]
             self.apply(i, side, size, price, rate, taker, order, reason,
                        reference=reference, costs=costs)
             order["filled"] += size
+
             if order["pair"] is not None:
-                self.cancel(order["pair"], "its OCO partner filled")
+                if self.cancel(order["pair"], "its OCO partner filled"):
+                    self.hit("an OCO partner cancelled")
 
             if order["size"] is None:
                 done = self.position[i] == 0.0
@@ -1783,6 +1862,7 @@ class Simulator:
             order["seen"] += 1
             # ioc and fok take one bar, filled or not, where gtc waits for the next
             if order["tif"] in ("ioc", "fok"):
+                self.hit("an ioc or fok limit expiring after one bar")
                 order["status"] = "expired"
                 self.slots[self.slots.index(order)] = None
                 self.log("expired", order, f"{order['tif']}: one bar")
@@ -1804,12 +1884,16 @@ class Simulator:
 
         reverse = self.venue.intrabar == "optimistic"
         out     = list(offers)
+
         for i in range(len(self.instruments)):
             places = [k for k, item in enumerate(offers)
                       if item[1]["instrument"] == i and realize(item) is not None]
             ordered = sorted(places, key=lambda k: realize(offers[k]), reverse=reverse)
+            if ordered != places:
+                self.hit("a position's exits reordered")
             for place, take in zip(places, ordered):
                 out[place] = offers[take]
+
         return out
 
 
@@ -1820,15 +1904,23 @@ class Simulator:
         if reduce_only:
             reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
             if not reduces:
+                self.hit("a reduce_only order with nothing to reduce")
                 return 0.0
+            if size > abs(q):
+                self.hit("a reduce_only order held to the position")
             size = min(size, abs(q))
 
         if self.instruments[i].kind == "spot":
             if side == "sell":
+                if size > max(q, 0.0):
+                    self.hit("a spot sale held to the holding")
                 size = min(size, max(q, 0.0))
             else:
                 affordable = self.spot_cash / (price * (1.0 + rate))
-                size       = min(size, max(affordable, 0.0))
+                if size > affordable:
+                    self.hit("a spot buy held to its cash")
+                size = min(size, max(affordable, 0.0))
+
             return max(size, 0.0)
 
         return self.cap(i, side, max(size, 0.0), price)
@@ -1847,11 +1939,15 @@ class Simulator:
             return size
 
         # the other legs sit where the fill sits on the path of the side it grows
-        prices = self.others_at(self.fraction(i, side == "buy", price, self.t), self.t,
-                                skip=i)
+        s      = self.fraction(i, side == "buy", price, self.t)
+        prices = self.others_at(s, self.t, skip=i)
+        if prices and s > 0.0:
+            self.hit("the cap with the other legs at the fill's fraction")
+
         prices[i] = price
         equity = self.margin_equity(prices)
         if equity <= 0.0:
+            self.hit("a growing fill refused at no equity")
             return reducing
 
         base  = 0.0 if q * signed <= 0.0 else abs(q)
@@ -1862,6 +1958,7 @@ class Simulator:
             return self.cap_requirement(prices, sizes)
 
         if need(0.0) >= equity:
+            self.hit("an account over the cap kept from growing")
             return reducing
 
         limit = growing
@@ -1870,11 +1967,14 @@ class Simulator:
             last = inst.tiers[-1].up_to
             if inst.tiers_by == "notional":
                 last /= abs(inst.notional(1.0, price))
+            if last - base < limit:
+                self.hit("a fill held at the last tier's bound")
             limit = min(limit, max(last - base, 0.0))
 
         if need(limit) <= equity:
             return reducing + limit
 
+        self.hit("a fill held to the margin cap")
         # the requirement only rises with the fill's size, through every tier
         return reducing + first_zero(lambda x: equity - need(x), 0.0, limit)
 
@@ -1928,6 +2028,11 @@ class Simulator:
             lifted = min(price, max(goal, bar.low))
 
         credit = max(kept(goal) - kept(lifted), 0.0)
+        if lifted != price:
+            self.hit("the margin bound lifting a fill inside its bar")
+        if credit > 0.0:
+            self.hit("the margin bound paying what the bar cannot hold")
+
         self.margin_cash += credit
         self.costs["liquidation"] -= abs(inst.profit(size, price, lifted)) + credit
         return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price)
@@ -1944,6 +2049,7 @@ class Simulator:
             if q == 0.0 or inst.lot <= 0.0 or abs(q) >= inst.lot / 2.0:
                 continue
 
+            self.hit("dust swept at the close")
             if inst.kind == "spot":
                 value = inst.notional(q, self.mark[i])
             else:
@@ -1986,12 +2092,18 @@ class Simulator:
         if abs(after) <= DUST:
             after = 0.0
 
+        if inst.kind == "inverse":
+            self.hit("an inverse contract filled")
+        if before * after < 0.0:
+            self.hit("a flip")
+
         if closed > 0.0:
             trip = self.trip[i]
             trip.close(closed, price)
             trip.realized += realized
             trip.fees += fee * closed / size
             if after == 0.0 or after * before < 0.0:
+                self.hit("a round trip closed")
                 trip.close_bar, trip.close_time, trip.reason = t, self.times[t], reason
                 self.trips.append(trip)
                 self.trip[i] = None

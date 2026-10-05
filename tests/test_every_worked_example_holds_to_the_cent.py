@@ -66,17 +66,18 @@ def test_253_daily_bars_from_one_2_january_to_the_next_annualise_at_252():
     assert periods_per_year([d * DAY for d in days]) == pytest.approx(252.0, abs=1e-9)
 
 
-def test_an_order_decided_at_fridays_close_fills_at_mondays_open():
-    thursday = 3 * DAY
-    times    = [thursday, thursday + DAY, thursday + 4 * DAY]
-    bars     = [[flat(100.0)], [flat(101.0)], [Bar(98.0, 99.0, 97.0, 98.5, 1_000.0)]]
-    sim      = run(times, bars, [Instrument("SPY", kind="spot")],
-                   Venue(maker=0.0, taker=0.0),
-                   script={1: [("buy", dict(instrument=0, size=10.0))]})
+def test_orders_decided_at_fridays_close_fill_at_mondays_open():
+    # 1 January 1970 was a Thursday, so these rows are Thursday, Friday and Monday
+    times = [0, DAY, 4 * DAY]
+    bars  = [[flat(100.0)], [flat(101.0)], [Bar(98.0, 99.0, 97.0, 98.5, 1_000.0)]]
+    sim   = run(times, bars, [Instrument("SPY", kind="spot")],
+                Venue(maker=0.0, taker=0.0), interval=DAY,
+                script={0: [("buy", dict(instrument=0, size=10.0))],
+                        1: [("buy", dict(instrument=0, size=5.0)),
+                            ("sell", dict(instrument=0, size=10.0, stop=100.0))]})
 
-    [fill] = sim.fills
-    assert fill["time"]  == times[2]
-    assert fill["price"] == 98.0
+    assert [(f["time"], f["price"], f["reason"]) for f in sim.fills] == [
+        (DAY, 101.0, "market"), (4 * DAY, 98.0, "market"), (4 * DAY, 98.0, "stop")]
 
 
 def test_a_delisting_closes_the_position_at_the_last_close_with_no_fee():
