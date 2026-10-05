@@ -145,21 +145,27 @@ inverse, V dollars  wanted = weight * equity_t * close_t / V            contract
 
 ### Order types
 
-- A market order fills at the next open. A limit rests until a bar reaches it. A stop arms at its trigger and fills as a taker.
+- A market order fills at the next open. A limit rests until a bar reaches it. A buy stop triggers when a bar's high reaches its trigger and a sell stop when the low does, and a triggered stop fills as a taker.
 - `gtc` rests. `ioc` takes one bar and cancels the rest. `fok` fills the whole size against one bar or nothing, judged after every clamp. A market order is `ioc` unless `fok` is asked for.
 - A stop that cannot fill on a bar with no volume stays armed, and a stop is consumed only by what it filled.
 - An order retires when its remaining size can no longer fill ([Sizes and dust](#sizes-and-dust)).
 - `reduce_only` holds on every order type and is checked when the order fills.
-- `post_only` is checked at placement against the last close and again on the first bar: a post-only limit the first bar opens through is cancelled.
-- `bracket(stop, take_profit)` places two reduce-only legs at those prices as one OCO pair. Neither has a size of its own: each closes the position it finds when it fills, so a bracket placed with its entry rests while flat and arms once the entry fills. When either leg fills, even in part, the other is cancelled, and the filled leg's remainder keeps resting.
+- `post_only` is checked at placement against the last close, where a post-only buy at or above it, or a sell at or below it, is refused, and again on the first bar: a post-only limit the first bar opens through is cancelled.
+- `bracket(stop, take_profit)` places two reduce-only legs at those prices as one OCO pair. Neither has a size of its own: each closes the position it finds when it fills, so a bracket placed with its entry rests while flat and arms once the entry fills. Its legs take their side from that position, a sell stop and a sell limit behind a long, a buy stop and a buy limit behind a short, and a leg reached while the account is flat fills nothing. When either leg fills, even in part, the other is cancelled, and the filled leg's remainder keeps resting.
 - `replace` changes a resting order's price, trigger or size and keeps its id and its OCO pair. A successful replace takes the first free slot; a refused one leaves the original in its own slot.
 - `max_open_orders`, 8 by default, bounds each instrument's resting orders and its pending market orders.
+
+**Worked example.** A sell stop at 95 fills at 95 on a bar that opens at 96 and trades down to 94, and at 93 on a bar that opens at 93, the worse of its trigger and the open. A long of 1 from 100 holds a bracket with its stop at 95 and its take-profit at 110, and the next bar opens at 100 with a low of 94 and a high of 111: both legs are reached, so under the pessimistic setting the stop fills first, at 95, and the take-profit is cancelled, and under the optimistic setting the take-profit fills at 110 and the stop is cancelled.
+
+**Worked example of the book.** A buy limit at 95 takes the first slot and a buy limit at 94 the second. Cancelling the first frees its slot, and a `replace` that moves the 94 to 92 keeps its id and takes that first free slot, so a buy limit at 93 placed next takes the second. An `ioc` buy limit at 96 that its first bar does not reach expires after that bar, and a `fok` market buy whose size the spot wallet's cash pays for only in part fills nothing. A bracket placed in the same decision as its market entry arms when the entry fills, and a sell stop reached on a bar that printed no volume stays armed and fills on the next bar that reaches it.
 
 ### Maker, taker and the book
 
 - A limit is a taker only on the first bar after its placement, when that bar opens at or through it, and it then fills at its own price at the taker rate. A limit that has rested through a bar is on the book and fills as a maker at its price. A `replace` that moves a limit's price is a new placement for this rule and for `post_only`.
-- An order that would trade against the account's own resting order is refused.
+- A limit whose price reaches the account's own resting limit of the other side on the same instrument, a buy at or above its own sell or a sell at or below its own buy, is refused, as a venue refuses an order that would trade against the same account.
 - Resting orders across every instrument share one slot table and resolve in slot order, and a freed slot is taken by the next placement on any instrument.
+
+**Worked example.** A buy limit at 99 placed at a close of 100. If the next bar opens at 98.50 it fills at 99 as a taker; if it opens at 100 and trades down to 98 it fills at 99 as a maker; and if it rests through that bar and the one after opens at 98.50, it fills at 99 as a maker. A post-only buy at 100 placed at that close is refused, and a buy at 101 placed while the account rests a sell at 100.50 is refused too.
 
 ### Barriers on an array
 

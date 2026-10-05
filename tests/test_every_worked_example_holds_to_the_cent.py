@@ -156,3 +156,118 @@ def test_a_fill_pays_its_size_times_its_price_times_the_fee():
 
     assert fill["size"] * fill["price"] == pytest.approx(2_963.08, abs=0.005)
     assert fill["fee"] == pytest.approx(1.48, abs=0.005)
+
+
+@pytest.mark.parametrize("bar, price", [(Bar(96.0, 96.5, 94.0, 95.5, 1_000.0), 95.0),
+                                        (Bar(93.0, 94.0, 92.0, 93.5, 1_000.0), 93.0)])
+def test_a_sell_stop_fills_at_its_trigger_or_at_an_open_that_gapped_through_it(bar,
+                                                                                 price):
+    sim = run(hourly(3), [[flat(100.0)], [flat(100.0)], [bar]],
+              [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0),
+              script={0: [("buy", dict(instrument=0, size=1.0))],
+                      1: [("sell", dict(instrument=0, size=1.0, stop=95.0))]})
+
+    assert sim.fills[-1]["price"] == price
+    assert sim.position[0]        == 0.0
+
+
+@pytest.mark.parametrize("intrabar, price, cancelled",
+                         [("pessimistic", 95.0, "take_profit"),
+                          ("optimistic", 110.0, "stop")])
+def test_a_bar_reaching_both_legs_of_a_bracket_fills_the_worse_first_by_default(
+        intrabar, price, cancelled):
+    wide = Bar(100.0, 111.0, 94.0, 100.0, 1_000.0)
+    sim  = run(hourly(3), [[flat(100.0)], [flat(100.0)], [wide]],
+               [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0, intrabar=intrabar),
+               script={0: [("buy", dict(instrument=0, size=1.0))],
+                       1: [("bracket", dict(instrument=0, stop=95.0,
+                                            take_profit=110.0))]})
+
+    assert sim.fills[-1]["price"] == price
+    assert sim.position[0]        == 0.0
+
+    [gone] = [o for o in sim.orders.values() if o["status"] == "cancelled"]
+    assert gone["leg"] == cancelled
+
+
+@pytest.mark.parametrize("later, taker", [
+    ([Bar(98.5, 99.5, 98.0, 99.0, 1_000.0)], True),
+    ([Bar(100.0, 100.5, 98.0, 99.0, 1_000.0)], False),
+    ([flat(100.0), Bar(98.5, 99.5, 98.0, 99.0, 1_000.0)], False),
+])
+def test_a_limit_is_a_taker_only_when_its_first_bar_opens_through_it(later, taker):
+    bars = [[flat(100.0)]] + [[bar] for bar in later]
+    sim  = run(hourly(len(bars)), bars, [Instrument("BTCUSDT")],
+               script={0: [("buy", dict(instrument=0, size=1.0, limit=99.0))]})
+    [fill] = sim.fills
+
+    assert fill["price"] == 99.0
+    assert fill["taker"] is taker
+
+
+def test_a_post_only_buy_at_the_close_and_a_buy_crossing_its_own_sell_are_refused():
+    sim = run(hourly(2), [[flat(100.0)], [flat(100.0)]], [Instrument("BTCUSDT")],
+              script={0: [("buy", dict(instrument=0, size=1.0, limit=100.0,
+                                       post_only=True)),
+                          ("sell", dict(instrument=0, size=1.0, limit=100.5)),
+                          ("buy", dict(instrument=0, size=1.0, limit=101.0))]})
+
+    assert [(e["order"], e["kind"]) for e in sim.events] == [
+        (1, "refused"), (2, "placed"), (3, "refused")]
+
+
+@pytest.mark.parametrize("limit, low, fills", [("touch", 99.40, True),
+                                               ("through", 99.40, False),
+                                               ("through", 99.39, True)])
+def test_a_buy_limit_at_99_40_fills_on_touch_and_through_only_a_tick_past(limit, low,
+                                                                          fills):
+    sim = run(hourly(2), [[flat(100.0)], [Bar(100.0, 100.2, low, 99.8, 1_000.0)]],
+              [Instrument("BTCUSDT", tick=0.01)], Venue(limit=limit),
+              script={0: [("buy", dict(instrument=0, size=1.0, limit=99.40))]})
+
+    assert bool(sim.fills) is fills
+
+
+def test_a_replace_keeps_its_id_and_takes_the_first_free_slot():
+    sim = run(hourly(2), [[flat(100.0)], [flat(100.0)]], [Instrument("BTCUSDT")],
+              script={0: [("buy", dict(instrument=0, size=1.0, limit=95.0)),
+                          ("buy", dict(instrument=0, size=1.0, limit=94.0)),
+                          ("cancel", dict(order_id=1)),
+                          ("replace", dict(order_id=2, price=92.0)),
+                          ("buy", dict(instrument=0, size=1.0, limit=93.0))]})
+
+    assert [(o["id"], o["price"]) for o in sim.slots] == [(2, 92.0), (3, 93.0)]
+
+
+def test_an_ioc_limit_expires_after_its_first_bar_and_a_partial_fok_fills_nothing():
+    sim = run(hourly(2), [[flat(100.0)], [Bar(100.0, 100.5, 97.0, 99.0, 1_000.0)]],
+              [Instrument("BTCUSDT", kind="spot")], Venue(balance=300.0),
+              script={0: [("buy", dict(instrument=0, size=1.0, limit=96.0, tif="ioc")),
+                          ("buy", dict(instrument=0, size=5.0, tif="fok"))]})
+
+    assert sim.fills == []
+    assert [sim.orders[k]["status"] for k in (1, 2)] == ["expired", "expired"]
+
+
+def test_a_bracket_placed_with_its_entry_arms_when_the_entry_fills():
+    sim = run(hourly(2), [[flat(100.0)], [Bar(100.0, 101.0, 99.0, 100.0, 1_000.0)]],
+              [Instrument("BTCUSDT")],
+              script={0: [("buy", dict(instrument=0, size=1.0)),
+                          ("bracket", dict(instrument=0, stop=95.0,
+                                           take_profit=110.0))]})
+    armed = [(e["bar"], e["reason"]) for e in sim.events if e["kind"] == "armed"]
+
+    assert armed == [(1, "stop"), (1, "take_profit")]
+    assert [o["status"] for o in sim.orders.values()] == ["filled", "resting",
+                                                          "resting"]
+
+
+def test_a_stop_reached_on_a_bar_with_no_volume_stays_armed_for_the_next():
+    sim = run(hourly(4), [[flat(100.0)], [flat(100.0)],
+                          [Bar(99.0, 99.5, 94.0, 96.0, 0.0)],
+                          [Bar(96.0, 96.5, 94.5, 95.5, 1_000.0)]],
+              [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0),
+              script={0: [("buy", dict(instrument=0, size=1.0))],
+                      1: [("sell", dict(instrument=0, size=1.0, stop=95.0))]})
+
+    assert [(f["bar"], f["price"]) for f in sim.fills] == [(1, 100.0), (3, 95.0)]

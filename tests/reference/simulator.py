@@ -10,11 +10,13 @@ It takes what the low-level binding takes, the bars on a clock, the instruments,
 the venue and the decisions made at each close, and it returns what the binding
 returns: the ledger, the fill log, the order log and the round trips.
 
-Scope: the clock, the step's order of events, market and value orders and
-`target`, fees, the spot and margin wallets with transfers, listing and delisting,
-round trips and the ledger. Orders that rest, the fill model's costs, funding, the
-margin cap and liquidation, inverse contracts and several instruments on one path
-are not here.
+Scope: the clock, the step's order of events, market, value, limit and stop
+orders with their time in force, `post_only`, `reduce_only`, brackets, `replace`
+and cancels, `target`, the slot table, maker after the first bar, self-trade
+refusal, the worse exit first, fees, the spot and margin wallets with transfers,
+listing and delisting, round trips and the ledger. The fill model's costs,
+funding, the margin cap and liquidation, inverse contracts and several instruments
+on one path are not here.
 """
 
 import collections
@@ -28,25 +30,34 @@ Bar = collections.namedtuple("Bar", "open high low close volume")
 
 class Instrument:
 
-    def __init__(self, name, kind="linear", lot=0.0, delist=None):
+    def __init__(self, name, kind="linear", lot=0.0, tick=0.0, delist=None):
         if kind not in ("spot", "linear"):
             raise ValueError(f"kind: {kind!r} is not modelled; use spot or linear")
 
         self.name   = name
         self.kind   = kind
         self.lot    = float(lot)
+        self.tick   = float(tick)
         self.delist = delist          # nanoseconds, or None
 
 
 class Venue:
 
     def __init__(self, balance=10_000.0, maker=0.0002, taker=0.0006, leverage=10.0,
-                 max_open_orders=8):
+                 max_open_orders=8, limit="touch", intrabar="pessimistic"):
+        if limit not in ("touch", "through"):
+            raise ValueError(f"limit: {limit!r}; use touch or through")
+
+        if intrabar not in ("pessimistic", "optimistic"):
+            raise ValueError(f"intrabar: {intrabar!r}; use pessimistic or optimistic")
+
         self.balance         = balance
         self.maker           = float(maker)
         self.taker           = float(taker)
         self.leverage        = float(leverage)
         self.max_open_orders = int(max_open_orders)
+        self.limit           = limit
+        self.intrabar        = intrabar
 
 
 def periods_per_year(times):
@@ -134,6 +145,7 @@ class Simulator:
         self.trip        = [None] * n
         self.trips       = []
         self.pending     = []          # market orders, filling at each one's next bar
+        self.slots       = []          # Orders, Maker, taker and the book: one table
         self.transfers   = []
         self.orders      = {}
         self.next_id     = 1
@@ -182,6 +194,11 @@ class Simulator:
                    if q != 0.0 and self.instruments[i].kind != "spot")
 
 
+    def resting(self, instrument=None):
+        return [o for o in self.slots if o is not None
+                and (instrument is None or o["instrument"] == instrument)]
+
+
     def row(self, t, fees):
         spot, margin = self.wallet_equity()
         equity = spot + margin
@@ -210,54 +227,164 @@ class Simulator:
         ))
 
 
-    def place(self, instrument, side, size=None, value=None, reduce_only=False,
-              reason="market"):
-        """Orders, Order types: a market order fills at its instrument's next open,
-        and a value order's size is its amount over that fill price (Units)."""
-        order = dict(id=self.next_id, instrument=instrument, side=side, kind="market",
+    def new_order(self, instrument, side, kind, size=None, value=None, price=None,
+                  trigger=None, tif="gtc", post_only=False, reduce_only=False,
+                  reason="market"):
+        order = dict(id=self.next_id, instrument=instrument, side=side, kind=kind,
                      size=None if size is None else float(size),
-                     value=None if value is None else float(value), filled=0.0,
-                     placed=self.t, status="pending", reduce_only=reduce_only,
-                     reason=reason)
+                     value=None if value is None else float(value),
+                     price=None if price is None else float(price),
+                     trigger=None if trigger is None else float(trigger),
+                     filled=0.0, placed=self.t, seen=0, status="pending", tif=tif,
+                     post_only=post_only, reduce_only=reduce_only, reason=reason,
+                     pair=None, leg=None, armed=True)
+
         self.next_id += 1
         self.orders[order["id"]] = order
 
-        asked   = order["size"] if value is None else order["value"]
-        refusal = None
-        if asked is None or not math.isfinite(asked) or asked <= 0.0:
-            refusal = f"size: {asked} cannot fill"
-        elif not self.listed[instrument]:
-            refusal = "the instrument has not printed its first bar"
-        elif self.delisted[instrument]:
-            refusal = "the instrument is delisted"
-        elif sum(1 for o in self.pending
-                 if o["instrument"] == instrument) >= self.venue.max_open_orders:
-            refusal = f"max_open_orders: {self.venue.max_open_orders} already waiting"
+        return order
 
-        if refusal is not None:
-            order["status"] = "refused"
-            self.log("refused", order, refusal)
-            return order["id"]
 
-        self.log("placed", order, reason)
-        self.pending.append(order)
+    def refuse(self, order, why):
+        order["status"] = "refused"
+        self.log("refused", order, why)
         return order["id"]
 
 
-    def buy(self, instrument, size, reduce_only=False):
-        return self.place(instrument, "buy", size, reduce_only=reduce_only)
+    def common_refusal(self, order):
+        i = order["instrument"]
+        if not self.listed[i]:
+            return "the instrument has not printed its first bar"
+
+        if self.delisted[i]:
+            return "the instrument is delisted"
+
+        return None
 
 
-    def sell(self, instrument, size, reduce_only=False):
-        return self.place(instrument, "sell", size, reduce_only=reduce_only)
+    def place_market(self, order):
+        """Orders, Order types: a market order fills at its instrument's next open,
+        and a value order's size is its amount over that fill price (Units)."""
+        asked = order["size"] if order["value"] is None else order["value"]
+        why   = self.common_refusal(order)
+
+        if asked is None or not math.isfinite(asked) or asked <= 0.0:
+            why = f"size: {asked} cannot fill"
+        elif why is None and len([o for o in self.pending
+                                  if o["instrument"] == order["instrument"]]) \
+                >= self.venue.max_open_orders:
+            why = f"max_open_orders: {self.venue.max_open_orders} already waiting"
+
+        if why is not None:
+            return self.refuse(order, why)
+
+        self.log("placed", order, order["reason"])
+        self.pending.append(order)
+
+        return order["id"]
+
+
+    def resting_refusal(self, order, replacing=None):
+        """Why a limit or a stop cannot rest, or None."""
+        i, side = order["instrument"], order["side"]
+        why = self.common_refusal(order)
+        if why is not None:
+            return why
+
+        if order["size"] is not None and (not math.isfinite(order["size"])
+                                          or order["size"] <= 0.0):
+            return f"size: {order['size']} cannot fill"
+
+        if order["kind"] == "limit" and not math.isfinite(order["price"]):
+            return f"limit: {order['price']} is not a price"
+
+        if order["kind"] == "stop" and not math.isfinite(order["trigger"]):
+            return f"stop: {order['trigger']} is not a price"
+
+        others = [o for o in self.resting(i) if o is not replacing]
+        if len(others) >= self.venue.max_open_orders:
+            return f"max_open_orders: {self.venue.max_open_orders} already resting"
+
+        if order["kind"] == "limit" and side is not None:
+            # Maker, taker and the book: an order that reaches the account's own
+            # resting limit of the other side would trade against the same account
+            for own in others:
+                if own["kind"] != "limit" or own["side"] in (None, side):
+                    continue
+                if (side == "buy" and order["price"] >= own["price"]) or \
+                        (side == "sell" and order["price"] <= own["price"]):
+                    return f"it would trade against the account's own order {own['id']}"
+
+            # Order types: post_only is checked against the last close
+            if order["post_only"]:
+                close = self.mark[i]
+                if (side == "buy" and order["price"] >= close) or \
+                        (side == "sell" and order["price"] <= close):
+                    return "post_only: it would take liquidity at the last close"
+
+        return None
+
+
+    def rest(self, order, slot=None):
+        """Maker, taker and the book: the first free slot of the one table."""
+        if slot is None:
+            slot = next((k for k, o in enumerate(self.slots) if o is None), None)
+
+        if slot is None:
+            self.slots.append(order)
+        else:
+            self.slots[slot] = order
+
+        order["status"] = "resting"
+
+
+    def place_resting(self, order):
+        why = self.resting_refusal(order)
+        if why is not None:
+            return self.refuse(order, why)
+
+        self.rest(order)
+        self.log("placed", order, order["reason"])
+        return order["id"]
+
+
+    def order(self, instrument, side, size=None, limit=None, stop=None, tif="gtc",
+              post_only=False, reduce_only=False, value=None, reason="market"):
+        if limit is not None:
+            order = self.new_order(instrument, side, "limit", size=size, price=limit,
+                                   tif=tif, post_only=post_only,
+                                   reduce_only=reduce_only, reason="limit")
+            return self.place_resting(order)
+
+        if stop is not None:
+            order = self.new_order(instrument, side, "stop", size=size, trigger=stop,
+                                   reduce_only=reduce_only, reason="stop")
+            return self.place_resting(order)
+
+        tif   = "fok" if tif == "fok" else "ioc"
+        order = self.new_order(instrument, side, "market", size=size, value=value,
+                               tif=tif, reduce_only=reduce_only, reason=reason)
+        return self.place_market(order)
+
+
+    def buy(self, instrument, size, limit=None, stop=None, tif="gtc", post_only=False,
+            reduce_only=False):
+        return self.order(instrument, "buy", size, limit, stop, tif, post_only,
+                          reduce_only)
+
+
+    def sell(self, instrument, size, limit=None, stop=None, tif="gtc", post_only=False,
+             reduce_only=False):
+        return self.order(instrument, "sell", size, limit, stop, tif, post_only,
+                          reduce_only)
 
 
     def buy_value(self, instrument, amount):
-        return self.place(instrument, "buy", value=amount)
+        return self.order(instrument, "buy", value=amount)
 
 
     def sell_value(self, instrument, amount):
-        return self.place(instrument, "sell", value=amount)
+        return self.order(instrument, "sell", value=amount)
 
 
     def close(self, instrument):
@@ -265,28 +392,99 @@ class Simulator:
         q = self.position[instrument]
         if q == 0.0:
             return None
-        return self.place(instrument, "sell" if q > 0.0 else "buy", abs(q),
+        return self.order(instrument, "sell" if q > 0.0 else "buy", abs(q),
                           reduce_only=True)
 
 
-    def cancel(self, order_id):
+    def bracket(self, instrument, stop=None, take_profit=None):
+        """Order types: two sizeless reduce-only legs, one OCO pair, armed while the
+        account holds the position they close and taking their side from it."""
+        legs = []
+
+        for leg, kind, price in (("stop", "stop", stop), ("take_profit", "limit",
+                                                          take_profit)):
+            if price is None:
+                continue
+
+            order = self.new_order(instrument, None, kind,
+                                   price=price if kind == "limit" else None,
+                                   trigger=price if kind == "stop" else None,
+                                   reduce_only=True, reason=leg)
+            order["leg"]   = leg
+            order["armed"] = False
+            self.place_resting(order)
+            if order["status"] == "resting":
+                legs.append(order)
+
+        if len(legs) == 2:
+            legs[0]["pair"], legs[1]["pair"] = legs[1]["id"], legs[0]["id"]
+
+        self.arm()
+        return [order["id"] for order in legs]
+
+
+    def arm(self):
+        for order in self.resting():
+            if not order["armed"] and self.position[order["instrument"]] != 0.0:
+                order["armed"] = True
+                self.log("armed", order, order["leg"])
+
+
+    def cancel(self, order_id, reason="cancelled by the account"):
         order = self.orders.get(order_id)
-        if order is None or order["status"] != "pending":
+        if order is None or order["status"] not in ("pending", "resting"):
             return False
 
+        if order["status"] == "pending":
+            self.pending.remove(order)
+        else:
+            self.slots[self.slots.index(order)] = None
+
         order["status"] = "cancelled"
-        self.pending.remove(order)
-        self.log("cancelled", order, "cancelled by the account")
+        self.log("cancelled", order, reason)
         return True
 
 
     def cancel_all(self, instrument=None):
-        waiting = [o for o in self.pending
-                   if instrument is None or o["instrument"] == instrument]
-        for order in waiting:
+        live = [o for o in self.pending + self.resting()
+                if instrument is None or o["instrument"] == instrument]
+        for order in live:
             self.cancel(order["id"])
 
-        return len(waiting)
+        return len(live)
+
+
+    def replace(self, order_id, price=None, trigger=None, size=None):
+        """Order types: the same order moved, keeping its id and its OCO pair. A
+        successful replace takes the first free slot; a refused one changes nothing."""
+        old = self.orders.get(order_id)
+        if old is None or old["status"] != "resting":
+            return None
+
+        moved = dict(old)
+        if price is not None:
+            moved["price"] = float(price)
+        if trigger is not None:
+            moved["trigger"] = float(trigger)
+
+        if size is not None:
+            moved["size"] = float(size) + old["filled"]
+        if moved["kind"] == "limit" and price is not None:
+            # a moved limit is a new placement for maker or taker and for post_only
+            moved["placed"], moved["seen"] = self.t, 0
+
+        why = self.resting_refusal(moved, replacing=old)
+        if why is not None:
+            self.log("refused", old, f"replace: {why}")
+            return None
+
+        slot = self.slots.index(old)
+        self.slots[slot] = None
+        old.update(moved)
+        self.rest(old)
+        self.log("placed", old, "replace")
+
+        return old["id"]
 
 
     def target(self, weights, tolerance=0.0):
@@ -300,9 +498,7 @@ class Simulator:
         if self.decided == self.t:
             for order in self.target_legs:
                 if order["status"] == "pending":
-                    order["status"] = "cancelled"
-                    self.pending.remove(order)
-                    self.log("cancelled", order, "replaced by a later target")
+                    self.cancel(order["id"], "replaced by a later target")
 
         self.decided, self.target_legs = self.t, []
         equity = self.equity()
@@ -332,7 +528,7 @@ class Simulator:
 
         for legs, reduce_only in ((reducing, True), (growing, False)):
             for i, leg in legs:
-                order_id = self.place(i, "buy" if leg > 0.0 else "sell", abs(leg),
+                order_id = self.order(i, "buy" if leg > 0.0 else "sell", abs(leg),
                                       reduce_only=reduce_only, reason="rebalance")
                 self.target_legs.append(self.orders[order_id])
 
@@ -360,7 +556,9 @@ class Simulator:
         # 2 funding between rows and 3 the liquidation path are not in this scope
         self.delist(t)
         fees += self.fill_market_orders(t)       # 4
-        # 5 to 8, resting orders to funding at the closes, are not in this scope
+        self.arm()
+        fees += self.fill_resting_orders(t)      # 5
+        # 6 to 8, exits on a liquidating bar, the check and funding, are not here
         self.see_row(t)                          # 9
         self.ledger.append(self.row(t, fees))
 
@@ -398,11 +596,11 @@ class Simulator:
             if self.delisted[i] or inst.delist is None or self.times[t] < inst.delist:
                 continue
 
+            for order in [o for o in self.pending + self.resting()
+                          if o["instrument"] == i]:
+                self.cancel(order["id"], "delist")
+
             self.delisted[i] = True
-            for order in [o for o in self.pending if o["instrument"] == i]:
-                order["status"] = "cancelled"
-                self.pending.remove(order)
-                self.log("cancelled", order, "delist")
 
             q = self.position[i]
             if q != 0.0:
@@ -426,10 +624,13 @@ class Simulator:
                 asked = order["value"] / price
             else:
                 asked = order["size"] - order["filled"]
-            size = self.clamp(i, order["side"], asked, price, order["reduce_only"])
-            if bar.volume <= 0.0 or size <= DUST:
+            size = self.clamp(i, order["side"], asked, price, order["reduce_only"],
+                              self.venue.taker)
+            if bar.volume <= 0.0 or size <= DUST or (order["tif"] == "fok"
+                                                     and size < asked - DUST):
                 order["status"] = "expired"
-                self.log("not_filled", order, "nothing could fill on its bar")
+                self.log("not_filled", order, "nothing could fill on its bar"
+                         if order["tif"] != "fok" else "fok: the whole size could not")
                 continue
 
             if size < asked - DUST:
@@ -450,8 +651,150 @@ class Simulator:
         return fees
 
 
-    def clamp(self, i, side, size, price, reduce_only):
-        """Wallets and Orders: every clamp a market order passes, in the page's order."""
+    def side_of(self, order):
+        """A bracket leg's side is taken from the position it finds (Order types)."""
+        if order["side"] is not None:
+            return order["side"]
+
+        q = self.position[order["instrument"]]
+        if q == 0.0:
+            return None
+        return "sell" if q > 0.0 else "buy"
+
+
+    def offer(self, order, bar):
+        """Whether the bar reaches a resting order, and if so at what price, maker or
+        taker (Order types, Maker, taker and the book, Fills, Limits)."""
+        side = self.side_of(order)
+        if side is None or not order["armed"]:
+            return None
+
+        inst = self.instruments[order["instrument"]]
+        if order["kind"] == "limit":
+            price = order["price"]
+            # through needs the market a tick past the limit; prices sit on the tick,
+            # so half a tick past is a whole one without a float landing short of it
+            past = (price - bar.low) if side == "buy" else (bar.high - price)
+            if self.venue.limit == "through":
+                reached = past >= inst.tick / 2.0
+            else:
+                reached = past >= 0.0
+            opened_through = bar.open <= price if side == "buy" else bar.open >= price
+            if not reached:
+                return None
+            first = order["seen"] == 0
+            return price, first and opened_through
+
+        trigger = order["trigger"]
+        if side == "buy":
+            if bar.high < trigger:
+                return None
+            price = min(max(trigger, bar.open), bar.high)
+        else:
+            if bar.low > trigger:
+                return None
+            price = max(min(trigger, bar.open), bar.low)
+
+        return price, True
+
+
+    def fill_resting_orders(self, t):
+        """The step, 5: resting orders in slot order, a position's exits reordered by
+        the PnL per unit each would realize, worst first unless optimistic."""
+        fees   = 0.0
+        offers = []
+        for slot, order in enumerate(self.slots):
+            if order is None:
+                continue
+            bar = self.bars[t][order["instrument"]]
+            if bar is None:
+                continue                     # it waits for its instrument's next bar
+
+            if order["kind"] == "limit" and order["post_only"] and order["seen"] == 0:
+                side = order["side"]
+                if (side == "buy" and bar.open <= order["price"]) or \
+                        (side == "sell" and bar.open >= order["price"]):
+                    self.cancel(order["id"], "post_only: the first bar opened through")
+                    continue
+            if bar.volume <= 0.0:
+                continue                     # a bar with no volume fills nothing
+
+            found = self.offer(order, bar)
+            if found is not None:
+                offers.append((slot, order, found[0], found[1]))
+
+        offers = self.worst_first(offers)
+        for slot, order, price, taker in offers:
+            if order["status"] != "resting":
+                continue                     # its OCO partner filled first
+
+            i    = order["instrument"]
+            side = self.side_of(order)
+            if side is None:
+                continue
+
+            remaining = (abs(self.position[i]) if order["size"] is None
+                         else order["size"] - order["filled"])
+            rate = self.venue.taker if taker else self.venue.maker
+            size = self.clamp(i, side, remaining, price, order["reduce_only"], rate)
+            if order["tif"] == "fok" and size < remaining - DUST:
+                continue
+            if size <= DUST:
+                continue
+            if size < remaining - DUST:
+                self.log("clamped", order, f"{size} of the {remaining} asked fits",
+                         size=size)
+
+            reason = order["leg"] or order["reason"]
+            fees += self.apply(i, side, size, price, rate, taker, order, reason,
+                               reference=price)
+            order["filled"] += size
+            if order["pair"] is not None:
+                self.cancel(order["pair"], "its OCO partner filled")
+            done = (self.position[i] == 0.0 if order["size"] is None
+                    else order["size"] - order["filled"] <= DUST)
+            if done:
+                order["status"] = "filled"
+                self.slots[self.slots.index(order)] = None
+
+        for order in self.resting():
+            if self.bars[t][order["instrument"]] is None:
+                continue
+            order["seen"] += 1
+            # ioc and fok take one bar, filled or not, where gtc waits for the next
+            if order["tif"] in ("ioc", "fok"):
+                order["status"] = "expired"
+                self.slots[self.slots.index(order)] = None
+                self.log("expired", order, f"{order['tif']}: one bar")
+
+        return fees
+
+
+    def worst_first(self, offers):
+        """The step, 5: only a position's exits reorder, among the slots they hold."""
+        def realize(item):
+            _, order, price, _ = item
+            i       = order["instrument"]
+            q       = self.position[i]
+            side    = self.side_of(order)
+            reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
+            if not reduces:
+                return None
+            return (price - self.entry[i]) * (1.0 if q > 0.0 else -1.0)
+
+        reverse = self.venue.intrabar == "optimistic"
+        out     = list(offers)
+        for i in range(len(self.instruments)):
+            places = [k for k, item in enumerate(offers)
+                      if item[1]["instrument"] == i and realize(item) is not None]
+            ordered = sorted(places, key=lambda k: realize(offers[k]), reverse=reverse)
+            for place, take in zip(places, ordered):
+                out[place] = offers[take]
+        return out
+
+
+    def clamp(self, i, side, size, price, reduce_only, rate):
+        """Wallets and Orders: every clamp a fill passes, in the page's order."""
         q = self.position[i]
 
         if reduce_only:
@@ -464,7 +807,7 @@ class Simulator:
             if side == "sell":
                 size = min(size, max(q, 0.0))
             else:
-                affordable = self.spot_cash / (price * (1.0 + self.venue.taker))
+                affordable = self.spot_cash / (price * (1.0 + rate))
                 size       = min(size, max(affordable, 0.0))
 
         return size
