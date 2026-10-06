@@ -1404,10 +1404,22 @@ class Simulator:
         return leg.start + (s - leg.frac) / (1.0 - leg.frac) * (leg.end - leg.start)
 
 
+    @classmethod
+    def ends(cls, leg, a, b):
+        """A check leg's prices at the two ends of the piece from a to b. On the last
+        piece, which has no length, a leg that joined at the path's end runs its whole
+        adverse move, so the new side of a flip filled at the old side's extreme still
+        goes to its own adverse extreme (The path)."""
+        if a == b == 1.0 and leg.frac >= 1.0:
+            return leg.start, leg.end
+        return cls.price_at(leg, a), cls.price_at(leg, b)
+
+
     def pieces(self, legs):
         """The check's path, cut where a leg joins or leaves: on each piece the legs
-        held through it move in step, and a leg filled at the adverse extreme itself
-        is tested on a last piece of no length."""
+        held through it move in step, and a leg that joined at the path's end, filled
+        at its own adverse extreme or flipped at the old side's, is tested on a last
+        piece of no length."""
         cuts = {0.0, 1.0} | {leg.frac for leg in legs}
         cuts |= {leg.leave for leg in legs if leg.leave is not None}
         cuts  = sorted(cuts)
@@ -1415,8 +1427,8 @@ class Simulator:
         if any(leg.frac >= 1.0 for leg in legs):
             spans.append((1.0, 1.0))
 
-        path = [[Leg(leg.instrument, leg.q, leg.entry, self.price_at(leg, a),
-                     self.price_at(leg, b)) for leg in legs
+        path = [[Leg(leg.instrument, leg.q, leg.entry, *self.ends(leg, a, b))
+                 for leg in legs
                  if leg.frac <= a and (leg.leave is None or leg.leave >= b)]
                 for a, b in spans]
         return path, spans
@@ -1451,13 +1463,15 @@ class Simulator:
 
         trigger, (k, u) = result
         a, b = spans[k]
-        s = a + u * (b - a)
-
         self.hit("a liquidation by the check")
         for i, charge in counted:
             self.pay_funding(i, charge)          # an event counted is an event paid
 
-        closes = [(leg.instrument, leg.q, self.price_at(leg, s)) for leg in held]
+        closes = []
+        for leg in held:
+            start, end = self.ends(leg, a, b)
+            closes.append((leg.instrument, leg.q, start + u * (end - start)))
+
         self.liquidate(closes, t, path, wallet, trigger)
         return True
 
