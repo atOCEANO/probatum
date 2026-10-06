@@ -3,19 +3,21 @@
 //! step against the NEW bar, marks the account, and returns the new `State`. An
 //! order decided on one bar fills on the next, never the bar the decision saw.
 //!
-//! Within a step the order of events follows the bar, and the fence comes before
-//! all of it. The price the position's margin runs out at is worked out before
-//! any order is resolved: a bar that OPENED past it killed the account before it
-//! opened, so the forced close happens first and nothing on that bar fills, and
-//! any other bar is clipped there, so an order that would have filled beyond the
-//! fence never triggers. Then, against that clipped candle: 1. pending market
-//! orders fill at the open, 2. resting limit and stop orders fill against the
-//! range, 3. funding is charged at each interval boundary and marked at the
-//! clipped close, 4. liquidation is checked at the bar's own adverse extreme.
+//! Within a step the order of events follows the bar. Funding stamped between the
+//! last row and this one comes first, at the last mark, and then the fence. The
+//! price the position's margin runs out at is worked out before any order is
+//! resolved: a bar that OPENED past it killed the account before it opened, so the
+//! forced close happens first and nothing on that bar fills, and any other bar is
+//! clipped there, so an order that would have filled beyond the fence never
+//! triggers. Then, against that clipped candle: 1. pending market orders fill at
+//! the open, 2. resting limit and stop orders fill against the range, 3.
+//! liquidation is checked at the bar's own adverse extreme, counting any debit
+//! stamped inside the bar, 4. the funding the row owns is charged at its close on
+//! the position still held, and an account a debit takes to zero is closed there.
 //! Equity is then marked at the close. A fill that reduces a perp is bounded once
 //! more as it lands, because the fence was read from the position carried into the
-//! bar and one grown or opened during the bar has none of its own
-//! (ADRs 0017, 0018).
+//! bar and one grown or opened during the bar has none of its own (ADRs 0017, 0018,
+//! 0020).
 
 #[cfg(test)]
 mod fixtures;
@@ -244,8 +246,20 @@ impl Engine {
     pub fn step(&mut self) -> State {
         let advanced = self.tick + 1 < self.candles.len();
         if advanced {
+            let last = self.current_close();
             self.tick += 1;
             let bar = self.candles.get(self.tick).expect("tick in range");
+
+            // funding stamped between the last row and this one, across a closure or
+            // a hole in the data, is charged at the last mark before anything else,
+            // so a debit that takes the account to its trigger liquidates it at the
+            // start of the gap, there if it is dead already and on the gap below if
+            // the open lies past the fence (ADR 0020)
+            self.charge_between(last);
+            if self.account.is_bust_at(Price(last)) {
+                self.liquidate_at(Price(last));
+                self.bust = true;
+            }
 
             // 0. the price a position's margin runs out at is a point on this bar's
             //    own path, and everything past it belongs to a market the account
@@ -278,32 +292,30 @@ impl Engine {
             // 2. resting limit and stop orders fill against the bar range
             self.resolve_resting(&resolving);
 
-            // 3. funding at each interval boundary, on the position held at the
-            //    funding event (so after this bar's fills, not the position carried
-            //    into the bar), marked at the close, and before liquidation so a
-            //    funding debit can bust the account this bar (ADR 0020).
-            //
-            //    At the close of the RESOLVING bar, which is the fenced one: this
-            //    read `bar.close` and so marked a liquidated account at a price on
-            //    the far side of the point its margin ran out. `fenced` calls
-            //    itself the honest picture of a market the account was not in, and
-            //    every order on the bar is resolved against it; funding was the one
-            //    event that reached past it. A short liquidated on a bar that kept
-            //    rising was CREDITED for the whole rise, which overstates
-            //    funding_paid on any run with a liquidation in it and, at the
-            //    margin, hands the account enough to clear the bust check it had
-            //    already failed (ADR 0020)
-            self.charge_funding(&resolving);
-
-            // 4. liquidation at the bar's adverse extreme (long at the low, short
-            //    at the high)
+            // 3. liquidation at the bar's adverse extreme (long at the low, short
+            //    at the high), with the debits stamped inside the bar counted toward
+            //    it; an account it liquidates pays what it counted and nothing more
             let adverse = if self.account.position.qty.get() >= 0.0 {
                 bar.low
             } else {
                 bar.high
             };
-            if self.account.is_bust_at(Price(adverse)) {
+            let debits = self.debits_inside(bar.close);
+            if self.dead_at(adverse, debits) {
+                self.pay_debits_inside(bar.close);
                 self.liquidate();
+                self.bust = true;
+            }
+
+            // 4. the funding the row owns, at its close and after the check, because
+            //    a stamp at the bar's end comes after every price the bar printed:
+            //    an account the check closed out holds nothing at the stamp and pays
+            //    nothing. emsl charged it before the check, at the clipped close,
+            //    which liquidated accounts on payments not yet made. An account a
+            //    debit takes to its trigger here is closed at the close (ADR 0020)
+            self.charge_funding(bar.close);
+            if self.account.is_bust_at(Price(bar.close)) {
+                self.liquidate_at(Price(bar.close));
                 self.bust = true;
             }
         }

@@ -33,7 +33,6 @@ NOT_IN_THE_ENGINE = {
     "a post_only limit its first bar opened through",
     "an order trading against the account's own refused",
     "a favourable exit held back on a liquidating bar",
-    "a liquidation at the closes",
     "a wallet that fees left below zero set to zero",
 }
 
@@ -61,9 +60,50 @@ def walk(rng, n):
     return bars
 
 
-def config(rng):
-    market = rng.choice(["spot", "perp"])
-    perp   = market == "perp"
+def clock(rng, n):
+    """Open times an hour apart, but for a closure now and then of two to six hours,
+    as a market that closes or a feed with a hole in it has."""
+    times, at = [], 0
+    for _ in range(n):
+        times.append(at)
+        at += HOUR * (rng.choice([2, 3, 6]) if rng.random() < 0.1 else 1)
+
+    return times
+
+
+def stamps(rng, times):
+    """Funding events for a venue that charges from its own history: at a row's end,
+    inside a row, across a closure, and a fraction of a second off a boundary, where
+    it is taken as the boundary, each at its own rate."""
+    events = []
+    for _ in range(rng.randint(1, len(times))):
+        row   = rng.randrange(len(times))
+        end   = times[row] + HOUR
+        after = times[row + 1] if row + 1 < len(times) else end
+        stamp = rng.choice([
+            end,
+            times[row] + rng.randint(1, HOUR - 1),
+            rng.randint(end, max(after, end)),
+            end + rng.choice([-1, 1]) * rng.randint(1, 10**9 - 1),
+        ])
+        events.append((stamp, rng.choice([0.0001, 0.02, -0.01, 0.1])))
+
+    return events
+
+
+def config(rng, times):
+    market  = rng.choice(["spot", "perp"])
+    perp    = market == "perp"
+    funding = ("none",)
+    if perp:
+        rate    = rng.choice([0.0001, 0.02, -0.01, 0.1])
+        funding = rng.choice([
+            ("none",),
+            ("every_bars", 3, rate),
+            ("every", rng.choice([0.5, 1.0, 3.0, 8.0]), rate),
+            ("data", stamps(rng, times)),
+        ])
+
     return dict(
         market=market,
         quote=rng.choice([1_000.0, 10_000.0]),
@@ -74,8 +114,7 @@ def config(rng):
         # the book and on the pending queue gets reached
         max_open_orders=rng.choice([1, 2, 8]),
         leverage=rng.choice([0.0, 3.0, 10.0]) if perp else 10.0,
-        funding_rate=rng.choice([0.0, 0.0001, 0.01]) if perp else 0.0,
-        funding_interval=rng.choice([0, 3]) if perp else 0,
+        funding=funding,
     )
 
 
@@ -84,13 +123,14 @@ def config(rng):
 KINDS = os.environ.get(
     "KINDS",
     "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,"
-    "cancel_all,reduce_limit,stop_entry",
+    "cancel_all,reduce_limit,stop_entry,exits",
 ).split(",")
 
 # the kinds that only mean something with a live position or order to act on; a run
 # in which one never met anything agreed about nothing
 TRACKED = [kind for kind in ("close", "reduce", "cancel", "replace", "cancel_all",
-                             "ioc_limit", "fok_limit", "reduce_limit", "stop_entry")
+                             "ioc_limit", "fok_limit", "reduce_limit", "stop_entry",
+                             "exits")
            if kind in KINDS]
 
 
@@ -125,7 +165,24 @@ def stop_price(close, u):
     return close * (0.8 + 0.4 * u)
 
 
-def make_engine(bars, cfg):
+def engine_funding(source):
+    """The engine's arguments for a funding source."""
+    if source[0] == "every_bars":
+        return dict(funding_interval=source[1], funding_rate=source[2])
+
+    if source[0] == "every":
+        return dict(funding_hours=source[1], funding_rate=source[2])
+
+    if source[0] == "data":
+        return dict(
+            funding_times=np.array([stamp for stamp, _ in source[1]], dtype=np.int64),
+            funding_rates=np.array([rate for _, rate in source[1]], dtype=np.float64),
+        )
+
+    return {}
+
+
+def make_engine(bars, cfg, times):
     array = np.array([list(bar) for bar in bars], dtype=np.float64)
     return probatum.Engine(
         array,
@@ -138,22 +195,27 @@ def make_engine(bars, cfg):
         max_open_orders   = cfg["max_open_orders"],
         leverage          = cfg["leverage"],
         impact            = 0.0,
-        funding_rate      = cfg["funding_rate"],
-        funding_interval  = cfg["funding_interval"],
+        times             = np.array(times, dtype=np.int64),
         report            = True,
+        **engine_funding(cfg["funding"]),
     )
 
 
-def funding_of(cfg):
-    if cfg["funding_interval"] > 0 and cfg["funding_rate"] != 0.0:
-        return ("every_bars", cfg["funding_interval"], cfg["funding_rate"])
-    return "none"
+def make_reference(bars, cfg, times, interval=None, events=None):
+    """The reference over one instrument on the clock `times`. `events`, when given,
+    are the venue's own funding events in place of the configured source, which a
+    batch env started part way in needs for a schedule counted in bars."""
+    source = cfg["funding"]
+    if events is None and source[0] == "data":
+        events = source[1]
 
+    if events is not None:
+        funding = "data"
+    elif source[0] in ("every_bars", "every"):
+        funding = source
+    else:
+        funding = "none"
 
-def make_reference(bars, cfg, funding=None, times=None):
-    """The reference over one instrument on an hourly clock. `funding`, when given,
-    is the venue's own events, in place of the schedule every n bars."""
-    times = [k * HOUR for k in range(len(bars))] if times is None else times
     kind  = "spot" if cfg["market"] == "spot" else "linear"
     venue = Venue(
         balance         = cfg["quote"],
@@ -162,11 +224,20 @@ def make_reference(bars, cfg, funding=None, times=None):
         leverage        = cfg["leverage"],
         max_open_orders = cfg["max_open_orders"],
         slippage        = cfg["slippage_bps"],
-        funding         = funding_of(cfg) if funding is None else "data",
+        funding         = funding,
     )
 
-    return Simulator(times, [[bar] for bar in bars], [Instrument("X", kind=kind)],
-                     venue, funding=funding)
+    if events is not None:
+        events = [(stamp, None, rate) for stamp, rate in events]
+
+    return Simulator(
+        times,
+        [[bar] for bar in bars],
+        [Instrument("X", kind=kind)],
+        venue,
+        interval = interval,
+        funding  = events,
+    )
 
 
 def resting(sim, order_id):
@@ -186,7 +257,7 @@ def place(engine, sim, action, close, mine, theirs, reached=None):
         # what the action had to act on when it was placed: one that never meets a
         # live position or order agrees with anything, and after the fact there is
         # no telling that from a real agreement
-        if kind in ("close", "reduce") and sim.position[0] != 0.0:
+        if kind in ("close", "reduce", "exits") and sim.position[0] != 0.0:
             reached[kind] += 1
         elif kind in ("cancel", "replace") and theirs and resting(sim, theirs[0]):
             reached[kind] += 1
@@ -216,6 +287,27 @@ def place(engine, sim, action, close, mine, theirs, reached=None):
     elif kind == "close":
         mine_got   = engine.close()
         theirs_got = sim.close(0)
+    elif kind == "exits":
+        # a protective stop and a take-profit on the position held, which one wide
+        # bar can reach both of, so the worse is tried first
+        held = sim.position[0]
+        if held == 0.0:
+            return
+
+        side = "sell" if held > 0.0 else "buy"
+        low, high = close * (0.8 + 0.19 * u), close * (1.01 + 0.19 * u)
+        trigger, price = (low, high) if held > 0.0 else (high, low)
+        placed = [
+            (engine.stop(side, size, trigger, True),
+             sim.order(0, side, size, stop=trigger, reduce_only=True)),
+            (engine.order(side, size, "limit", price, None, True, False, "gtc"),
+             sim.order(0, side, size, limit=price, reduce_only=True)),
+        ]
+        for got_mine, got_theirs in placed:
+            if got_mine is not None:
+                mine.append(got_mine)
+            if resting(sim, got_theirs):
+                theirs.append(got_theirs)
     elif kind == "cancel":
         if mine and theirs:
             engine.cancel(mine.pop(0))
@@ -254,24 +346,20 @@ def place(engine, sim, action, close, mine, theirs, reached=None):
             reached[kind] += 1
 
 
-def run(bars, cfg, actions, reached=None):
+def run(bars, times, cfg, actions, reached=None):
     """Both simulators through the case, a row of each per bar."""
-    engine, sim = make_engine(bars, cfg), make_reference(bars, cfg)
+    engine = make_engine(bars, cfg, times)
+    sim    = make_reference(bars, cfg, times)
     engine.reset()
 
-    mine, theirs, rows, ran_out = [], [], [], set()
+    mine, theirs, rows = [], [], []
     funded = 0.0
 
     for t, action in enumerate(actions):
         place(engine, sim, action, bars[t].close, mine, theirs, reached)
-        bust, liquidations = engine.is_bust(), sim.liquidations
         state = engine.step()
         sim.step()
         funded += sim.ledger[-1]["funding"]
-
-        if engine.is_bust() != bust or sim.liquidations != liquidations or sim.clipped:
-            ran_out.add(t + 1)
-
         cash = sim.spot_cash if cfg["market"] == "spot" else sim.margin_cash
         rows.append(((state["position"], state["equity"], state["quote"],
                       state["funding_paid"]),
@@ -279,22 +367,14 @@ def run(bars, cfg, actions, reached=None):
         if engine.done():
             break
 
-    return rows, engine, sim, ran_out
+    return rows, engine, sim
 
 
-def set_aside(sim, cfg, ran_out):
-    """Why a case is outside what both simulators model, or None. `ran_out` holds
-    the bars the margin ran out on, clipped or liquidated on either side."""
+def set_aside(sim):
+    """The first rule the case reached that the engine does not have yet, or None."""
     for rule in sorted(NOT_IN_THE_ENGINE):
         if sim.reached[rule]:
             return rule
-
-    # the engine charges a bar's funding before its liquidation check and at the
-    # clipped close, the Specification after the check and at the close, so the
-    # two agree on a funding bar only where the margin held all through it
-    if funding_of(cfg) != "none" and any(
-            t % cfg["funding_interval"] == 0 for t in ran_out):
-        return "funding on a bar the margin ran out on"
 
     return None
 
@@ -333,18 +413,19 @@ def compare(cases, seed):
 
     for case in range(cases):
         bars    = walk(rng, rng.randint(8, 40))
-        cfg     = config(rng)
+        times   = clock(rng, len(bars))
+        cfg     = config(rng, times)
         actions = plan(rng, bars, cfg)
         counted = collections.Counter()
 
         try:
-            rows, _, sim, ran_out = run(bars, cfg, actions, counted)
+            rows, _, sim = run(bars, times, cfg, actions, counted)
         except Exception as exc:
             disagreed.append((case, cfg, bars, actions,
                               f"raised: {type(exc).__name__}: {exc}"))
             continue
 
-        why = set_aside(sim, cfg, ran_out)
+        why = set_aside(sim)
         if why is not None:
             aside[why] += 1
             continue

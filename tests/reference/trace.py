@@ -21,32 +21,32 @@ import sys
 from . import differential as D
 
 
-def diverges(bars, cfg, actions):
+def diverges(bars, times, cfg, actions):
     """The first bar the two disagree on, or None. A case outside what both model
     is not a disagreement, so a shrink that wanders out of it is not one either."""
     try:
-        rows, _, sim, ran_out = D.run(bars, cfg, actions)
+        rows, _, sim = D.run(bars, times, cfg, actions)
     except Exception:
         return None
 
-    if D.set_aside(sim, cfg, ran_out) is not None:
+    if D.set_aside(sim) is not None:
         return None
 
     found = D.first_difference(rows, cfg)
     return None if found is None else found[0]
 
 
-def shrink(bars, cfg, actions):
+def shrink(bars, times, cfg, actions):
     """Drop bars off the tail and actions from anywhere, while it still diverges."""
-    at = diverges(bars, cfg, actions)
+    at = diverges(bars, times, cfg, actions)
     if at is None:
-        return bars, actions, None
+        return bars, times, actions, None
 
     # tail first: nothing after the divergence can be causing it
     keep = at + 2
     while keep < len(bars):
-        if diverges(bars[:keep], cfg, actions[:keep - 1]) is not None:
-            bars, actions = bars[:keep], actions[:keep - 1]
+        if diverges(bars[:keep], times[:keep], cfg, actions[:keep - 1]) is not None:
+            bars, times, actions = bars[:keep], times[:keep], actions[:keep - 1]
             break
         keep += 1
 
@@ -59,20 +59,21 @@ def shrink(bars, cfg, actions):
                 continue
             trial = list(actions)
             trial[i] = None
-            if diverges(bars, cfg, trial) is not None:
+            if diverges(bars, times, cfg, trial) is not None:
                 actions = trial
                 changed = True
 
-    return bars, actions, diverges(bars, cfg, actions)
+    return bars, times, actions, diverges(bars, times, cfg, actions)
 
 
 def rounded(value):
     return round(value, 6) if isinstance(value, float) else value
 
 
-def trace(bars, cfg, actions):
+def trace(bars, times, cfg, actions):
     """Bar by bar, both sides, so the exact step that parts them is visible."""
-    engine, sim = D.make_engine(bars, cfg), D.make_reference(bars, cfg)
+    engine = D.make_engine(bars, cfg, times)
+    sim    = D.make_reference(bars, cfg, times)
     engine.reset()
 
     mine, theirs, rows = [], [], []
@@ -121,17 +122,18 @@ def main():
 
     for case in range(cases):
         bars    = D.walk(rng, rng.randint(8, 40))
-        cfg     = D.config(rng)
+        times   = D.clock(rng, len(bars))
+        cfg     = D.config(rng, times)
         actions = D.plan(rng, bars, cfg)
-        if diverges(bars, cfg, actions) is None:
+        if diverges(bars, times, cfg, actions) is None:
             continue
 
-        bars, actions, at = shrink(bars, cfg, actions)
-        rows, engine, sim = trace(bars, cfg, actions)
+        bars, times, actions, at = shrink(bars, times, cfg, actions)
+        rows, engine, sim = trace(bars, times, cfg, actions)
 
         out = dict(
             seed=seed, case=case, config=cfg, diverges_at_row=at,
-            bars=[list(b) for b in bars], actions=actions, rows=rows,
+            bars=[list(b) for b in bars], times=times, actions=actions, rows=rows,
             engine_trades=[{k: rounded(v) for k, v in trade.items()}
                            for trade in (engine.trades() or [])],
             reference_fills=[{k: rounded(v) for k, v in fill.items()}

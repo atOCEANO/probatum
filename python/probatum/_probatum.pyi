@@ -25,6 +25,9 @@ class Engine:
         funding_rate: float = ...,
         funding_interval: int = ...,
         times: Optional[np.ndarray] = ...,
+        funding_hours: float = ...,
+        funding_times: Optional[np.ndarray] = ...,
+        funding_rates: Optional[np.ndarray] = ...,
     ) -> None: ...
     @property
     def shape(self) -> tuple[int, int]: ...
@@ -108,6 +111,9 @@ class Batch:
         slippage_bps_per_env: Optional[np.ndarray] = ...,
         impact_per_env: Optional[np.ndarray] = ...,
         times: Optional[np.ndarray] = ...,
+        funding_hours: float = ...,
+        funding_times: Optional[np.ndarray] = ...,
+        funding_rates: Optional[np.ndarray] = ...,
     ) -> None: ...
     def __len__(self) -> int: ...
     def done(self) -> bool: ...

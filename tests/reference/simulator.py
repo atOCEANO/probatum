@@ -1827,6 +1827,10 @@ class Simulator:
             else:
                 price, costs = reference, dict(spread=0.0, slippage=0.0, impact=0.0,
                                                adjustment=0.0, reference=reference)
+                # counted where it sets the price, since a cap read at the price it
+                # set can leave nothing to fill
+                if reference != order["price"]:
+                    self.hit("a limit held to the prices traded since the last close")
 
             rate = self.venue.taker if taker else self.venue.maker
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
@@ -1848,8 +1852,6 @@ class Simulator:
                 if not taker and (bar.open <= order["price"] if side == "buy"
                                   else bar.open >= order["price"]):
                     self.hit("a limit on the book its bar opened through")
-                if reference != order["price"]:
-                    self.hit("a limit held to the prices traded since the last close")
 
             if order["leg"]:
                 self.hit("a bracket leg filled")

@@ -662,6 +662,70 @@ def test_candles_without_times_have_no_annualization_to_report():
     assert probatum._probatum.periods_per_year(np.array([0], dtype=np.int64)) is None
 
 
+def hourly(rows):
+    return np.full((rows, 5), 100.0), np.arange(rows, dtype=np.int64) * HOUR
+
+
+def test_funding_every_eight_hours_is_charged_at_the_close_of_the_bar_ending_then():
+    # the 08:00 event belongs to the bar that opened at 07:00, and its venue-data
+    # twin stamped a hair later lands on the same bar (ADR 0020)
+    candles, times = hourly(10)
+    sources = [
+        dict(funding_hours=8.0, funding_rate=0.001),
+        dict(funding_times=np.array([8 * HOUR + 3_000_000], dtype=np.int64),
+             funding_rates=np.array([0.001])),
+    ]
+
+    for source in sources:
+        eng = probatum.Engine(
+            candles,
+            market    = "perp",
+            quote     = 10_000.0,
+            fee_taker = 0.0,
+            times     = times,
+            **source,
+        )
+
+        eng.reset()
+        eng.market_buy(1.0)
+        paid = [eng.step()["funding_paid"] for _ in range(8)]
+
+        assert paid == [0.0] * 6 + [pytest.approx(0.1)] * 2, source
+
+
+def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
+    candles, times = hourly(4)
+
+    with pytest.raises(ValueError, match="times: none"):
+        probatum.Engine(candles, market="perp", funding_hours=8.0)
+
+    with pytest.raises(ValueError, match="funding: more than one source"):
+        probatum.Engine(
+            candles,
+            market           = "perp",
+            times            = times,
+            funding_hours    = 8.0,
+            funding_interval = 3,
+        )
+
+    with pytest.raises(ValueError, match="funding_times: given without funding_rates"):
+        probatum.Batch(
+            candles,
+            num_envs      = 1,
+            times         = times,
+            funding_times = np.array([HOUR], dtype=np.int64),
+        )
+
+    with pytest.raises(ValueError, match="funding_rates: 2 for 1 funding_times"):
+        probatum.Engine(
+            candles,
+            market        = "perp",
+            times         = times,
+            funding_times = np.array([HOUR], dtype=np.int64),
+            funding_rates = np.array([0.1, 0.1]),
+        )
+
+
 def test_a_clock_out_of_order_or_short_of_a_bar_is_refused():
     with pytest.raises(ValueError, match="times: row 2 opens at 3600000000000"):
         engine(times=np.array([0, 2 * HOUR, HOUR], dtype=np.int64))

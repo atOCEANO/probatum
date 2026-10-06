@@ -21,6 +21,7 @@ use pyo3::types::{PyDict, PyList};
 
 use probatum_core::candle::floats;
 use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
+use probatum_engine::schedule::every;
 use probatum_engine::{Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 
 /// Parse a market string into the core enum, case-insensitively.
@@ -152,6 +153,77 @@ fn candles_from_array(
             Ok(Candles::on_clock(bars, clock))
         }
     }
+}
+
+/// `series` with a time-stamped funding source placed on its clock: every
+/// `funding_hours` from 00:00 UTC at `funding_rate`, or the events `funding_times`
+/// and `funding_rates`. Refused unless at most one source is given, counting
+/// `funding_interval`, and a stamped one comes with the clock it needs (ADR 0020).
+fn place_funding(
+    series: Candles,
+    funding_rate: f64,
+    funding_interval: usize,
+    funding_hours: f64,
+    funding_times: Option<PyReadonlyArray1<'_, i64>>,
+    funding_rates: Option<PyReadonlyArray1<'_, f64>>,
+) -> PyResult<Candles> {
+    if !(funding_hours.is_finite() && funding_hours >= 0.0) {
+        return Err(PyValueError::new_err(format!(
+            "funding_hours: {funding_hours}; pass the hours between events, or 0.0 for none"
+        )));
+    }
+    let stamped = match (funding_times, funding_rates) {
+        (None, None) => None,
+        (Some(times), Some(rates)) => {
+            let (times, rates) = (times.as_array(), rates.as_array());
+            if times.len() != rates.len() {
+                return Err(PyValueError::new_err(format!(
+                    "funding_rates: {} for {} funding_times; pass one rate per time",
+                    rates.len(),
+                    times.len()
+                )));
+            }
+            if let Some(row) = rates.iter().position(|rate| !rate.is_finite()) {
+                return Err(PyValueError::new_err(format!(
+                    "funding_rates: row {row} is {}; pass finite rates",
+                    rates[row]
+                )));
+            }
+            Some(
+                times
+                    .iter()
+                    .copied()
+                    .zip(rates.iter().copied())
+                    .collect::<Vec<_>>(),
+            )
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(PyValueError::new_err(
+                "funding_times: given without funding_rates, or the other way round; pass \
+                 both or neither",
+            ))
+        }
+    };
+    let sources = [funding_interval > 0, funding_hours > 0.0, stamped.is_some()];
+    if sources.iter().filter(|&&given| given).count() > 1 {
+        return Err(PyValueError::new_err(
+            "funding: more than one source; pass funding_interval, funding_hours or \
+             funding_times, one of them",
+        ));
+    }
+    if funding_hours == 0.0 && stamped.is_none() {
+        return Ok(series);
+    }
+    let events = match series.clock() {
+        None => {
+            return Err(PyValueError::new_err(
+                "times: none, and funding_hours and funding_times place events on the \
+                 clock; pass times=",
+            ))
+        }
+        Some(clock) => stamped.unwrap_or_else(|| every(clock, funding_hours, funding_rate)),
+    };
+    Ok(series.with_funding(&events))
 }
 
 /// The clock `times` describes, each bar's open in UTC nanoseconds. Refused unless
@@ -478,6 +550,9 @@ impl Engine {
         funding_rate = 0.0,
         funding_interval = 0,
         times = None,
+        funding_hours = 0.0,
+        funding_times = None,
+        funding_rates = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -495,6 +570,9 @@ impl Engine {
         funding_rate: f64,
         funding_interval: usize,
         times: Option<PyReadonlyArray1<'_, i64>>,
+        funding_hours: f64,
+        funding_times: Option<PyReadonlyArray1<'_, i64>>,
+        funding_rates: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<Engine> {
         let config = build_config(
             market,
@@ -510,7 +588,14 @@ impl Engine {
             funding_rate,
             funding_interval,
         )?;
-        let series = candles_from_array(candles, times)?;
+        let series = place_funding(
+            candles_from_array(candles, times)?,
+            funding_rate,
+            funding_interval,
+            funding_hours,
+            funding_times,
+            funding_rates,
+        )?;
         Ok(Engine {
             inner: BarEngine::new(series, config),
         })
@@ -936,6 +1021,9 @@ impl Batch {
         slippage_bps_per_env = None,
         impact_per_env = None,
         times = None,
+        funding_hours = 0.0,
+        funding_times = None,
+        funding_rates = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -958,6 +1046,9 @@ impl Batch {
         slippage_bps_per_env: Option<PyReadonlyArray1<'_, f64>>,
         impact_per_env: Option<PyReadonlyArray1<'_, f64>>,
         times: Option<PyReadonlyArray1<'_, i64>>,
+        funding_hours: f64,
+        funding_times: Option<PyReadonlyArray1<'_, i64>>,
+        funding_rates: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<Batch> {
         let config = build_config(
             market,
@@ -973,7 +1064,14 @@ impl Batch {
             funding_rate,
             funding_interval,
         )?;
-        let series = candles_from_array(candles, times)?;
+        let series = place_funding(
+            candles_from_array(candles, times)?,
+            funding_rate,
+            funding_interval,
+            funding_hours,
+            funding_times,
+            funding_rates,
+        )?;
 
         // Per-env cost randomization (ADR 0038): each override, if given, replaces
         // its scalar field for the matching env; absent overrides keep the scalar.

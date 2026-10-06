@@ -8,23 +8,44 @@ use std::sync::Arc;
 /// A day in nanoseconds.
 const DAY: i64 = 86_400 * 1_000_000_000;
 
-/// The open times of a series' bars, strictly increasing.
+/// The open times of a series' bars, strictly increasing, and the interval a bar
+/// spans.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clock {
     times: Arc<[i64]>,
+    interval: i64,
 }
 
 impl Clock {
-    /// A clock over `times`, each a bar's open in UTC nanoseconds. Panics unless
-    /// every time comes after the one before it; the Python boundary refuses such
-    /// a series with the row it found (ADR 0007).
+    /// A clock over `times`, each a bar's open in UTC nanoseconds, whose bars span
+    /// the median gap between them, the mean of the middle two when there is no
+    /// single middle. Panics unless every time comes after the one before it; the
+    /// Python boundary refuses such a series with the row it found (ADR 0007).
     pub fn new(times: impl Into<Arc<[i64]>>) -> Clock {
         let times = times.into();
         assert!(
             times.windows(2).all(|pair| pair[0] < pair[1]),
             "times must increase"
         );
-        Clock { times }
+        let mut gaps: Vec<i64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        gaps.sort_unstable();
+        let interval = match gaps.len() {
+            0 => 0,
+            n if n % 2 == 1 => gaps[n / 2],
+            n => (gaps[n / 2 - 1] + gaps[n / 2]) / 2,
+        };
+        Clock { times, interval }
+    }
+
+    /// The span of one bar in nanoseconds: a row ends at its open plus this, which
+    /// is where the funding it owns is stamped. Zero on a clock of one row.
+    pub fn interval(&self) -> i64 {
+        self.interval
+    }
+
+    /// Every open time, in order.
+    pub fn times(&self) -> &[i64] {
+        &self.times
     }
 
     /// The number of rows, one per bar.

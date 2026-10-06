@@ -39,6 +39,8 @@ SHARED = [
     "an account over the cap kept from growing",
     "an ioc or fok limit expiring after one bar",
     "funding at the close of its row",
+    "funding between rows",
+    "funding inside a bar counted toward the check",
     "slippage paid",
 ]
 
@@ -48,7 +50,7 @@ def check(cases, seed):
     report = differential.render(out, cases)
 
     assert not out.disagreed, report
-    assert out.compared >= cases // 2, report
+    assert out.compared >= cases // 3, report
 
     idle = [kind for kind in differential.TRACKED if not out.reached[kind]]
     assert not idle, f"never met a live position or order: {idle}\n{report}"

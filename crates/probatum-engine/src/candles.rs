@@ -7,12 +7,14 @@ use std::sync::Arc;
 use probatum_core::Candle;
 
 use crate::clock::Clock;
+use crate::schedule::Schedule;
 
 /// An immutable OHLCV series shared cheaply across envs.
 #[derive(Clone, Debug)]
 pub struct Candles {
     bars: Arc<[Candle]>,
     clock: Option<Clock>,
+    funding: Option<Arc<Schedule>>,
 }
 
 impl Candles {
@@ -23,6 +25,7 @@ impl Candles {
         Candles {
             bars: bars.into(),
             clock: None,
+            funding: None,
         }
     }
 
@@ -34,12 +37,27 @@ impl Candles {
         Candles {
             bars,
             clock: Some(clock),
+            funding: None,
         }
+    }
+
+    /// The same series with funding `events`, each a stamp in UTC nanoseconds and
+    /// a rate, placed on its clock once for every env that shares it. Panics on a
+    /// series without a clock, which has no time to place them at.
+    pub fn with_funding(mut self, events: &[(i64, f64)]) -> Candles {
+        let clock = self.clock.as_ref().expect("funding events need a clock");
+        self.funding = Some(Arc::new(Schedule::new(clock, events)));
+        self
     }
 
     /// The series' clock, or `None` when its bars came without times.
     pub fn clock(&self) -> Option<&Clock> {
         self.clock.as_ref()
+    }
+
+    /// The funding events placed on the clock, or `None` when the series has none.
+    pub fn funding(&self) -> Option<&Schedule> {
+        self.funding.as_deref()
     }
 
     /// Number of bars, fixed for the life of the series and shared by every clone.

@@ -19,12 +19,13 @@ at bar zero, which is what the batched tests do.
 
 import collections
 import random
+import statistics
 import sys
 
 import numpy as np
 
 import probatum
-from .differential import (HOUR, close_enough, config, funding_of, make_reference,
+from .differential import (clock, close_enough, config, engine_funding, make_reference,
                            set_aside, walk)
 
 
@@ -49,7 +50,7 @@ def plan(rng, num_envs, steps):
     ]
 
 
-def drive_batch(bars, cfg, offsets, actions):
+def drive_batch(bars, times, cfg, offsets, actions):
     array = np.array([list(bar) for bar in bars], dtype=np.float64)
     batch = probatum.Batch(
         array,
@@ -63,9 +64,9 @@ def drive_batch(bars, cfg, offsets, actions):
         max_open_orders   = cfg["max_open_orders"],
         leverage          = cfg["leverage"],
         impact            = 0.0,
-        funding_rate      = cfg["funding_rate"],
-        funding_interval  = cfg["funding_interval"],
+        times             = np.array(times, dtype=np.int64),
         report            = False,
+        **engine_funding(cfg["funding"]),
     )
     batch.reset_at_each(np.array(offsets, dtype=np.int64))
 
@@ -85,35 +86,29 @@ def drive_batch(bars, cfg, offsets, actions):
     return seen, batch
 
 
-def drive_references(bars, cfg, offsets, actions):
-    """One reference per env over the bars from its offset. Funding is passed as the
-    venue's own events, stamped where the whole series funds, since a schedule of
-    every n bars counts from each reference's first row."""
-    times  = [k * HOUR for k in range(len(bars))]
-    events = None
+def drive_references(bars, times, cfg, offsets, actions):
+    """One reference per env over the bars from its offset, on the whole series'
+    interval, so a slice's own median gap cannot move a stamp to another row. A
+    schedule of every n bars is passed as the events it stamps on the whole series,
+    since it counts from each reference's first row."""
+    interval = int(statistics.median(b - a for a, b in zip(times, times[1:])))
+    events   = None
+    if cfg["funding"][0] == "every_bars":
+        _, n, rate = cfg["funding"]
+        events = [(times[r] + interval, rate) for r in range(n, len(bars), n)]
 
-    if funding_of(cfg) != "none":
-        n      = cfg["funding_interval"]
-        events = [(times[r] + HOUR, None, cfg["funding_rate"])
-                  for r in range(n, len(bars), n)]
-
-    refs = [make_reference(bars[off:], cfg, funding=events, times=times[off:])
+    refs = [make_reference(bars[off:], cfg, times[off:], interval, events)
             for off in offsets]
-    seen, ran_out = [], [set() for _ in offsets]
 
+    seen = []
     for sizes in actions:
-        for env, (sim, size) in enumerate(zip(refs, sizes)):
+        for sim, size in zip(refs, sizes):
             # `advance` skips a zero outright rather than placing an empty order
             if size > 0.0:
                 sim.order(0, "buy", size)
             elif size < 0.0:
                 sim.order(0, "sell", -size)
-
-            before = sim.liquidations
             sim.step()
-            if sim.liquidations != before or sim.clipped:
-                ran_out[env].add(offsets[env] + sim.t)
-
         seen.append({
             "position":     np.array([sim.position[0] for sim in refs]),
             "equity":       np.array([sim.equity() for sim in refs]),
@@ -125,7 +120,7 @@ def drive_references(bars, cfg, offsets, actions):
             "done":         np.array([sim.t + 1 >= len(sim.times) for sim in refs]),
         })
 
-    return seen, refs, ran_out
+    return seen, refs
 
 
 def observation_disagreement(batch, bars, offsets, window):
@@ -164,19 +159,6 @@ def compare_runs(mine, theirs, cfg, num_envs):
     return None
 
 
-def deaths(mine, offsets, last):
-    """The bars each env's engine died on, where its bust flag first rose."""
-    out    = [set() for _ in offsets]
-    before = [False] * len(offsets)
-    for step, row in enumerate(mine):
-        for env, bust in enumerate(row["bust"]):
-            if bust and not before[env]:
-                out[env].add(min(offsets[env] + step + 1, last))
-            before[env] = bool(bust)
-
-    return out
-
-
 Outcome = collections.namedtuple(
     "Outcome", "compared agreed disagreed set_aside reached")
 
@@ -193,7 +175,8 @@ def compare(cases, seed):
 
     for case in range(cases):
         bars     = walk(rng, rng.randint(12, 40))
-        cfg      = config(rng)
+        times    = clock(rng, len(bars))
+        cfg      = config(rng, times)
         num_envs = rng.randint(2, 5)
         offsets  = offsets_for(rng, bars, num_envs)
         window   = rng.randint(1, 6)
@@ -204,12 +187,11 @@ def compare(cases, seed):
         actions = plan(rng, num_envs, steps)
 
         try:
-            mine, batch = drive_batch(bars, cfg, offsets, actions)
-            theirs, refs, ran_out = drive_references(bars, cfg, offsets, actions)
-            died    = deaths(mine, offsets, len(bars) - 1)
-            reasons = [set_aside(sim, cfg, ran_out[env] | died[env])
-                       for env, sim in enumerate(refs)]
-            why = next((reason for reason in reasons if reason is not None), None)
+            mine, batch = drive_batch(bars, times, cfg, offsets, actions)
+            theirs, refs = drive_references(bars, times, cfg, offsets, actions)
+
+            reasons = [set_aside(sim) for sim in refs]
+            why     = next((reason for reason in reasons if reason is not None), None)
             if why is not None:
                 aside[why] += 1
                 continue

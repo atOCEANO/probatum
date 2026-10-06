@@ -157,6 +157,9 @@ eng = Engine(
     funding_rate=0.0,        # perp funding per event on notional; long pays, short receives
     funding_interval=0,      # bars between funding events; 0 disables funding
     times=None,              # (T,) int64 open times in UTC nanoseconds: the clock
+    funding_hours=0.0,       # or funding every this many hours from 00:00 UTC; needs times
+    funding_times=None,      # or the venue's own (K,) int64 stamps; needs times
+    funding_rates=None,      # and the (K,) rate of each stamp
 )
 ```
 

@@ -1,22 +1,80 @@
-//! Perp funding, charged on the bars of the series that fall on an interval
-//! boundary, on the position held then: a positive rate is paid by a long and
-//! received by a short, and what was paid is kept for the result (ADR 0020).
+//! Perp funding. A row charges the events it owns at its close, after the bar's
+//! liquidation check and on the position still held, and the events stamped between
+//! it and the row before at its start, at the last mark. A positive rate is paid by
+//! a long and received by a short, and what was paid is kept for the result
+//! (ADR 0020).
 
-use probatum_core::{Candle, Price};
+use probatum_core::{Market, Price};
 
 use super::Engine;
 
 impl Engine {
-    /// Charge funding on the position held now, marked at `bar`'s close, when the
-    /// current bar falls on an interval boundary. The boundary is read off the
-    /// bar's index in the series rather than the bars since a reset, so every env
-    /// of a batch is charged on the same bars however its episode was offset
-    /// (ADR 0020).
-    pub(super) fn charge_funding(&mut self, bar: &Candle) {
-        if self.config.funding_interval > 0 && self.tick % self.config.funding_interval == 0 {
+    /// True when the current row owns emsl's event, at the close of bars `n`, `2n`
+    /// and so on, counted on the row's index in the series rather than the bars since
+    /// a reset, so every env of a batch is charged on the same bars however its
+    /// episode was offset (ADR 0020).
+    fn owns_every_bars(&self) -> bool {
+        self.config.funding_interval > 0 && self.tick % self.config.funding_interval == 0
+    }
+
+    /// Charge the events stamped between the row before and this one, across a
+    /// closure or a hole in the data, at `mark`, the last close, on the position
+    /// carried through them. This comes before the bar's path is solved, so a debit
+    /// that takes the account to its trigger liquidates it at the start of the gap.
+    pub(super) fn charge_between(&mut self, mark: f64) {
+        if let Some(schedule) = self.candles.funding() {
+            for &rate in schedule.between(self.tick) {
+                self.funding_paid += self.account.apply_funding(rate, Price(mark));
+            }
+        }
+    }
+
+    /// What the debits stamped inside this row come to on the position as it now
+    /// stands, at `close`. A bar cannot show whether such an event came before its
+    /// worst price, so a debit counts toward the bar's liquidation check and a credit
+    /// does not, the pessimistic reading.
+    pub(super) fn debits_inside(&self, close: f64) -> f64 {
+        if self.config.market != Market::Perp {
+            return 0.0;
+        }
+        let held = self.account.position.qty.get();
+        self.candles.funding().map_or(0.0, |schedule| {
+            schedule
+                .owned(self.tick)
+                .iter()
+                .filter(|&&(_, inside)| inside)
+                .map(|&(rate, _)| held * close * rate)
+                .filter(|&charge| charge > 0.0)
+                .sum()
+        })
+    }
+
+    /// Pay the debits stamped inside this row, at `close`, which the check counted
+    /// against an account it then liquidated: counted is paid, and the credits it did
+    /// not count are not.
+    pub(super) fn pay_debits_inside(&mut self, close: f64) {
+        if let Some(schedule) = self.candles.funding() {
+            let held = self.account.position.qty.get();
+            for &(rate, inside) in schedule.owned(self.tick) {
+                if inside && held * close * rate > 0.0 {
+                    self.funding_paid += self.account.apply_funding(rate, Price(close));
+                }
+            }
+        }
+    }
+
+    /// Charge the events this row owns at its `close`, on the position still held,
+    /// so an account the check liquidated holds nothing at the stamp and pays nothing.
+    pub(super) fn charge_funding(&mut self, close: f64) {
+        if self.owns_every_bars() {
             self.funding_paid += self
                 .account
-                .apply_funding(self.config.funding_rate, Price(bar.close));
+                .apply_funding(self.config.funding_rate, Price(close));
+        }
+        if let Some(schedule) = self.candles.funding() {
+            for &(rate, _) in schedule.owned(self.tick) {
+                self.funding_paid += self.account.apply_funding(rate, Price(close));
+            }
         }
     }
 }
@@ -24,9 +82,11 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use crate::candles::Candles;
+    use crate::clock::Clock;
     use crate::engine::fixtures::{cfg, flat_series, levered, ohlc, perp_cfg, series};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
-    use probatum_core::Market;
+    use crate::schedule::every;
+    use probatum_core::{Candle, Market, Side};
 
     #[test]
     fn perp_funding_charges_a_held_long_each_interval() {
@@ -57,8 +117,9 @@ mod tests {
 
     #[test]
     fn funding_can_bust_the_account_on_the_same_bar() {
-        // a punitive funding rate on a leveraged long drains equity below zero within
-        // the step, before the liquidation check, so the account busts (ADR 0020)
+        // a punitive funding rate on a leveraged long takes equity below zero at the
+        // bar's close, after its check has passed, and the account is closed there
+        // with exactly nothing left (ADR 0020)
         let mut config = perp_cfg(); // quote 100
         config.funding_rate = 1.0; // 100% of notional per event, for the test
         config.funding_interval = 1;
@@ -69,9 +130,11 @@ mod tests {
         let mut e = Engine::new(candles, config);
         e.reset();
         e.market_buy(2.0); // long 2 @ 100, notional 200 on 100 equity
-        let s = e.step(); // funding 2*100*1.0 = 200 debited -> equity -100
+        let s = e.step(); // funding 2*100*1.0 = 200 debited at the close
         assert!(e.is_bust());
-        assert!(s.equity <= 0.0);
+        assert_eq!(s.position, 0.0);
+        assert_eq!(s.equity, 0.0);
+        assert_eq!(s.funding_paid, 200.0);
     }
 
     #[test]
@@ -132,13 +195,12 @@ mod tests {
     }
 
     #[test]
-    fn funding_on_a_liquidating_bar_marks_at_the_fence_and_not_at_the_raw_close() {
-        // ADR 0020. Every order on a fenced bar resolves against the clipped
-        // candle, which `fenced` calls the honest picture of a market the account
-        // was not in, and funding reached past it to the raw close. This short
-        // dies at 110 on a bar that closes at 128, so the two readings are 11.0
-        // and 12.8: the second credits the account for 18 points of a rise it had
-        // already been closed out of, and funding_paid is reported
+    fn an_account_closed_out_on_a_bar_pays_nothing_for_that_bars_funding() {
+        // the stamp at a bar's end comes after every price the bar printed, so the
+        // check runs first, and an account it liquidates holds nothing at the stamp.
+        // emsl charged the bar's funding before the check, at the clipped close,
+        // which credited this short 11 for a rise it had been closed out of and moved
+        // its exit with the credit (ADR 0020)
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
@@ -156,28 +218,46 @@ mod tests {
         assert_eq!(state.position, -10.0);
         assert_eq!(state.funding_paid, 0.0, "tick 1 is not a funding boundary");
 
-        // the margin runs out at 110, so the bar the account was in closes there
+        // the margin runs out at 110, where the short is closed, and the stamp
+        // finds it flat
         let state = e.step();
-        assert!(
-            (state.funding_paid + 11.0).abs() < 1e-9,
-            "funding was marked at {}, not at the fence",
-            state.funding_paid / -0.1
-        );
-        assert!(
-            (state.funding_paid + 12.8).abs() > 1e-9,
-            "funding was marked at the raw close of a bar the account never saw"
-        );
-        // and the credit lands before the liquidation, so the exit moves with it:
-        // 100 of margin plus 11 of funding runs out at 111.1 rather than 110
         assert!(e.is_bust());
         assert_eq!(state.position, 0.0);
-        // ADR 0018's nothing left, to the last bit the funding arithmetic allows:
-        // 100 of margin, 11 of credit and an exit at 111.1 land 5.7e-14 off zero
-        assert!(state.equity.abs() < 1e-9);
+        assert_eq!(state.funding_paid, 0.0);
+        assert_eq!(state.equity, 0.0);
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
-        assert!((trades[0].exit_price - 111.1).abs() < 1e-9);
+        assert_eq!(trades[0].exit_price, 110.0);
         assert!(trades[0].liquidated);
+    }
+
+    #[test]
+    fn a_bar_the_account_survives_is_funded_at_its_close_not_where_it_was_clipped() {
+        // the fence of the position carried in clips the bar at 101.8, and a buy at
+        // the open shrinks the short enough to live through the rest of it. The
+        // stamp still comes at the bar's close of 104.9, which emsl read as the
+        // clipped close (ADR 0020)
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(91.0, 108.6, 90.0, 104.9, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 900.0,
+            max_leverage: 0.0,
+            funding_rate: 0.0001,
+            funding_interval: 2,
+            ..levered()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_sell(500.0); // short 500 at 100 on 900: the margin runs out at 101.8
+        e.step();
+        e.market_buy(495.0); // fills at the open of 91, leaving a short of 5
+        let state = e.step();
+        assert!(!e.is_bust());
+        assert_eq!(state.position, -5.0);
+        assert!((state.funding_paid - (-5.0 * 104.9 * 0.0001)).abs() < 1e-12);
     }
 
     #[test]
@@ -208,5 +288,174 @@ mod tests {
             vec![(3, 6.25), (4, 6.25), (5, 6.25), (6, 12.5), (7, 12.5)]
         );
         assert_eq!(e.current_state().quote, 9_987.5);
+    }
+
+    const HOUR: i64 = 3_600 * 1_000_000_000;
+    const DAY: i64 = 24 * HOUR;
+
+    /// Bars of these open, high, low and close prices on a clock of `times`, with
+    /// funding `events` placed on it.
+    fn on_clock(
+        prices: &[(f64, f64, f64, f64)],
+        times: Vec<i64>,
+        events: &[(i64, f64)],
+    ) -> Candles {
+        let bars: Vec<Candle> = prices
+            .iter()
+            .map(|&(open, high, low, close)| ohlc(open, high, low, close, 1e6))
+            .collect();
+        Candles::on_clock(bars, Clock::new(times)).with_funding(events)
+    }
+
+    #[test]
+    fn a_stamp_a_hair_after_a_bars_end_is_charged_at_that_bars_close() {
+        // the Specification's example: hourly bars and 8-hour funding, an event
+        // stamped 08:00:00.003 taken as 08:00 and so charged on the bar that opened
+        // at 07:00; a long of 0.5 at a close of 60,000 pays 0.0001 of it, 3.00
+        let flat = (60_000.0, 60_000.0, 60_000.0, 60_000.0);
+        let times = (0..10).map(|row| row * HOUR).collect();
+        let bars = on_clock(&[flat; 10], times, &[(8 * HOUR + 3_000_000, 0.0001)]);
+        let config = EngineConfig {
+            quote: 100_000.0,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(0.5);
+        for _ in 0..6 {
+            e.step();
+        }
+        assert_eq!(
+            e.current_state().funding_paid,
+            0.0,
+            "nothing is due by 07:00"
+        );
+        let seven = e.step();
+        assert_eq!(seven.tick_index, 7);
+        assert!((seven.funding_paid - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_long_stopped_out_during_a_day_pays_nothing_for_that_days_funding() {
+        // the Specification's example of the sources: on daily bars an event at
+        // 08:00 is charged at the day's close on the position after its fills, so a
+        // long stopped out during the day pays nothing for it and a long held
+        // through the day pays all three of the day's events at its close
+        let times = vec![0, DAY, 2 * DAY];
+        let prices = [
+            (100.0, 100.0, 100.0, 100.0),
+            (100.0, 101.0, 94.0, 96.0),
+            (96.0, 96.0, 96.0, 96.0),
+        ];
+        let events = every(&Clock::new(times.clone()), 8.0, 0.001);
+        for stopped in [true, false] {
+            let bars = on_clock(&prices, times.clone(), &events);
+            let config = EngineConfig {
+                quote: 10_000.0,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            e.market_buy(1.0);
+            if stopped {
+                e.stop(Side::Sell, 1.0, 95.0, true);
+            }
+            let state = e.step();
+            let paid = if stopped { 0.0 } else { 3.0 * 96.0 * 0.001 };
+            assert!(
+                (state.funding_paid - paid).abs() < 1e-12,
+                "stopped={stopped} paid {}",
+                state.funding_paid
+            );
+        }
+    }
+
+    #[test]
+    fn a_debit_stamped_inside_a_bar_counts_toward_its_check_and_a_credit_does_not() {
+        // daily bars and an event at 08:00 on the second day. The long of 10 on 100
+        // of margin survives that day's low of 90.5 by 5, and a debit of 9.5 inside
+        // the bar takes it under: the bar cannot show whether the payment came
+        // before the low, so the debit counts and is paid, and the account is closed
+        // at 90.95, where the 90.5 left after paying it runs out. A credit to the
+        // long does not count, and the account lives to be paid it at the close
+        for (rate, survives) in [(0.01, false), (-0.01, true)] {
+            let bars = on_clock(
+                &[
+                    (100.0, 100.0, 100.0, 100.0),
+                    (100.0, 101.0, 90.5, 95.0),
+                    (95.0, 95.0, 95.0, 95.0),
+                ],
+                vec![0, DAY, 2 * DAY],
+                &[(DAY + 8 * HOUR, rate)],
+            );
+            let mut e = Engine::new(bars, levered());
+            e.reset();
+            e.market_buy(10.0);
+            let state = e.step();
+            assert_eq!(e.is_bust(), !survives, "rate {rate}");
+            assert!(
+                (state.funding_paid - 10.0 * 95.0 * rate).abs() < 1e-9,
+                "rate {rate}"
+            );
+            if survives {
+                assert_eq!(state.position, 10.0);
+            } else {
+                assert_eq!(state.position, 0.0);
+                assert_eq!(state.equity, 0.0);
+                let trades = e.reporter().expect("reporting is on").trades();
+                assert!((trades[0].exit_price - 90.95).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn an_event_across_a_closure_is_charged_at_the_last_mark_before_the_bar_opens() {
+        // daily bars stop at Friday's close of 100 and Monday opens at 90; a Saturday
+        // event is charged at the start of Monday's bar on the long carried through
+        // the weekend, at Friday's close: 0.01 of 1 at 100, not at Monday's 90
+        let week = vec![0, DAY, 2 * DAY, 3 * DAY, 4 * DAY, 7 * DAY];
+        let mut prices = vec![(100.0, 100.0, 100.0, 100.0); 5];
+        prices.push((90.0, 90.0, 90.0, 90.0));
+        let bars = on_clock(&prices, week, &[(5 * DAY + 8 * HOUR, 0.01)]);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        for _ in 0..4 {
+            e.step();
+        }
+        assert_eq!(e.current_state().funding_paid, 0.0);
+        let monday = e.step();
+        assert!((monday.funding_paid - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_debit_across_a_closure_that_empties_the_margin_closes_before_the_bar_opens() {
+        // a long of 10 on 100 of margin ends Friday at 91 with 10 left, and the
+        // Saturday debit of 18.2 leaves it owing at Friday's close. It is closed
+        // there, at the start of the gap, before Monday's open of 92 could lift it
+        // back above water
+        let week = vec![0, DAY, 2 * DAY, 3 * DAY, 4 * DAY, 7 * DAY];
+        let mut prices = vec![(100.0, 100.0, 100.0, 100.0); 4];
+        prices.push((100.0, 100.0, 91.0, 91.0));
+        prices.push((92.0, 92.0, 92.0, 92.0));
+        let bars = on_clock(&prices, week, &[(5 * DAY + 8 * HOUR, 0.02)]);
+        let mut e = Engine::new(bars, levered());
+        e.reset();
+        e.market_buy(10.0);
+        for _ in 0..4 {
+            e.step();
+        }
+        assert!(!e.is_bust(), "Friday's low leaves 10 of margin");
+        let monday = e.step();
+        assert!(e.is_bust());
+        assert_eq!(monday.position, 0.0);
+        assert_eq!(monday.equity, 0.0);
+        assert!((monday.funding_paid - 18.2).abs() < 1e-9);
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert_eq!(trades[0].exit_price, 91.0);
     }
 }

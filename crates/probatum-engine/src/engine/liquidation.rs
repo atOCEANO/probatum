@@ -9,6 +9,16 @@ use probatum_core::{Candle, CostModel, Fill, Market, Price, Qty, Side};
 use super::Engine;
 
 impl Engine {
+    /// True when a perp position is dead at `mark` once `debits` of funding are
+    /// counted against its equity: the check at a bar's adverse extreme, with the
+    /// debits stamped inside the bar (ADRs 0017, 0020).
+    pub(super) fn dead_at(&self, mark: f64, debits: f64) -> bool {
+        self.config.market == Market::Perp
+            && !self.account.position.is_flat()
+            && mark.is_finite()
+            && self.account.equity(Price(mark)) - debits <= 0.0
+    }
+
     /// The price this bar would take the position's margin to zero at, or `None`
     /// when nothing on the bar can kill the account.
     ///
@@ -61,10 +71,16 @@ impl Engine {
     /// exit is priced where the margin runs out, and the liquidation fee is inside
     /// that price rather than charged past it (ADR 0018).
     pub(super) fn liquidate(&mut self) {
-        let price = match self.account.bankruptcy_price(self.cost.fee_taker) {
-            Some(price) => price,
-            None => return,
-        };
+        if let Some(price) = self.account.bankruptcy_price(self.cost.fee_taker) {
+            self.liquidate_at(price);
+        }
+    }
+
+    /// Force-close the whole position at `price`, paying the liquidation fee, and
+    /// leave the wallet at exactly zero: whatever it then holds, positive or
+    /// negative, is the liquidation charge. A funding debit that takes the account to
+    /// its trigger at a bar's close is closed here at that close (ADR 0020).
+    pub(super) fn liquidate_at(&mut self, price: Price) {
         let size = self.account.position.qty.get().abs();
         let fill = Fill {
             side: if self.account.position.qty.get() > 0.0 {
@@ -80,10 +96,10 @@ impl Engine {
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
         self.book_fill(size, price.get(), fee, before, true);
-        // That price leaves nothing in exact arithmetic and a hair either side of it
-        // in floating point, and a hair above zero is equity the cap levers: with the
-        // cap off, an account closed out here opened a position again on the next
-        // bar. So the wallet ends at exactly zero (ADRs 0015, 0018).
+        // The bankruptcy price leaves nothing in exact arithmetic and a hair either
+        // side of it in floating point, and a hair above zero is equity the cap
+        // levers: with the cap off, an account closed out there opened a position
+        // again on the next bar. So the wallet ends at exactly zero (ADRs 0015, 0018).
         self.account.quote = 0.0;
     }
 
