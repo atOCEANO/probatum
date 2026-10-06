@@ -54,6 +54,12 @@ impl EnvBatch {
         self.engines.first().map(Engine::num_bars).unwrap_or(0)
     }
 
+    /// Bars a year by the shared series' clock, or `None` when its bars came
+    /// without times or there are no envs (ADR 0004).
+    pub fn periods_per_year(&self) -> Option<f64> {
+        self.engines.first().and_then(Engine::periods_per_year)
+    }
+
     /// True when no env has a next bar to step into. In the lockstep `Batch` use
     /// every env shares the cursor, so this is uniform; after per-env random-start
     /// resets it is true only once every env has reached the end. An empty batch is

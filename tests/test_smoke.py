@@ -640,6 +640,43 @@ def test_stats_reject_a_non_positive_annualization():
             e.stats(periods_per_year=ppy)
 
 
+HOUR = 3_600 * 10**9
+
+
+def test_candles_on_a_clock_count_their_own_bars_a_year():
+    # three bars an hour apart but for a closure after the second: two steps over
+    # five hours, so a year holds 3504 of them (ADR 0004)
+    times    = np.array([0, HOUR, 5 * HOUR], dtype=np.int64)
+    on_clock = engine(times=times).periods_per_year()
+
+    assert on_clock == pytest.approx(2 * 8760.0 / 5)
+
+    batch = probatum.Batch(series(), num_envs=2, times=times)
+
+    assert batch.periods_per_year() == on_clock
+    assert probatum._probatum.periods_per_year(times) == on_clock
+
+
+def test_candles_without_times_have_no_annualization_to_report():
+    assert engine().periods_per_year() is None
+    assert probatum._probatum.periods_per_year(np.array([0], dtype=np.int64)) is None
+
+
+def test_a_clock_out_of_order_or_short_of_a_bar_is_refused():
+    with pytest.raises(ValueError, match="times: row 2 opens at 3600000000000"):
+        engine(times=np.array([0, 2 * HOUR, HOUR], dtype=np.int64))
+
+    with pytest.raises(ValueError, match="times: row 1 opens at 0"):
+        probatum.Batch(
+            series(),
+            num_envs = 1,
+            times    = np.array([0, 0, HOUR], dtype=np.int64),
+        )
+
+    with pytest.raises(ValueError, match="times: 2 for 3 bars"):
+        engine(times=np.array([0, HOUR], dtype=np.int64))
+
+
 def test_stop_takes_reduce_only_so_it_cannot_open_the_other_side():
     # a fall that crosses the trigger while flat: a protective stop fills nothing,
     # a bare one opens a short on a perp (ADR 0010)

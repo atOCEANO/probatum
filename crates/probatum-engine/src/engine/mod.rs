@@ -31,6 +31,7 @@ use probatum_core::{
 };
 
 use crate::candles::Candles;
+use crate::clock::Clock;
 use crate::execution::FillModel;
 use crate::reporter::Reporter;
 use crate::stats::Stats;
@@ -214,6 +215,12 @@ impl Engine {
         self.candles.len()
     }
 
+    /// Bars a year by the series' own clock, or `None` when its bars came without
+    /// times (ADR 0004).
+    pub fn periods_per_year(&self) -> Option<f64> {
+        self.candles.clock().and_then(Clock::periods_per_year)
+    }
+
     /// The whole candle series as a slice, for a zero-copy full-series view. Like
     /// `candle_window`, it borrows the immutable `Arc` buffer with no copy.
     pub fn candles_all(&self) -> &[Candle] {
@@ -387,6 +394,7 @@ mod tests {
     use super::fixtures::{cfg, ohlc, perp_cfg, report_cfg, series};
     use super::{Engine, EngineConfig};
     use crate::candles::Candles;
+    use crate::clock::Clock;
     use probatum_core::{Candle, Market, Side, State};
     use proptest::prelude::*;
 
@@ -395,6 +403,43 @@ mod tests {
     fn new_rejects_an_empty_series() {
         // a zero-bar series has no bar to reset or step to
         Engine::new(Candles::new(Vec::<Candle>::new()), cfg());
+    }
+
+    #[test]
+    fn the_rows_run_straight_across_a_weekend() {
+        // the Specification's example: Thursday, Friday and Monday are three rows
+        // of the clock, so a market order decided at Friday's close fills at
+        // Monday's open, and a stop that open gaps through fills there (ADR 0004)
+        let day = 86_400 * 1_000_000_000;
+        let bars = Candles::on_clock(
+            vec![
+                ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+                ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+                ohlc(90.0, 92.0, 89.0, 91.0, 1e6),
+            ],
+            Clock::new(vec![0, day, 4 * day]),
+        );
+        let mut decided_friday = Engine::new(bars.clone(), cfg());
+        decided_friday.reset();
+        decided_friday.step();
+        decided_friday.market_buy(1.0);
+        let monday = decided_friday.step();
+        assert_eq!(monday.avg_entry, 90.0);
+
+        let mut stopped = Engine::new(bars, cfg());
+        stopped.reset();
+        stopped.market_buy(1.0);
+        stopped.step(); // long 1 from Friday's open of 100
+        stopped.stop(Side::Sell, 1.0, 95.0, true);
+        let monday = stopped.step();
+        assert_eq!(monday.position, 0.0);
+        assert_eq!(monday.quote, 10_000.0 - 100.0 + 90.0);
+        assert_eq!(stopped.periods_per_year(), Some(2.0 * 365.0 / 4.0));
+    }
+
+    #[test]
+    fn a_series_without_times_has_no_annualisation_to_report() {
+        assert_eq!(Engine::new(series(), cfg()).periods_per_year(), None);
     }
 
     #[test]

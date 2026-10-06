@@ -5,6 +5,7 @@
 
 pub mod batch;
 pub mod candles;
+pub mod clock;
 pub mod engine;
 pub mod execution;
 pub mod reporter;
@@ -14,6 +15,7 @@ pub mod sweep;
 
 pub use batch::{BatchSnapshot, EnvBatch};
 pub use candles::Candles;
+pub use clock::Clock;
 pub use engine::{Engine, EngineConfig};
 pub use execution::FillModel;
 pub use reporter::{Reporter, Trade};

@@ -98,34 +98,29 @@ def test_hourly_candles_annualize_at_eight_thousand_seven_hundred_and_sixty():
     assert bars_per_year(stamped(200, "1h").index.to_numpy()) == 8760.0
 
 
-def test_a_handful_of_missing_bars_does_not_move_the_annualization():
-    # the median gap decides it, so dropping bars leaves the interval intact
+def test_missing_bars_count_against_the_year():
+    # the clock is the bars that exist, so five missing out of 200 leave 194 steps
+    # over the same 199 hours, where the median gap called it 8760 regardless
     data = stamped(200, "1h")
     data = data.drop(data.index[[10, 11, 12, 80, 150]])
 
-    assert bars_per_year(data.index.to_numpy()) == 8760.0
+    assert bars_per_year(data.index.to_numpy()) == pytest.approx(8760.0 * 194 / 199)
 
 
-def test_a_spacing_that_is_no_real_interval_is_reported_rather_than_rounded():
-    # five hours is not a candle interval anyone ships, so this is a mixed or
-    # decimated feed. Rounding it to the four-hour neighbour would state a bar
-    # count nothing in the data supports, so it says what it saw instead
+def test_a_stocks_daily_bars_annualise_at_the_days_it_trades():
+    # the Specification's example: 253 daily bars from one 2 January to the next
+    # are 252 a year, where the median gap of a day read 365
+    days       = pd.bdate_range("2025-01-02", "2026-01-02", tz="UTC")
+    data       = frame(253)
+    data.index = days[:252].append(days[-1:])
+
+    assert bars_per_year(data.index.to_numpy()) == 252.0
+
+
+def test_a_decimated_feed_annualises_at_the_bars_it_has():
     data = stamped(40, "1h")
 
-    with pytest.warns(UserWarning) as caught:
-        inferred = bars_per_year(data.index[::5].to_numpy())
-
-    assert "not within one percent" in str(caught[0].message)
-    assert inferred == 365.0 * 24.0 * 60.0 * 60.0 / (5 * 3600.0)
-
-
-def test_an_outage_leaves_the_interval_alone():
-    # a whole day missing out of a year of hourly candles does not make them
-    # something other than hourly, and the median is what keeps that true
-    data = stamped(200, "1h")
-    data = data.drop(data.index[40:64])
-
-    assert bars_per_year(data.index.to_numpy()) == 8760.0
+    assert bars_per_year(data.index[::5].to_numpy()) == 1752.0
 
 
 def test_five_minute_and_daily_candles_are_read_too():
@@ -136,7 +131,9 @@ def test_five_minute_and_daily_candles_are_read_too():
 def test_candles_with_no_datetime_index_have_no_annualization_to_read():
     assert bars_per_year(None) is None
     assert bars_per_year(np.arange(10)) is None
-    assert bars_per_year(stamped(2, "1h").index.to_numpy()) is None  # too few gaps
+    # one bar has no span to count over, and two have one
+    assert bars_per_year(stamped(1, "1h").index.to_numpy()) is None
+    assert bars_per_year(stamped(2, "1h").index.to_numpy()) == 8760.0
 
 
 def test_the_annualization_the_caller_states_is_used_unchanged():

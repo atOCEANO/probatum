@@ -21,7 +21,7 @@ use pyo3::types::{PyDict, PyList};
 
 use probatum_core::candle::floats;
 use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
-use probatum_engine::{Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
+use probatum_engine::{Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 
 /// Parse a market string into the core enum, case-insensitively.
 fn parse_market(market: &str) -> PyResult<Market> {
@@ -84,10 +84,13 @@ fn kind_str(kind: OrderType) -> &'static str {
     }
 }
 
-/// Copy a `(T, 5)` OHLCV array into an owned candle series. Columns are open,
-/// high, low, close, volume. This is the one input copy; observation windows
-/// handed back later are the zero-copy path.
-fn candles_from_array(array: PyReadonlyArray2<'_, f64>) -> PyResult<Candles> {
+/// Copy a `(T, 5)` OHLCV array into an owned candle series, on the clock `times`
+/// when given. Columns are open, high, low, close, volume. This is the one input
+/// copy; observation windows handed back later are the zero-copy path.
+fn candles_from_array(
+    array: PyReadonlyArray2<'_, f64>,
+    times: Option<PyReadonlyArray1<'_, i64>>,
+) -> PyResult<Candles> {
     let view = array.as_array();
     let cols = view.ncols();
     if cols != 5 {
@@ -142,7 +145,38 @@ fn candles_from_array(array: PyReadonlyArray2<'_, f64>) -> PyResult<Candles> {
             )));
         }
     }
-    Ok(Candles::new(bars))
+    match times {
+        None => Ok(Candles::new(bars)),
+        Some(times) => {
+            let clock = clock_from(times, Some(bars.len()))?;
+            Ok(Candles::on_clock(bars, clock))
+        }
+    }
+}
+
+/// The clock `times` describes, each bar's open in UTC nanoseconds. Refused unless
+/// every time comes after the one before it and, when `rows` is given, there is one
+/// time per row (ADR 0004).
+fn clock_from(times: PyReadonlyArray1<'_, i64>, rows: Option<usize>) -> PyResult<Clock> {
+    let times = times.as_array();
+    if let Some(rows) = rows {
+        if times.len() != rows {
+            return Err(PyValueError::new_err(format!(
+                "times: {} for {rows} bars; pass one open time per bar",
+                times.len()
+            )));
+        }
+    }
+    if let Some(row) = (1..times.len()).find(|&row| times[row] <= times[row - 1]) {
+        return Err(PyValueError::new_err(format!(
+            "times: row {row} opens at {}, not after row {} at {}; pass the bars in \
+             time order, one per time",
+            times[row],
+            row - 1,
+            times[row - 1]
+        )));
+    }
+    Ok(Clock::new(times.to_vec()))
 }
 
 /// The largest resting-order book the caller may ask for. Slots are allocated up
@@ -443,6 +477,7 @@ impl Engine {
         impact = 0.0,
         funding_rate = 0.0,
         funding_interval = 0,
+        times = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -459,6 +494,7 @@ impl Engine {
         impact: f64,
         funding_rate: f64,
         funding_interval: usize,
+        times: Option<PyReadonlyArray1<'_, i64>>,
     ) -> PyResult<Engine> {
         let config = build_config(
             market,
@@ -474,7 +510,7 @@ impl Engine {
             funding_rate,
             funding_interval,
         )?;
-        let series = candles_from_array(candles)?;
+        let series = candles_from_array(candles, times)?;
         Ok(Engine {
             inner: BarEngine::new(series, config),
         })
@@ -496,6 +532,12 @@ impl Engine {
     /// True when there is no next bar to step into.
     fn done(&self) -> bool {
         self.inner.done()
+    }
+
+    /// Bars a year by the candles' own clock, or `None` when they came without
+    /// `times` (ADR 0004).
+    fn periods_per_year(&self) -> Option<f64> {
+        self.inner.periods_per_year()
     }
 
     /// The shape of the loaded candles as `(T, 5)`, the honesty check on how many
@@ -893,6 +935,7 @@ impl Batch {
         fee_maker_per_env = None,
         slippage_bps_per_env = None,
         impact_per_env = None,
+        times = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -914,6 +957,7 @@ impl Batch {
         fee_maker_per_env: Option<PyReadonlyArray1<'_, f64>>,
         slippage_bps_per_env: Option<PyReadonlyArray1<'_, f64>>,
         impact_per_env: Option<PyReadonlyArray1<'_, f64>>,
+        times: Option<PyReadonlyArray1<'_, i64>>,
     ) -> PyResult<Batch> {
         let config = build_config(
             market,
@@ -929,7 +973,7 @@ impl Batch {
             funding_rate,
             funding_interval,
         )?;
-        let series = candles_from_array(candles)?;
+        let series = candles_from_array(candles, times)?;
 
         // Per-env cost randomization (ADR 0038): each override, if given, replaces
         // its scalar field for the matching env; absent overrides keep the scalar.
@@ -992,6 +1036,12 @@ impl Batch {
     /// done from the start.
     fn done(&self) -> bool {
         self.inner.done()
+    }
+
+    /// Bars a year by the shared candles' own clock, or `None` when they came
+    /// without `times` (ADR 0004).
+    fn periods_per_year(&self) -> Option<f64> {
+        self.inner.periods_per_year()
     }
 
     /// Reset every env to the first bar, returning one initial state dict per env
@@ -1230,10 +1280,19 @@ impl Batch {
     }
 }
 
+/// Bars a year on the clock `times`, each bar's open in UTC nanoseconds: the rows
+/// less one per 365 days of their span, or `None` with fewer than two rows
+/// (ADR 0004).
+#[pyfunction]
+fn periods_per_year(times: PyReadonlyArray1<'_, i64>) -> PyResult<Option<f64>> {
+    Ok(clock_from(times, None)?.periods_per_year())
+}
+
 /// The `_probatum` extension module, imported by Python as `probatum._probatum`.
 #[pymodule]
 fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_class::<Batch>()?;
+    m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
     Ok(())
 }

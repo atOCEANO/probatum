@@ -156,6 +156,7 @@ eng = Engine(
     impact=0.0,              # market-impact slippage coefficient; 0.0 means none
     funding_rate=0.0,        # perp funding per event on notional; long pays, short receives
     funding_interval=0,      # bars between funding events; 0 disables funding
+    times=None,              # (T,) int64 open times in UTC nanoseconds: the clock
 )
 ```
 
@@ -274,7 +275,7 @@ With `report=True`, three accessors read the recorded run (each returns `None` w
 - `equity_curve()` returns a numpy array, one equity value per step.
 - `trades()` returns a list of [trade dicts](#trades).
 
-`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. `Engine.stats` is the raw call and takes it as a number, so state it. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
+`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. `Engine.stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
 
 <br>
 
@@ -359,7 +360,7 @@ print(result.equity_curve[-1], len(result.trades))
 
 `Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the trade log cannot always say: a forced close books a row carrying `liquidated`, but an account drained by fees or funding books nothing at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
 
-**`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it takes the median gap between bars, so hourly candles annualize at 8760 without being told and a run whose feed is missing a day is still hourly. It snaps to a real interval only when already within one percent of one, and says so when the spacing matches none: a series typically five hours apart is a mixed or decimated feed, not four-hour candles. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0004](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
+**`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it counts the bars the index holds, the rows less one per 365 days of their span, so hourly candles annualize at 8760 without being told, a feed missing a day annualizes at the bars it actually has, and a stock's daily bars at the 252 or so a year it trades. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0004](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
 
 A strategy uses any order type, the sizing helpers, and the state's `open_orders` to manage risk. This one sizes each entry to half of equity and rests a reduce-only stop-loss under the position:
 

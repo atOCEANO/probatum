@@ -6,17 +6,40 @@ use std::sync::Arc;
 
 use probatum_core::Candle;
 
+use crate::clock::Clock;
+
 /// An immutable OHLCV series shared cheaply across envs.
 #[derive(Clone, Debug)]
 pub struct Candles {
     bars: Arc<[Candle]>,
+    clock: Option<Clock>,
 }
 
 impl Candles {
     /// Build a series from anything that becomes an `Arc<[Candle]>`, such as a
-    /// `Vec<Candle>`. The bars are stored once and shared by clone.
+    /// `Vec<Candle>`. The bars are stored once and shared by clone. A series built
+    /// here has no clock, so nothing that reads time can run on it.
     pub fn new(bars: impl Into<Arc<[Candle]>>) -> Candles {
-        Candles { bars: bars.into() }
+        Candles {
+            bars: bars.into(),
+            clock: None,
+        }
+    }
+
+    /// The same, with each bar's open time on `clock`. Panics unless the clock has
+    /// one row per bar.
+    pub fn on_clock(bars: impl Into<Arc<[Candle]>>, clock: Clock) -> Candles {
+        let bars = bars.into();
+        assert_eq!(clock.len(), bars.len(), "the clock needs one time per bar");
+        Candles {
+            bars,
+            clock: Some(clock),
+        }
+    }
+
+    /// The series' clock, or `None` when its bars came without times.
+    pub fn clock(&self) -> Option<&Clock> {
+        self.clock.as_ref()
     }
 
     /// Number of bars, fixed for the life of the series and shared by every clone.
@@ -52,6 +75,7 @@ impl Candles {
 #[cfg(test)]
 mod tests {
     use super::Candles;
+    use crate::clock::Clock;
     use probatum_core::Candle;
 
     fn series(n: usize) -> Candles {
@@ -107,5 +131,19 @@ mod tests {
         let b = a.clone();
         // Same backing allocation: the clone is a refcount bump, not a copy.
         assert!(std::ptr::eq(a.as_slice().as_ptr(), b.as_slice().as_ptr()));
+    }
+
+    #[test]
+    fn a_series_carries_its_clock_and_one_without_times_has_none() {
+        let bars = series(3).as_slice().to_vec();
+        let timed = Candles::on_clock(bars.clone(), Clock::new(vec![0, 10, 20]));
+        assert_eq!(timed.clock().and_then(|clock| clock.time(2)), Some(20));
+        assert!(Candles::new(bars).clock().is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "one time per bar")]
+    fn a_clock_of_another_length_is_refused() {
+        Candles::on_clock(series(3).as_slice().to_vec(), Clock::new(vec![0, 10]));
     }
 }
