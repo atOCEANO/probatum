@@ -139,7 +139,7 @@ def test_nothing_is_traded_before_the_first_window():
     first = out.span[0]
 
     # flat until the first fitted window owns a bar
-    assert all(t["entry_tick"] >= first for t in out.result.trades)
+    assert all(t["open_bar"] >= first for t in out.result.trades)
     assert np.allclose(out.result.equity_curve[:first - 1], out.result.initial)
 
 

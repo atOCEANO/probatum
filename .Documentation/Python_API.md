@@ -90,7 +90,7 @@ A frame carrying a real (datetime) index must be sorted ascending and unique; a 
 
 **Every row has to be a bar**: `low <= open <= high` and `low <= close <= high`, checked per row alongside finiteness ([ADR 0007](Decisions.md)). The fill model bounds a taker to what the bar traded, and on an unordered row that bound moves the fill toward the account instead, so a dead flat market pays out. The realistic cause is a positional slice of a feed that ships its columns in another order, which is why the message names the order it wants: a venue returning `low, high, open, close` satisfies `high >= low` on every row and still mints money. A bar that never moved, every price equal, is a bar. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
 
-The wrappers call it for you, so a DataFrame can go straight into `Backtester` or `VectorEnv`. Handing the `Backtester` a datetime index is also what stamps each trade with `entry_time` and `exit_time` ([Trades](#trades)).
+The wrappers call it for you, so a DataFrame can go straight into `Backtester` or `VectorEnv`. Handing the `Backtester` a datetime index is also what stamps each round trip with `open_time` and `close_time` ([Trades](#trades)).
 
 <br>
 
@@ -151,7 +151,7 @@ eng = Engine(
     slippage_bps=0.0,        # slippage on market fills, basis points
     max_fill_fraction=1.0,   # cap on the fraction of a bar's volume one order takes
     max_open_orders=8,       # resting-order slots
-    report=False,            # True keeps an equity curve and trade log
+    report=False,            # True keeps the equity curve, round trips and logs
     leverage=10.0,           # perp margin cap on notional; 10x default, 0.0 = none
     impact=0.0,              # market-impact slippage coefficient; 0.0 means none
     funding_rate=0.0,        # perp funding per event on notional; long pays, short receives
@@ -281,7 +281,7 @@ With `report=True`, five accessors read the recorded run (each returns `None` wh
 
 - `stats(periods_per_year=365.0, risk_free=0.0)` returns the [stats dict](#statistics).
 - `equity_curve()` returns a numpy array, one equity value per step.
-- `trades()` returns a list of [trade dicts](#trades).
+- `trades()` returns a list of [round trips](#trades), the one still open at the end marked and flagged.
 - `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
 - `order_log()` returns a list of [order events](#the-order-log), every order's life in the order it happened.
 
@@ -368,7 +368,7 @@ print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
 print(result.equity_curve[-1], len(result.trades))
 ```
 
-`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the trade log cannot always say: a forced close books a row carrying `liquidated`, but an account drained by fees or funding books nothing at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
+`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (the [round trips](#trades), a list of dicts), `.fills` (the [fill log](#fills)), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the round trips cannot always say: a forced close ends one with the reason `liquidation`, but an account drained by fees or funding ends none at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
 
 **`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it counts the bars the index holds, the rows less one per 365 days of their span, so hourly candles annualize at 8760 without being told, a feed missing a day annualizes at the bars it actually has, and a stock's daily bars at the 252 or so a year it trades. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0004](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
 
@@ -418,10 +418,11 @@ The stop rests only once a position is held (orders fill on the next bar, so the
 
 Two things about ranking, because `tune` takes an argmax over these. `calmar` scales a **negative** return by its drawdown rather than dividing by it, so the losing runs order by how much they lost; dividing made the deepest bust score highest, since the deeper the loss the larger the divisor ([ADR 0030](Decisions.md)). And `cagr_pct` saturates rather than escaping to infinity: annualizing raises the growth ratio to one-over-the-years, so on minute candles the exponent leaves the float range and every profitable run ties at the top. An annualized rate off a few hours is an extrapolation and not a measurement, so rank a sub-year run on `total_return_pct` or `sharpe`.
 
-The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0022](Decisions.md)). They read each trade's `net_pnl`, its whole round trip after fees, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADRs 0023, 0030](Decisions.md)). So they reproduce from the log:
+The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0022](Decisions.md)). They read each closed round trip's `pnl`, after its fees and its funding, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADRs 0023, 0030](Decisions.md)). So they reproduce from the log:
 
 ```python
-win_rate = sum(t["net_pnl"] > 0 for t in result.trades) / len(result.trades)
+closed = [t for t in result.trades if not t["open"]]
+win_rate = sum(t["pnl"] > 0 for t in closed) / len(closed)
 ```
 
 `num_fills` is the canary for a dead feed: a series with no volume fills nothing, silently and correctly, and without it that run is indistinguishable from a strategy that never triggered. `periods_per_year` must be finite and positive.
@@ -430,21 +431,25 @@ The conventions (risk-free rate, sample deviation, annualization) are fixed in [
 
 ### Trades
 
-Each entry in `trades()` is one closed portion of a position:
+Each entry in `trades()` is one round trip: a maximal run of one sign, from the fill that takes the position off zero to the fill that returns it to zero or flips it, so resizing inside it does not end it and `num_trades` counts decisions rather than fills ([ADR 0023](Decisions.md)). The closed ones come in the order they closed, then the one still open at the end, marked at the last close:
 
 | Field | Meaning |
 | :--- | :--- |
-| `entry_tick`, `exit_tick` | Bars the position opened and this portion closed. |
-| `side` | Side of the position that closed (`buy` for a long, `sell` for a short). |
-| `size` | Base size closed. |
-| `entry_price`, `exit_price` | Average entry before the fill, and the fill price. |
-| `fees` | The whole round-trip fee on the closed size: its share of the position's entry fee plus the closing fill's fee ([ADR 0023](Decisions.md)). |
-| `pnl` | Gross realized price PnL, before fees. |
-| `net_pnl` | `pnl - fees`: what the trade actually added to the account. The trade statistics are built from this, so they reproduce from the log ([ADR 0023](Decisions.md)). |
-| `bars_held` | Bars held, from the position's first entry. |
-| `liquidated` | True when a liquidation force-closed the position rather than an order ([ADRs 0017, 0018](Decisions.md)). Its `exit_price` is where the margin ran out, not the extreme the bar printed, so the loss is bounded by the margin and the account is left with exactly nothing rather than owing. |
+| `instrument` | The instrument, 0 with one. |
+| `side` | `long` or `short`. |
+| `size` | The largest position it reached. |
+| `entry`, `exit` | The average prices of its opening fills and of its closing fills; `exit` is NaN until a fill has closed some of it. |
+| `open_bar`, `close_bar` | The bars it opened and closed on; `close_bar` is `None` while it is open. |
+| `open_time`, `close_time` | Those bars' open times when the engine was built with `times=`, else `None`. |
+| `realized` | The price PnL its closing fills realized, before fees and funding. |
+| `fees` | Every fee of its fills, a flip's split by size between the round trip it ends and the one it begins, so each is carried exactly once ([ADR 0014](Decisions.md)). |
+| `funding` | The funding charged on it while it was open. |
+| `pnl` | Its net PnL: `realized` less `fees` and `funding`, and for one still open what it holds at the last close as well. The trade statistics are built from it, so they reproduce from the log. |
+| `ret` | `pnl` over `size * entry`. |
+| `reason` | What closed it, `market`, `limit`, `stop` or `liquidation`, and `None` while it is open. A forced close is priced where the margin ran out, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
+| `open` | True for the round trip still open at the end. |
 
-When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, each trade also carries `entry_time` and `exit_time`, the index values at those ticks. A raw numpy input has no index, so its trades stay tick-only.
+When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.
 
 ### Fills
 
@@ -629,9 +634,9 @@ metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zer
 
 ### Where the money went
 
-`decompose(result)` splits the change in equity into `gross_pnl`, `fees`, `funding`, and `unrealized`: gross less fees less funding plus unrealized is `net`, by construction. The two costs are reported as **positive amounts paid away**, the convention `funding_paid` already uses, so they subtract. On a perp this is the first thing to look at: a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea. `unrealized` is whatever a position still open at the end contributes; it is zero on a run that ends flat.
+`decompose(result)` splits the change in equity into `gross_pnl`, `fees`, `funding`, and `unrealized`: gross less fees less funding plus unrealized is `net`, by construction. The two costs are reported as **positive amounts paid away**, the convention `funding_paid` already uses, so they subtract. On a perp this is the first thing to look at: a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea. `unrealized` is what a position still open at the end holds at the last close; it is zero on a run that ends flat.
 
-`decompose` also carries `fee_share`, the costs as a fraction of the gross edge, and `turnover`, the notional both sides of every round trip moved over the opening balance. Read together they say whether you have a cost problem or an idea problem, which neither says alone.
+`decompose` also carries `fee_share`, the costs as a fraction of the gross edge, and `turnover`, the notional every fill moved, both sides of every round trip, over the opening balance. Read together they say whether you have a cost problem or an idea problem, which neither says alone.
 
 `long_short_split(result)` gives trades, net PnL, fees, win rate and average holding time for each side separately, because almost every naive crypto rule earns long and bleeds short, and one win rate averages the two into something describing neither.
 

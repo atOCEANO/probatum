@@ -861,9 +861,11 @@ def _focus(value, num_bars, ahead=0):
     if value is None:
         return None
 
-    if isinstance(value, dict) and "entry_tick" in value:
-        pad = max(18.0, max(1, value["exit_tick"] - value["entry_tick"]) * 0.7)
-        low, high = value["entry_tick"] - pad, value["exit_tick"] + pad
+    if isinstance(value, dict) and "open_bar" in value:
+        opened = value["open_bar"]
+        closed = opened if value["close_bar"] is None else value["close_bar"]
+        pad    = max(18.0, max(1, closed - opened) * 0.7)
+        low, high = opened - pad, closed + pad
     elif isinstance(value, (int, np.integer)):
         # the last N bars, plus whatever was projected past them: asking for a
         # window and being shown less than the chart holds is never what was meant
@@ -883,27 +885,28 @@ def _trades(result, num_bars):
     if result is None or not result.trades:
         return []
 
-    out = []
-    for index, trade in enumerate(result.trades):
+    out    = []
+    closed = [trade for trade in result.trades if trade["close_bar"] is not None]
+    for index, trade in enumerate(closed):
         # an explicit key list, never dict(trade): Backtester._stamp_times adds
-        # entry_time and exit_time as numpy.datetime64, which json.dumps refuses,
+        # open_time and close_time as numpy.datetime64, which json.dumps refuses,
         # and the renderer reads its timestamps off the shared axis anyway
         out.append({
             "i":      index + 1,
-            "in":     int(trade["entry_tick"]),
-            "out":    int(trade["exit_tick"]),
+            "in":     int(trade["open_bar"]),
+            "out":    int(trade["close_bar"]),
             "side":   str(trade["side"]),
             "size":   round(float(trade["size"]), 8),
-            "px_in":  round(float(trade["entry_price"]), 8),
-            "px_out": round(float(trade["exit_price"]), 8),
+            "px_in":  round(float(trade["entry"]), 8),
+            "px_out": round(float(trade["exit"]), 8),
             "fees":   round(float(trade["fees"]), 8),
-            "net":    round(float(trade["net_pnl"]), 8),
-            "bars":   int(trade["bars_held"]),
+            "net":    round(float(trade["pnl"]), 8),
+            "bars":   int(trade["close_bar"]) - int(trade["open_bar"]),
         })
 
         # only when it is set, so an ordinary run spends no bytes on it. A forced
         # close is the one row a reader must not mistake for a decision
-        if trade.get("liquidated"):
+        if trade.get("reason") == "liquidation":
             out[-1]["liq"] = True
 
     return out
@@ -1306,7 +1309,8 @@ def chart(
     if result is not None:
         ran_on = len(result.equity_curve) + 1 if len(result.equity_curve) else None
         if ran_on is None and result.trades:
-            ran_on = max(int(t["exit_tick"]) for t in result.trades) + 1
+            ran_on = max(int(t["open_bar"] if t["close_bar"] is None else t["close_bar"])
+                         for t in result.trades) + 1
         if ran_on is not None and ran_on != num_bars:
             raise ValueError(
                 f"result was produced on {ran_on} bars but {num_bars} were given; "

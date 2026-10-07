@@ -575,7 +575,7 @@ mod tests {
             assert_eq!(s.position, 0.0, "stop_first={stop_first}");
             let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades.len(), 1, "stop_first={stop_first}");
-            assert_eq!(trades[0].exit_price, 90.0, "stop_first={stop_first}");
+            assert_eq!(trades[0].exit, 90.0, "stop_first={stop_first}");
             assert!(trades[0].pnl < 0.0, "stop_first={stop_first}");
         }
     }
@@ -599,7 +599,7 @@ mod tests {
         e.step();
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
-        assert_eq!(trades[0].exit_price, 110.0);
+        assert_eq!(trades[0].exit, 110.0);
         assert!(trades[0].pnl > 0.0);
     }
 

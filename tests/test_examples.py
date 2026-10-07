@@ -129,7 +129,8 @@ def prelude():
     sd     = close.rolling(20).std()
     held   = np.zeros(len(data), dtype=bool)
     for trade in result.trades:
-        held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
+        last = len(data) - 1 if trade["open"] else trade["close_bar"]
+        held[trade["open_bar"]:last + 1] = True
 
     rows   = np.asarray(logret.rolling(24).std())
     regime = np.where(rows < np.nanquantile(rows, 0.33), "calm", "wild").astype(object)

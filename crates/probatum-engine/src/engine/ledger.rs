@@ -1,13 +1,12 @@
-//! Booking a fill, forced closes included: the account moves, the fill is
-//! counted, and when reporting is on it is logged with what it paid and whatever
-//! it closed is logged as a trade carrying both sides of its fee, while the entry
-//! fee of what is left waits for the close that consumes it (ADRs 0022, 0023).
+//! Booking a fill, forced closes included: the account moves, the fill is counted,
+//! and when reporting is on it is logged with what it paid and carried into the
+//! round trips, each of which holds every fee of its own fills (ADRs 0022, 0023).
 
 use probatum_core::{CostModel, Fill, OrderId, Side};
 
 use super::{Engine, CLOSE_EPS};
 use crate::execution::FillCosts;
-use crate::reporter::{EventKind, EventReason, FillReason, FillRecord, Trade};
+use crate::reporter::{EventKind, EventReason, FillReason, FillRecord, RoundTrip};
 
 impl Engine {
     /// The position fields a fill has to be compared against once it has landed.
@@ -41,7 +40,7 @@ impl Engine {
         let fee = self.cost.fee(&fill);
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
-        self.book_fill(applied, fill.price.get(), fee, before, false);
+        self.book_fill(applied, fill.price.get(), fee, before, reason);
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.record_fill(FillRecord {
                 tick: self.tick,
@@ -83,53 +82,32 @@ impl Engine {
         applied
     }
 
-    /// Book what a fill just did to the account: count it, log whatever it closed
-    /// as a trade, carry the entry-side fee of whatever is left, and stamp a new
-    /// position's open tick.
+    /// Book what a fill just did to the account: count it, and with reporting on,
+    /// carry it into the round trips. Whatever it closed shrinks or ends the round
+    /// trip standing, and whatever it opened grows it or begins the next, each part
+    /// with its share of the fee, so a flip's fee is split by size between the round
+    /// trip it ends and the one it begins (ADRs 0014, 0023).
     ///
     /// The single place this happens, which is the point. A liquidation used to
     /// close the position on the account directly and reach none of it, so the
-    /// forced close appeared in no trade row, counted toward no fill, and left the
-    /// dead position's entry fee standing to be charged against the NEXT trade
-    /// (ADR 0023).
-    ///
-    /// Twelve boundary mutants survive here and ALL TWELVE are equivalent or sit
-    /// on an unreachable branch. Measured, not argued: probes asserting the three
-    /// invariants below ran, at 1.0.0, against 179 Rust tests, 547 Python tests
-    /// and 3,600 randomised differential cases without firing once.
-    ///
-    ///   `applied` is never zero or less. `apply_fill_clamped` returns before
-    ///   calling this on a non-positive size and `liquidate` never books a flat
-    ///   position, so the two `applied > 0.0` guards and the `else` that carries
-    ///   `open_fee` without a fee share are all dead. Four mutants.
-    ///
-    ///   `closed` is never between zero and CLOSE_EPS. It comes from the
-    ///   position's own dust rule (ADR 0014), so it is either exactly zero or
-    ///   comfortably above the epsilon, and `>` cannot be told from `>=`. That
-    ///   also makes the `&&` in the entry-fee guard equivalent to `||`: at
-    ///   `closed == 0` the share is `open_fee * 0 / pos` either way. Four mutants.
-    ///
-    ///   `kept` is only ever read through `(pos_before.abs() - kept).max(0.0)`,
-    ///   and every sign comparison in it collapses at exactly zero: opening from
-    ///   flat closes nothing under both readings, and a full close closes the
-    ///   whole old side under both. Two mutants, and two more on the new-side
-    ///   stamp, which is guarded by `pos_after != 0.0` before either sign is read.
-    ///
-    /// So the count here overstates the gap. What this function actually does is
-    /// pinned by value: `a_trade_carries_both_sides_of_its_fee`,
-    /// `adding_to_a_position_does_not_double_charge_its_entry_fee` and the two
-    /// partial-close tests.
+    /// forced close appeared in no trade, counted toward no fill, and left the dead
+    /// position's entry fee standing to be charged against the NEXT trade.
     pub(super) fn book_fill(
         &mut self,
         applied: f64,
-        exit_price: f64,
+        price: f64,
         fee: f64,
         before: (f64, f64, f64),
-        liquidated: bool,
+        reason: FillReason,
     ) {
-        let (pos_before, entry_before, realized_before) = before;
+        let (pos_before, _, realized_before) = before;
         self.fills += 1;
         let pos_after = self.account.position.qty.get();
+        let realized = self.account.realized() - realized_before;
+        let tick = self.tick;
+        let Some(reporter) = self.reporter.as_mut() else {
+            return;
+        };
 
         // The base amount the fill moved the position toward zero: a reduce keeps
         // the same-side remainder, a close or flip keeps none of the old side.
@@ -144,65 +122,30 @@ impl Engine {
         let closed = (pos_before.abs() - kept).max(0.0);
         let opened = applied - closed;
 
-        // Split this fill's fee between the part that closed (the exit side of a
-        // completed trade) and the part that opened (the entry side of the position
-        // now standing, to be charged when it closes later).
-        let exit_fee = if applied > 0.0 {
-            fee * closed / applied
-        } else {
-            0.0
-        };
-        // The share of the position's own entry fee that this close consumes.
-        let entry_fee = if closed > CLOSE_EPS && pos_before.abs() > CLOSE_EPS {
-            self.open_fee * closed / pos_before.abs()
-        } else {
-            0.0
-        };
-
-        if closed > CLOSE_EPS && self.reporter.is_some() {
-            let pnl = self.account.realized() - realized_before;
-            // The whole round trip: the fee paid to open this size and the fee paid
-            // to close it. Charging only the exit side made a strategy whose edge is
-            // smaller than its costs look profitable per trade (ADR 0023).
-            let fees = entry_fee + exit_fee;
-            let trade = Trade {
-                entry_tick: self.position_entry_tick,
-                exit_tick: self.tick,
-                side: if pos_before > 0.0 {
-                    Side::Buy
-                } else {
-                    Side::Sell
-                },
-                size: closed,
-                entry_price: entry_before,
-                exit_price,
-                fees,
-                pnl,
-                net_pnl: pnl - fees,
-                bars_held: self.tick.saturating_sub(self.position_entry_tick),
-                liquidated,
-            };
-            if let Some(reporter) = self.reporter.as_mut() {
-                reporter.record_trade(trade);
+        if closed > CLOSE_EPS {
+            if let Some(trip) = reporter.trip_mut() {
+                trip.shrink(closed, price, fee * closed / applied, realized);
+            }
+            if pos_after.abs() <= CLOSE_EPS || (pos_before > 0.0) != (pos_after > 0.0) {
+                reporter.close_trip(tick, reason);
             }
         }
-
-        // Carry the entry-side fee of whatever position is left: what this close
-        // consumed is gone, and the part of this fill that opened size pays in.
-        self.open_fee = if pos_after.abs() <= CLOSE_EPS {
-            0.0
-        } else if applied > 0.0 {
-            (self.open_fee - entry_fee) + fee * opened / applied
-        } else {
-            self.open_fee - entry_fee
-        };
-
-        // Stamp the open tick whenever a new side is established, from flat or
-        // through a flip, so the next close measures its holding time from here.
-        let opened_new_side =
-            pos_after != 0.0 && (pos_before == 0.0 || (pos_before > 0.0) != (pos_after > 0.0));
-        if opened_new_side {
-            self.position_entry_tick = self.tick;
+        if opened > CLOSE_EPS && pos_after.abs() > CLOSE_EPS {
+            let share = fee * opened / applied;
+            match reporter.trip_mut() {
+                Some(trip) => trip.grow(opened, price, share),
+                None => {
+                    let side = if pos_after > 0.0 {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    };
+                    reporter.open_trip(RoundTrip::open(side, tick, opened, price, share));
+                }
+            }
+        }
+        if let Some(trip) = reporter.trip_mut() {
+            trip.size = trip.size.max(pos_after.abs());
         }
     }
 }
@@ -215,86 +158,107 @@ mod tests {
     };
     use crate::engine::{Engine, EngineConfig};
     use crate::execution::FillCosts;
-    use crate::reporter::{FillReason, FillRecord};
+    use crate::reporter::{FillReason, FillRecord, RoundTrip};
     use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side};
 
     fn fills(e: &Engine) -> &[FillRecord] {
         e.reporter().expect("reporting is on").fills()
     }
 
+    fn trips(e: &Engine) -> &[RoundTrip] {
+        e.reporter().expect("reporting is on").trades()
+    }
+
     #[test]
-    fn a_close_records_a_trade_with_realized_pnl() {
+    fn a_close_ends_the_round_trip_with_what_it_realized() {
         let mut e = Engine::new(series(), report_cfg());
         e.reset();
         e.market_buy(2.0);
         e.step(); // long 2 @ 200 (bar 1 open)
         e.close();
         e.step(); // close 2 @ 300 (bar 2 open)
-        let trades = e.reporter().unwrap().trades();
-        assert_eq!(trades.len(), 1);
-        let t = trades[0];
-        assert_eq!(t.side, Side::Buy);
-        assert_eq!(t.size, 2.0);
-        assert_eq!(t.entry_price, 200.0);
-        assert_eq!(t.exit_price, 300.0);
-        assert_eq!(t.pnl, 200.0); // 2 * (300 - 200)
-        assert_eq!(t.entry_tick, 1);
-        assert_eq!(t.exit_tick, 2);
-        assert_eq!(t.bars_held, 1);
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert_eq!(
+            (t.side, t.size, t.entry, t.exit),
+            (Side::Buy, 2.0, 200.0, 300.0)
+        );
+        assert_eq!((t.open_tick, t.close_tick), (1, Some(2)));
+        assert_eq!((t.realized, t.pnl, t.ret), (200.0, 200.0, 0.5));
+        assert_eq!(t.reason, Some(FillReason::Market));
     }
 
     #[test]
-    fn a_partial_close_records_only_the_reduced_size() {
+    fn a_partial_close_leaves_the_round_trip_open() {
         let mut e = Engine::new(series(), report_cfg());
         e.reset();
         e.market_buy(5.0);
         e.step(); // long 5 @ 200
         e.market_sell(2.0);
-        e.step(); // sell 2 @ 300, still long 3
-        let trades = e.reporter().unwrap().trades();
-        assert_eq!(trades.len(), 1);
-        assert_eq!(trades[0].size, 2.0);
-        assert_eq!(trades[0].pnl, 200.0); // 2 * (300 - 200)
+        e.step(); // sell 2 @ 300, still long 3, and the bar closes at 350
+        assert!(trips(&e).is_empty());
+        let all = e.round_trips();
+        let [open] = all.as_slice() else {
+            panic!("the one still open");
+        };
+        assert_eq!((open.size, open.exit, open.realized), (5.0, 300.0, 200.0));
+        assert_eq!(open.close_tick, None);
+        // marked at the close: the 200 realized and the 3 * (350 - 200) still held
+        assert_eq!(open.pnl, 650.0);
     }
 
     #[test]
-    fn a_flip_records_only_the_closed_portion() {
-        // a flip through zero reopens on the opposite side; spot cannot go short
-        // (ADR 0008), so the flip is exercised on a perp
-        let mut e = Engine::new(
-            series(),
-            EngineConfig {
-                report: true,
-                ..perp_cfg()
-            },
-        );
+    fn a_flip_ends_one_round_trip_and_begins_the_next() {
+        // the Specification's example: a long of 1.0 at an average of 100 sells 1.5
+        // at 110, so the long closes, realizing 10.00 before fees, and a short of
+        // 0.5 opens at 110
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(110.0, 110.0, 110.0, 110.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
         e.reset();
-        e.market_buy(2.0);
-        e.step(); // long 2 @ 200
-        e.market_sell(5.0);
-        let s = e.step(); // sell 5 @ 300: close 2, open short 3
-        let trades = e.reporter().unwrap().trades();
-        assert_eq!(trades.len(), 1);
-        assert_eq!(trades[0].size, 2.0); // only the closed 2, not the whole 5
-        assert_eq!(trades[0].pnl, 200.0);
-        assert_eq!(s.position, -3.0); // flipped to short 3
+        e.market_buy(1.0);
+        e.step();
+        e.market_sell(1.5);
+        let s = e.step();
+        assert_eq!((s.position, s.avg_entry), (-0.5, 110.0));
+        let all = e.round_trips();
+        let [closed, opened] = all.as_slice() else {
+            panic!("two round trips");
+        };
+        assert_eq!((closed.side, closed.realized), (Side::Buy, 10.0));
+        assert_eq!(closed.close_tick, Some(2));
+        assert_eq!(
+            (opened.side, opened.entry, opened.size),
+            (Side::Sell, 110.0, 0.5)
+        );
+        assert_eq!((opened.open_tick, opened.close_tick), (2, None));
     }
 
     #[test]
-    fn adding_to_a_position_records_no_trade() {
+    fn adding_to_a_position_grows_its_one_round_trip() {
         let mut e = Engine::new(series(), report_cfg());
         e.reset();
         e.market_buy(1.0);
         e.step(); // long 1 @ 200
         e.market_buy(1.0);
         e.step(); // add 1 @ 300, no close
-        assert!(e.reporter().unwrap().trades().is_empty());
+        assert!(trips(&e).is_empty());
+        let open = e.round_trips()[0];
+        assert_eq!((open.size, open.entry), (2.0, 250.0));
     }
 
     #[test]
-    fn logged_trade_pnl_reconciles_with_realized() {
+    fn the_round_trips_realize_what_the_account_realized() {
         // the Validation Guide's reconciliation invariant: with no liquidation, the
-        // sum of logged trade PnL equals the account's cumulative realized PnL
+        // round trips realize between them the account's cumulative realized PnL
         let mut config = perp_cfg(); // perp, quote 100, no cap
         config.report = true;
         let candles = Candles::new(vec![
@@ -308,19 +272,19 @@ mod tests {
         e.market_buy(1.0);
         e.step(); // long 1
         e.market_sell(2.0);
-        e.step(); // flip to short 1, books the long's PnL
+        e.step(); // flip to short 1, which ends the long
         e.market_buy(1.0);
-        let last = e.step(); // close the short, books its PnL
+        let last = e.step(); // close the short
 
-        let trade_sum: f64 = e.reporter().unwrap().trades().iter().map(|t| t.pnl).sum();
-        assert!(!e.reporter().unwrap().trades().is_empty()); // trades were logged
-        assert!((trade_sum - last.realized_pnl).abs() < 1e-9);
+        assert_eq!(trips(&e).len(), 2);
+        let realized: f64 = trips(&e).iter().map(|t| t.realized).sum();
+        assert!((realized - last.realized_pnl).abs() < 1e-9);
     }
 
     #[test]
-    fn net_trade_pnl_accounts_for_the_whole_run_when_it_ends_flat() {
-        // the invariant the entry-fee attribution buys: with the position closed and
-        // no liquidation, the net PnL of the logged trades IS the change in equity.
+    fn the_round_trips_net_pnl_is_the_change_in_equity_on_a_run_that_ends_flat() {
+        // the invariant the fee attribution buys: with the position closed and no
+        // liquidation, the net PnL of the round trips IS the change in equity.
         // Charging only the exit fee left about half the cost attributed to nothing
         // (ADR 0023).
         let mut config = cfg(); // spot
@@ -357,24 +321,24 @@ mod tests {
             "the run must end flat for the identity"
         );
 
-        let trades = e.reporter().unwrap().trades();
-        assert!(trades.len() > 3, "only {} trades", trades.len());
-        let net: f64 = trades.iter().map(|t| t.net_pnl).sum();
+        let trades = trips(&e);
+        assert!(trades.len() > 3, "only {} round trips", trades.len());
+        let net: f64 = trades.iter().map(|t| t.pnl).sum();
         let equity_change = state.equity - 10_000.0;
         assert!(
             (net - equity_change).abs() < 1e-9,
-            "sum(net_pnl) {net} != equity change {equity_change}"
+            "sum(pnl) {net} != equity change {equity_change}"
         );
         // and the gross figure alone does not reconcile, which is the whole point
-        let gross: f64 = trades.iter().map(|t| t.pnl).sum();
+        let gross: f64 = trades.iter().map(|t| t.realized).sum();
         assert!((gross - equity_change).abs() > 1e-6);
         for t in trades {
-            assert!((t.net_pnl - (t.pnl - t.fees)).abs() < 1e-12);
+            assert!((t.pnl - (t.realized - t.fees - t.funding)).abs() < 1e-12);
         }
     }
 
     #[test]
-    fn a_trade_carries_both_sides_of_its_fee() {
+    fn a_round_trip_carries_both_sides_of_its_fee() {
         let mut config = cfg(); // spot, bar 1 open 200, bar 2 open 300
         config.report = true;
         config.fee_taker = 0.01;
@@ -384,19 +348,20 @@ mod tests {
         e.step(); // buy 1 at 200, fee 2.0
         e.close();
         e.step(); // sell 1 at 300, fee 3.0
-        let t = e.reporter().unwrap().trades()[0];
-        assert!((t.pnl - 100.0).abs() < 1e-9); // gross price PnL
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert!((t.realized - 100.0).abs() < 1e-9); // gross price PnL
         assert!((t.fees - 5.0).abs() < 1e-9); // 2.0 entry plus 3.0 exit
-        assert!((t.net_pnl - 95.0).abs() < 1e-9);
+        assert!((t.pnl - 95.0).abs() < 1e-9);
     }
 
     #[test]
     fn adding_to_a_position_does_not_double_charge_its_entry_fee() {
-        // buy 1 at 200 (fee 2), buy 1 at 400 (fee 4), then close both at 300 (fee 6).
-        // The whole position closes, so the row must carry every fee paid: 12, not 16.
-        // A same-side add keeps more than it started with, so the closed amount goes
-        // negative unless it is clamped, and the opening share of the fee is counted
-        // twice.
+        // buy 1 at 200 (fee 2), buy 1 at 400 (fee 4), then close both at 300 (fee
+        // 6). The round trip carries every fee paid: 12, not 16. A same-side add
+        // keeps more than it started with, so the closed amount goes negative unless
+        // it is clamped, and the opening share of the fee is counted twice.
         let candles = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1_000_000.0),
             ohlc(200.0, 200.0, 200.0, 200.0, 1_000_000.0),
@@ -417,21 +382,25 @@ mod tests {
         e.market_sell(2.0);
         let last = e.step(); // 2 @ 300, fee 6
 
-        let trades = e.reporter().unwrap().trades();
-        assert_eq!(trades.len(), 1);
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
         assert!(
-            (trades[0].fees - 12.0).abs() < 1e-9,
+            (t.fees - 12.0).abs() < 1e-9,
             "fees {} should be 2 + 4 + 6",
-            trades[0].fees
+            t.fees
         );
-        assert!((trades[0].pnl - 0.0).abs() < 1e-9);
-        assert!((trades[0].net_pnl + 12.0).abs() < 1e-9);
+        assert!(t.realized.abs() < 1e-9);
+        assert!((t.pnl + 12.0).abs() < 1e-9);
         // the identity must survive a scale-in as well as a single entry
-        assert!((trades[0].net_pnl - (last.equity - 1_000_000.0)).abs() < 1e-9);
+        assert!((t.pnl - (last.equity - 1_000_000.0)).abs() < 1e-9);
     }
 
     #[test]
-    fn net_pnl_reconciles_through_scale_ins_and_partial_exits() {
+    fn scaling_in_and_out_reads_as_one_long_round_trip() {
+        // ADR 0023's cost: a position that never returns to zero until the end is
+        // one round trip, however often it was resized, and its net PnL is still
+        // the change in equity
         let mut config = cfg(); // spot
         config.report = true;
         config.fee_taker = 0.002;
@@ -456,31 +425,15 @@ mod tests {
             state = e.step();
         }
         assert_eq!(state.position, 0.0);
-        let trades = e.reporter().unwrap().trades();
-        assert!(trades.len() > 3, "only {} trades", trades.len());
-        let net: f64 = trades.iter().map(|t| t.net_pnl).sum();
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
         assert!(
-            (net - (state.equity - 10_000.0)).abs() < 1e-9,
-            "sum(net_pnl) {net} != equity change {}",
+            (t.pnl - (state.equity - 10_000.0)).abs() < 1e-9,
+            "pnl {} != equity change {}",
+            t.pnl,
             state.equity - 10_000.0
         );
-    }
-
-    #[test]
-    fn a_single_partial_close_splits_the_entry_fee_by_size() {
-        let mut config = cfg();
-        config.report = true;
-        config.fee_taker = 0.01;
-        let mut e = Engine::new(series(), config);
-        e.reset();
-        e.market_buy(4.0);
-        e.step(); // buy 4 at 200, entry fee 8.0 for the whole position
-        e.market_sell(1.0);
-        e.step(); // sell 1 at 300, exit fee 3.0; entry share is 8.0 * 1/4 = 2.0
-        let t = e.reporter().unwrap().trades()[0];
-        assert!((t.size - 1.0).abs() < 1e-9);
-        assert!((t.fees - 5.0).abs() < 1e-9);
-        assert!((t.net_pnl - 95.0).abs() < 1e-9);
     }
 
     #[test]
@@ -535,11 +488,9 @@ mod tests {
     }
 
     #[test]
-    fn a_holding_time_is_measured_from_when_the_side_was_opened() {
-        // bars_held rests on one predicate deciding whether a fill opened a new
-        // side, and every branch of it was reachable only through a whole run, so
-        // six single-line mutations of it survived. Adding to a position must not
-        // restart the clock, a partial close must not either, and a flip must
+    fn a_round_trip_spans_the_bars_from_its_side_opening_to_its_end() {
+        // adding to a position does not restart it, a partial close does not end it,
+        // and a flip ends one and begins the next on the same bar
         let mut e = Engine::new(
             flat_series(),
             EngineConfig {
@@ -551,29 +502,25 @@ mod tests {
         e.market_buy(1.0);
         e.step(); // tick 1: long 1 opens here
         e.market_buy(1.0);
-        e.step(); // tick 2: long 2, still opened at 1
+        e.step(); // tick 2: long 2
         e.market_sell(1.0);
-        e.step(); // tick 3: closes 1 of it, held 3 - 1
+        e.step(); // tick 3: closes 1 of it
         e.market_sell(3.0);
-        e.step(); // tick 4: closes the last 1, held 4 - 1, and opens short 2 here
+        e.step(); // tick 4: closes the last 1 and opens a short of 2 here
         e.market_buy(2.0);
-        e.step(); // tick 5: closes the short, held 5 - 4
+        e.step(); // tick 5: closes the short
 
-        let held: Vec<usize> = e
-            .reporter()
-            .expect("reporting is on")
-            .trades()
+        let spans: Vec<(usize, Option<usize>)> = trips(&e)
             .iter()
-            .map(|t| t.bars_held)
+            .map(|t| (t.open_tick, t.close_tick))
             .collect();
-        assert_eq!(held, vec![2, 3, 1]);
+        assert_eq!(spans, vec![(1, Some(4)), (4, Some(5))]);
     }
 
     #[test]
-    fn two_partial_closes_consume_the_entry_fee_exactly_once() {
-        // ADR 0023's whole point: a trade carries its round trip, so the entry fee
-        // is split across the closes by size and consumed exactly once. The
-        // arithmetic that does it had no test of its own
+    fn partial_closes_carry_the_entry_fee_exactly_once() {
+        // a round trip carries its entry fee and every exit fee once, however many
+        // fills close it
         let config = EngineConfig {
             fee_taker: 0.01,
             report: true,
@@ -584,21 +531,63 @@ mod tests {
         e.market_buy(2.0);
         e.step(); // entry fee is 2 * 100 * 1% = 2.0
         e.market_sell(1.0);
-        e.step(); // exit fee 1.0, plus half the entry fee
+        e.step(); // exit fee 1.0
         e.market_sell(1.0);
-        e.step(); // exit fee 1.0, plus the other half
+        e.step(); // exit fee 1.0
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert!((t.fees - 4.0).abs() < 1e-9, "{}", t.fees);
+    }
 
-        let fees: Vec<f64> = e
-            .reporter()
-            .expect("reporting is on")
-            .trades()
+    #[test]
+    fn six_fills_make_two_closed_round_trips_and_an_open_one() {
+        // the Specification's example: fills on bars 10, 12, 15, 20, 25 and 30 make
+        // a long from 10 to 20 that reached 2, a short from 25 to 30, and a long
+        // still open at the end, and `num_trades` is 2
+        let bars = Candles::new(vec![ohlc(100.0, 100.0, 100.0, 100.0, 1e6); 32]);
+        let config = EngineConfig {
+            market: Market::Perp,
+            report: true,
+            ..EngineConfig::default()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let decisions = [
+            (9, Side::Buy, 1.0),
+            (11, Side::Buy, 1.0),
+            (14, Side::Sell, 0.5),
+            (19, Side::Sell, 1.5),
+            (24, Side::Sell, 1.0),
+            (29, Side::Buy, 2.0),
+        ];
+        while !e.done() {
+            for &(tick, side, size) in &decisions {
+                if tick == e.tick() {
+                    if side == Side::Buy {
+                        e.market_buy(size);
+                    } else {
+                        e.market_sell(size);
+                    }
+                }
+            }
+            e.step();
+        }
+        let summary: Vec<(Side, usize, Option<usize>, f64)> = e
+            .round_trips()
             .iter()
-            .map(|t| t.fees)
+            .map(|t| (t.side, t.open_tick, t.close_tick, t.size))
             .collect();
-        assert_eq!(fees, vec![2.0, 2.0]);
-        // and the whole round trip is exactly what the account paid
-        let paid: f64 = fees.iter().sum();
-        assert!((paid - 4.0).abs() < 1e-9, "{paid}");
+        assert_eq!(
+            summary,
+            vec![
+                (Side::Buy, 10, Some(20), 2.0),
+                (Side::Sell, 25, Some(30), 1.0),
+                (Side::Buy, 30, None, 1.0),
+            ]
+        );
+        let stats = e.stats(365.0, 0.0).expect("reporting is on");
+        assert_eq!(stats.num_trades, 2);
     }
 
     #[test]

@@ -97,7 +97,7 @@ impl Engine {
         let fee = self.cost.fee(&fill);
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
-        self.book_fill(size, price.get(), fee, before, true);
+        self.book_fill(size, price.get(), fee, before, FillReason::Liquidation);
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.record_fill(FillRecord {
                 tick: self.tick,
@@ -193,6 +193,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
+    use crate::reporter::FillReason;
     use probatum_core::{Market, Side, Wallet};
 
     #[test]
@@ -292,10 +293,10 @@ mod tests {
         assert!(s.equity >= -CLOSE_EPS, "account owes {}", s.equity);
         for trade in e.reporter().expect("reporting is on").trades() {
             assert!(
-                !(trade.liquidated && trade.net_pnl > 0.0),
+                !(trade.reason == Some(FillReason::Liquidation) && trade.pnl > 0.0),
                 "liquidated at {} for a profit of {}",
-                trade.exit_price,
-                trade.net_pnl
+                trade.exit,
+                trade.pnl
             );
         }
     }
@@ -324,9 +325,9 @@ mod tests {
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
         assert!(
-            (trades[0].exit_price - 99.0).abs() < 1e-9,
+            (trades[0].exit - 99.0).abs() < 1e-9,
             "exited at {}",
-            trades[0].exit_price
+            trades[0].exit
         );
     }
 
@@ -353,18 +354,23 @@ mod tests {
         assert_eq!(e.num_fills(), 2); // the buy, and the forced close
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
-        assert!(trades[0].liquidated);
+        assert_eq!(trades[0].reason, Some(FillReason::Liquidation));
         // closed where the margin ran out, not at the 80 the bar printed. The entry
         // fee left 99 of margin, so (10*100 - 99) / (10 - 10*0.001) = 90.1902
         assert!(
-            (trades[0].exit_price - 901.0 / 9.99).abs() < 1e-9,
+            (trades[0].exit - 901.0 / 9.99).abs() < 1e-9,
             "closed at {}",
-            trades[0].exit_price
+            trades[0].exit
         );
         // and the account is left with exactly nothing, never owing (ADR 0018)
         assert!(s.equity.abs() < CLOSE_EPS, "left {}", s.equity);
         assert!(trades[0].fees > 1.0); // the entry fee, plus a real fee on the exit
-        assert_eq!(e.open_fee, 0.0); // nothing left over to charge the next position
+                                       // and nothing is left over to charge the next position
+        assert!(e
+            .reporter()
+            .expect("reporting is on")
+            .open_trade()
+            .is_none());
     }
 
     #[test]
@@ -464,8 +470,12 @@ mod tests {
             assert_eq!(state.equity, 0.0, "exit={exit} left {}", state.equity);
             let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades.len(), 1);
-            assert_eq!(trades[0].exit_price, 90.0);
-            assert!(trades[0].liquidated, "exit={exit} booked no liquidation");
+            assert_eq!(trades[0].exit, 90.0);
+            assert_eq!(
+                trades[0].reason,
+                Some(FillReason::Liquidation),
+                "exit={exit} booked no liquidation"
+            );
         }
     }
 
@@ -489,7 +499,7 @@ mod tests {
             let state = e.step();
             assert_eq!(state.equity, want_equity, "stop at {trigger}");
             let trades = e.reporter().expect("reporting is on").trades();
-            assert_eq!(trades[0].exit_price, want_exit, "stop at {trigger}");
+            assert_eq!(trades[0].exit, want_exit, "stop at {trigger}");
         }
     }
 
@@ -514,7 +524,7 @@ mod tests {
         assert_eq!(state.equity, 0.0);
         for trade in e.reporter().expect("reporting is on").trades() {
             assert!(trade.pnl <= 0.0, "a liquidation booked {}", trade.pnl);
-            assert!(trade.exit_price <= 101.0, "exited at {}", trade.exit_price);
+            assert!(trade.exit <= 101.0, "exited at {}", trade.exit);
         }
     }
 
@@ -550,8 +560,8 @@ mod tests {
         assert_eq!(state.bar_close, 100.0); // the bar recovered, the account did not
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
-        assert_eq!(trades[0].exit_price, 90.0);
-        assert!(trades[0].liquidated);
+        assert_eq!(trades[0].exit, 90.0);
+        assert_eq!(trades[0].reason, Some(FillReason::Liquidation));
     }
 
     #[test]
@@ -581,8 +591,8 @@ mod tests {
         assert_eq!(state.bar_close, 100.0); // the bar came back, the account did not
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
-        assert_eq!(trades[0].exit_price, 110.0);
-        assert!(trades[0].liquidated);
+        assert_eq!(trades[0].exit, 110.0);
+        assert_eq!(trades[0].reason, Some(FillReason::Liquidation));
     }
 
     #[test]
@@ -614,8 +624,12 @@ mod tests {
             assert_eq!(state.equity, 0.0, "exit={exit} left {}", state.equity);
             let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades.len(), 1, "exit={exit}");
-            assert_eq!(trades[0].exit_price, 110.0, "exit={exit}");
-            assert!(trades[0].liquidated, "exit={exit} booked no liquidation");
+            assert_eq!(trades[0].exit, 110.0, "exit={exit}");
+            assert_eq!(
+                trades[0].reason,
+                Some(FillReason::Liquidation),
+                "exit={exit} booked no liquidation"
+            );
         }
     }
 
@@ -642,7 +656,7 @@ mod tests {
             let state = e.step();
             assert_eq!(state.equity, want_equity, "stop at {trigger}");
             let trades = e.reporter().expect("reporting is on").trades();
-            assert_eq!(trades[0].exit_price, want_exit, "stop at {trigger}");
+            assert_eq!(trades[0].exit, want_exit, "stop at {trigger}");
         }
     }
 }

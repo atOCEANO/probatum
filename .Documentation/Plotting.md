@@ -497,7 +497,8 @@ The domain is the data's own finite range unless you pin it with `domain=`, so a
 held = numpy.zeros(len(frame), dtype=bool)
 
 for trade in result.trades:
-    held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
+    last = len(frame) - 1 if trade["open"] else trade["close_bar"]
+    held[trade["open_bar"]:last + 1] = True
 
 probatum.chart(
     frame=frame,
@@ -669,10 +670,10 @@ A missing volume column draws no volume panel. A volume column that is all zero,
 
 ## `focus`
 
-A trade dict, a `(start, end)` pair of bar indices, or an integer `N` meaning the last `N` bars. It moves the viewport and never slices the data, so every marker stays on its own bar, and its bounds are clamped to the frame rather than refused.
+A round trip from `result.trades`, a `(start, end)` pair of bar indices, or an integer `N` meaning the last `N` bars. It moves the viewport and never slices the data, so every marker stays on its own bar, and its bounds are clamped to the frame rather than refused.
 
 ```python
-worst = min(result.trades, key=lambda trade: trade["net_pnl"])
+worst = min(result.trades, key=lambda trade: trade["pnl"])
 
 probatum.chart(frame=frame, marks=strategy.marks(), run=result, focus=worst).show()
 ```

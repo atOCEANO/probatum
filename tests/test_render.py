@@ -212,21 +212,22 @@ def test_every_closed_trade_becomes_a_row_carrying_its_numbers(tmp_path):
     result  = run(candles)
     built   = probatum.chart(candles, result)
     seen    = observe(built, tmp_path)
+    closed  = [trade for trade in result.trades if not trade["open"]]
 
     assert seen["errors"]    == []
-    assert len(seen["rows"]) == len(result.trades)
-    assert len(result.trades) > 0
+    assert len(seen["rows"]) == len(closed)
+    assert len(closed) > 0
 
     # the two bar columns read as a time, because the axis over them does and a
     # row saying 4856 under an axis saying November has to be counted back by
     # hand. The tick is still reachable, in the cell's title
-    for row, title, trade in zip(seen["rows"], seen["titles"], result.trades):
-        assert row[1]   == ("buy" if trade["side"] == "buy" else "sell")
-        assert row[2]   == candles.index[trade["entry_tick"]].strftime("%Y-%m-%d %H:%M")
-        assert row[3]   == candles.index[trade["exit_tick"]].strftime("%Y-%m-%d %H:%M")
-        assert title[2] == "bar " + str(trade["entry_tick"])
-        assert title[3] == "bar " + str(trade["exit_tick"])
-        assert row[9]   == str(trade["bars_held"])
+    for row, title, trade in zip(seen["rows"], seen["titles"], closed):
+        assert row[1]   == trade["side"]
+        assert row[2]   == candles.index[trade["open_bar"]].strftime("%Y-%m-%d %H:%M")
+        assert row[3]   == candles.index[trade["close_bar"]].strftime("%Y-%m-%d %H:%M")
+        assert title[2] == "bar " + str(trade["open_bar"])
+        assert title[3] == "bar " + str(trade["close_bar"])
+        assert row[9]   == str(trade["close_bar"] - trade["open_bar"])
 
 
 def test_clicking_a_trade_row_selects_it_and_says_which(tmp_path):
@@ -247,7 +248,8 @@ def test_clicking_a_trade_row_selects_it_and_says_which(tmp_path):
     # the row says which trade it is and the hint has to agree, which is the whole
     # of the two-way selection: the numbering is the table's own, from one
     assert seen["hint"].startswith("trade " + seen["rows"][0][0])
-    assert str(result.trades[0]["bars_held"]) + " bars" in seen["hint"]
+    first = result.trades[0]
+    assert str(first["close_bar"] - first["open_bar"]) + " bars" in seen["hint"]
 
 
 def test_clicking_the_chart_at_a_trade_reveals_its_row(tmp_path):
@@ -259,7 +261,7 @@ def test_clicking_the_chart_at_a_trade_reveals_its_row(tmp_path):
 
     assert len(result.trades) > 0
 
-    entry = result.trades[0]["entry_tick"]
+    entry = result.trades[0]["open_bar"]
     bars  = len(candles)
 
     path = probatum.chart(candles, result).save(str(tmp_path / "click.html"))

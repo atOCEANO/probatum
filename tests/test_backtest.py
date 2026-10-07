@@ -33,13 +33,13 @@ def test_backtester_returns_stats_equity_and_trades():
     result = bt.run(BuyThenClose())
 
     assert isinstance(result, BacktestResult)
-    # one closed trade: bought 1 @ 200, closed @ 300 -> +100
+    # one round trip: bought 1 @ 200, closed @ 300 -> +100
     assert result.stats["num_trades"] == 1
     assert len(result.trades)         == 1
 
     trade = result.trades[0]
 
-    assert trade["side"] == "buy"
+    assert trade["side"] == "long"
     assert trade["pnl"]  == 100.0
     # equity curve has one point per step (2 steps for a 3-bar series)
     assert len(result.equity_curve) == 2
@@ -62,15 +62,14 @@ def test_trades_carry_times_when_a_datetime_index_is_given():
     result = Backtester(df, market="spot", fee_taker=0.0, fee_maker=0.0).run(BuyThenClose())
     trade  = result.trades[0]
 
-    # entry filled on bar 1, closed on bar 2 (see the numpy test above)
-    assert trade["entry_time"] == np.datetime64(idx[1])
-    assert trade["exit_time"]  == np.datetime64(idx[2])
+    # opened on bar 1, closed on bar 2 (see the numpy test above)
+    assert trade["open_time"]  == np.datetime64(idx[1])
+    assert trade["close_time"] == np.datetime64(idx[2])
 
 
 def test_trades_stay_tick_only_for_numpy_input():
     result = Backtester(series(), market="spot", fee_taker=0.0, fee_maker=0.0).run(BuyThenClose())
-
-    assert "entry_time" not in result.trades[0]  # no index, so no timestamps
+    assert result.trades[0]["open_time"] is None  # no index, so no timestamps
 
 
 def test_the_result_carries_the_annualization_its_stats_were_computed_at():
@@ -171,8 +170,8 @@ def test_a_warmup_that_is_not_a_count_of_bars_is_refused():
 
 
 def test_a_run_that_ended_at_zero_says_so_on_the_result():
-    # a forced close books a row carrying liquidated, but an account drained by
-    # fees or funding books nothing at all, so the trade log cannot always say
+    # a forced close ends a round trip with the reason liquidation, but an account
+    # drained by fees or funding ends none at all, so the trades cannot always say
     # it happened and the run-level flag is the only place that can
     bars = np.array([
         [100.0, 100.0, 100.0, 100.0, 1_000.0],
@@ -204,7 +203,7 @@ def test_a_run_that_ended_at_zero_says_so_on_the_result():
 
     assert dead.bust is True
     assert dead.to_dict()["bust"] is True
-    assert any(t["liquidated"] for t in dead.trades)
+    assert any(t["reason"] == "liquidation" for t in dead.trades)
 
     alive = Backtester(
         series(),

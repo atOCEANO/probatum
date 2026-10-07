@@ -47,6 +47,10 @@ def run(strategy=None, **kwargs):
     return Backtester(series(), **kwargs).run(strategy or Alternate())
 
 
+def closed(result):
+    return [trade for trade in result.trades if not trade["open"]]
+
+
 def test_the_sharpe_recomputed_here_is_the_sharpe_the_engine_reported():
     result = run()
 
@@ -148,10 +152,10 @@ def test_the_sides_split_covers_every_trade():
     result = run()
     sides  = metrics.long_short_split(result)
 
-    assert sides["long"]["trades"] + sides["short"]["trades"] == len(result.trades)
+    assert sides["long"]["trades"] + sides["short"]["trades"] == len(closed(result))
     assert math.isclose(
         sides["long"]["net_pnl"] + sides["short"]["net_pnl"],
-        sum(t["net_pnl"] for t in result.trades),
+        sum(t["pnl"] for t in closed(result)),
         abs_tol=1e-9,
     )
 
@@ -383,15 +387,14 @@ def test_every_trade_lived_through_at_least_what_it_finished_with():
     result = Backtester(data, periods_per_year=365.0).run(Alternate())
     rows   = metrics.excursions(result, data)
 
-    assert len(rows) == len(result.trades)
-
-    for row, trade in zip(rows, result.trades):
+    assert len(rows) == len(closed(result))
+    for row, trade in zip(rows, closed(result)):
         assert row["best_pct"] >= row["worst_pct"]
 
         # and the excursion brackets what the trade actually finished at, which
         # is the property that catches best and worst being swapped on one side
-        finished = (trade["exit_price"] / trade["entry_price"] - 1.0) * 100.0
-        if trade["side"] == "sell":
+        finished = (trade["exit"] / trade["entry"] - 1.0) * 100.0
+        if trade["side"] == "short":
             finished = -finished
         assert row["worst_pct"] - 1e-9 <= finished <= row["best_pct"] + 1e-9
 
@@ -419,7 +422,7 @@ def test_a_shorts_excursions_are_not_a_longs_read_backwards():
     result = Backtester(data, market="perp", periods_per_year=365.0).run(ShortOnce())
     row    = metrics.excursions(result, data)[0]
 
-    assert row["side"] == "sell"
+    assert row["side"] == "short"
     # entered at 100, the bar ran to 130 (against) and 70 (for)
     assert row["worst_pct"] == pytest.approx(-30.0)
     assert row["best_pct"]  == pytest.approx(30.0)
@@ -443,10 +446,10 @@ def test_trades_bucket_by_the_hour_they_closed_on():
     buckets    = metrics.session_buckets(result, data, by="hour")
 
     assert set(buckets) <= set(range(24))
-    assert sum(b["trades"] for b in buckets.values()) == len(result.trades)
+    assert sum(b["trades"] for b in buckets.values()) == len(closed(result))
     assert math.isclose(
         sum(b["net_pnl"] for b in buckets.values()),
-        sum(t["net_pnl"] for t in result.trades),
+        sum(t["pnl"] for t in closed(result)),
         abs_tol=1e-9,
     )
 
@@ -454,7 +457,7 @@ def test_trades_bucket_by_the_hour_they_closed_on():
     # <= set(range(24))` used to stand alone here, which is true of anything
     # modulo 24 and pinned no convention at all
     expected = {}
-    for tick in (t["exit_tick"] for t in result.trades):
+    for tick in (t["close_bar"] for t in closed(result)):
         hour = int(data.index[tick].hour)
         expected[hour] = expected.get(hour, 0) + 1
 
@@ -469,8 +472,7 @@ def test_weekdays_are_numbered_from_monday_like_every_other_clock():
     result     = Backtester(data).run(Alternate())
     buckets    = metrics.session_buckets(result, data, by="weekday")
     expected   = {}
-
-    for tick in (t["exit_tick"] for t in result.trades):
+    for tick in (t["close_bar"] for t in closed(result)):
         day = int(data.index[tick].dayofweek)
         expected[day] = expected.get(day, 0) + 1
 
@@ -1214,10 +1216,11 @@ def test_the_side_split_counts_a_win_after_its_fee_like_everything_else():
     dear  = Backtester(data, fee_taker=0.02, periods_per_year=365.0).run(Alternate())
     sides = metrics.long_short_split(dear)
 
-    for block, side in ((sides["long"], "buy"), (sides["short"], "sell")):
-        rows       = [t for t in dear.trades if t["side"] == side]
-        net_wins   = [t for t in rows if t["net_pnl"] > 0.0]
-        gross_wins = [t for t in rows if t["pnl"] > 0.0]
+    for side in ("long", "short"):
+        block      = sides[side]
+        rows       = [t for t in closed(dear) if t["side"] == side]
+        net_wins   = [t for t in rows if t["pnl"] > 0.0]
+        gross_wins = [t for t in rows if t["realized"] > 0.0]
 
         if rows:
             assert block["win_rate"] == pytest.approx(len(net_wins) / len(rows))
@@ -1228,7 +1231,7 @@ def test_the_side_split_counts_a_win_after_its_fee_like_everything_else():
 def test_the_trade_distribution_says_what_a_win_rate_cannot():
     result = run()
     shape  = metrics.trade_stats(result)
-    nets   = [t["net_pnl"] for t in result.trades]
+    nets   = [t["pnl"] for t in closed(result)]
 
     assert shape["trades"] == len(nets)
     assert shape["wins"] + shape["losses"] <= shape["trades"]
@@ -1250,18 +1253,19 @@ def test_a_high_win_rate_at_a_terrible_payoff_is_visible():
     )]
 
     made[0].trades = [{
-        "net_pnl":     1.0,
-        "pnl":         1.0,
-        "fees":        0.0,
-        "side":        "buy",
-        "bars_held":   1,
-        "size":        1.0,
-        "entry_price": 100.0,
-        "exit_price":  101.0,
-        "entry_tick":  0,
-        "exit_tick":   1,
+        "pnl":       1.0,
+        "realized":  1.0,
+        "fees":      0.0,
+        "funding":   0.0,
+        "side":      "long",
+        "size":      1.0,
+        "entry":     100.0,
+        "exit":      101.0,
+        "open_bar":  0,
+        "close_bar": 1,
+        "open":      False,
     }] * 9
-    made[0].trades = made[0].trades + [dict(made[0].trades[0], net_pnl=-20.0)]
+    made[0].trades = made[0].trades + [dict(made[0].trades[0], pnl=-20.0)]
 
     shape = metrics.trade_stats(made[0])
 
@@ -1294,20 +1298,22 @@ def test_turnover_is_both_sides_of_every_trade_over_the_opening_balance():
     # 100. The entry side alone reads 1.20, the exit side 1.25, and both sides
     # over the closing balance 2.35
     trades = [
-        {"net_pnl": 9.5, "pnl": 10.0, "fees": 0.5, "side": "buy", "bars_held": 3,
-         "size": 2.0, "entry_price": 50.0, "exit_price": 55.0, "entry_tick": 0,
-         "exit_tick": 3},
-        {"net_pnl": -5.2, "pnl": -5.0, "fees": 0.2, "side": "buy", "bars_held": 2,
-         "size": 1.0, "entry_price": 20.0, "exit_price": 15.0, "entry_tick": 4,
-         "exit_tick": 6},
+        {"pnl": 9.5, "realized": 10.0, "fees": 0.5, "funding": 0.0, "side": "long",
+         "size": 2.0, "entry": 50.0, "exit": 55.0, "open_bar": 0, "close_bar": 3,
+         "open": False},
+        {"pnl": -5.2, "realized": -5.0, "fees": 0.2, "funding": 0.0, "side": "long",
+         "size": 1.0, "entry": 20.0, "exit": 15.0, "open_bar": 4, "close_bar": 6,
+         "open": False},
     ]
-
+    fills = [{"size": 2.0, "price": 50.0}, {"size": 2.0, "price": 55.0},
+             {"size": 1.0, "price": 20.0}, {"size": 1.0, "price": 15.0}]
     hand = BacktestResult(
         stats            = {},
         equity_curve     = np.array([104.3]),
         trades           = trades,
         initial          = 100.0,
         periods_per_year = 365.0,
+        fills            = fills,
     )
 
     money = metrics.decompose(hand)
@@ -1482,9 +1488,9 @@ def test_every_calendar_period_of_hourly_candles_reports_a_growth_rate():
 
 
 def test_an_excursion_does_not_read_the_bar_the_trade_left_on_whole():
-    # exit_tick is the bar the closing fill resolved on, so everything it printed
-    # after the exit was folded in. The engine already disagreed: bars_held is
-    # exit_tick minus entry_tick, one fewer bar than this used to span (ADR 0023)
+    # close_bar is the bar the closing fill resolved on, so everything it printed
+    # after the exit was folded in. The engine already disagreed: a round trip
+    # spans close_bar minus open_bar, one fewer bar than this used to (ADR 0023)
     data = np.array([
         [100.0, 100.0, 100.0, 100.0, 1e6],
         [100.0, 100.0, 100.0, 100.0, 1e6],
@@ -1508,7 +1514,7 @@ def test_an_excursion_does_not_read_the_bar_the_trade_left_on_whole():
 
     # it exits at the open of bar 3, so the 180 and the 20 that bar went on to
     # print belong to nobody
-    assert trade["exit_tick"] == 3
+    assert trade["close_bar"] == 3
     assert row["best_pct"]    == pytest.approx(1.0)
     assert row["worst_pct"]   == pytest.approx(-1.0)
 
@@ -1544,8 +1550,8 @@ def test_an_excursion_does_not_credit_a_limit_entry_with_the_bar_before_it_fille
     trade = result.trades[0]
     row   = metrics.excursions(result, data)[0]
 
-    assert trade["entry_tick"]  == 1
-    assert trade["entry_price"] == pytest.approx(100.0)
+    assert trade["open_bar"] == 1
+    assert trade["entry"]    == pytest.approx(100.0)
     # bar 1 opened at 130, its own high, and only then fell to the bid. Nothing
     # from the fill onward ever printed above 101, so the most a target could
     # have caught is one percent, not thirty

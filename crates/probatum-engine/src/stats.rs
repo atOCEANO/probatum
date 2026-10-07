@@ -1,7 +1,7 @@
-//! Performance statistics derived from a recorded equity curve and trade log.
+//! Performance statistics derived from a recorded equity curve and round trips.
 //! The conventions are fixed in ADR 0030.
 
-use crate::reporter::Trade;
+use crate::reporter::RoundTrip;
 
 /// A run's performance summary. Percent fields are in percent (10.0 is 10%);
 /// ratios (sharpe, sortino, calmar, profit_factor) are unitless, and each is
@@ -75,7 +75,7 @@ impl Stats {
     pub fn compute(
         initial: f64,
         curve: &[f64],
-        trades: &[Trade],
+        trades: &[RoundTrip],
         periods_per_year: f64,
         risk_free: f64,
         in_position_steps: usize,
@@ -209,19 +209,19 @@ impl Stats {
             0.0
         };
 
-        // The trade metrics read `net_pnl`, the whole round trip after fees. On gross
-        // PnL a scalper whose edge is smaller than its costs reported a perfect win
-        // rate and an infinite profit factor beside a negative total return, the most
-        // flattering way a backtest can lie (ADR 0030), and netting only the exit
-        // side left half that error in place (ADR 0023). `Trade.pnl` stays gross
-        // (ADR 0022), so the log carries both and either can be recomputed.
+        // The trade metrics read a round trip's `pnl`, after its fees and its funding.
+        // On gross PnL a scalper whose edge is smaller than its costs reported a
+        // perfect win rate and an infinite profit factor beside a negative total
+        // return, the most flattering way a backtest can lie (ADR 0030), and netting
+        // only the exit side left half that error in place (ADR 0023). `realized`
+        // stays gross, so either can be recomputed.
         let num_trades = trades.len();
         let mut wins = 0usize;
         let mut net_profit = 0.0;
         let mut net_loss = 0.0;
         let mut total_pnl = 0.0;
         for t in trades {
-            let net = t.net_pnl;
+            let net = t.pnl;
             total_pnl += net;
             if net > 0.0 {
                 wins += 1;
@@ -282,30 +282,25 @@ impl Stats {
 #[cfg(test)]
 mod tests {
     use super::Stats;
-    use crate::reporter::Trade;
+    use crate::reporter::{FillReason, RoundTrip};
     use probatum_core::Side;
 
-    fn trade(pnl: f64) -> Trade {
-        Trade {
-            entry_tick: 0,
-            exit_tick: 1,
-            side: Side::Buy,
-            size: 1.0,
-            entry_price: 100.0,
-            exit_price: 100.0 + pnl,
-            fees: 0.0,
-            pnl,
-            net_pnl: pnl,
-            bars_held: 1,
-            liquidated: false,
-        }
+    fn trade_with_fee(pnl: f64, fees: f64) -> RoundTrip {
+        let mut trip = RoundTrip::open(Side::Buy, 0, 1.0, 100.0, fees);
+        trip.shrink(1.0, 100.0 + pnl, 0.0, pnl);
+        trip.finish(1, FillReason::Market);
+        trip
+    }
+
+    fn trade(pnl: f64) -> RoundTrip {
+        trade_with_fee(pnl, 0.0)
     }
 
     /// `Stats::compute` with no fills recorded, which is all these cases need.
     fn compute(
         initial: f64,
         curve: &[f64],
-        trades: &[Trade],
+        trades: &[RoundTrip],
         periods_per_year: f64,
         risk_free: f64,
         in_position_steps: usize,
@@ -403,14 +398,6 @@ mod tests {
         let s = compute(100.0, &[100.0, 101.0, 102.0, 103.0], &[], 252.0, 0.0, 3);
         assert!(approx(s.exposure_pct, 75.0));
         assert!(approx(s.net_profit_pct, s.total_return_pct));
-    }
-
-    fn trade_with_fee(pnl: f64, fees: f64) -> Trade {
-        Trade {
-            fees,
-            net_pnl: pnl - fees,
-            ..trade(pnl)
-        }
     }
 
     #[test]

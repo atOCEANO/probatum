@@ -36,7 +36,7 @@ use probatum_core::{
 use crate::candles::Candles;
 use crate::clock::Clock;
 use crate::execution::FillModel;
-use crate::reporter::Reporter;
+use crate::reporter::{Reporter, RoundTrip};
 use crate::stats::Stats;
 
 /// A position moved toward zero by less than this counts as no close, mirroring
@@ -113,14 +113,6 @@ pub struct Engine {
     transfers: Vec<(f64, Wallet)>,
     tick: usize,
     id_counter: u64,
-    /// The tick at which the current position first became non-flat, used to
-    /// stamp a closed trade's holding time. Meaningful only while a position is open.
-    position_entry_tick: usize,
-    /// The fee already paid to open the position now standing, in quote. A close
-    /// consumes the share belonging to the size it closes, so a completed trade can
-    /// carry its whole round-trip cost rather than the exit side alone (ADR 0023).
-    /// Zero whenever the position is flat.
-    open_fee: f64,
     /// Fills applied since the last reset. A run whose orders never filled, on a
     /// series with no volume say, is otherwise indistinguishable from one that never
     /// placed an order.
@@ -161,8 +153,6 @@ impl Engine {
             transfers: Vec::new(),
             tick: 0,
             id_counter: 1,
-            position_entry_tick: 0,
-            open_fee: 0.0,
             fills: 0,
             funding_paid: 0.0,
             bust: false,
@@ -189,8 +179,6 @@ impl Engine {
         // The id counter deliberately survives a reset. Restarting it made an id
         // handed out in one episode name a live order in the next, so a handle
         // carried across a reset cancelled somebody else's order (ADR 0010).
-        self.position_entry_tick = self.tick;
-        self.open_fee = 0.0;
         self.fills = 0;
         self.funding_paid = 0.0;
         self.bust = false;
@@ -378,6 +366,21 @@ impl Engine {
                 self.funding_paid,
             )
         })
+    }
+
+    /// The round trips: every one closed so far, in the order they closed, then the
+    /// one still open, marked at the current close and known by having no close.
+    /// Empty when reporting is off (ADR 0023).
+    pub fn round_trips(&self) -> Vec<RoundTrip> {
+        let Some(reporter) = &self.reporter else {
+            return Vec::new();
+        };
+        let mut trips = reporter.trades().to_vec();
+        if let Some(open) = reporter.open_trade() {
+            let mark = Price(self.current_close());
+            trips.push(open.marked(self.account.unrealized(mark)));
+        }
+        trips
     }
 
     /// Fills applied since the last reset, whatever the reporter is set to. Zero

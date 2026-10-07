@@ -99,17 +99,21 @@ class BacktestResult:
     ``risk_free`` is the annual rate the stats were computed against, carried for
     the reason ``periods_per_year`` is: ``metrics.sharpe`` reads it off the result
     unless a call passes its own. ``bust`` says the account reached zero, which a
-    trade row cannot always say: a forced close books one carrying ``liquidated``,
-    and an account drained by fees or funding books nothing at all.
+    round trip cannot always say: a forced close ends one with the reason
+    ``liquidation``, and an account drained by fees or funding ends none at all.
+
+    ``trades`` are the round trips, the one still open at the end marked and flagged,
+    and ``fills`` is the fill log, one dict per fill (ADRs 0022, 0023).
     """
 
 
     def __init__(self, stats, equity_curve, trades, initial=None,
                  periods_per_year=None, risk_free=0.0, config=None,
-                 data_hash=None, strategy=None, bust=False):
+                 data_hash=None, strategy=None, bust=False, fills=None):
         self.stats            = stats
         self.equity_curve     = equity_curve
         self.trades           = trades
+        self.fills            = list(fills) if fills else []
         self.initial          = initial
         self.periods_per_year = periods_per_year
         self.risk_free        = risk_free
@@ -238,6 +242,7 @@ class Backtester:
             data_hash        = self._data_hash,
             strategy         = _name(strategy),
             bust             = engine.is_bust(),
+            fills            = engine.fills(),
         )
 
 
@@ -247,8 +252,8 @@ class Backtester:
 
         n = len(self._index)
         for t in trades:
-            entry, exit_ = t["entry_tick"], t["exit_tick"]
-            if 0 <= entry < n:
-                t["entry_time"] = self._index[entry]
-            if 0 <= exit_ < n:
-                t["exit_time"] = self._index[exit_]
+            opened, closed = t["open_bar"], t["close_bar"]
+            if 0 <= opened < n:
+                t["open_time"] = self._index[opened]
+            if closed is not None and 0 <= closed < n:
+                t["close_time"] = self._index[closed]

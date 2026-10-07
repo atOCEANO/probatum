@@ -287,11 +287,13 @@ from probatum.plot import Background, Band, Histogram, Level, Line
 
 result = probatum.backtest.Backtester(candles=frame, market="spot").run(strategy)
 
-# the bars the rule was actually in the market. Ticks index bars, so this is one
-# entry per candle; an equity curve is one shorter and the chart aligns it for you
+# the bars the rule was actually in the market, a round trip still open at the end
+# running to the last. Bars index candles, so this is one entry per candle; an
+# equity curve is one shorter and the chart aligns it for you
 held = np.zeros(len(frame), dtype=bool)
 for trade in result.trades:
-    held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
+    last = len(frame) - 1 if trade["open"] else trade["close_bar"]
+    held[trade["open_bar"]:last + 1] = True
 
 probatum.chart(
     frame=frame,

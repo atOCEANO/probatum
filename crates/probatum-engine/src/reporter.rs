@@ -141,42 +141,119 @@ pub struct OrderEvent {
     pub reason: EventReason,
 }
 
-/// One closed trade, recorded when a position is reduced or closed.
+/// One round trip: a maximal run of one sign, from the fill that takes the position
+/// off zero to the fill that returns it to zero or flips it. Resizing inside it does
+/// not end it, so a strategy that scales in and out reads as one long trade, and a
+/// count of them counts decisions rather than fills (ADR 0023).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Trade {
-    pub entry_tick: usize,
-    pub exit_tick: usize,
-    /// The side of the position that was closed: buy for a long, sell for a short.
+pub struct RoundTrip {
+    /// `Buy` for a long, `Sell` for a short.
     pub side: Side,
-    /// Base size closed.
+    /// The largest position it reached.
     pub size: f64,
-    pub entry_price: f64,
-    pub exit_price: f64,
-    /// The whole round-trip fee on the closed size, in quote: the share of the
-    /// position's entry fee belonging to this size, plus the closing fill's fee on
-    /// it. Charging only the exit side understated the cost by about half and let a
-    /// strategy whose edge is smaller than its costs read as profitable per trade
-    /// (ADR 0023).
+    /// The average price of its opening fills.
+    pub entry: f64,
+    /// The average price of its closing fills, NaN until one has closed any of it.
+    pub exit: f64,
+    pub open_tick: usize,
+    /// The bar it closed on, or `None` while it is open.
+    pub close_tick: Option<usize>,
+    /// What its closing fills realized from the position's average entry, before
+    /// fees and funding.
+    pub realized: f64,
+    /// Every fee of its fills, a flip's split by size with the round trip it ends,
+    /// so each is carried exactly once (ADR 0014).
     pub fees: f64,
-    /// Gross realized price PnL booked on the close, in quote, before fees.
+    /// The funding charged on it while it was open.
+    pub funding: f64,
+    /// Its net PnL: what it realized less its fees and its funding, and for one
+    /// still open, what it holds unrealized at the last close as well.
     pub pnl: f64,
-    /// `pnl - fees`: what this trade actually added to the account. The trade
-    /// statistics are built from this, so they can be reproduced from the log.
-    pub net_pnl: f64,
-    pub bars_held: usize,
-    /// True when the position was force-closed by a liquidation rather than by an
-    /// order. A forced close used to be booked nowhere at all, so a death and an
-    /// ordinary exit were not merely alike in the log, one of them was absent
-    /// (ADR 0017).
-    pub liquidated: bool,
+    /// `pnl` over `size * entry`.
+    pub ret: f64,
+    /// What closed it, or `None` while it is open.
+    pub reason: Option<FillReason>,
+    /// The sizes its opening and its closing fills came to.
+    pub opened: f64,
+    pub closed: f64,
 }
 
-/// Side buffers for the equity curve and the trade log. Never part of the
-/// hot-path state or the RL observation.
+impl RoundTrip {
+    /// A round trip opened on bar `tick` by `size` at `price`, paying `fee`.
+    pub fn open(side: Side, tick: usize, size: f64, price: f64, fee: f64) -> RoundTrip {
+        let mut trip = RoundTrip {
+            side,
+            size,
+            entry: price,
+            exit: f64::NAN,
+            open_tick: tick,
+            close_tick: None,
+            realized: 0.0,
+            fees: fee,
+            funding: 0.0,
+            pnl: 0.0,
+            ret: 0.0,
+            reason: None,
+            opened: size,
+            closed: 0.0,
+        };
+        trip.settle(0.0);
+        trip
+    }
+
+    /// A fill of `size` at `price` that grows it, paying `fee`.
+    pub fn grow(&mut self, size: f64, price: f64, fee: f64) {
+        self.entry = (self.entry * self.opened + price * size) / (self.opened + size);
+        self.opened += size;
+        self.fees += fee;
+    }
+
+    /// A fill of `size` at `price` that shrinks it, paying `fee` and realizing
+    /// `realized`.
+    pub fn shrink(&mut self, size: f64, price: f64, fee: f64, realized: f64) {
+        self.exit = if self.closed > 0.0 {
+            (self.exit * self.closed + price * size) / (self.closed + size)
+        } else {
+            price
+        };
+        self.closed += size;
+        self.fees += fee;
+        self.realized += realized;
+    }
+
+    /// End it on bar `tick`, for `reason`.
+    pub fn finish(&mut self, tick: usize, reason: FillReason) {
+        self.close_tick = Some(tick);
+        self.reason = Some(reason);
+        self.settle(0.0);
+    }
+
+    /// The round trip still open, marked: `unrealized` is what its position holds
+    /// at the last close.
+    pub fn marked(&self, unrealized: f64) -> RoundTrip {
+        let mut trip = *self;
+        trip.settle(unrealized);
+        trip
+    }
+
+    fn settle(&mut self, unrealized: f64) {
+        self.pnl = self.realized + unrealized - self.fees - self.funding;
+        let notional = self.size * self.entry;
+        self.ret = if notional > 0.0 {
+            self.pnl / notional
+        } else {
+            0.0
+        };
+    }
+}
+
+/// Side buffers for the equity curve, the round trips and the logs. Never part of
+/// the hot-path state or the RL observation.
 #[derive(Clone, Debug, Default)]
 pub struct Reporter {
     equity_curve: Vec<f64>,
-    trades: Vec<Trade>,
+    trades: Vec<RoundTrip>,
+    open: Option<RoundTrip>,
     fills: Vec<FillRecord>,
     events: Vec<OrderEvent>,
     /// Steps recorded while holding a nonzero position, for the exposure stat.
@@ -198,9 +275,22 @@ impl Reporter {
         }
     }
 
-    /// Append a closed trade.
-    pub fn record_trade(&mut self, trade: Trade) {
-        self.trades.push(trade);
+    /// The round trip still open, to grow, shrink or charge.
+    pub fn trip_mut(&mut self) -> Option<&mut RoundTrip> {
+        self.open.as_mut()
+    }
+
+    /// Begin `trip`, the position having left zero.
+    pub fn open_trip(&mut self, trip: RoundTrip) {
+        self.open = Some(trip);
+    }
+
+    /// End the open round trip on bar `tick`, for `reason`.
+    pub fn close_trip(&mut self, tick: usize, reason: FillReason) {
+        if let Some(mut trip) = self.open.take() {
+            trip.finish(tick, reason);
+            self.trades.push(trip);
+        }
     }
 
     /// Append a fill to the fill log.
@@ -220,10 +310,15 @@ impl Reporter {
         &self.equity_curve
     }
 
-    /// The closed trades, in the order they closed. A forced close is logged here
-    /// like any other, carrying `liquidated` (ADR 0017).
-    pub fn trades(&self) -> &[Trade] {
+    /// The closed round trips, in the order they closed. One a forced close ended
+    /// carries the reason `liquidation` (ADRs 0017, 0023).
+    pub fn trades(&self) -> &[RoundTrip] {
         &self.trades
+    }
+
+    /// The round trip still open, unmarked.
+    pub fn open_trade(&self) -> Option<&RoundTrip> {
+        self.open.as_ref()
     }
 
     /// Every fill in the order it landed, forced closes included (ADR 0022).
@@ -238,8 +333,8 @@ impl Reporter {
     }
 
     /// Number of recorded equity points, and nothing else. It does not pair with
-    /// `is_empty`, which wants the trade log empty too, so a reporter holding a
-    /// trade and no equity point answers zero here and `false` there.
+    /// `is_empty`, which wants every other buffer empty too, so a reporter holding
+    /// a round trip and no equity point answers zero here and `false` there.
     pub fn len(&self) -> usize {
         self.equity_curve.len()
     }
@@ -248,6 +343,7 @@ impl Reporter {
     pub fn is_empty(&self) -> bool {
         self.equity_curve.is_empty()
             && self.trades.is_empty()
+            && self.open.is_none()
             && self.fills.is_empty()
             && self.events.is_empty()
     }
@@ -278,24 +374,8 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Reporter, Trade};
+    use super::{FillReason, Reporter, RoundTrip};
     use probatum_core::Side;
-
-    fn a_trade() -> Trade {
-        Trade {
-            entry_tick: 1,
-            exit_tick: 5,
-            side: Side::Buy,
-            size: 2.0,
-            entry_price: 100.0,
-            exit_price: 110.0,
-            fees: 0.1,
-            pnl: 20.0,
-            net_pnl: 19.9,
-            bars_held: 4,
-            liquidated: false,
-        }
-    }
 
     #[test]
     fn records_the_equity_curve() {
@@ -307,11 +387,32 @@ mod tests {
     }
 
     #[test]
-    fn records_trades() {
+    fn a_round_trip_is_a_trade_only_once_it_closes() {
         let mut r = Reporter::new();
-        r.record_trade(a_trade());
-        assert_eq!(r.trades().len(), 1);
-        assert_eq!(r.trades()[0].pnl, 20.0);
+        r.open_trip(RoundTrip::open(Side::Buy, 1, 2.0, 100.0, 0.1));
+        assert!(r.trades().is_empty());
+        assert_eq!(r.open_trade().map(|t| t.size), Some(2.0));
+        if let Some(trip) = r.trip_mut() {
+            trip.shrink(2.0, 110.0, 0.1, 20.0);
+        }
+        r.close_trip(5, FillReason::Market);
+        let [trip] = r.trades() else {
+            panic!("one round trip");
+        };
+        assert!((trip.pnl - 19.8).abs() < 1e-12);
+        assert!((trip.ret - 19.8 / 200.0).abs() < 1e-12);
+        assert_eq!(trip.close_tick, Some(5));
+        assert!(r.open_trade().is_none());
+    }
+
+    #[test]
+    fn its_entry_and_exit_are_the_averages_of_its_fills() {
+        let mut trip = RoundTrip::open(Side::Sell, 0, 1.0, 100.0, 0.0);
+        trip.grow(3.0, 120.0, 0.0);
+        trip.shrink(2.0, 90.0, 0.0, 0.0);
+        trip.shrink(2.0, 80.0, 0.0, 0.0);
+        assert_eq!((trip.entry, trip.exit), (115.0, 85.0));
+        assert_eq!((trip.opened, trip.closed), (4.0, 4.0));
     }
 
     #[test]

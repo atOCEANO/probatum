@@ -23,7 +23,9 @@ use probatum_core::candle::floats;
 use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce, Wallet};
 use probatum_engine::reporter::{EventReason, FillRecord, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
-use probatum_engine::{Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
+use probatum_engine::{
+    Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, RoundTrip, Stats,
+};
 
 /// Parse a market string into the core enum, case-insensitively.
 fn parse_market(market: &str) -> PyResult<Market> {
@@ -506,19 +508,38 @@ fn stats_to_dict<'py>(py: Python<'py>, stats: &Stats) -> PyResult<Bound<'py, PyD
     Ok(d)
 }
 
-fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyDict>> {
+fn trade_to_dict<'py>(
+    py: Python<'py>,
+    trade: &RoundTrip,
+    engine: &BarEngine,
+) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
-    d.set_item("entry_tick", trade.entry_tick)?;
-    d.set_item("exit_tick", trade.exit_tick)?;
-    d.set_item("side", side_str(trade.side))?;
+    d.set_item("instrument", 0)?;
+    d.set_item(
+        "side",
+        if trade.side == Side::Buy {
+            "long"
+        } else {
+            "short"
+        },
+    )?;
     d.set_item("size", trade.size)?;
-    d.set_item("entry_price", trade.entry_price)?;
-    d.set_item("exit_price", trade.exit_price)?;
+    d.set_item("entry", trade.entry)?;
+    d.set_item("exit", trade.exit)?;
+    d.set_item("open_bar", trade.open_tick)?;
+    d.set_item("close_bar", trade.close_tick)?;
+    d.set_item("open_time", engine.open_time(trade.open_tick))?;
+    d.set_item(
+        "close_time",
+        trade.close_tick.and_then(|tick| engine.open_time(tick)),
+    )?;
+    d.set_item("realized", trade.realized)?;
     d.set_item("fees", trade.fees)?;
+    d.set_item("funding", trade.funding)?;
     d.set_item("pnl", trade.pnl)?;
-    d.set_item("net_pnl", trade.net_pnl)?;
-    d.set_item("bars_held", trade.bars_held)?;
-    d.set_item("liquidated", trade.liquidated)?;
+    d.set_item("ret", trade.ret)?;
+    d.set_item("reason", trade.reason.map(|reason| reason.name()))?;
+    d.set_item("open", trade.close_tick.is_none())?;
     Ok(d)
 }
 
@@ -1063,18 +1084,18 @@ impl Engine {
             .map(|reporter| PyArray1::from_slice(py, reporter.equity_curve()))
     }
 
-    /// The closed trades as a list of dicts, or None when reporting is off.
+    /// The round trips as a list of dicts, every one closed in the order it closed
+    /// and then the one still open, marked at the current close with `open` true,
+    /// or None when reporting is off (ADR 0023).
     fn trades<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        match self.inner.reporter() {
-            Some(reporter) => {
-                let list = PyList::empty(py);
-                for trade in reporter.trades() {
-                    list.append(trade_to_dict(py, trade)?)?;
-                }
-                Ok(Some(list))
-            }
-            None => Ok(None),
+        if self.inner.reporter().is_none() {
+            return Ok(None);
         }
+        let list = PyList::empty(py);
+        for trade in self.inner.round_trips() {
+            list.append(trade_to_dict(py, &trade, &self.inner)?)?;
+        }
+        Ok(Some(list))
     }
 
     /// The fill log as a list of dicts, one per fill in the order they landed, or

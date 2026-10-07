@@ -90,7 +90,8 @@ def everything():
     held   = np.zeros(len(data), dtype=bool)
 
     for trade in result.trades:
-        held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
+        last = len(data) - 1 if trade["open"] else trade["close_bar"]
+        held[trade["open_bar"]:last + 1] = True
 
     return probatum.chart(
         data,
@@ -1030,7 +1031,7 @@ def test_focus_of_a_trade_frames_that_trade():
     result = run()
     spec   = probatum.chart(frame(8), result, focus=result.trades[0]).spec()
 
-    assert spec["focus"][0] <= result.trades[0]["entry_tick"]
+    assert spec["focus"][0] <= result.trades[0]["open_bar"]
 
 
 def test_two_charts_of_the_same_inputs_produce_the_same_document():

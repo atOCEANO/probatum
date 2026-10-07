@@ -163,7 +163,7 @@ mod tests {
         cfg, crash_series, flat_series, ohlc, perp_cfg, report_cfg, series,
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
-    use crate::reporter::EventKind;
+    use crate::reporter::{EventKind, FillReason};
     use probatum_core::{Candle, OrderType, Side, TimeInForce};
 
     #[test]
@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(e.num_fills(), 2, "the refused fill was applied anyway");
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1, "a phantom position was opened and closed");
-        assert!(trades[0].liquidated);
+        assert_eq!(trades[0].reason, Some(FillReason::Liquidation));
     }
 
     #[test]

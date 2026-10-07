@@ -428,6 +428,8 @@ def first_difference(rows, cfg):
 FILL_FIELDS = ("bar", "order", "side", "size", "price", "reference", "spread",
                "slippage", "impact", "fee", "adjustment", "taker", "reason")
 EVENT_FIELDS = ("bar", "kind", "order", "size", "price")
+TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees",
+                "funding", "pnl", "ret", "reason", "open")
 
 
 def log_difference(what, fields, mine, theirs):
@@ -438,7 +440,8 @@ def log_difference(what, fields, mine, theirs):
             x, y = a[name], b[name]
             both = isinstance(x, float) and isinstance(y, float)
             if not (close_enough(x, y) if both else x == y):
-                return f"{what} {k + 1}, on bar {b['bar']}: {name} {x!r} against {y!r}"
+                where = b.get("bar", b.get("open_bar"))
+                return f"{what} {k + 1}, on bar {where}: {name} {x!r} against {y!r}"
 
     if len(mine) != len(theirs):
         return f"{len(mine)} {what}s against {len(theirs)}"
@@ -482,7 +485,9 @@ def compare(cases, seed):
         found = first_difference(rows, cfg)
         why   = found[1] if found else (
             log_difference("fill", FILL_FIELDS, engine.fills(), sim.fills)
-            or log_difference("event", EVENT_FIELDS, engine.order_log(), sim.events))
+            or log_difference("event", EVENT_FIELDS, engine.order_log(), sim.events)
+            or log_difference("round trip", TRIP_FIELDS, engine.trades(),
+                              sim.round_trips()))
         if why is None:
             agreed += 1
         else:

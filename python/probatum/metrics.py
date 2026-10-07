@@ -82,6 +82,17 @@ def _curve(result):
     return np.concatenate(([float(start)], equity))
 
 
+def _closed(result):
+    # the round trips that ended: the trade statistics count decisions taken to
+    # their end, and the one still open at the end is marked rather than closed
+    # (ADR 0023)
+    return [t for t in (result.trades or []) if not t["open"]]
+
+
+def _held(trade):
+    return trade["close_bar"] - trade["open_bar"]
+
+
 def _annualization(result):
     ppy = getattr(result, "periods_per_year", None)
     if ppy is None or not math.isfinite(float(ppy)) or float(ppy) <= 0.0:
@@ -252,8 +263,8 @@ def drawdown_table(result, top=5):
     shallow falls and one long one are the same ``max_drawdown_pct`` and not
     remotely the same strategy to hold.
 
-    The three positions are BAR indices, the same numbering as a trade's
-    ``entry_tick`` and every other position this module reports, so one goes
+    The three positions are BAR indices, the same numbering as a round trip's
+    ``open_bar`` and every other position this module reports, so one goes
     straight to the candle or onto a chart. ``recovered_bar`` is ``None`` for a
     fall the run never came back from.
     """
@@ -335,23 +346,22 @@ def decompose(result):
     and a larger share of dead strategies died on the fee line rather than on the
     idea.
 
-    ``unrealized`` is whatever the other three do not account for: a position
-    still open at the end, marked, net of the entry fee it already paid. It is
-    zero on a run that ends flat, and a test pins that. ``net_pct`` is ``net``
-    against the opening balance.
+    ``unrealized`` is whatever the other three do not account for: what a position
+    still open at the end holds at the last close. It is zero on a run that ends
+    flat, and a test pins that. ``net_pct`` is ``net`` against the opening balance.
 
-    ``fee_share`` is fees over gross, and ``turnover`` is the notional both sides
-    of every round trip moved, over the opening balance. They are read together: a
+    ``fee_share`` is fees over gross, and ``turnover`` is the notional every fill
+    moved, both sides of every round trip, over the opening balance. They are read together: a
     strategy paying half its gross edge away in costs has a cost problem rather
     than an idea problem, and neither number alone says which one you have.
     """
     trades  = result.trades or []
-    gross   = float(sum(t["pnl"] for t in trades))
+    gross   = float(sum(t["realized"] for t in trades))
     fees    = float(sum(t["fees"] for t in trades))
     funding = float((result.stats or {}).get("funding_paid", 0.0))
     series  = _curve(result)
     net     = float(series[-1] - series[0])
-    traded  = float(sum(t["size"] * (t["entry_price"] + t["exit_price"]) for t in trades))
+    traded  = float(sum(f["size"] * f["price"] for f in getattr(result, "fills", [])))
 
     return {
         "gross_pnl":  gross,
@@ -380,8 +390,8 @@ def trade_stats(result):
     live account would have had to sit through, which is what actually decides
     whether a rule gets switched off.
     """
-    trades = result.trades or []
-    nets   = [float(t["net_pnl"]) for t in trades]
+    trades = _closed(result)
+    nets   = [float(t["pnl"]) for t in trades]
     wins   = [v for v in nets if v > 0.0]
     losses = [-v for v in nets if v < 0.0]
     streak = worst = 0
@@ -409,7 +419,7 @@ def trade_stats(result):
         "largest_win":            max(nets) if nets else 0.0,
         "largest_loss":           min(nets) if nets else 0.0,
         "max_consecutive_losses": worst,
-        "avg_bars_held":          (float(np.mean([t["bars_held"] for t in trades]))
+        "avg_bars_held":          (float(np.mean([_held(t) for t in trades]))
                                    if trades else 0.0),
     }
 
@@ -550,15 +560,16 @@ def long_short_split(result):
     neither.
     """
     out = {}
-    for side in ("buy", "sell"):
-        rows = [t for t in (result.trades or []) if t["side"] == side]
-        wins = [t for t in rows if t["net_pnl"] > 0.0]
-        out["long" if side == "buy" else "short"] = {
+
+    for side in ("long", "short"):
+        rows = [t for t in _closed(result) if t["side"] == side]
+        wins = [t for t in rows if t["pnl"] > 0.0]
+        out[side] = {
             "trades":        len(rows),
-            "net_pnl":       float(sum(t["net_pnl"] for t in rows)),
+            "net_pnl":       float(sum(t["pnl"] for t in rows)),
             "fees":          float(sum(t["fees"] for t in rows)),
             "win_rate":      len(wins) / len(rows) if rows else 0.0,
-            "avg_bars_held": float(np.mean([t["bars_held"] for t in rows])) if rows else 0.0,
+            "avg_bars_held": float(np.mean([_held(t) for t in rows])) if rows else 0.0,
         }
 
     return out
@@ -673,7 +684,7 @@ def segment(result, start=0, stop=None):
     # instead loses one return per boundary, which compounds two halves of a run
     # to slightly less than the run
     opening = _curve(result)[max(0, start - 1)]
-    trades  = [t for t in (result.trades or []) if start <= t["exit_tick"] < stop]
+    trades  = [t for t in _closed(result) if start <= t["close_bar"] < stop]
     series  = np.concatenate(([opening], curve[max(0, start - 1):stop - 1]))
 
     return _stats(series, trades, _annualization(result), _risk_free(result, None))
@@ -723,7 +734,7 @@ def _stats(series, trades, ppy, rate):
         falls = np.where(peak > 0.0, np.minimum((peak - series) / peak, 1.0), 0.0)
 
     max_dd = float(falls.max()) if falls.size else 0.0
-    nets   = [float(t["net_pnl"]) for t in trades]
+    nets   = [float(t["pnl"]) for t in trades]
     wins   = [v for v in nets if v > 0.0]
     losses = [-v for v in nets if v < 0.0]
 
@@ -1281,16 +1292,15 @@ def excursions(result, frame):
     _same_bars(result, frame, len(high), "excursions")
 
     out = []
-    for trade in result.trades or []:
-        first, last = trade["entry_tick"], trade["exit_tick"]
+    for trade in _closed(result):
+        first, last = trade["open_bar"], trade["close_bar"]
         if not 0 <= first <= last < len(high):
-            # unreachable on the right frame, since a position still open at the
-            # end is never logged as a trade (ADR 0022). The guard above is what
-            # makes that true rather than hoped for
+            # unreachable on the right frame; the guard above is what makes that
+            # true rather than hoped for
             continue
 
-        entry = trade["entry_price"]
-        seen  = [entry, float(trade["exit_price"])]
+        entry = trade["entry"]
+        seen  = [entry, float(trade["exit"])]
         if last > first:
             seen.append(float(closes[first]))
             seen.append(float(opens[last]))
@@ -1299,18 +1309,18 @@ def excursions(result, frame):
                 seen.append(float(low[first + 1:last].min()))
 
         peak, trough = max(seen), min(seen)
-        if trade["side"] == "buy":
+        if trade["side"] == "long":
             best, worst = peak - entry, trough - entry
         else:
             best, worst = entry - trough, entry - peak
 
         out.append({
-            "entry_tick": first,
-            "exit_tick":  last,
-            "side":       trade["side"],
-            "net_pnl":    trade["net_pnl"],
-            "best_pct":   best / entry * 100.0 if entry else 0.0,
-            "worst_pct":  worst / entry * 100.0 if entry else 0.0,
+            "open_bar":  first,
+            "close_bar": last,
+            "side":      trade["side"],
+            "pnl":       trade["pnl"],
+            "best_pct":  best / entry * 100.0 if entry else 0.0,
+            "worst_pct": worst / entry * 100.0 if entry else 0.0,
         })
 
     return out
@@ -1341,17 +1351,19 @@ def session_buckets(result, frame, by="hour"):
     # Monday and was Sunday (ADR 0030)
     keys    = (unit % 24) if by == "hour" else ((unit // 24 + 3) % 7)
     buckets = {}
-    for trade in result.trades or []:
-        exit_tick = trade["exit_tick"]
-        if not 0 <= exit_tick < keys.size:
+
+    for trade in _closed(result):
+        closed = trade["close_bar"]
+        if not 0 <= closed < keys.size:
             continue
 
         slot = buckets.setdefault(
-            int(keys[exit_tick]), {"trades": 0, "net_pnl": 0.0, "wins": 0}
+            int(keys[closed]), {"trades": 0, "net_pnl": 0.0, "wins": 0}
         )
         slot["trades"] += 1
-        slot["net_pnl"] += trade["net_pnl"]
-        slot["wins"] += 1 if trade["net_pnl"] > 0.0 else 0
+        slot["net_pnl"] += trade["pnl"]
+        slot["wins"] += 1 if trade["pnl"] > 0.0 else 0
+
     for slot in buckets.values():
         slot["win_rate"] = slot["wins"] / slot["trades"] if slot["trades"] else 0.0
 
@@ -1376,7 +1388,7 @@ def _fingerprint_of(frame):
 def _same_bars(result, frame, bars, where):
     """Refuse a frame that is not the one the run was produced on.
 
-    These read the run's own ``entry_tick`` and ``exit_tick`` straight into the
+    These read the run's own ``open_bar`` and ``close_bar`` straight into the
     frame's bars, so a different frame is not a smaller answer, it is an answer
     about something else. Both halves earned their place. The length check catches
     the accident: given a 2,000-bar slice of its own 100,000-bar frame,

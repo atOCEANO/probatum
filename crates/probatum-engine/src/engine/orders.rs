@@ -623,7 +623,7 @@ mod tests {
         let trades = e.reporter().unwrap().trades();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].side, Side::Sell);
-        assert_eq!(trades[0].pnl, -100.0); // short 1 from 200 bought back at 300
+        assert_eq!(trades[0].realized, -100.0); // short 1 from 200 bought back at 300
         let stats = e.stats(365.0, 0.0).unwrap();
         assert_eq!(stats.win_rate, 0.0);
         assert_eq!(stats.profit_factor, 0.0);

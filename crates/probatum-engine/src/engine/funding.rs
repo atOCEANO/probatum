@@ -7,6 +7,17 @@
 use probatum_core::{Market, Price};
 
 use super::Engine;
+use crate::reporter::Reporter;
+
+/// Keep a funding payment for the result and charge it to the round trip it was paid
+/// on (ADRs 0020, 0023). It takes the two fields it writes, so a schedule borrowed
+/// from the candles can stay borrowed while it runs.
+fn pay(funding_paid: &mut f64, reporter: &mut Option<Reporter>, payment: f64) {
+    *funding_paid += payment;
+    if let Some(trip) = reporter.as_mut().and_then(Reporter::trip_mut) {
+        trip.funding += payment;
+    }
+}
 
 impl Engine {
     /// True when the current row owns emsl's event, at the close of bars `n`, `2n`
@@ -24,7 +35,8 @@ impl Engine {
     pub(super) fn charge_between(&mut self, mark: f64) {
         if let Some(schedule) = self.candles.funding() {
             for &rate in schedule.between(self.tick) {
-                self.funding_paid += self.account.apply_funding(rate, Price(mark));
+                let paid = self.account.apply_funding(rate, Price(mark));
+                pay(&mut self.funding_paid, &mut self.reporter, paid);
             }
         }
     }
@@ -57,7 +69,8 @@ impl Engine {
             let held = self.account.position.qty.get();
             for &(rate, inside) in schedule.owned(self.tick) {
                 if inside && held * close * rate > 0.0 {
-                    self.funding_paid += self.account.apply_funding(rate, Price(close));
+                    let paid = self.account.apply_funding(rate, Price(close));
+                    pay(&mut self.funding_paid, &mut self.reporter, paid);
                 }
             }
         }
@@ -67,13 +80,15 @@ impl Engine {
     /// so an account the check liquidated holds nothing at the stamp and pays nothing.
     pub(super) fn charge_funding(&mut self, close: f64) {
         if self.owns_every_bars() {
-            self.funding_paid += self
+            let paid = self
                 .account
                 .apply_funding(self.config.funding_rate, Price(close));
+            pay(&mut self.funding_paid, &mut self.reporter, paid);
         }
         if let Some(schedule) = self.candles.funding() {
             for &(rate, _) in schedule.owned(self.tick) {
-                self.funding_paid += self.account.apply_funding(rate, Price(close));
+                let paid = self.account.apply_funding(rate, Price(close));
+                pay(&mut self.funding_paid, &mut self.reporter, paid);
             }
         }
     }
@@ -85,6 +100,7 @@ mod tests {
     use crate::clock::Clock;
     use crate::engine::fixtures::{cfg, flat_series, levered, ohlc, perp_cfg, series};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
+    use crate::reporter::FillReason;
     use crate::schedule::every;
     use probatum_core::{Candle, Market, Side};
 
@@ -227,8 +243,8 @@ mod tests {
         assert_eq!(state.equity, 0.0);
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
-        assert_eq!(trades[0].exit_price, 110.0);
-        assert!(trades[0].liquidated);
+        assert_eq!(trades[0].exit, 110.0);
+        assert_eq!(trades[0].reason, Some(FillReason::Liquidation));
     }
 
     #[test]
@@ -403,7 +419,7 @@ mod tests {
                 assert_eq!(state.position, 0.0);
                 assert_eq!(state.equity, 0.0);
                 let trades = e.reporter().expect("reporting is on").trades();
-                assert!((trades[0].exit_price - 90.95).abs() < 1e-9);
+                assert!((trades[0].exit - 90.95).abs() < 1e-9);
             }
         }
     }
@@ -456,6 +472,6 @@ mod tests {
         assert_eq!(monday.equity, 0.0);
         assert!((monday.funding_paid - 18.2).abs() < 1e-9);
         let trades = e.reporter().expect("reporting is on").trades();
-        assert_eq!(trades[0].exit_price, 91.0);
+        assert_eq!(trades[0].exit, 91.0);
     }
 }

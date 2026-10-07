@@ -893,9 +893,9 @@ def test_a_trade_carries_both_sides_of_its_fee():
     e.step()  # sell 1 at 300, exit fee 3.0
     t = e.trades()[0]
 
-    assert abs(t["pnl"] - 100.0) < 1e-9
+    assert abs(t["realized"] - 100.0) < 1e-9
     assert abs(t["fees"] - 5.0) < 1e-9
-    assert abs(t["net_pnl"] - 95.0) < 1e-9
+    assert abs(t["pnl"] - 95.0) < 1e-9
 
 
 def test_stats_reproduce_from_the_trade_log():
@@ -927,15 +927,17 @@ def test_stats_reproduce_from_the_trade_log():
         report    = True,
     )
     e.run(PingPong())
-    st, trades = e.stats(), e.trades()
+    st     = e.stats()
+    trades = [t for t in e.trades() if not t["open"]]
 
     assert len(trades) > 3
+    assert st["num_trades"] == len(trades)
 
-    wins = sum(1 for t in trades if t["net_pnl"] > 0.0)
+    wins = sum(1 for t in trades if t["pnl"] > 0.0)
 
     assert abs(st["win_rate"] - wins / len(trades)) < 1e-12
     for t in trades:
-        assert abs(t["net_pnl"] - (t["pnl"] - t["fees"])) < 1e-12
+        assert abs(t["pnl"] - (t["realized"] - t["fees"] - t["funding"])) < 1e-12
 
 
 def test_num_fills_separates_a_dead_feed_from_a_quiet_strategy():

@@ -19,7 +19,7 @@ pub use candles::Candles;
 pub use clock::Clock;
 pub use engine::{Engine, EngineConfig};
 pub use execution::{FillCosts, FillModel};
-pub use reporter::{Reporter, Trade};
+pub use reporter::{Reporter, RoundTrip};
 pub use schedule::Schedule;
 pub use stats::Stats;
 pub use strategy::{run, Strategy};
