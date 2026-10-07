@@ -150,6 +150,11 @@ def test_two_markets_with_the_same_knobs_are_the_same_market():
     assert Market(kind="perp") != Market(kind="spot")
     assert len({Market(), Market()}) == 1
 
+    wallets = {"spot": 500.0, "margin": 9_500.0}
+    pair    = Market(kind="perp", quote=wallets), Market(kind="perp", quote=dict(wallets))
+
+    assert len(set(pair)) == 1
+
 
 def test_a_market_prints_only_what_was_chosen():
     assert repr(Market()) == "Market(kind='spot')"

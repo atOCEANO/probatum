@@ -162,7 +162,12 @@ class Market:
 
 
     def __hash__(self):
-        return hash(tuple(sorted(self.as_dict().items())))
+        settings = self.as_dict()
+        # a quote that names both wallets is a dict, which does not hash
+        if isinstance(settings["quote"], dict):
+            settings["quote"] = tuple(sorted(settings["quote"].items()))
+
+        return hash(tuple(sorted(settings.items())))
 
 
     def __repr__(self):
