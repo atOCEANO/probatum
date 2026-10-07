@@ -4,11 +4,11 @@
 //! extreme, and no fill that reduces the position books past that price, so an
 //! account can end at zero but never owing (ADR 0018).
 
-use probatum_core::{Candle, CostModel, Fill, Market, Price, Qty, Side, Wallet};
+use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Qty, Side, Wallet};
 
 use super::Engine;
 use crate::execution::FillCosts;
-use crate::reporter::{FillReason, FillRecord};
+use crate::reporter::{EventKind, EventReason, FillReason, FillRecord};
 
 impl Engine {
     /// True when a perp position is dead at `mark` once `debits` of funding are
@@ -122,6 +122,23 @@ impl Engine {
         // Every order the closed-out account left goes with it. The empty wallet
         // refused them anyway until a transfer could fund it again, after which
         // they filled for an account that had already left the market (ADR 0018).
+        if self.reporter.is_some() {
+            let left: Vec<OrderId> = self
+                .pending
+                .iter()
+                .chain(self.book.iter())
+                .map(|order| order.id)
+                .collect();
+            for id in left {
+                self.log_event(
+                    EventKind::Cancelled,
+                    Some(id),
+                    None,
+                    None,
+                    EventReason::Liquidation,
+                );
+            }
+        }
         self.book.cancel_all();
         self.pending.clear();
     }

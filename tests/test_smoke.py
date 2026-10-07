@@ -156,6 +156,32 @@ def test_a_fill_is_logged_with_its_reference_and_what_it_paid_beyond_it():
     assert fill["spread"] == fill["impact"] == fill["adjustment"] == 0.0
 
 
+def test_the_order_log_follows_each_order_and_keeps_a_refused_one():
+    off = engine()
+    off.reset()
+
+    assert off.order_log() is None
+
+    e = engine(report=True, quote=1_000.0, max_open_orders=1)
+    e.reset()
+    rested = e.limit_buy(1.0, 90.0)
+
+    assert e.limit_buy(1.0, 80.0) is None           # the book's one slot is taken
+    assert e.replace(rested, price=95.0) == rested  # the same order, moved
+
+    bought = e.market_buy(20.0)                     # 1,000 pays for 5 at 200
+    e.step()
+    log = [(event["order"], event["kind"]) for event in e.order_log()]
+
+    assert log == [(rested, "placed"), (rested + 1, "refused"), (rested, "placed"),
+                   (bought, "placed"), (bought, "clamped"), (bought, "filled"),
+                   (bought, "expired")]
+
+    clamp = e.order_log()[4]
+
+    assert (clamp["size"], clamp["reason"]) == (5.0, "5 of the 20 asked fits")
+
+
 def test_observation_is_a_zero_copy_readonly_view():
     e = engine()
     e.reset()  # tick 0

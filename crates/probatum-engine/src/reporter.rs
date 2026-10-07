@@ -1,9 +1,9 @@
 //! Optional reporting buffers: an equity curve sampled each step, a log of closed
-//! trades and a log of fills. Off by default (the engine holds it behind an
-//! `Option`) so the RL hot path allocates nothing; the backtester turns it on.
-//! Stats are derived from these later.
+//! trades, a log of fills and a log of every order's events. Off by default (the
+//! engine holds it behind an `Option`) so the RL hot path allocates nothing; the
+//! backtester turns it on. Stats are derived from these later.
 
-use probatum_core::{OrderId, Side};
+use probatum_core::{OrderId, Side, TimeInForce};
 
 use crate::execution::FillCosts;
 use crate::stats::Stats;
@@ -50,6 +50,97 @@ pub struct FillRecord {
     pub reason: FillReason,
 }
 
+/// What happened to an order, as the order log names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Placed,
+    Refused,
+    Clamped,
+    Filled,
+    NotFilled,
+    Expired,
+    Cancelled,
+}
+
+impl EventKind {
+    /// The name the order log gives it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            EventKind::Placed => "placed",
+            EventKind::Refused => "refused",
+            EventKind::Clamped => "clamped",
+            EventKind::Filled => "filled",
+            EventKind::NotFilled => "not_filled",
+            EventKind::Expired => "expired",
+            EventKind::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Why a placement was refused, with what it quotes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Refusal {
+    /// The pending queue already holds `max_open_orders`.
+    Waiting(usize),
+    /// The book already rests `max_open_orders`.
+    Resting(usize),
+    /// A size that is not a positive finite number can never fill.
+    Size(f64),
+    /// A limit price that is not a price.
+    Price(f64),
+    /// A stop trigger that is not a price.
+    Trigger(f64),
+    /// A post_only limit that would take liquidity at the last close.
+    PostOnly,
+}
+
+/// Why an event happened, with the numbers its text quotes (ADR 0022).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EventReason {
+    /// Placed or filled as its own type.
+    Market,
+    Limit,
+    Stop,
+    /// Placed again by a replace, keeping its id.
+    Replace,
+    Refused(Refusal),
+    /// A replace refused, which leaves the order as it was.
+    Replacing(Refusal),
+    /// A fill clamped to the event's size, of `asked`.
+    Fits {
+        asked: f64,
+    },
+    /// A transfer clamped to the event's size, of `asked`.
+    Transfer {
+        asked: f64,
+    },
+    /// A market order that nothing on its bar could fill.
+    NothingFilled,
+    /// A fok market order that could not fill whole.
+    Fok,
+    /// A market order's remainder, gone after its one bar.
+    MarketBar,
+    /// An ioc or fok limit, gone after its one bar.
+    OneBar(TimeInForce),
+    CancelledByAccount,
+    Liquidation,
+}
+
+/// One event in an order's life (ADR 0022).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrderEvent {
+    /// The bar it happened on: the decision's for a placement, the fill's for a fill.
+    pub tick: usize,
+    pub kind: EventKind,
+    /// The order, or `None` for a transfer's clamp.
+    pub order: Option<OrderId>,
+    /// The size a fill or a clamp came to.
+    pub size: Option<f64>,
+    /// The price a fill was booked at.
+    pub price: Option<f64>,
+    pub reason: EventReason,
+}
+
 /// One closed trade, recorded when a position is reduced or closed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trade {
@@ -87,6 +178,7 @@ pub struct Reporter {
     equity_curve: Vec<f64>,
     trades: Vec<Trade>,
     fills: Vec<FillRecord>,
+    events: Vec<OrderEvent>,
     /// Steps recorded while holding a nonzero position, for the exposure stat.
     in_position_steps: usize,
 }
@@ -116,6 +208,11 @@ impl Reporter {
         self.fills.push(fill);
     }
 
+    /// Append an event to the order log.
+    pub fn record_event(&mut self, event: OrderEvent) {
+        self.events.push(event);
+    }
+
     /// The equity sampled at each recorded step: one point per bar the engine
     /// actually advanced, so a driver that keeps calling `step` past the last bar
     /// adds none.
@@ -134,6 +231,12 @@ impl Reporter {
         &self.fills
     }
 
+    /// Every order's events in the order they happened, refusals included
+    /// (ADR 0022).
+    pub fn events(&self) -> &[OrderEvent] {
+        &self.events
+    }
+
     /// Number of recorded equity points, and nothing else. It does not pair with
     /// `is_empty`, which wants the trade log empty too, so a reporter holding a
     /// trade and no equity point answers zero here and `false` there.
@@ -141,9 +244,12 @@ impl Reporter {
         self.equity_curve.len()
     }
 
-    /// True when no buffer holds anything: no equity point, no trade and no fill.
+    /// True when no buffer holds anything: no equity point, trade, fill or event.
     pub fn is_empty(&self) -> bool {
-        self.equity_curve.is_empty() && self.trades.is_empty() && self.fills.is_empty()
+        self.equity_curve.is_empty()
+            && self.trades.is_empty()
+            && self.fills.is_empty()
+            && self.events.is_empty()
     }
 
     /// Performance statistics over the recorded curve and trades. `initial` is the

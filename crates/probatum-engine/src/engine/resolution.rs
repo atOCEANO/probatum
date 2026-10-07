@@ -7,7 +7,7 @@ use probatum_core::{Candle, Fill, OrderId, OrderType, Qty, Side, TimeInForce};
 
 use super::{Engine, CLOSE_EPS};
 use crate::execution::FillCosts;
-use crate::reporter::FillReason;
+use crate::reporter::{EventKind, EventReason, FillReason};
 
 /// How badly a fill ends for the position currently held: the price PnL per unit
 /// it would realize, so the most adverse sorts first. A fill that does not reduce
@@ -28,23 +28,57 @@ impl Engine {
     pub(super) fn resolve_pending(&mut self, bar: &Candle) {
         let pending = std::mem::take(&mut self.pending);
         for order in pending {
-            if let Some((fill, costs)) = self.fill_model.fill_market(&order, bar) {
-                // FOK is all or nothing against everything that can shrink the
-                // fill, not just the bar's liquidity: the margin cap and the
-                // spot clamps are applied to a copy first, so an order that
-                // could only fill in part books nothing at all (ADR 0010).
-                if order.tif == TimeInForce::Fok
-                    && self.clamp_fill(order.reduce_only, &fill).size.get() + CLOSE_EPS
-                        < order.size.get()
-                {
-                    continue;
-                }
-                self.apply_fill_clamped(
-                    order.id,
-                    FillReason::Market,
-                    order.reduce_only,
-                    fill,
-                    costs,
+            let requested = order.remaining().get();
+            let Some((fill, costs)) = self.fill_model.fill_market(&order, bar) else {
+                self.log_event(
+                    EventKind::NotFilled,
+                    Some(order.id),
+                    None,
+                    None,
+                    EventReason::NothingFilled,
+                );
+                continue;
+            };
+            // FOK is all or nothing against everything that can shrink the fill,
+            // not just the bar's liquidity: the margin cap and the spot clamps
+            // are applied to a copy first, so an order that could only fill in
+            // part books nothing at all (ADR 0010).
+            if order.tif == TimeInForce::Fok
+                && self.clamp_fill(order.reduce_only, &fill).size.get() + CLOSE_EPS < requested
+            {
+                self.log_event(
+                    EventKind::NotFilled,
+                    Some(order.id),
+                    None,
+                    None,
+                    EventReason::Fok,
+                );
+                continue;
+            }
+            let applied = self.apply_fill_clamped(
+                order.id,
+                FillReason::Market,
+                order.reduce_only,
+                requested,
+                fill,
+                costs,
+            );
+            // a market order lives one bar, and what it did not fill is gone
+            if applied <= 0.0 {
+                self.log_event(
+                    EventKind::NotFilled,
+                    Some(order.id),
+                    None,
+                    None,
+                    EventReason::NothingFilled,
+                );
+            } else if applied + CLOSE_EPS < requested {
+                self.log_event(
+                    EventKind::Expired,
+                    Some(order.id),
+                    None,
+                    None,
+                    EventReason::MarketBar,
                 );
             }
         }
@@ -129,7 +163,7 @@ impl Engine {
             } else {
                 FillReason::Limit
             };
-            let applied = self.apply_fill_clamped(id, reason, reduce_only, fill, costs);
+            let applied = self.apply_fill_clamped(id, reason, reduce_only, requested, fill, costs);
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
                 // ADR 0010 says and what it used to say only for a bar with no
@@ -170,15 +204,22 @@ impl Engine {
 
         // IOC and FOK limits get one bar of exposure, then expire whether or not
         // they filled: they never rest for a later bar (ADR 0010).
-        let expiring: Vec<OrderId> = self
+        let expiring: Vec<(OrderId, TimeInForce)> = self
             .book
             .iter()
             .filter(|o| {
                 o.kind == OrderType::Limit && matches!(o.tif, TimeInForce::Ioc | TimeInForce::Fok)
             })
-            .map(|o| o.id)
+            .map(|o| (o.id, o.tif))
             .collect();
-        for id in expiring {
+        for (id, tif) in expiring {
+            self.log_event(
+                EventKind::Expired,
+                Some(id),
+                None,
+                None,
+                EventReason::OneBar(tif),
+            );
             self.book.cancel(id);
         }
     }

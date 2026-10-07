@@ -21,7 +21,7 @@ use pyo3::types::{PyDict, PyList};
 
 use probatum_core::candle::floats;
 use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce, Wallet};
-use probatum_engine::reporter::FillRecord;
+use probatum_engine::reporter::{EventReason, FillRecord, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 
@@ -546,6 +546,56 @@ fn fill_to_dict<'py>(
     Ok(d)
 }
 
+fn refusal_text(why: Refusal) -> String {
+    match why {
+        Refusal::Waiting(n) => format!("max_open_orders: {n} already waiting"),
+        Refusal::Resting(n) => format!("max_open_orders: {n} already resting"),
+        Refusal::Size(size) => format!("size: {size} cannot fill"),
+        Refusal::Price(price) => format!("limit: {price} is not a price"),
+        Refusal::Trigger(trigger) => format!("stop: {trigger} is not a price"),
+        Refusal::PostOnly => "post_only: it would take liquidity at the last close".to_string(),
+    }
+}
+
+/// The reason an event happened, as the order log writes it.
+fn reason_text(event: &OrderEvent) -> String {
+    let size = event.size.unwrap_or(0.0);
+    match event.reason {
+        EventReason::Market => "market".to_string(),
+        EventReason::Limit => "limit".to_string(),
+        EventReason::Stop => "stop".to_string(),
+        EventReason::Replace => "replace".to_string(),
+        EventReason::Refused(why) => refusal_text(why),
+        EventReason::Replacing(why) => format!("replace: {}", refusal_text(why)),
+        EventReason::Fits { asked } => format!("{size} of the {asked} asked fits"),
+        EventReason::Transfer { asked } => format!("transfer: {size} of the {asked} asked"),
+        EventReason::NothingFilled => "nothing could fill on its bar".to_string(),
+        EventReason::Fok => "fok: the whole size could not".to_string(),
+        EventReason::MarketBar => "a market order takes one bar".to_string(),
+        EventReason::OneBar(TimeInForce::Fok) => "fok: one bar".to_string(),
+        EventReason::OneBar(_) => "ioc: one bar".to_string(),
+        EventReason::CancelledByAccount => "cancelled by the account".to_string(),
+        EventReason::Liquidation => "liquidation".to_string(),
+    }
+}
+
+fn event_to_dict<'py>(
+    py: Python<'py>,
+    event: &OrderEvent,
+    time: Option<i64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("bar", event.tick)?;
+    d.set_item("time", time)?;
+    d.set_item("kind", event.kind.name())?;
+    d.set_item("order", event.order.map(|id| id.0))?;
+    d.set_item("instrument", event.order.map(|_| 0))?;
+    d.set_item("size", event.size)?;
+    d.set_item("price", event.price)?;
+    d.set_item("reason", reason_text(event))?;
+    Ok(d)
+}
+
 /// Build a read-only, zero-copy `(rows, 5)` numpy view over `window`, a slice of an
 /// engine's immutable candle buffer. `container` (the engine pyobject, which owns
 /// the `Arc`) becomes the array's base so the data outlives the view, and the array
@@ -833,14 +883,14 @@ impl Engine {
         self.inner.cancel(OrderId(order_id))
     }
 
-    /// Move a resting order: cancel `order_id` and rest a replacement with the same
-    /// side, type and flags, overriding whichever of `size`, `price` and `trigger`
-    /// are given. Returns the new order id.
+    /// Move a resting order under the same id, with the same side, type and flags,
+    /// overriding whichever of `size`, `price` and `trigger` are given, into the
+    /// first free slot. Returns the id.
     ///
-    /// None when `order_id` is no longer resting, and nothing is placed in that
-    /// case. Use it for a trailing stop: re-placing with `stop()` each bar rests a
-    /// new order every time, and the one that fills leaves its siblings live to open
-    /// a position on the other side (ADR 0010).
+    /// None when `order_id` is no longer resting or the moved order cannot rest, and
+    /// nothing changes in that case. Use it for a trailing stop: re-placing with
+    /// `stop()` each bar rests a new order every time, and the one that fills leaves
+    /// its siblings live to open a position on the other side (ADR 0010).
     #[pyo3(signature = (order_id, size = None, price = None, trigger = None))]
     fn replace(
         &mut self,
@@ -1040,6 +1090,26 @@ impl Engine {
                 for fill in reporter.fills() {
                     let time = self.inner.open_time(fill.tick);
                     list.append(fill_to_dict(py, fill, time)?)?;
+                }
+                Ok(Some(list))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The order log as a list of dicts, one per event in the order they happened,
+    /// or None when reporting is off. Each carries its bar and open time, its kind
+    /// (placed, refused, clamped, filled, not_filled, expired or cancelled), the
+    /// order (None for a transfer's clamp), the size and price it concerns, and its
+    /// reason. A refused placement is here under the id it would have had
+    /// (ADRs 0010, 0022).
+    fn order_log<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
+        match self.inner.reporter() {
+            Some(reporter) => {
+                let list = PyList::empty(py);
+                for event in reporter.events() {
+                    let time = self.inner.open_time(event.tick);
+                    list.append(event_to_dict(py, event, time)?)?;
                 }
                 Ok(Some(list))
             }

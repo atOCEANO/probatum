@@ -7,7 +7,7 @@ use probatum_core::{CostModel, Fill, OrderId, Side};
 
 use super::{Engine, CLOSE_EPS};
 use crate::execution::FillCosts;
-use crate::reporter::{FillReason, FillRecord, Trade};
+use crate::reporter::{EventKind, EventReason, FillReason, FillRecord, Trade};
 
 impl Engine {
     /// The position fields a fill has to be compared against once it has landed.
@@ -20,12 +20,14 @@ impl Engine {
     }
 
     /// Clamp `fill`, bound it by the margin, book it and log it as `order`'s, with
-    /// `costs` the fill model measured. Returns the size that landed.
+    /// `costs` the fill model measured and `requested` what the order still asked
+    /// for. Returns the size that landed.
     pub(super) fn apply_fill_clamped(
         &mut self,
         order: OrderId,
         reason: FillReason,
         reduce_only: bool,
+        requested: f64,
         fill: Fill,
         costs: FillCosts,
     ) -> f64 {
@@ -56,6 +58,28 @@ impl Engine {
                 reason,
             });
         }
+        if applied + CLOSE_EPS < requested {
+            self.log_event(
+                EventKind::Clamped,
+                Some(order),
+                Some(applied),
+                None,
+                EventReason::Fits { asked: requested },
+            );
+        }
+        let why = match reason {
+            FillReason::Market => EventReason::Market,
+            FillReason::Limit => EventReason::Limit,
+            FillReason::Stop => EventReason::Stop,
+            FillReason::Liquidation => EventReason::Liquidation,
+        };
+        self.log_event(
+            EventKind::Filled,
+            Some(order),
+            Some(applied),
+            Some(fill.price.get()),
+            why,
+        );
         applied
     }
 
@@ -501,6 +525,7 @@ mod tests {
             OrderId(1),
             FillReason::Market,
             false,
+            5e-13,
             dust,
             FillCosts::default(),
         );

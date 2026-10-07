@@ -2,11 +2,13 @@
 //! the next bar, before funding and before any fill, so cash moved into the margin
 //! wallet backs the orders decided with it. Out of the margin wallet a transfer is
 //! held to the cash there, so unrealized profit stays, and to what leaves the cap's
-//! requirement covered; out of the spot wallet, to its cash (ADR 0008).
+//! requirement covered; out of the spot wallet, to its cash. A clamped transfer is
+//! an order-log event (ADRs 0008, 0022).
 
 use probatum_core::{Price, Wallet};
 
 use super::Engine;
+use crate::reporter::{EventKind, EventReason};
 
 impl Engine {
     /// Move `amount` into the `to` wallet from the other one, at the start of the
@@ -31,7 +33,17 @@ impl Engine {
                     self.account.margin_cash.min(free)
                 }
             };
-            self.account.transfer(amount.min(allowed).max(0.0), to);
+            let moved = amount.min(allowed).max(0.0);
+            if moved < amount {
+                self.log_event(
+                    EventKind::Clamped,
+                    None,
+                    Some(moved),
+                    None,
+                    EventReason::Transfer { asked: amount },
+                );
+            }
+            self.account.transfer(moved, to);
         }
         self.transfers.clear();
     }
@@ -42,6 +54,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, series};
     use crate::engine::{Engine, EngineConfig};
+    use crate::reporter::{EventKind, EventReason};
     use probatum_core::Wallet;
 
     #[test]
@@ -76,6 +89,7 @@ mod tests {
         let config = EngineConfig {
             quote: 600.0,
             max_leverage: 4.0,
+            report: true,
             ..perp_cfg()
         };
         let mut e = Engine::new(bars, config);
@@ -87,6 +101,17 @@ mod tests {
         let s = e.step();
         assert_eq!((s.spot_cash, s.margin_cash), (600.0, 0.0));
         assert_eq!(s.equity, 1_000.0);
+        // and the clamp is an order-log event, which no order owns
+        let clamp = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .last()
+            .copied()
+            .expect("an event");
+        assert_eq!((clamp.kind, clamp.order), (EventKind::Clamped, None));
+        assert_eq!(clamp.size, Some(600.0));
+        assert_eq!(clamp.reason, EventReason::Transfer { asked: 1_000.0 });
     }
 
     #[test]

@@ -425,21 +425,23 @@ def first_difference(rows, cfg):
     return None
 
 
-FILL_FIELDS = ("bar", "side", "size", "price", "reference", "spread", "slippage",
-               "impact", "fee", "adjustment", "taker", "reason")
+FILL_FIELDS = ("bar", "order", "side", "size", "price", "reference", "spread",
+               "slippage", "impact", "fee", "adjustment", "taker", "reason")
+EVENT_FIELDS = ("bar", "kind", "order", "size", "price")
 
 
-def fill_difference(mine, theirs):
-    """The first fill the two logs part company on, or None."""
-    if len(mine) != len(theirs):
-        return f"{len(mine)} fills against {len(theirs)}"
-
+def log_difference(what, fields, mine, theirs):
+    """The first row two logs part company on, or None. A float is held to the
+    tolerance and anything else, a missing size included, must be equal."""
     for k, (a, b) in enumerate(zip(mine, theirs)):
-        for name in FILL_FIELDS:
+        for name in fields:
             x, y = a[name], b[name]
-            same = close_enough(x, y) if isinstance(x, float) else x == y
-            if not same:
-                return f"fill {k + 1}, on bar {b['bar']}: {name} {x!r} against {y!r}"
+            both = isinstance(x, float) and isinstance(y, float)
+            if not (close_enough(x, y) if both else x == y):
+                return f"{what} {k + 1}, on bar {b['bar']}: {name} {x!r} against {y!r}"
+
+    if len(mine) != len(theirs):
+        return f"{len(mine)} {what}s against {len(theirs)}"
 
     return None
 
@@ -478,7 +480,9 @@ def compare(cases, seed):
         rules.update(sim.reached)
 
         found = first_difference(rows, cfg)
-        why   = found[1] if found else fill_difference(engine.fills(), sim.fills)
+        why   = found[1] if found else (
+            log_difference("fill", FILL_FIELDS, engine.fills(), sim.fills)
+            or log_difference("event", EVENT_FIELDS, engine.order_log(), sim.events))
         if why is None:
             agreed += 1
         else:

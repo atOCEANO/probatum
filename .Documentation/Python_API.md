@@ -188,7 +188,7 @@ eng = Engine(
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
 | `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
 | `transfer(amount, to)` | `None` | Move cash into the `"spot"` or `"margin"` wallet from the other. It lands at the start of the next bar, before any fill, held to what the wallet it leaves can give ([ADR 0008](Decisions.md)). |
-| `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order: cancel it and rest a replacement with the same side, type and flags. `None`, and nothing placed, if it is no longer resting. |
+| `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order under the same id, with the same side, type and flags, into the first free slot. `None`, and nothing changed, if it is no longer resting or the moved order cannot rest ([ADR 0010](Decisions.md)). |
 | `is_bust()` | bool | True when the account died: its equity, both wallets together, reached zero, which a perp liquidation does unless the spot wallet holds cash ([ADR 0008](Decisions.md)). The engine does not stop on it. |
 | `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
 | `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
@@ -277,12 +277,13 @@ final = eng.run(BuyAndHold())
 
 ### Results
 
-With `report=True`, four accessors read the recorded run (each returns `None` when reporting is off):
+With `report=True`, five accessors read the recorded run (each returns `None` when reporting is off):
 
 - `stats(periods_per_year=365.0, risk_free=0.0)` returns the [stats dict](#statistics).
 - `equity_curve()` returns a numpy array, one equity value per step.
 - `trades()` returns a list of [trade dicts](#trades).
 - `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
+- `order_log()` returns a list of [order events](#the-order-log), every order's life in the order it happened.
 
 `periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. `Engine.stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
 
@@ -461,6 +462,21 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
 | `taker` | True when the fill took liquidity. A forced close is the venue's and is not. |
 | `reason` | `market`, `limit`, `stop` or `liquidation`. |
+
+### The order log
+
+Each entry in `order_log()` is one event in an order's life ([ADR 0022](Decisions.md)):
+
+| Field | Meaning |
+| :--- | :--- |
+| `bar`, `time` | The bar it happened on, the decision's for a placement and the fill's for a fill, and that bar's open time when the engine was built with `times=`, else `None`. |
+| `kind` | `placed`, `refused`, `clamped`, `filled`, `not_filled`, `expired` or `cancelled`. |
+| `order`, `instrument` | The order and its instrument, both `None` for a clamped transfer. |
+| `size` | What a fill or a clamp came to, else `None`. |
+| `price` | What a fill was booked at, else `None`. |
+| `reason` | Why, in words: `max_open_orders: 8 already resting`, `5 of the 20 asked fits`, `ioc: one bar`, `liquidation`. |
+
+A refused placement still returns `None`, and the log holds it under the id it would have had, with its reason.
 
 <br>
 

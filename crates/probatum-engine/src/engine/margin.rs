@@ -159,8 +159,11 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use crate::candles::Candles;
-    use crate::engine::fixtures::{cfg, crash_series, flat_series, ohlc, perp_cfg, series};
+    use crate::engine::fixtures::{
+        cfg, crash_series, flat_series, ohlc, perp_cfg, report_cfg, series,
+    };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
+    use crate::reporter::EventKind;
     use probatum_core::{Candle, OrderType, Side, TimeInForce};
 
     #[test]
@@ -224,7 +227,7 @@ mod tests {
         let config = EngineConfig {
             quote: 1_000.0,
             fee_taker: 0.001,
-            ..cfg()
+            ..report_cfg()
         };
         let mut e = Engine::new(bars, config);
         e.reset();
@@ -232,6 +235,23 @@ mod tests {
         let s = e.step();
         assert!((s.position - 9.99001).abs() < 5e-6, "filled {}", s.position);
         assert!(s.spot_cash.abs() < 1e-9, "left {}", s.spot_cash);
+        // and the order log records the clamp
+        let kinds: Vec<EventKind> = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .iter()
+            .map(|event| event.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                EventKind::Placed,
+                EventKind::Clamped,
+                EventKind::Filled,
+                EventKind::Expired,
+            ]
+        );
     }
 
     #[test]
