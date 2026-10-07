@@ -352,10 +352,11 @@ def place(engine, sim, action, close, mine, theirs, reached=None):
             moved   = engine.replace(mine[0], size, None, trigger)
             sim.replace(theirs[0], trigger=trigger, size=size)
         else:
-            price = limit_price(order["side"], close, u)
+            # now and then only the size moves, which is no new placement for
+            # post_only, so the close is not read against the order again
+            price = None if u < 0.25 else limit_price(order["side"], close, u)
             moved = engine.replace(mine[0], size, price, None)
             sim.replace(theirs[0], price=price, size=size)
-
         # a refused replacement leaves the original under its own id on both sides
         if moved is not None:
             mine[0] = moved

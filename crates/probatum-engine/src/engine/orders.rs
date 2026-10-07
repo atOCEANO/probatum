@@ -85,9 +85,9 @@ impl Engine {
 
     /// Why a limit or a stop could not rest as `order`, or `None`: a size, price or
     /// trigger that can never fill, a full book, or a post_only limit that would
-    /// cross. `freed` is true when the order is a replacement whose original slot
-    /// has just been given up (ADRs 0007, 0010).
-    fn resting_refusal(&self, order: &Order, freed: bool) -> Option<Refusal> {
+    /// cross. `replacing` is the order a replace moves, whose slot has just been given
+    /// up (ADRs 0007, 0010).
+    fn resting_refusal(&self, order: &Order, replacing: Option<&Order>) -> Option<Refusal> {
         // A size that is not a positive finite number can never fill (ADR 0014), so
         // it is refused a slot rather than resting inert forever. A non-finite price
         // is refused for the same reason: every touch test against it compares with
@@ -107,7 +107,7 @@ impl Engine {
                 return Some(Refusal::Trigger(trigger));
             }
         }
-        if !freed && self.book.is_full() {
+        if replacing.is_none() && self.book.is_full() {
             return Some(Refusal::Resting(self.config.max_open_orders));
         }
         // Crossing is judged against the CURRENT close, the last price the strategy
@@ -118,7 +118,10 @@ impl Engine {
             self.fill_model
                 .limit_crosses(order.side, price, Price(self.current_close()))
         });
-        if order.post_only && crosses {
+        // post_only is a rule about how an order enters the book, so a replace that
+        // leaves the price where it was is not checked again
+        let enters = replacing.is_none_or(|old| old.price != order.price);
+        if order.post_only && crosses && enters {
             return Some(Refusal::PostOnly);
         }
         None
@@ -126,7 +129,7 @@ impl Engine {
 
     /// Rest `order` in the first free slot, or log why it cannot rest.
     fn rest(&mut self, order: Order, reason: EventReason) -> Option<OrderId> {
-        if let Some(why) = self.resting_refusal(&order, false) {
+        if let Some(why) = self.resting_refusal(&order, None) {
             return self.refuse(order.id, why);
         }
         let id = self.book.place(order).ok()?;
@@ -293,7 +296,7 @@ impl Engine {
         } else {
             moved.trigger = trigger.map(Price).or(old.trigger);
         }
-        if let Some(why) = self.resting_refusal(&moved, true) {
+        if let Some(why) = self.resting_refusal(&moved, Some(&old)) {
             // The cancel came first, so a replacement refused here would otherwise
             // leave nothing behind and still answer `None`, which this method
             // defines as "nothing happened". A caller trailing a stop reads that as
@@ -910,5 +913,39 @@ mod tests {
             ]
         );
         assert_eq!(log(&e)[3].reason, EventReason::Liquidation);
+    }
+
+    #[test]
+    fn a_replace_that_keeps_the_price_is_no_new_placement_for_post_only() {
+        // a post_only bid at 99 rests below a close of 100, and the next bar, which
+        // trades nothing, closes at 98, above which the bid now sits. Changing its
+        // size leaves it where it entered the book; moving it to 98.5 is a new
+        // placement that would take liquidity at that close
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 98.0, 98.0, 0.0),
+            ohlc(98.0, 98.0, 98.0, 98.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, report_cfg());
+        e.reset();
+        let id = e
+            .order(
+                Side::Buy,
+                1.0,
+                OrderType::Limit,
+                Some(99.0),
+                None,
+                false,
+                true,
+                TimeInForce::Gtc,
+            )
+            .expect("rests below the close");
+        e.step();
+        assert_eq!(e.replace(id, Some(2.0), None, None), Some(id));
+        assert_eq!(e.replace(id, None, Some(98.5), None), None);
+        assert_eq!(
+            log(&e).last().map(|event| event.reason),
+            Some(EventReason::Replacing(Refusal::PostOnly))
+        );
     }
 }

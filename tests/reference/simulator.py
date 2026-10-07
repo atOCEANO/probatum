@@ -748,8 +748,10 @@ class Simulator:
                     self.hit("an order trading against the account's own refused")
                     return f"it would trade against the account's own order {own['id']}"
 
-            # Order types: post_only is checked against the last close
-            if order["post_only"]:
+            # Order types: post_only is checked against the last close, and a
+            # replace is a new placement for it only when it moves the price
+            moved = replacing is None or order["price"] != replacing["price"]
+            if order["post_only"] and moved:
                 close = self.mark[i]
                 if (side == "buy" and order["price"] >= close) or \
                         (side == "sell" and order["price"] <= close):
