@@ -313,10 +313,10 @@ Six fills make two closed round trips and an open one, and `num_trades` is 2.
 
 - The spot wallet holds cash and spot holdings. A buy is clamped to what its cash pays for, fee included, and a sell to its holding; it never borrows and is never liquidated.
 - The margin wallet holds the collateral behind every perpetual, in cross margin.
-- A transfer is applied at the start of the bar after it was decided, before any fill. A transfer out of the margin wallet is clamped to the cash the wallet holds, so unrealized profit cannot be moved, and so that the margin left still covers the cap's requirement; one out of the spot wallet is clamped to its cash; a clamped transfer is an order-log event.
+- A transfer is applied at the start of the bar after it was decided, before any fill. A transfer out of the margin wallet is clamped to the cash the wallet holds, so unrealized profit cannot be moved, and so that the margin left still covers the cap's requirement; one out of the spot wallet is clamped to its cash; a clamped transfer is an order-log event. With the cap off nothing is required, so a transfer can take a margin wallet holding an unrealized loss to zero equity, at or past its trigger, and the account is then liquidated at the last marks, before the bar opens.
 - Account equity is the sum of both wallets. An account whose equity is at or below zero is terminal.
 
-**Worked example.** A spot wallet of 1,000 USDT buys 20 at an open of 100 with a taker fee of 0.1%: its cash pays for `1,000 / (100 * 1.001) = 9.99001`, so 9.99001 fills and the order log records the clamp. A margin wallet with 600 USDT of cash and 400 of unrealized profit, under a cap requirement of 200, moves at most 600 to the spot wallet, the cash it holds, though its equity less the requirement is 800.
+**Worked example.** A spot wallet of 1,000 USDT buys 20 at an open of 100 with a taker fee of 0.1%: its cash pays for `1,000 / (100 * 1.001) = 9.99001`, so 9.99001 fills and the order log records the clamp. A margin wallet with 600 USDT of cash and 400 of unrealized profit, under a cap requirement of 200, moves at most 600 to the spot wallet, the cash it holds, though its equity less the requirement is 800. With the cap off, a margin wallet of 1,000 USDT holding a long of 10 from 100, marked at 95, moves at most 950, which leaves its equity at zero, and the long is liquidated at 95 before the next bar opens.
 
 <br>
 <br>

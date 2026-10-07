@@ -476,16 +476,20 @@ class Simulator:
         return total
 
 
-    def margin_equity(self, prices=None):
-        equity = self.margin_cash
+    def margin_unrealized(self, prices=None):
+        total = 0.0
 
         for i in self.perps():
             if self.position[i] != 0.0:
                 price = self.mark[i] if prices is None else prices.get(i, self.mark[i])
-                equity += self.instruments[i].profit(self.position[i], self.entry[i],
-                                                     price)
+                total += self.instruments[i].profit(self.position[i], self.entry[i],
+                                                    price)
 
-        return equity
+        return total
+
+
+    def margin_equity(self, prices=None):
+        return self.margin_cash + self.margin_unrealized(prices)
 
 
     def account_maintained(self):
@@ -1601,12 +1605,15 @@ class Simulator:
         for transfer in self.transfers:
             amount = transfer["amount"]
             if transfer["to"] == "margin":
-                allowed = self.spot_cash
+                cash, keep = self.spot_cash, 0.0
             else:
-                allowed = min(self.margin_cash,
-                              self.margin_equity() - self.cap_requirement())
+                # the margin wallet keeps what covers the cap's requirement once its
+                # unrealized PnL is counted, floored at zero so a profit cannot move
+                cash = self.margin_cash
+                keep = max(0.0, self.cap_requirement() - self.margin_unrealized())
 
-            moved = max(0.0, min(amount, allowed))
+            allowed = max(0.0, cash - keep)
+            moved   = min(amount, allowed)
             self.hit("a transfer")
             if moved < amount:
                 self.hit("a transfer clamped")
@@ -1619,6 +1626,10 @@ class Simulator:
             else:
                 self.margin_cash -= moved
                 self.spot_cash += moved
+                if moved > 0.0 and moved == allowed:
+                    # all it may give leaves exactly what it keeps, so with the cap off
+                    # a wallet holding a loss is left at zero equity, its trigger
+                    self.margin_cash = keep
 
         self.transfers = []
 

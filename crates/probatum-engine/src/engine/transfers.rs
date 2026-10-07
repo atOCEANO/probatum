@@ -2,10 +2,12 @@
 //! the next bar, before funding and before any fill, so cash moved into the margin
 //! wallet backs the orders decided with it. Out of the margin wallet a transfer is
 //! held to the cash there, so unrealized profit stays, and to what leaves the cap's
-//! requirement covered; out of the spot wallet, to its cash. A clamped transfer is
-//! an order-log event (ADRs 0008, 0022).
+//! requirement covered; out of the spot wallet, to its cash. With the cap off nothing
+//! is required, so a transfer can take a margin wallet holding a loss to its trigger,
+//! and the position is closed at the last close before the bar opens. A clamped
+//! transfer is an order-log event (ADRs 0008, 0022).
 
-use probatum_core::{Price, Wallet};
+use probatum_core::{Market, Price, Wallet};
 
 use super::Engine;
 use crate::reporter::{EventKind, EventReason};
@@ -25,15 +27,17 @@ impl Engine {
     pub(super) fn apply_transfers(&mut self, mark: f64) {
         for i in 0..self.transfers.len() {
             let (amount, to) = self.transfers[i];
-            let allowed = match to {
-                Wallet::Margin => self.account.spot_cash,
-                Wallet::Spot => {
-                    let free = self.account.wallet_equity(Wallet::Margin, Price(mark))
-                        - self.requirement(mark);
-                    self.account.margin_cash.min(free)
+            // the cash the margin wallet keeps: what still covers the requirement once
+            // its unrealized PnL is counted, floored at zero so a profit cannot move
+            let keep = match (to, self.config.market) {
+                (Wallet::Spot, Market::Perp) => {
+                    let unrealized = self.account.unrealized(Price(mark));
+                    (self.requirement(mark) - unrealized).max(0.0)
                 }
+                _ => 0.0,
             };
-            let moved = amount.min(allowed).max(0.0);
+            let allowed = (self.account.cash(to.other()) - keep).max(0.0);
+            let moved = amount.min(allowed);
             if moved < amount {
                 self.log_event(
                     EventKind::Clamped,
@@ -44,6 +48,12 @@ impl Engine {
                 );
             }
             self.account.transfer(moved, to);
+            if to == Wallet::Spot && moved > 0.0 && moved == allowed {
+                // all it may give leaves exactly what it keeps, so with the cap off a
+                // wallet holding a loss lands on zero equity, its trigger, rather than
+                // on a rounding to either side of it
+                self.account.margin_cash = keep;
+            }
         }
         self.transfers.clear();
     }
@@ -54,7 +64,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, series};
     use crate::engine::{Engine, EngineConfig};
-    use crate::reporter::{EventKind, EventReason};
+    use crate::reporter::{EventKind, EventReason, FillReason};
     use probatum_core::Wallet;
 
     #[test]
@@ -136,6 +146,42 @@ mod tests {
         let s = e.step();
         assert_eq!((s.spot_cash, s.margin_cash), (855.0, 145.0));
         assert_eq!(s.margin_cash + s.unrealized_pnl, 95.0);
+    }
+
+    #[test]
+    fn with_the_cap_off_a_transfer_can_take_the_margin_wallet_to_its_trigger() {
+        // long 1.5 from 100 on 999.7, marked at 95.1: only the loss stays behind, and
+        // the long is closed at that close before the next bar opens. At these
+        // prices the cash less the loss, with the loss added back, is not zero
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 95.1, 95.1, 1e6),
+            ohlc(95.1, 95.1, 95.1, 95.1, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 999.7,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.5);
+        e.step();
+        e.transfer(2_000.0, Wallet::Spot);
+        let s = e.step();
+        assert_eq!(s.position, 0.0);
+        assert_eq!(
+            (s.spot_cash, s.margin_cash),
+            (999.7 - 1.5 * (100.0 - 95.1), 0.0)
+        );
+        let fill = e
+            .reporter()
+            .expect("reporting is on")
+            .fills()
+            .last()
+            .copied()
+            .expect("a fill");
+        assert_eq!((fill.reason, fill.price), (FillReason::Liquidation, 95.1));
     }
 
     #[test]

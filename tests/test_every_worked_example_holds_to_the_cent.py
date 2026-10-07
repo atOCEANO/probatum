@@ -202,6 +202,23 @@ def test_a_transfer_out_of_margin_moves_its_cash_but_never_its_unrealized_profit
     assert clamp["size"] == pytest.approx(600.0)
 
 
+def test_with_the_cap_off_a_transfer_takes_a_losing_margin_wallet_to_its_trigger():
+    sim = run(hourly(4), [[flat(100.0)], [flat(100.0)], [flat(95.0)], [flat(95.0)]],
+              [Instrument("BTCUSDT")], Venue(balance=1_000.0, maker=0.0, taker=0.0,
+                                             leverage=0.0),
+              script={0: [("buy", dict(instrument=0, size=10.0))],
+                      2: [("transfer", dict(amount=2_000.0, to="spot"))]})
+
+    [clamp] = [e for e in sim.events if e["kind"] == "clamped"]
+
+    assert clamp["size"]   == 950.0
+    assert sim.position[0] == 0.0
+    assert (sim.spot_cash, sim.margin_cash) == (950.0, 0.0)
+
+    [close] = [f for f in sim.fills if f["order"] is None]
+    assert (close["bar"], close["price"]) == (3, 95.0)
+
+
 def test_a_fill_pays_its_size_times_its_price_times_the_fee():
     sim = run(hourly(2), [[flat(21_000.0)], [flat(21_014.75)]],
               [Instrument("BTCUSDT")], Venue(taker=0.0005),
