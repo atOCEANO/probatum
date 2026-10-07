@@ -1464,6 +1464,9 @@ class Simulator:
         trigger, (k, u) = result
         a, b = spans[k]
         self.hit("a liquidation by the check")
+        if (k, u) == (0, 0.0):
+            self.hit("a check closing the account at the open")
+
         for i, charge in counted:
             self.pay_funding(i, charge)          # an event counted is an event paid
 
@@ -1503,6 +1506,9 @@ class Simulator:
         """Liquidation, The forced close: takeover closes every leg at its price at the
         clip, and book then backstop sells each from its trigger as a taker unless the
         path reaches the backstop level or the sale's costs would cross it."""
+        if len({i for i, _, _ in closes}) < len(closes):
+            self.hit("a forced close of a leg that joined during the bar")
+
         maintained = self.account_maintained()
         model      = self.venue.liquidation
 

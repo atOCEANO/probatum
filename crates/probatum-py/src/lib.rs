@@ -21,6 +21,7 @@ use pyo3::types::{PyDict, PyList};
 
 use probatum_core::candle::floats;
 use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce, Wallet};
+use probatum_engine::reporter::FillRecord;
 use probatum_engine::schedule::every;
 use probatum_engine::{Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 
@@ -521,6 +522,30 @@ fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyD
     Ok(d)
 }
 
+fn fill_to_dict<'py>(
+    py: Python<'py>,
+    fill: &FillRecord,
+    time: Option<i64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("bar", fill.tick)?;
+    d.set_item("time", time)?;
+    d.set_item("instrument", 0)?;
+    d.set_item("order", fill.order.map(|id| id.0))?;
+    d.set_item("side", side_str(fill.side))?;
+    d.set_item("size", fill.size)?;
+    d.set_item("price", fill.price)?;
+    d.set_item("reference", fill.costs.reference)?;
+    d.set_item("spread", fill.costs.spread)?;
+    d.set_item("slippage", fill.costs.slippage)?;
+    d.set_item("impact", fill.costs.impact)?;
+    d.set_item("fee", fill.fee)?;
+    d.set_item("adjustment", fill.costs.adjustment)?;
+    d.set_item("taker", fill.taker)?;
+    d.set_item("reason", fill.reason.name())?;
+    Ok(d)
+}
+
 /// Build a read-only, zero-copy `(rows, 5)` numpy view over `window`, a slice of an
 /// engine's immutable candle buffer. `container` (the engine pyobject, which owns
 /// the `Arc`) becomes the array's base so the data outlives the view, and the array
@@ -995,6 +1020,26 @@ impl Engine {
                 let list = PyList::empty(py);
                 for trade in reporter.trades() {
                     list.append(trade_to_dict(py, trade)?)?;
+                }
+                Ok(Some(list))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The fill log as a list of dicts, one per fill in the order they landed, or
+    /// None when reporting is off. Each carries its bar and open time, the order
+    /// that made it (None for a forced close), its side, size and price, the
+    /// reference it is measured from, the spread, slippage, impact and adjustment
+    /// beyond that per unit, its fee, whether it took liquidity, and its reason
+    /// (ADR 0022).
+    fn fills<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
+        match self.inner.reporter() {
+            Some(reporter) => {
+                let list = PyList::empty(py);
+                for fill in reporter.fills() {
+                    let time = self.inner.open_time(fill.tick);
+                    list.append(fill_to_dict(py, fill, time)?)?;
                 }
                 Ok(Some(list))
             }

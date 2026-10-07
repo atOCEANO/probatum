@@ -18,7 +18,7 @@ pub use batch::{BatchSnapshot, EnvBatch};
 pub use candles::Candles;
 pub use clock::Clock;
 pub use engine::{Engine, EngineConfig};
-pub use execution::FillModel;
+pub use execution::{FillCosts, FillModel};
 pub use reporter::{Reporter, Trade};
 pub use schedule::Schedule;
 pub use stats::Stats;

@@ -134,6 +134,28 @@ def test_stats_none_without_reporting_and_dict_with():
     assert "max_drawdown_pct" in st
 
 
+def test_a_fill_is_logged_with_its_reference_and_what_it_paid_beyond_it():
+    off = engine()
+    off.reset()
+
+    assert off.fills() is None
+
+    e = engine(report=True, slippage_bps=10.0, fee_taker=0.0005,
+               times=np.array([0, HOUR, 2 * HOUR], dtype=np.int64))
+    e.reset()
+    order = e.market_buy(1.0)
+    e.step()
+    [fill] = e.fills()
+
+    assert (fill["bar"], fill["time"], fill["order"])    == (1, HOUR, order)
+    assert (fill["side"], fill["reason"], fill["taker"]) == ("buy", "market", True)
+    assert fill["reference"] == 200.0                  # the open it filled at
+    assert fill["slippage"]  == pytest.approx(0.2)     # 10 bps of it
+    assert fill["price"]     == pytest.approx(200.2)
+    assert fill["fee"]       == pytest.approx(200.2 * 0.0005)
+    assert fill["spread"] == fill["impact"] == fill["adjustment"] == 0.0
+
+
 def test_observation_is_a_zero_copy_readonly_view():
     e = engine()
     e.reset()  # tick 0

@@ -1,12 +1,13 @@
 //! Booking a fill, forced closes included: the account moves, the fill is
-//! counted, whatever it closed is logged as a trade carrying both sides of its
-//! fee when reporting is on, and the entry fee of what is left waits for the
-//! close that consumes it (ADR 0023).
+//! counted, and when reporting is on it is logged with what it paid and whatever
+//! it closed is logged as a trade carrying both sides of its fee, while the entry
+//! fee of what is left waits for the close that consumes it (ADRs 0022, 0023).
 
-use probatum_core::{CostModel, Fill, Side};
+use probatum_core::{CostModel, Fill, OrderId, Side};
 
 use super::{Engine, CLOSE_EPS};
-use crate::reporter::Trade;
+use crate::execution::FillCosts;
+use crate::reporter::{FillReason, FillRecord, Trade};
 
 impl Engine {
     /// The position fields a fill has to be compared against once it has landed.
@@ -18,17 +19,43 @@ impl Engine {
         )
     }
 
-    pub(super) fn apply_fill_clamped(&mut self, reduce_only: bool, fill: Fill) -> f64 {
+    /// Clamp `fill`, bound it by the margin, book it and log it as `order`'s, with
+    /// `costs` the fill model measured. Returns the size that landed.
+    pub(super) fn apply_fill_clamped(
+        &mut self,
+        order: OrderId,
+        reason: FillReason,
+        reduce_only: bool,
+        fill: Fill,
+        costs: FillCosts,
+    ) -> f64 {
         let mut fill = self.clamp_fill(reduce_only, &fill);
         if fill.size.get() <= 0.0 {
             return 0.0;
         }
+        let priced = fill.price.get();
         self.bound_by_margin(&mut fill);
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
         self.book_fill(applied, fill.price.get(), fee, before, false);
+        if let Some(reporter) = self.reporter.as_mut() {
+            reporter.record_fill(FillRecord {
+                tick: self.tick,
+                order: Some(order),
+                side: fill.side,
+                size: applied,
+                price: fill.price.get(),
+                costs: FillCosts {
+                    adjustment: costs.adjustment + fill.price.get() - priced,
+                    ..costs
+                },
+                fee,
+                taker: fill.is_taker,
+                reason,
+            });
+        }
         applied
     }
 
@@ -159,9 +186,17 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use crate::candles::Candles;
-    use crate::engine::fixtures::{cfg, flat_series, ohlc, perp_cfg, report_cfg, series};
+    use crate::engine::fixtures::{
+        cfg, crash_series, flat_series, levered, ohlc, perp_cfg, report_cfg, series,
+    };
     use crate::engine::{Engine, EngineConfig};
-    use probatum_core::{Candle, Fill, Price, Qty, Side};
+    use crate::execution::FillCosts;
+    use crate::reporter::{FillReason, FillRecord};
+    use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side};
+
+    fn fills(e: &Engine) -> &[FillRecord] {
+        e.reporter().expect("reporting is on").fills()
+    }
 
     #[test]
     fn a_close_records_a_trade_with_realized_pnl() {
@@ -462,7 +497,14 @@ mod tests {
             is_taker: true,
         };
         assert_eq!(e.clamp_fill(false, &dust).size.get(), 0.0);
-        assert_eq!(e.apply_fill_clamped(false, dust), 0.0);
+        let applied = e.apply_fill_clamped(
+            OrderId(1),
+            FillReason::Market,
+            false,
+            dust,
+            FillCosts::default(),
+        );
+        assert_eq!(applied, 0.0);
         assert_eq!(e.num_fills(), 0);
         assert_eq!(e.state().position, 0.0);
     }
@@ -532,5 +574,116 @@ mod tests {
         // and the whole round trip is exactly what the account paid
         let paid: f64 = fees.iter().sum();
         assert!((paid - 4.0).abs() < 1e-9, "{paid}");
+    }
+
+    #[test]
+    fn a_fill_is_logged_with_its_order_its_reference_and_what_it_paid() {
+        let config = EngineConfig {
+            slippage_bps: 10.0,
+            fee_taker: 0.0005,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        let id = e.market_buy(1.0).expect("placed");
+        e.step(); // at the open of 200, 10 bps worse
+        let [fill] = fills(&e) else {
+            panic!("one fill");
+        };
+        assert_eq!((fill.tick, fill.order), (1, Some(id)));
+        assert_eq!((fill.reason, fill.taker), (FillReason::Market, true));
+        assert_eq!(fill.costs.reference, 200.0);
+        assert!((fill.costs.slippage - 0.2).abs() < 1e-9);
+        assert!((fill.price - 200.2).abs() < 1e-9);
+        assert!((fill.fee - 200.2 * 0.0005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_stop_and_a_limit_are_logged_from_their_own_references() {
+        // the next bar opens at 300 and trades from 290 to 360: the stop is reached
+        // at its trigger and the limit as a maker at its price, the stop first
+        let mut e = Engine::new(series(), report_cfg());
+        e.reset();
+        e.market_buy(2.0);
+        e.step();
+        e.limit_sell(1.0, 320.0);
+        e.stop(Side::Sell, 1.0, 295.0, true);
+        e.step();
+        let log = fills(&e);
+        let reasons: Vec<FillReason> = log.iter().map(|f| f.reason).collect();
+        assert_eq!(
+            reasons,
+            vec![FillReason::Market, FillReason::Stop, FillReason::Limit]
+        );
+        assert_eq!((log[1].costs.reference, log[1].price), (295.0, 295.0));
+        let measured = FillCosts {
+            reference: 320.0,
+            ..FillCosts::default()
+        };
+        assert_eq!((log[2].costs, log[2].taker), (measured, false));
+    }
+
+    #[test]
+    fn a_forced_close_is_logged_as_the_venues_with_no_order() {
+        let mut e = Engine::new(crash_series(), levered());
+        e.reset();
+        e.market_buy(10.0);
+        e.step(); // closed out at 90 on the way to the low of 80
+        let close = fills(&e).last().copied().expect("the forced close");
+        assert_eq!(close.order, None);
+        assert_eq!(
+            (close.reason, close.taker),
+            (FillReason::Liquidation, false)
+        );
+        assert_eq!((close.price, close.costs.reference), (90.0, 90.0));
+    }
+
+    #[test]
+    fn a_fill_the_margin_bound_lifts_logs_the_lift_as_its_adjustment() {
+        // a stop armed with its entry triggers at 90, past the 901 / 9.99 where the
+        // margin left after the entry's fee runs out, and is booked there
+        let config = EngineConfig {
+            market: Market::Perp,
+            quote: 100.0,
+            fee_taker: 0.001,
+            max_leverage: 10.0,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(crash_series(), config);
+        e.reset();
+        e.market_buy(10.0);
+        e.stop(Side::Sell, 10.0, 90.0, true);
+        e.step();
+        let stop = fills(&e)
+            .iter()
+            .find(|f| f.reason == FillReason::Stop)
+            .copied()
+            .expect("the stop filled");
+        assert_eq!(stop.costs.reference, 90.0);
+        assert!((stop.price - 901.0 / 9.99).abs() < 1e-9);
+        assert!((stop.costs.adjustment - (stop.price - 90.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_fill_pays_its_size_times_its_price_times_the_fee() {
+        // the Specification's example: 0.141 BTC at 21,014.75 is 2,963.08 of
+        // notional, and the taker fee of 0.05% on it is 1.48
+        let bars = Candles::new(vec![
+            ohlc(21_000.0, 21_000.0, 21_000.0, 21_000.0, 1e6),
+            ohlc(21_014.75, 21_014.75, 21_014.75, 21_014.75, 1e6),
+        ]);
+        let config = EngineConfig {
+            fee_taker: 0.0005,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(0.141);
+        e.step();
+        let [fill] = fills(&e) else {
+            panic!("one fill");
+        };
+        assert!((fill.size * fill.price - 2_963.08).abs() < 0.005);
+        assert!((fill.fee - 1.48).abs() < 0.005);
     }
 }

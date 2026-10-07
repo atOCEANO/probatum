@@ -34,6 +34,8 @@ NOT_IN_THE_ENGINE = {
     "an order trading against the account's own refused",
     "a favourable exit held back on a liquidating bar",
     "a wallet that fees left below zero set to zero",
+    "a forced close of a leg that joined during the bar",
+    "a check closing the account at the open",
 }
 
 
@@ -423,6 +425,25 @@ def first_difference(rows, cfg):
     return None
 
 
+FILL_FIELDS = ("bar", "side", "size", "price", "reference", "spread", "slippage",
+               "impact", "fee", "adjustment", "taker", "reason")
+
+
+def fill_difference(mine, theirs):
+    """The first fill the two logs part company on, or None."""
+    if len(mine) != len(theirs):
+        return f"{len(mine)} fills against {len(theirs)}"
+
+    for k, (a, b) in enumerate(zip(mine, theirs)):
+        for name in FILL_FIELDS:
+            x, y = a[name], b[name]
+            same = close_enough(x, y) if isinstance(x, float) else x == y
+            if not same:
+                return f"fill {k + 1}, on bar {b['bar']}: {name} {x!r} against {y!r}"
+
+    return None
+
+
 Outcome = collections.namedtuple(
     "Outcome", "compared agreed disagreed set_aside rules reached")
 
@@ -442,7 +463,7 @@ def compare(cases, seed):
         counted = collections.Counter()
 
         try:
-            rows, _, sim = run(bars, times, cfg, actions, counted)
+            rows, engine, sim = run(bars, times, cfg, actions, counted)
         except Exception as exc:
             disagreed.append((case, cfg, bars, actions,
                               f"raised: {type(exc).__name__}: {exc}"))
@@ -457,10 +478,11 @@ def compare(cases, seed):
         rules.update(sim.reached)
 
         found = first_difference(rows, cfg)
-        if found is None:
+        why   = found[1] if found else fill_difference(engine.fills(), sim.fills)
+        if why is None:
             agreed += 1
         else:
-            disagreed.append((case, cfg, bars, actions, found[1]))
+            disagreed.append((case, cfg, bars, actions, why))
 
     return Outcome(agreed + len(disagreed), agreed, disagreed, aside, rules, reached)
 

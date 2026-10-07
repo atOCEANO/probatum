@@ -277,11 +277,12 @@ final = eng.run(BuyAndHold())
 
 ### Results
 
-With `report=True`, three accessors read the recorded run (each returns `None` when reporting is off):
+With `report=True`, four accessors read the recorded run (each returns `None` when reporting is off):
 
 - `stats(periods_per_year=365.0, risk_free=0.0)` returns the [stats dict](#statistics).
 - `equity_curve()` returns a numpy array, one equity value per step.
 - `trades()` returns a list of [trade dicts](#trades).
+- `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
 
 `periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. `Engine.stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
 
@@ -443,6 +444,23 @@ Each entry in `trades()` is one closed portion of a position:
 | `liquidated` | True when a liquidation force-closed the position rather than an order ([ADRs 0017, 0018](Decisions.md)). Its `exit_price` is where the margin ran out, not the extreme the bar printed, so the loss is bounded by the margin and the account is left with exactly nothing rather than owing. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, each trade also carries `entry_time` and `exit_time`, the index values at those ticks. A raw numpy input has no index, so its trades stay tick-only.
+
+### Fills
+
+Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decisions.md)):
+
+| Field | Meaning |
+| :--- | :--- |
+| `bar`, `time` | The bar it landed on, and that bar's open time when the engine was built with `times=`, else `None`. |
+| `instrument` | The instrument, 0 with one. |
+| `order` | The id of the order that filled, or `None` for a forced close. |
+| `side`, `size`, `price` | What filled, and at what price. |
+| `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, and a limit's own price. |
+| `spread`, `slippage`, `impact` | What it paid beyond the reference, per unit of size. The spread is zero until it is modelled. |
+| `fee` | The fee, in quote. |
+| `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
+| `taker` | True when the fill took liquidity. A forced close is the venue's and is not. |
+| `reason` | `market`, `limit`, `stop` or `liquidation`. |
 
 <br>
 

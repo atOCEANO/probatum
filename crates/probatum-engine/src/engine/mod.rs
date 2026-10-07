@@ -237,6 +237,12 @@ impl Engine {
         self.candles.clock().and_then(Clock::periods_per_year)
     }
 
+    /// The open time of bar `tick` in UTC nanoseconds, or `None` when the bars came
+    /// without times.
+    pub fn open_time(&self, tick: usize) -> Option<i64> {
+        self.candles.clock().and_then(|clock| clock.time(tick))
+    }
+
     /// The whole candle series as a slice, for a zero-copy full-series view. Like
     /// `candle_window`, it borrows the immutable `Arc` buffer with no copy.
     pub fn candles_all(&self) -> &[Candle] {

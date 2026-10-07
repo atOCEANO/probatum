@@ -6,6 +6,8 @@
 use probatum_core::{Candle, Fill, OrderId, OrderType, Qty, Side, TimeInForce};
 
 use super::{Engine, CLOSE_EPS};
+use crate::execution::FillCosts;
+use crate::reporter::FillReason;
 
 /// How badly a fill ends for the position currently held: the price PnL per unit
 /// it would realize, so the most adverse sorts first. A fill that does not reduce
@@ -26,7 +28,7 @@ impl Engine {
     pub(super) fn resolve_pending(&mut self, bar: &Candle) {
         let pending = std::mem::take(&mut self.pending);
         for order in pending {
-            if let Some(fill) = self.fill_model.fill_market(&order, bar) {
+            if let Some((fill, costs)) = self.fill_model.fill_market(&order, bar) {
                 // FOK is all or nothing against everything that can shrink the
                 // fill, not just the bar's liquidity: the margin cap and the
                 // spot clamps are applied to a copy first, so an order that
@@ -37,7 +39,13 @@ impl Engine {
                 {
                     continue;
                 }
-                self.apply_fill_clamped(order.reduce_only, fill);
+                self.apply_fill_clamped(
+                    order.id,
+                    FillReason::Market,
+                    order.reduce_only,
+                    fill,
+                    costs,
+                );
             }
         }
     }
@@ -49,14 +57,15 @@ impl Engine {
     /// a trigger would delete a stop-loss precisely on the illiquid data where it
     /// matters; it stays armed for the next bar that can trade instead (ADR 0010).
     pub(super) fn resolve_resting(&mut self, bar: &Candle) {
-        let mut fills: Vec<(OrderId, Fill, OrderType, bool, TimeInForce, f64)> = Vec::new();
+        let mut fills: Vec<(OrderId, Fill, OrderType, bool, TimeInForce, f64, FillCosts)> =
+            Vec::new();
         for order in self.book.iter() {
             let fill = match order.kind {
                 OrderType::Limit => self.fill_model.fill_limit(order, bar),
                 OrderType::Stop => self.fill_model.fill_stop(order, bar),
                 OrderType::Market => None,
             };
-            if let Some(fill) = fill {
+            if let Some((fill, costs)) = fill {
                 fills.push((
                     order.id,
                     fill,
@@ -64,6 +73,7 @@ impl Engine {
                     order.reduce_only,
                     order.tif,
                     order.remaining().get(),
+                    costs,
                 ));
             }
         }
@@ -103,7 +113,7 @@ impl Engine {
             }
         }
 
-        for (id, fill, kind, reduce_only, tif, requested) in fills {
+        for (id, fill, kind, reduce_only, tif, requested, costs) in fills {
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the snapshot the loop above saw. The
@@ -114,7 +124,12 @@ impl Engine {
             {
                 continue;
             }
-            let applied = self.apply_fill_clamped(reduce_only, fill);
+            let reason = if kind == OrderType::Stop {
+                FillReason::Stop
+            } else {
+                FillReason::Limit
+            };
+            let applied = self.apply_fill_clamped(id, reason, reduce_only, fill, costs);
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
                 // ADR 0010 says and what it used to say only for a bar with no

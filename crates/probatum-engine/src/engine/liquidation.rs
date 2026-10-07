@@ -7,6 +7,8 @@
 use probatum_core::{Candle, CostModel, Fill, Market, Price, Qty, Side, Wallet};
 
 use super::Engine;
+use crate::execution::FillCosts;
+use crate::reporter::{FillReason, FillRecord};
 
 impl Engine {
     /// True when a perp position is dead at `mark` once `debits` of funding are
@@ -96,6 +98,22 @@ impl Engine {
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
         self.book_fill(size, price.get(), fee, before, true);
+        if let Some(reporter) = self.reporter.as_mut() {
+            reporter.record_fill(FillRecord {
+                tick: self.tick,
+                order: None,
+                side: fill.side,
+                size,
+                price: price.get(),
+                costs: FillCosts {
+                    reference: price.get(),
+                    ..FillCosts::default()
+                },
+                fee,
+                taker: false,
+                reason: FillReason::Liquidation,
+            });
+        }
         // The bankruptcy price leaves nothing in exact arithmetic and a hair either
         // side of it in floating point, and a hair above zero is equity the cap
         // levers: with the cap off, an account closed out there opened a position

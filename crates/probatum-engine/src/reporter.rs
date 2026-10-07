@@ -1,11 +1,54 @@
-//! Optional reporting buffers: an equity curve sampled each step and a log of
-//! closed trades. Off by default (the engine holds it behind an `Option`) so the
-//! RL hot path allocates nothing; the backtester turns it on. Stats are derived
-//! from these later.
+//! Optional reporting buffers: an equity curve sampled each step, a log of closed
+//! trades and a log of fills. Off by default (the engine holds it behind an
+//! `Option`) so the RL hot path allocates nothing; the backtester turns it on.
+//! Stats are derived from these later.
 
-use probatum_core::Side;
+use probatum_core::{OrderId, Side};
 
+use crate::execution::FillCosts;
 use crate::stats::Stats;
+
+/// What made a fill, as the fill log names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillReason {
+    Market,
+    Limit,
+    Stop,
+    Liquidation,
+}
+
+impl FillReason {
+    /// The name the fill log gives it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            FillReason::Market => "market",
+            FillReason::Limit => "limit",
+            FillReason::Stop => "stop",
+            FillReason::Liquidation => "liquidation",
+        }
+    }
+}
+
+/// One fill, with the reference it is measured from and what it paid beyond it
+/// (ADR 0022).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FillRecord {
+    /// The bar the fill landed on.
+    pub tick: usize,
+    /// The order that filled, or `None` for a forced close.
+    pub order: Option<OrderId>,
+    pub side: Side,
+    pub size: f64,
+    pub price: f64,
+    /// The reference and the spread, slippage, impact and adjustment, per unit.
+    pub costs: FillCosts,
+    /// The fee, in quote.
+    pub fee: f64,
+    /// True when the fill took liquidity. A forced close is the venue's and takes
+    /// none of the account's.
+    pub taker: bool,
+    pub reason: FillReason,
+}
 
 /// One closed trade, recorded when a position is reduced or closed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,6 +86,7 @@ pub struct Trade {
 pub struct Reporter {
     equity_curve: Vec<f64>,
     trades: Vec<Trade>,
+    fills: Vec<FillRecord>,
     /// Steps recorded while holding a nonzero position, for the exposure stat.
     in_position_steps: usize,
 }
@@ -67,6 +111,11 @@ impl Reporter {
         self.trades.push(trade);
     }
 
+    /// Append a fill to the fill log.
+    pub fn record_fill(&mut self, fill: FillRecord) {
+        self.fills.push(fill);
+    }
+
     /// The equity sampled at each recorded step: one point per bar the engine
     /// actually advanced, so a driver that keeps calling `step` past the last bar
     /// adds none.
@@ -80,6 +129,11 @@ impl Reporter {
         &self.trades
     }
 
+    /// Every fill in the order it landed, forced closes included (ADR 0022).
+    pub fn fills(&self) -> &[FillRecord] {
+        &self.fills
+    }
+
     /// Number of recorded equity points, and nothing else. It does not pair with
     /// `is_empty`, which wants the trade log empty too, so a reporter holding a
     /// trade and no equity point answers zero here and `false` there.
@@ -87,9 +141,9 @@ impl Reporter {
         self.equity_curve.len()
     }
 
-    /// True when neither buffer holds anything: no equity point and no trade.
+    /// True when no buffer holds anything: no equity point, no trade and no fill.
     pub fn is_empty(&self) -> bool {
-        self.equity_curve.is_empty() && self.trades.is_empty()
+        self.equity_curve.is_empty() && self.trades.is_empty() && self.fills.is_empty()
     }
 
     /// Performance statistics over the recorded curve and trades. `initial` is the
