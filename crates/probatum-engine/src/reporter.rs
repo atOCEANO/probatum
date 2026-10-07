@@ -1,7 +1,7 @@
-//! Optional reporting buffers: an equity curve sampled each step, a log of closed
-//! trades, a log of fills and a log of every order's events. Off by default (the
-//! engine holds it behind an `Option`) so the RL hot path allocates nothing; the
-//! backtester turns it on. Stats are derived from these later.
+//! Optional reporting buffers: an equity curve sampled each step, the ledger, the
+//! round trips, a log of fills and a log of every order's events. Off by default
+//! (the engine holds it behind an `Option`) so the RL hot path allocates nothing;
+//! the backtester turns it on. Stats are derived from these later.
 
 use probatum_core::{OrderId, Side, TimeInForce};
 
@@ -277,8 +277,53 @@ impl RoundTrip {
     }
 }
 
-/// Side buffers for the equity curve, the round trips and the logs. Never part of
-/// the hot-path state or the RL observation.
+/// What a bar cost, in quote, each term computed on its own so that the ledger
+/// identity is a check rather than a residual (ADR 0022).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BarCosts {
+    pub fees: f64,
+    /// Funding paid, positive when paid away.
+    pub funding: f64,
+    /// What fills paid beyond their reference prices, each part in proportion
+    /// when the bar's range held a price back.
+    pub spread: f64,
+    pub slippage: f64,
+    pub impact: f64,
+    /// What a forced close left in the margin wallet, taken or absorbed, less
+    /// what the margin bound lifted fills by.
+    pub liquidation: f64,
+    pub dust: f64,
+}
+
+/// One row of the ledger: the account and its position marked at a bar's close,
+/// and what that bar cost (ADR 0022).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LedgerRow {
+    pub tick: usize,
+    pub equity: f64,
+    pub spot_cash: f64,
+    pub margin_cash: f64,
+    /// The position's notional at the close, unsigned and signed.
+    pub gross_exposure: f64,
+    pub net_exposure: f64,
+    /// Gross exposure over equity, zero once equity is gone.
+    pub leverage: f64,
+    /// What the margin cap asks of the position at the close.
+    pub margin_used: f64,
+    /// The maintenance requirement, which no table sets yet.
+    pub maintenance: f64,
+    pub costs: BarCosts,
+    pub position: f64,
+    pub entry: f64,
+    pub mark: f64,
+    pub notional: f64,
+    pub unrealized: f64,
+    /// The signed notional over equity, zero once equity is gone.
+    pub weight: f64,
+}
+
+/// Side buffers for the equity curve, the ledger, the round trips and the logs.
+/// Never part of the hot-path state or the RL observation.
 #[derive(Clone, Debug, Default)]
 pub struct Reporter {
     equity_curve: Vec<f64>,
@@ -286,6 +331,9 @@ pub struct Reporter {
     open: Option<RoundTrip>,
     fills: Vec<FillRecord>,
     events: Vec<OrderEvent>,
+    ledger: Vec<LedgerRow>,
+    /// What the bar being stepped has cost so far.
+    costs: BarCosts,
     /// Steps recorded while holding a nonzero position, for the exposure stat.
     in_position_steps: usize,
 }
@@ -303,6 +351,18 @@ impl Reporter {
         if in_position {
             self.in_position_steps += 1;
         }
+    }
+
+    /// What the bar being stepped has cost so far, to add to.
+    pub fn costs_mut(&mut self) -> &mut BarCosts {
+        &mut self.costs
+    }
+
+    /// Append the ledger row of a bar, carrying what the bar cost, and start the
+    /// next bar's costs from nothing.
+    pub fn record_row(&mut self, mut row: LedgerRow) {
+        row.costs = std::mem::take(&mut self.costs);
+        self.ledger.push(row);
     }
 
     /// The round trip still open, to grow, shrink or charge.
@@ -349,6 +409,12 @@ impl Reporter {
     /// The round trip still open, unmarked.
     pub fn open_trade(&self) -> Option<&RoundTrip> {
         self.open.as_ref()
+    }
+
+    /// One row per bar from the opening balance on, so no curve is one shorter than
+    /// the data (ADR 0022).
+    pub fn ledger(&self) -> &[LedgerRow] {
+        &self.ledger
     }
 
     /// Every fill in the order it landed, forced closes included (ADR 0022).

@@ -21,7 +21,7 @@ use pyo3::types::{PyDict, PyList};
 
 use probatum_core::candle::floats;
 use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce, Wallet};
-use probatum_engine::reporter::{EventReason, FillRecord, OrderEvent, Refusal};
+use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{
     Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, RoundTrip, Stats,
@@ -568,6 +568,9 @@ fn fill_to_dict<'py>(
     d.set_item("reason", fill.reason.name())?;
     Ok(d)
 }
+
+/// How one ledger column is read off a row.
+type Column = fn(&LedgerRow) -> f64;
 
 fn refusal_text(why: Refusal) -> String {
     match why {
@@ -1118,6 +1121,55 @@ impl Engine {
             }
             None => Ok(None),
         }
+    }
+
+    /// The ledger as a dict of `(T,)` numpy columns, one row per bar from the opening
+    /// balance on, or None when reporting is off: the bar and its open time, equity,
+    /// each wallet's cash, gross and net exposure, leverage, margin used and the
+    /// maintenance requirement, what the bar cost in fees, funding, spread, slippage,
+    /// impact, the liquidation charge and dust, and the position, its entry, mark,
+    /// notional, unrealized PnL and weight (ADR 0022).
+    fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(reporter) = self.inner.reporter() else {
+            return Ok(None);
+        };
+        let rows = reporter.ledger();
+        let column = |get: Column| -> Vec<f64> { rows.iter().map(get).collect() };
+        let d = PyDict::new(py);
+        let bars: Vec<usize> = rows.iter().map(|row| row.tick).collect();
+        d.set_item("bar", PyArray1::from_vec(py, bars))?;
+        let times: Option<Vec<i64>> = rows
+            .iter()
+            .map(|row| self.inner.open_time(row.tick))
+            .collect();
+        d.set_item("time", times.map(|times| PyArray1::from_vec(py, times)))?;
+        let columns: [(&str, Column); 21] = [
+            ("equity", |row| row.equity),
+            ("spot_cash", |row| row.spot_cash),
+            ("margin_cash", |row| row.margin_cash),
+            ("gross_exposure", |row| row.gross_exposure),
+            ("net_exposure", |row| row.net_exposure),
+            ("leverage", |row| row.leverage),
+            ("margin_used", |row| row.margin_used),
+            ("maintenance", |row| row.maintenance),
+            ("fees", |row| row.costs.fees),
+            ("funding", |row| row.costs.funding),
+            ("spread", |row| row.costs.spread),
+            ("slippage", |row| row.costs.slippage),
+            ("impact", |row| row.costs.impact),
+            ("liquidation", |row| row.costs.liquidation),
+            ("dust", |row| row.costs.dust),
+            ("position", |row| row.position),
+            ("entry", |row| row.entry),
+            ("mark", |row| row.mark),
+            ("notional", |row| row.notional),
+            ("unrealized", |row| row.unrealized),
+            ("weight", |row| row.weight),
+        ];
+        for (name, get) in columns {
+            d.set_item(name, PyArray1::from_vec(py, column(get)))?;
+        }
+        Ok(Some(d))
     }
 
     /// The order log as a list of dicts, one per event in the order they happened,

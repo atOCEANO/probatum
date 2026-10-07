@@ -38,7 +38,7 @@ use probatum_core::{
 use crate::candles::Candles;
 use crate::clock::Clock;
 use crate::execution::FillModel;
-use crate::reporter::{Reporter, RoundTrip};
+use crate::reporter::{BarCosts, LedgerRow, Reporter, RoundTrip};
 use crate::stats::Stats;
 
 /// A position moved toward zero by less than this counts as no close, mirroring
@@ -134,7 +134,7 @@ impl Engine {
     /// first state.
     pub fn new(candles: Candles, config: EngineConfig) -> Engine {
         assert!(!candles.is_empty(), "candles must have at least one row");
-        Engine {
+        let mut engine = Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
                 max_fill_fraction: config.max_fill_fraction,
@@ -160,7 +160,12 @@ impl Engine {
             bust: false,
             candles,
             config,
+        };
+        let row = engine.ledger_row();
+        if let Some(reporter) = engine.reporter.as_mut() {
+            reporter.record_row(row);
         }
+        engine
     }
 
     /// Reset to the first bar and a fresh account, returning the initial state.
@@ -185,7 +190,9 @@ impl Engine {
         self.funding_paid = 0.0;
         self.bust = false;
         if self.reporter.is_some() {
-            self.reporter = Some(Reporter::new());
+            let mut reporter = Reporter::new();
+            reporter.record_row(self.ledger_row());
+            self.reporter = Some(reporter);
         }
         self.state()
     }
@@ -340,6 +347,12 @@ impl Engine {
                     trip.see(bar.high);
                 }
             }
+            if self.reporter.is_some() {
+                let row = self.ledger_row();
+                if let Some(reporter) = self.reporter.as_mut() {
+                    reporter.record_row(row);
+                }
+            }
         }
 
         let state = self.state();
@@ -408,6 +421,35 @@ impl Engine {
     pub fn equity(&self) -> f64 {
         let mark = self.candles.get(self.tick).expect("tick in range").close;
         self.account.equity(Price(mark))
+    }
+
+    /// The ledger row of the current bar, marked at its close. `record_row` adds
+    /// what the bar cost.
+    fn ledger_row(&self) -> LedgerRow {
+        let bar = self.candles.get(self.tick).expect("tick in range");
+        let mark = Price(bar.close);
+        let position = self.account.position.qty.get();
+        let equity = self.account.equity(mark);
+        let net = position * bar.close;
+        let alive = equity > 0.0;
+        LedgerRow {
+            tick: self.tick,
+            equity,
+            spot_cash: self.account.spot_cash,
+            margin_cash: self.account.margin_cash,
+            gross_exposure: net.abs(),
+            net_exposure: net,
+            leverage: if alive { net.abs() / equity } else { 0.0 },
+            margin_used: self.requirement(bar.close),
+            maintenance: 0.0,
+            costs: BarCosts::default(),
+            position,
+            entry: self.account.position.avg_entry.get(),
+            mark: bar.close,
+            notional: net.abs(),
+            unrealized: self.account.unrealized(mark),
+            weight: if alive { net / equity } else { 0.0 },
+        }
     }
 
     fn state(&self) -> State {

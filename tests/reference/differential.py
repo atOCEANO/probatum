@@ -432,6 +432,29 @@ TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees"
                 "funding", "pnl", "ret", "best", "worst", "reason", "open")
 
 
+LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
+                 "slippage", "impact", "liquidation", "dust", "position", "entry",
+                 "mark", "notional", "unrealized", "weight")
+
+
+def ledger_difference(mine, theirs):
+    """The first row the two ledgers part company on, or None."""
+    for t, row in enumerate(theirs):
+        held = row["instruments"][0]
+        want = dict(row, position=held["position"], entry=held["entry"],
+                    mark=held["mark"], notional=held["notional"],
+                    unrealized=held["upnl"], weight=held["weight"])
+        for name in LEDGER_FIELDS:
+            x = float(mine[name][t])
+            if not close_enough(x, want[name]):
+                return f"ledger row {t}: {name} {x!r} against {want[name]!r}"
+
+    if len(mine["equity"]) != len(theirs):
+        return f"{len(mine['equity'])} ledger rows against {len(theirs)}"
+
+    return None
+
+
 def log_difference(what, fields, mine, theirs):
     """The first row two logs part company on, or None. A float is held to the
     tolerance and anything else, a missing size included, must be equal."""
@@ -487,7 +510,8 @@ def compare(cases, seed):
             log_difference("fill", FILL_FIELDS, engine.fills(), sim.fills)
             or log_difference("event", EVENT_FIELDS, engine.order_log(), sim.events)
             or log_difference("round trip", TRIP_FIELDS, engine.trades(),
-                              sim.round_trips()))
+                              sim.round_trips())
+            or ledger_difference(engine.ledger(), sim.ledger))
         if why is None:
             agreed += 1
         else:

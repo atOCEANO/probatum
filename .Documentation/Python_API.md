@@ -277,11 +277,12 @@ final = eng.run(BuyAndHold())
 
 ### Results
 
-With `report=True`, five accessors read the recorded run (each returns `None` when reporting is off):
+With `report=True`, six accessors read the recorded run (each returns `None` when reporting is off):
 
 - `stats(periods_per_year=365.0, risk_free=0.0)` returns the [stats dict](#statistics).
 - `equity_curve()` returns a numpy array, one equity value per step.
 - `trades()` returns a list of [round trips](#trades), the one still open at the end marked and flagged.
+- `ledger()` returns [the ledger](#the-ledger), a dict of numpy columns with one row per bar from the opening balance.
 - `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
 - `order_log()` returns a list of [order events](#the-order-log), every order's life in the order it happened.
 
@@ -451,6 +452,25 @@ Each entry in `trades()` is one round trip: a maximal run of one sign, from the 
 | `open` | True for the round trip still open at the end. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.
+
+### The ledger
+
+Each column of `ledger()` holds one value per bar, the first for the opening balance, so no column is one shorter than the data ([ADR 0022](Decisions.md)):
+
+| Column | Meaning |
+| :--- | :--- |
+| `bar`, `time` | The bar, and its open time when the engine was built with `times=`; `time` is `None` without. |
+| `equity`, `spot_cash`, `margin_cash` | The account at the close: both wallets together, and each wallet's cash. |
+| `gross_exposure`, `net_exposure` | The position's notional at the close, unsigned and signed. |
+| `leverage` | Gross exposure over equity, zero once equity is gone. |
+| `margin_used` | What the margin cap asks of the position at the close. |
+| `maintenance` | The maintenance requirement, zero until maintenance tables are modelled. |
+| `fees`, `funding`, `spread`, `slippage`, `impact` | What the bar cost, in quote: a fill's spread, slippage and impact are what it paid beyond its reference, each in proportion when the bar's range held its price back. |
+| `liquidation` | What a forced close left in the margin wallet, taken by the venue or absorbed by it, less what the margin bound lifted fills by ([ADR 0018](Decisions.md)). |
+| `dust` | The value of positions too small to trade, zeroed at the close, which nothing makes until sizes are modelled. |
+| `position`, `entry`, `mark`, `notional`, `unrealized`, `weight` | The position, its average entry, the close it is marked at, its notional, its unrealized PnL, and its signed notional over equity. |
+
+Each cost is computed on its own, so on every bar the change in equity is the price PnL, measured from each fill's reference and then from the bar's close, less every cost.
 
 ### Fills
 

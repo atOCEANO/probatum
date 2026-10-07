@@ -107,6 +107,11 @@ impl Engine {
             moment,
         );
         if let Some(reporter) = self.reporter.as_mut() {
+            // whatever the wallet still holds once the position is closed, taken by
+            // the venue or absorbed by it, is the liquidation charge (ADR 0018)
+            let bar = reporter.costs_mut();
+            bar.fees += fee;
+            bar.liquidation += self.account.margin_cash;
             reporter.record_fill(FillRecord {
                 tick: self.tick,
                 order: None,

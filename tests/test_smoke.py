@@ -156,6 +156,27 @@ def test_a_fill_is_logged_with_its_reference_and_what_it_paid_beyond_it():
     assert fill["spread"] == fill["impact"] == fill["adjustment"] == 0.0
 
 
+def test_the_ledger_has_a_row_per_bar_from_the_opening_balance():
+    off = engine()
+    off.reset()
+
+    assert off.ledger() is None
+
+    e = engine(report=True, fee_taker=0.001)
+    e.reset()
+    e.market_buy(2.0)
+    e.step()                                        # 2 at 200, a fee of 0.4
+    e.step()
+    ledger = e.ledger()
+
+    assert list(ledger["bar"]) == [0, 1, 2]
+    assert ledger["time"] is None                   # no times, no clock
+    assert ledger["equity"][0]      == 10_000.0
+    assert list(ledger["fees"])     == pytest.approx([0.0, 0.4, 0.0])
+    assert list(ledger["position"]) == [0.0, 2.0, 2.0]
+    assert list(ledger["mark"])     == [150.0, 250.0, 350.0]
+
+
 def test_the_order_log_follows_each_order_and_keeps_a_refused_one():
     off = engine()
     off.reset()

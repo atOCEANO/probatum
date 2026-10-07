@@ -61,6 +61,19 @@ impl Engine {
             Moment::InBar,
         );
         if let Some(reporter) = self.reporter.as_mut() {
+            // what the fill paid beyond its reference at the price its costs and the
+            // bar set, each part in proportion when the bar held that price back, and
+            // what the margin bound then lifted it by, a negative liquidation charge
+            let paid = applied * (priced - costs.reference).abs();
+            let asked = costs.spread + costs.slippage + costs.impact;
+            let bar = reporter.costs_mut();
+            bar.fees += fee;
+            if asked > 0.0 {
+                bar.spread += paid * costs.spread / asked;
+                bar.slippage += paid * costs.slippage / asked;
+                bar.impact += paid * costs.impact / asked;
+            }
+            bar.liquidation -= applied * (fill.price.get() - priced).abs();
             reporter.record_fill(FillRecord {
                 tick: self.tick,
                 order: Some(order),
@@ -125,10 +138,10 @@ impl Engine {
         let pos_after = self.account.position.qty.get();
         let realized = self.account.realized() - realized_before;
         let tick = self.tick;
-        let bar = self.candles.get(tick).expect("tick in range");
         let Some(reporter) = self.reporter.as_mut() else {
             return;
         };
+        let bar = self.candles.get(tick).expect("tick in range");
 
         // The base amount the fill moved the position toward zero: a reduce keeps
         // the same-side remainder, a close or flip keeps none of the old side.
@@ -192,8 +205,8 @@ mod tests {
     };
     use crate::engine::{Engine, EngineConfig};
     use crate::execution::FillCosts;
-    use crate::reporter::{FillReason, FillRecord, RoundTrip};
-    use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side};
+    use crate::reporter::{BarCosts, FillReason, FillRecord, RoundTrip};
+    use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side, Wallet};
 
     fn fills(e: &Engine) -> &[FillRecord] {
         e.reporter().expect("reporting is on").fills()
@@ -837,5 +850,90 @@ mod tests {
         };
         assert!((fill.size * fill.price - 2_963.08).abs() < 0.005);
         assert!((fill.fee - 1.48).abs() < 0.005);
+    }
+
+    #[test]
+    fn the_ledger_holds_a_row_per_bar_from_the_opening_balance() {
+        let config = EngineConfig {
+            fee_taker: 0.001,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.market_buy(2.0);
+        e.step(); // 2 at the open of 200, a fee of 0.4
+        e.step();
+        let ledger = e.reporter().expect("reporting is on").ledger();
+        assert_eq!(ledger.len(), 3, "one row per bar, the opening one included");
+        assert_eq!((ledger[0].tick, ledger[0].equity), (0, 10_000.0));
+        assert_eq!(ledger[0].costs, BarCosts::default());
+        let row = ledger[1];
+        assert!((row.costs.fees - 0.4).abs() < 1e-12);
+        assert_eq!((row.position, row.entry, row.mark), (2.0, 200.0, 250.0));
+        assert_eq!((row.notional, row.unrealized), (500.0, 100.0));
+        assert!((row.weight - 500.0 / row.equity).abs() < 1e-12);
+        assert_eq!(ledger[2].costs, BarCosts::default());
+    }
+
+    #[test]
+    fn the_ledger_identity_holds_on_every_bar() {
+        // the change in equity is the price PnL, measured from each fill's reference
+        // and then each bar's mark, less every cost, each of which is computed on its
+        // own (ADR 0022). Slippage, impact a bar holds back, fees, funding, the margin
+        // bound and a forced close all pass through it here
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1_000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000.0),
+            ohlc(100.0, 103.0, 98.0, 102.0, 1_000.0),
+            ohlc(102.0, 102.5, 80.0, 85.0, 1_000.0),
+            ohlc(85.0, 90.0, 84.0, 88.0, 1_000.0),
+            ohlc(88.0, 89.0, 87.0, 88.0, 1_000.0),
+        ]);
+        let config = EngineConfig {
+            market: Market::Perp,
+            quote: 100.0,
+            idle_cash: 50.0,
+            fee_taker: 0.001,
+            fee_maker: 0.0005,
+            slippage_bps: 20.0,
+            impact: 2.0,
+            max_leverage: 10.0,
+            funding_rate: 0.002,
+            funding_interval: 1,
+            report: true,
+            ..cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(5.0);
+        e.step();
+        e.market_buy(4.0);
+        e.stop(Side::Sell, 3.0, 90.0, true);
+        e.step();
+        e.step(); // the stop, then the forced close on the way to 80
+        e.transfer(50.0, Wallet::Margin);
+        e.market_sell(0.5);
+        e.step(); // a short from the funded wallet
+        e.step();
+
+        let reporter = e.reporter().expect("reporting is on");
+        let ledger = reporter.ledger();
+        assert_eq!(ledger.len(), 6);
+        assert!(ledger.iter().any(|row| row.costs.liquidation != 0.0));
+        for t in 1..ledger.len() {
+            let (was, row) = (ledger[t - 1], ledger[t]);
+            let mut pnl = was.position * (row.mark - was.mark);
+            for fill in reporter.fills().iter().filter(|fill| fill.tick == t) {
+                pnl += fill.side.sign() * fill.size * (row.mark - fill.costs.reference);
+            }
+            let c = row.costs;
+            let costs = c.spread + c.slippage + c.impact + c.fees + c.funding;
+            let costs = costs + c.liquidation + c.dust;
+            let change = row.equity - was.equity;
+            assert!(
+                (change - (pnl - costs)).abs() < 1e-9 * row.equity.abs().max(1.0),
+                "bar {t}: equity moved {change}, price PnL {pnl} less costs {costs}"
+            );
+        }
     }
 }

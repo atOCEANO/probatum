@@ -9,13 +9,16 @@ use probatum_core::{Market, Price};
 use super::Engine;
 use crate::reporter::Reporter;
 
-/// Keep a funding payment for the result and charge it to the round trip it was paid
-/// on (ADRs 0020, 0023). It takes the two fields it writes, so a schedule borrowed
+/// Keep a funding payment for the result and charge it to its bar and to the round
+/// trip it was paid on (ADRs 0020, 0022, 0023). It takes the two fields it writes, so a schedule borrowed
 /// from the candles can stay borrowed while it runs.
 fn pay(funding_paid: &mut f64, reporter: &mut Option<Reporter>, payment: f64) {
     *funding_paid += payment;
-    if let Some(trip) = reporter.as_mut().and_then(Reporter::trip_mut) {
-        trip.funding += payment;
+    if let Some(reporter) = reporter.as_mut() {
+        reporter.costs_mut().funding += payment;
+        if let Some(trip) = reporter.trip_mut() {
+            trip.funding += payment;
+        }
     }
 }
 
