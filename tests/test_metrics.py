@@ -399,17 +399,34 @@ def test_every_trade_lived_through_at_least_what_it_finished_with():
         assert row["worst_pct"] - 1e-9 <= finished <= row["best_pct"] + 1e-9
 
 
-def test_the_excursions_read_here_are_the_ones_each_round_trip_carries():
-    # two paths to one pair of numbers, the engine's while it ran and this one off
-    # the frame afterwards, and two paths drift apart unless something holds them
-    data   = series()
-    result = Backtester(data, periods_per_year=365.0).run(Alternate())
-    rows   = metrics.excursions(result, data)
+def test_a_close_out_before_the_open_is_not_charged_the_open_it_never_saw():
+    # a long of 10 on 100 of margin dies at 90 on the way down to an open of 85,
+    # so the worst it lived through is 90, and reading the exit bar from its open
+    # made it 85, an overstatement of half again
+    data = np.array([
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [85.0, 86.0, 80.0, 85.0, 1e6],
+    ])
 
-    assert len(rows) == len(closed(result)) > 3
-    for row, trade in zip(rows, closed(result)):
-        assert row["best_pct"]  == pytest.approx(trade["best"] * 100.0, abs=1e-9)
-        assert row["worst_pct"] == pytest.approx(trade["worst"] * 100.0, abs=1e-9)
+    class BuyOnce(Strategy):
+
+        def next(self, state, engine):
+            if state["tick_index"] == 0:
+                engine.market_buy(10.0)
+
+    result = Backtester(
+        data,
+        market           = "perp",
+        quote            = 100.0,
+        fee_taker        = 0.0,
+        fee_maker        = 0.0,
+        periods_per_year = 365.0,
+    ).run(BuyOnce())
+    [row] = metrics.excursions(result, data)
+
+    assert row["worst_pct"] == pytest.approx(-10.0)
+    assert row["best_pct"]  == pytest.approx(0.0)
 
 
 def test_a_shorts_excursions_are_not_a_longs_read_backwards():
@@ -439,15 +456,6 @@ def test_a_shorts_excursions_are_not_a_longs_read_backwards():
     # entered at 100, the bar ran to 130 (against) and 70 (for)
     assert row["worst_pct"] == pytest.approx(-30.0)
     assert row["best_pct"]  == pytest.approx(30.0)
-
-
-def test_excursions_needs_the_highs_and_lows():
-    result = run()
-
-    with pytest.raises(TypeError) as excinfo:
-        metrics.excursions(result, np.zeros((10, 2)))
-
-    assert "high and low" in str(excinfo.value)
 
 
 def test_trades_bucket_by_the_hour_they_closed_on():

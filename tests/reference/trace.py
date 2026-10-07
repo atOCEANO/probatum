@@ -22,17 +22,18 @@ from . import differential as D
 
 
 def diverges(bars, times, cfg, actions):
-    """The first bar the two disagree on, or None. A case outside what both model
-    is not a disagreement, so a shrink that wanders out of it is not one either."""
+    """The first bar the two disagree on, on any record, or None. A case outside what
+    both model is not a disagreement, so a shrink that wanders out of it is not one
+    either."""
     try:
-        rows, _, sim = D.run(bars, times, cfg, actions)
+        rows, engine, sim = D.run(bars, times, cfg, actions)
     except Exception:
         return None
 
     if D.set_aside(sim) is not None:
         return None
 
-    found = D.first_difference(rows, cfg)
+    found = D.disagreement(rows, engine, sim, cfg)
     return None if found is None else found[0]
 
 
@@ -43,7 +44,7 @@ def shrink(bars, times, cfg, actions):
         return bars, times, actions, None
 
     # tail first: nothing after the divergence can be causing it
-    keep = at + 2
+    keep = at + 1
     while keep < len(bars):
         if diverges(bars[:keep], times[:keep], cfg, actions[:keep - 1]) is not None:
             bars, times, actions = bars[:keep], times[:keep], actions[:keep - 1]

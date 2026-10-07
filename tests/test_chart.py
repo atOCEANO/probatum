@@ -1034,6 +1034,24 @@ def test_focus_of_a_trade_frames_that_trade():
     assert spec["focus"][0] <= result.trades[0]["open_bar"]
 
 
+def test_focus_of_a_round_trip_still_open_frames_it_to_the_last_bar():
+    data   = frame(60)
+    result = probatum.backtest.Backtester(
+        data,
+        market    = "spot",
+        fee_taker = 0.0,
+        fee_maker = 0.0,
+    ).run(BuyAtOpen())
+    [held] = result.trades
+
+    assert held["open"]
+
+    spec = probatum.chart(data, result, focus=held).spec()
+
+    assert spec["focus"][0] <= held["open_bar"]
+    assert spec["focus"][1] == 59.0
+
+
 def test_two_charts_of_the_same_inputs_produce_the_same_document():
     def once():
         return probatum.chart(frame(8), Line(np.arange(8, dtype=float), "f"), run())._html()

@@ -265,7 +265,8 @@ def start_here(raw):
 
     held = numpy.zeros(len(frame), dtype=bool)
     for trade in result.trades:
-        held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
+        last = len(frame) - 1 if trade["open"] else trade["close_bar"]
+        held[trade["open_bar"]:last + 1] = True
 
     keep("chart-backtest", probatum.chart(
         frame=frame,
@@ -385,9 +386,10 @@ def documented_examples(raw):
 
     held = numpy.zeros(len(frame), dtype=bool)
     for trade in result.trades:
-        held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
+        last = len(frame) - 1 if trade["open"] else trade["close_bar"]
+        held[trade["open_bar"]:last + 1] = True
 
-    worst = min(result.trades, key=lambda trade: trade["net_pnl"])
+    worst = min(result.trades, key=lambda trade: trade["pnl"])
 
     keep("ex-line", probatum.chart(
         frame=frame,
@@ -473,7 +475,7 @@ def documented_examples(raw):
         marks=strategy.marks(),
         run=result,
         focus=worst,
-        title=f"worst trade, net {worst['net_pnl']:,.0f}",
+        title=f"worst trade, net {worst['pnl']:,.0f}",
         height=660,
     ), NARROW, "the worst trade framed")
     keep("ex-notes", probatum.chart(

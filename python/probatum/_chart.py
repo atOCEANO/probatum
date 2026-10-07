@@ -863,7 +863,7 @@ def _focus(value, num_bars, ahead=0):
 
     if isinstance(value, dict) and "open_bar" in value:
         opened = value["open_bar"]
-        closed = opened if value["close_bar"] is None else value["close_bar"]
+        closed = num_bars - 1 if value["close_bar"] is None else value["close_bar"]
         pad    = max(18.0, max(1, closed - opened) * 0.7)
         low, high = opened - pad, closed + pad
     elif isinstance(value, (int, np.integer)):

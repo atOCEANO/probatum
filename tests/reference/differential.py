@@ -438,7 +438,8 @@ LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "sprea
 
 
 def ledger_difference(mine, theirs):
-    """The first row the two ledgers part company on, or None."""
+    """The first row the two ledgers part company on, as its bar and what about, or
+    None."""
     for t, row in enumerate(theirs):
         held = row["instruments"][0]
         want = dict(row, position=held["position"], entry=held["entry"],
@@ -447,29 +448,50 @@ def ledger_difference(mine, theirs):
         for name in LEDGER_FIELDS:
             x = float(mine[name][t])
             if not close_enough(x, want[name]):
-                return f"ledger row {t}: {name} {x!r} against {want[name]!r}"
+                return t, f"ledger row {t}: {name} {x!r} against {want[name]!r}"
 
     if len(mine["equity"]) != len(theirs):
-        return f"{len(mine['equity'])} ledger rows against {len(theirs)}"
+        rows = min(len(mine["equity"]), len(theirs))
+        return rows, f"{len(mine['equity'])} ledger rows against {len(theirs)}"
 
     return None
 
 
 def log_difference(what, fields, mine, theirs):
-    """The first row two logs part company on, or None. A float is held to the
-    tolerance and anything else, a missing size included, must be equal."""
+    """The first row two logs part company on, as its bar and what about, or None. A
+    float is held to the tolerance and anything else, a missing size included, must
+    be equal."""
     for k, (a, b) in enumerate(zip(mine, theirs)):
         for name in fields:
             x, y = a[name], b[name]
             both = isinstance(x, float) and isinstance(y, float)
             if not (close_enough(x, y) if both else x == y):
                 where = b.get("bar", b.get("open_bar"))
-                return f"{what} {k + 1}, on bar {where}: {name} {x!r} against {y!r}"
+                return where, (f"{what} {k + 1}, on bar {where}: {name} {x!r} "
+                               f"against {y!r}")
 
     if len(mine) != len(theirs):
-        return f"{len(mine)} {what}s against {len(theirs)}"
+        extra = (mine if len(mine) > len(theirs) else theirs)[min(len(mine),
+                                                                  len(theirs))]
+        return (extra.get("bar", extra.get("open_bar")),
+                f"{len(mine)} {what}s against {len(theirs)}")
 
     return None
+
+
+def disagreement(rows, engine, sim, cfg):
+    """Where the two first part company on any record, as the bar and what about, or
+    None: the account bar by bar, then the fill log, the order log, the round trips
+    and the ledger."""
+    found = first_difference(rows, cfg)
+    if found is not None:
+        return found[0] + 1, found[1]
+
+    return (log_difference("fill", FILL_FIELDS, engine.fills(), sim.fills)
+            or log_difference("event", EVENT_FIELDS, engine.order_log(), sim.events)
+            or log_difference("round trip", TRIP_FIELDS, engine.trades(),
+                              sim.round_trips())
+            or ledger_difference(engine.ledger(), sim.ledger))
 
 
 Outcome = collections.namedtuple(
@@ -504,18 +526,11 @@ def compare(cases, seed):
 
         reached.update(counted)
         rules.update(sim.reached)
-
-        found = first_difference(rows, cfg)
-        why   = found[1] if found else (
-            log_difference("fill", FILL_FIELDS, engine.fills(), sim.fills)
-            or log_difference("event", EVENT_FIELDS, engine.order_log(), sim.events)
-            or log_difference("round trip", TRIP_FIELDS, engine.trades(),
-                              sim.round_trips())
-            or ledger_difference(engine.ledger(), sim.ledger))
-        if why is None:
+        found = disagreement(rows, engine, sim, cfg)
+        if found is None:
             agreed += 1
         else:
-            disagreed.append((case, cfg, bars, actions, why))
+            disagreed.append((case, cfg, bars, actions, found[1]))
 
     return Outcome(agreed + len(disagreed), agreed, disagreed, aside, rules, reached)
 

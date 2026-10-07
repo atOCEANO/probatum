@@ -1272,8 +1272,9 @@ def _own_the_fees(config, where):
         )
 
 
-def excursions(result, frame):
-    """The worst and best each trade went while it was open, in percent of its entry.
+def excursions(result, frame=None):
+    """The worst and best each closed round trip went while it was open, in percent
+    of its entry: the round trip's own ``worst`` and ``best``, laid out a row each.
 
     The maximum adverse excursion is where a stop would have been hit, and the
     maximum favourable is what a target would have caught. A trade log says what a
@@ -1282,48 +1283,26 @@ def excursions(result, frame):
 
     Both are a **bound rather than an exact figure**, and they never overstate. A
     bar prints its open first and its close last and nothing else in it is
-    ordered, so the bar a trade entered on is only known from the fill forward to
-    its close, and the bar it left on only from its open up to the fill; the bars
-    strictly between were lived through whole. A market entry fills at its bar's
-    open and so did live through that whole bar, which this does not credit,
-    because nothing in a trade row says which kind of order opened it (ADR 0023).
+    ordered, so the engine counts the bar a trade entered on from the fill forward
+    to its close, the bar it left on from its open up to the fill, none of a bar it
+    was closed out of before the open, and the bars strictly between whole
+    (ADR 0023). ``frame``, when given, has to be the frame the run was produced
+    on, since the rows carry its bar indices.
     """
-    opens, high, low, closes = _bar_prices(frame)
-    _same_bars(result, frame, len(high), "excursions")
+    if frame is not None:
+        _same_bars(result, frame, len(np.asarray(frame)), "excursions")
 
-    out = []
-    for trade in _closed(result):
-        first, last = trade["open_bar"], trade["close_bar"]
-        if not 0 <= first <= last < len(high):
-            # unreachable on the right frame; the guard above is what makes that
-            # true rather than hoped for
-            continue
-
-        entry = trade["entry"]
-        seen  = [entry, float(trade["exit"])]
-        if last > first:
-            seen.append(float(closes[first]))
-            seen.append(float(opens[last]))
-            if last - first > 1:
-                seen.append(float(high[first + 1:last].max()))
-                seen.append(float(low[first + 1:last].min()))
-
-        peak, trough = max(seen), min(seen)
-        if trade["side"] == "long":
-            best, worst = peak - entry, trough - entry
-        else:
-            best, worst = entry - trough, entry - peak
-
-        out.append({
-            "open_bar":  first,
-            "close_bar": last,
+    return [
+        {
+            "open_bar":  trade["open_bar"],
+            "close_bar": trade["close_bar"],
             "side":      trade["side"],
             "pnl":       trade["pnl"],
-            "best_pct":  best / entry * 100.0 if entry else 0.0,
-            "worst_pct": worst / entry * 100.0 if entry else 0.0,
-        })
-
-    return out
+            "best_pct":  trade["best"] * 100.0,
+            "worst_pct": trade["worst"] * 100.0,
+        }
+        for trade in _closed(result)
+    ]
 
 
 def session_buckets(result, frame, by="hour"):
@@ -1415,24 +1394,6 @@ def _same_bars(result, frame, bars, where):
             f"have caught it, and every trade's ticks would have been read "
             f"against another asset's prices"
         )
-
-
-def _bar_prices(frame):
-    # all four, because the two an excursion can trust on a partly held bar are the
-    # open and the close rather than the extremes (ADR 0023)
-    if all(hasattr(frame, name) for name in ("open", "high", "low", "close")):
-        return tuple(np.asarray(getattr(frame, name), dtype=np.float64)
-                     for name in ("open", "high", "low", "close"))
-
-    data = np.asarray(frame, dtype=np.float64)
-    if data.ndim != 2 or data.shape[1] != 5:
-        raise TypeError(
-            "excursions needs each bar's open and close as well as its high and "
-            "low, so frame must be a DataFrame carrying the four, or a (T, 5) "
-            "OHLCV array"
-        )
-
-    return data[:, 0], data[:, 1], data[:, 2], data[:, 3]
 
 
 def _stamps(frame):
