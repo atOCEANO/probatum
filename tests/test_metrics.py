@@ -399,6 +399,19 @@ def test_every_trade_lived_through_at_least_what_it_finished_with():
         assert row["worst_pct"] - 1e-9 <= finished <= row["best_pct"] + 1e-9
 
 
+def test_the_excursions_read_here_are_the_ones_each_round_trip_carries():
+    # two paths to one pair of numbers, the engine's while it ran and this one off
+    # the frame afterwards, and two paths drift apart unless something holds them
+    data   = series()
+    result = Backtester(data, periods_per_year=365.0).run(Alternate())
+    rows   = metrics.excursions(result, data)
+
+    assert len(rows) == len(closed(result)) > 3
+    for row, trade in zip(rows, closed(result)):
+        assert row["best_pct"]  == pytest.approx(trade["best"] * 100.0, abs=1e-9)
+        assert row["worst_pct"] == pytest.approx(trade["worst"] * 100.0, abs=1e-9)
+
+
 def test_a_shorts_excursions_are_not_a_longs_read_backwards():
     # a short is hurt by the high and helped by the low, and swapping the two
     # puts a stop on exactly the wrong side of the entry

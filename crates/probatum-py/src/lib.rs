@@ -538,6 +538,8 @@ fn trade_to_dict<'py>(
     d.set_item("funding", trade.funding)?;
     d.set_item("pnl", trade.pnl)?;
     d.set_item("ret", trade.ret)?;
+    d.set_item("best", trade.best)?;
+    d.set_item("worst", trade.worst)?;
     d.set_item("reason", trade.reason.map(|reason| reason.name()))?;
     d.set_item("open", trade.close_tick.is_none())?;
     Ok(d)

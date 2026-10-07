@@ -29,6 +29,8 @@ mod orders;
 mod resolution;
 mod transfers;
 
+use ledger::Moment;
+
 use probatum_core::{
     Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
 };
@@ -270,7 +272,7 @@ impl Engine {
             // below if the open lies past the fence (ADR 0020)
             self.charge_between(last);
             if self.account.is_bust_at(Price(last)) {
-                self.liquidate_at(Price(last));
+                self.liquidate_at(Price(last), Moment::BeforeOpen);
             }
 
             // 0. the price a position's margin runs out at is a point on this bar's
@@ -290,7 +292,7 @@ impl Engine {
             let fence = self.liquidation_fence(&bar);
             let gapped = fence.is_some_and(|f| if long { bar.open <= f } else { bar.open >= f });
             if gapped {
-                self.liquidate();
+                self.liquidate(Moment::BeforeOpen);
             }
             let resolving = match fence {
                 Some(f) if !gapped => Engine::fenced(&bar, f, long),
@@ -314,7 +316,7 @@ impl Engine {
             let debits = self.debits_inside(bar.close);
             if self.dead_at(adverse, debits) {
                 self.pay_debits_inside(bar.close);
-                self.liquidate();
+                self.liquidate(Moment::InBar);
             }
 
             // 4. the funding the row owns, at its close and after the check, because
@@ -325,7 +327,18 @@ impl Engine {
             //    debit takes to its trigger here is closed at the close (ADR 0020)
             self.charge_funding(bar.close);
             if self.account.is_bust_at(Price(bar.close)) {
-                self.liquidate_at(Price(bar.close));
+                self.liquidate_at(Price(bar.close), Moment::AtClose);
+            }
+
+            // the part of this bar a round trip still open lived through: from its
+            // fill to the close when it opened on this bar, the whole bar otherwise
+            if let Some(trip) = self.reporter.as_mut().and_then(Reporter::trip_mut) {
+                if trip.open_tick == self.tick {
+                    trip.see(bar.close);
+                } else {
+                    trip.see(bar.low);
+                    trip.see(bar.high);
+                }
             }
         }
 

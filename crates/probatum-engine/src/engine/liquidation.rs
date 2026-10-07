@@ -6,6 +6,7 @@
 
 use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Qty, Side, Wallet};
 
+use super::ledger::Moment;
 use super::Engine;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord};
@@ -72,9 +73,9 @@ impl Engine {
     /// owing 100. A position cannot lose more than the margin behind it, so the
     /// exit is priced where the margin runs out, and the liquidation fee is inside
     /// that price rather than charged past it (ADR 0018).
-    pub(super) fn liquidate(&mut self) {
+    pub(super) fn liquidate(&mut self, moment: Moment) {
         if let Some(price) = self.account.bankruptcy_price(self.cost.fee_taker) {
-            self.liquidate_at(price);
+            self.liquidate_at(price, moment);
         }
     }
 
@@ -82,7 +83,7 @@ impl Engine {
     /// leave the margin wallet at exactly zero: whatever it then holds, positive or
     /// negative, is the liquidation charge. A funding debit that takes the account to
     /// its trigger at a bar's close is closed here at that close (ADR 0020).
-    pub(super) fn liquidate_at(&mut self, price: Price) {
+    pub(super) fn liquidate_at(&mut self, price: Price, moment: Moment) {
         let size = self.account.position.qty.get().abs();
         let fill = Fill {
             side: if self.account.position.qty.get() > 0.0 {
@@ -97,7 +98,14 @@ impl Engine {
         let fee = self.cost.fee(&fill);
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
-        self.book_fill(size, price.get(), fee, before, FillReason::Liquidation);
+        self.book_fill(
+            size,
+            price.get(),
+            fee,
+            before,
+            FillReason::Liquidation,
+            moment,
+        );
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.record_fill(FillRecord {
                 tick: self.tick,

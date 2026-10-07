@@ -176,6 +176,16 @@ pub struct RoundTrip {
     /// The sizes its opening and its closing fills came to.
     pub opened: f64,
     pub closed: f64,
+    /// The highest and the lowest price over the part of each bar it was in: its
+    /// entry bar from the fill to the close, its exit bar from the open to the fill,
+    /// and every bar between whole (ADR 0023).
+    pub high: f64,
+    pub low: f64,
+    /// How far its side's price went for it and against it over those parts, as
+    /// a fraction of `entry`. Bounds that never overstate, since nothing inside a
+    /// bar says when its high and its low came.
+    pub best: f64,
+    pub worst: f64,
 }
 
 impl RoundTrip {
@@ -196,9 +206,19 @@ impl RoundTrip {
             reason: None,
             opened: size,
             closed: 0.0,
+            high: price,
+            low: price,
+            best: 0.0,
+            worst: 0.0,
         };
         trip.settle(0.0);
         trip
+    }
+
+    /// Count `price` among the prices it lived through.
+    pub fn see(&mut self, price: f64) {
+        self.high = self.high.max(price);
+        self.low = self.low.min(price);
     }
 
     /// A fill of `size` at `price` that grows it, paying `fee`.
@@ -206,6 +226,7 @@ impl RoundTrip {
         self.entry = (self.entry * self.opened + price * size) / (self.opened + size);
         self.opened += size;
         self.fees += fee;
+        self.see(price);
     }
 
     /// A fill of `size` at `price` that shrinks it, paying `fee` and realizing
@@ -219,6 +240,7 @@ impl RoundTrip {
         self.closed += size;
         self.fees += fee;
         self.realized += realized;
+        self.see(price);
     }
 
     /// End it on bar `tick`, for `reason`.
@@ -244,6 +266,14 @@ impl RoundTrip {
         } else {
             0.0
         };
+        if self.entry > 0.0 {
+            let (up, down) = (self.high / self.entry - 1.0, self.low / self.entry - 1.0);
+            (self.best, self.worst) = if self.side == Side::Buy {
+                (up, down)
+            } else {
+                (-down, -up)
+            };
+        }
     }
 }
 

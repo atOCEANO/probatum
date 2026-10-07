@@ -8,6 +8,18 @@ use super::{Engine, CLOSE_EPS};
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord, RoundTrip};
 
+/// Where in its bar a fill sits, which decides how much of the bar a round trip it
+/// ends lived through (ADR 0023).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Moment {
+    /// Before the bar opened: a close-out on the gap, or at the last mark.
+    BeforeOpen,
+    /// Inside the bar: at its open or along its range.
+    InBar,
+    /// At its close, once the bar had printed every price.
+    AtClose,
+}
+
 impl Engine {
     /// The position fields a fill has to be compared against once it has landed.
     pub(super) fn before_fill(&self) -> (f64, f64, f64) {
@@ -40,7 +52,14 @@ impl Engine {
         let fee = self.cost.fee(&fill);
         let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
-        self.book_fill(applied, fill.price.get(), fee, before, reason);
+        self.book_fill(
+            applied,
+            fill.price.get(),
+            fee,
+            before,
+            reason,
+            Moment::InBar,
+        );
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.record_fill(FillRecord {
                 tick: self.tick,
@@ -99,12 +118,14 @@ impl Engine {
         fee: f64,
         before: (f64, f64, f64),
         reason: FillReason,
+        moment: Moment,
     ) {
         let (pos_before, _, realized_before) = before;
         self.fills += 1;
         let pos_after = self.account.position.qty.get();
         let realized = self.account.realized() - realized_before;
         let tick = self.tick;
+        let bar = self.candles.get(tick).expect("tick in range");
         let Some(reporter) = self.reporter.as_mut() else {
             return;
         };
@@ -124,6 +145,19 @@ impl Engine {
 
         if closed > CLOSE_EPS {
             if let Some(trip) = reporter.trip_mut() {
+                // the part of this bar a round trip carried into it lived through: up
+                // to the fill from the open, the whole bar when it closed at the
+                // close, and none of it when it closed before the bar opened
+                if trip.open_tick != tick {
+                    match moment {
+                        Moment::BeforeOpen => {}
+                        Moment::InBar => trip.see(bar.open),
+                        Moment::AtClose => {
+                            trip.see(bar.low);
+                            trip.see(bar.high);
+                        }
+                    }
+                }
                 trip.shrink(closed, price, fee * closed / applied, realized);
             }
             if pos_after.abs() <= CLOSE_EPS || (pos_before > 0.0) != (pos_after > 0.0) {
@@ -588,6 +622,110 @@ mod tests {
         );
         let stats = e.stats(365.0, 0.0).expect("reporting is on");
         assert_eq!(stats.num_trades, 2);
+    }
+
+    #[test]
+    fn an_exit_at_the_open_counts_none_of_what_its_bar_printed_after() {
+        // the long fills at the open of bar 1 and leaves at the open of bar 3, which
+        // goes on to print 180 and 20 after the account had gone, so its excursions
+        // are the one percent bar 2 showed (ADR 0023)
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+            ohlc(100.0, 180.0, 20.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, report_cfg());
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        e.step();
+        e.close();
+        e.step();
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert_eq!(t.close_tick, Some(3));
+        assert!((t.best - 0.01).abs() < 1e-12, "best {}", t.best);
+        assert!((t.worst + 0.01).abs() < 1e-12, "worst {}", t.worst);
+    }
+
+    #[test]
+    fn a_limit_entry_is_not_credited_with_its_bar_before_it_filled() {
+        // the bid rests below the market, so its bar opens at 130 and has to come
+        // down to it, and nothing from the fill on printed above 101
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(130.0, 130.0, 100.0, 101.0, 1e6),
+            ohlc(101.0, 101.0, 101.0, 101.0, 1e6),
+            ohlc(101.0, 101.0, 101.0, 101.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, report_cfg());
+        e.reset();
+        e.limit_buy(1.0, 100.0);
+        e.step();
+        e.close();
+        e.step();
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert_eq!((t.open_tick, t.entry), (1, 100.0));
+        assert!((t.best - 0.01).abs() < 1e-12, "best {}", t.best);
+        assert_eq!(t.worst, 0.0);
+    }
+
+    #[test]
+    fn a_close_out_before_the_open_counts_none_of_the_bar_that_gapped() {
+        // the long of 10 on 100 of margin dies at 90, on the way down to an open of
+        // 85, so the 85 and the 80 after it are a market it had already left
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(85.0, 86.0, 80.0, 85.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            max_leverage: 10.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.step();
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert_eq!((t.exit, t.reason), (90.0, Some(FillReason::Liquidation)));
+        assert!((t.worst + 0.1).abs() < 1e-12, "worst {}", t.worst);
+        assert_eq!(t.best, 0.0);
+    }
+
+    #[test]
+    fn a_short_is_helped_by_the_low_and_hurt_by_the_high() {
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 130.0, 70.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_sell(1.0);
+        e.step();
+        e.step();
+        e.close();
+        e.step();
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert!((t.best - 0.3).abs() < 1e-12, "best {}", t.best);
+        assert!((t.worst + 0.3).abs() < 1e-12, "worst {}", t.worst);
     }
 
     #[test]

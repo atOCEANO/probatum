@@ -263,16 +263,26 @@ class Trip:
         self.fees       = 0.0
         self.funding    = 0.0
         self.reason     = None
+        self.high = self.low = None
+
+
+    def see(self, *prices):
+        """Round trips: a price among those the round trip lived through."""
+        for p in prices:
+            self.high = p if self.high is None else max(self.high, p)
+            self.low  = p if self.low is None else min(self.low, p)
 
 
     def open(self, size, price):
         self.entry = self.inst.average(self.opened, self.entry, size, price)
         self.opened += size
+        self.see(price)
 
 
     def close(self, size, price):
         self.exit = self.inst.average(self.closed, self.exit, size, price)
         self.closed += size
+        self.see(price)
 
 
     def report(self, mark=None, entry=None, held=0.0):
@@ -283,6 +293,11 @@ class Trip:
 
         pnl = self.realized + unrealized - self.fees - self.funding
 
+        # its best and worst excursions, over the part of each bar it was in, as a
+        # fraction of its entry
+        up, down = self.high / self.entry - 1.0, self.low / self.entry - 1.0
+        best, worst = (up, down) if self.side == "long" else (-down, -up)
+
         return dict(
             instrument=self.instrument, side=self.side, size=self.size,
             entry=self.entry, exit=self.exit if self.closed > 0.0 else math.nan,
@@ -290,7 +305,7 @@ class Trip:
             open_time=self.open_time, close_time=self.close_time,
             pnl=pnl, ret=pnl / abs(self.inst.notional(self.size, self.entry)),
             fees=self.fees, funding=self.funding, reason=self.reason,
-            open=self.close_bar is None,
+            best=best, worst=worst, open=self.close_bar is None,
         )
 
 
@@ -1039,6 +1054,7 @@ class Simulator:
         self.resolve_resting(t)                                     # 5, 6 and 7
         self.charge_funding(self.owned[t], t, at_close=True)        # 8
         self.check_closes(t)
+        self.live_through(t)
         self.see_row(t)                                             # 9
 
         self.sweep_dust()
@@ -1293,7 +1309,7 @@ class Simulator:
             self.hit("a liquidation before the bar opens")
             closes = [(leg.instrument, leg.q, leg.start + s * (leg.end - leg.start))
                       for leg in path[0]]
-            self.liquidate(closes, t, path, self.margin_cash, trigger)
+            self.liquidate(closes, t, path, self.margin_cash, trigger, moment="before")
             return
 
         self.hit("a bar clipped")
@@ -1499,10 +1515,25 @@ class Simulator:
 
         if equity - requirement <= 0.0:
             self.hit("a liquidation at the closes")
-            self.liquidate([(i, self.position[i], prices[i]) for i in held], t)
+            self.liquidate([(i, self.position[i], prices[i]) for i in held], t,
+                           moment="close")
 
 
-    def liquidate(self, closes, t, path=None, wallet=None, trigger=None):
+    def live_through(self, t):
+        """Round trips: one still open at the close lived through its entry bar from
+        the fill to the close, and through any later bar whole."""
+        for i, trip in enumerate(self.trip):
+            bar = self.bars[t][i]
+            if trip is None or bar is None:
+                continue
+
+            if trip.open_bar == t:
+                trip.see(bar.close)
+            else:
+                trip.see(bar.high, bar.low)
+
+
+    def liquidate(self, closes, t, path=None, wallet=None, trigger=None, moment="bar"):
         """Liquidation, The forced close: takeover closes every leg at its price at the
         clip, and book then backstop sells each from its trigger as a taker unless the
         path reaches the backstop level or the sale's costs would cross it."""
@@ -1529,6 +1560,7 @@ class Simulator:
             k, s = trigger
             equity, requirement, _ = self.state_at(path[k], wallet, s)
             reached = self.solve(path, wallet, share=share) is not None
+
             if not reached and equity - paid >= share * requirement:
                 self.hit("book then backstop selling on the book")
                 for i, q, sold, costs in sales:
@@ -1536,7 +1568,7 @@ class Simulator:
                     self.book(i, abs(q), sold, costs)
                     self.apply(i, side, abs(q), sold, self.venue.taker, True, None,
                                "liquidation", reference=costs["reference"],
-                               costs=costs)
+                               costs=costs, moment=moment)
                 self.after_liquidation()
                 return
 
@@ -1546,7 +1578,7 @@ class Simulator:
         rate = 0.0 if maintained else self.venue.liquidation_fee
         for i, q, price in closes:
             self.apply(i, "sell" if q > 0.0 else "buy", abs(q), price, rate, False,
-                       None, "liquidation", reference=price)
+                       None, "liquidation", reference=price, moment=moment)
 
         # whatever the margin wallet still holds is the liquidation charge, and the
         # wallet ends at exactly zero
@@ -1607,7 +1639,7 @@ class Simulator:
             if q != 0.0:
                 self.apply(i, "sell" if q > 0.0 else "buy", abs(q), self.mark[i],
                            rate=0.0, taker=False, order=None, reason="delist",
-                           reference=self.mark[i])
+                           reference=self.mark[i], moment="before")
 
 
     def taker_price(self, i, side, reference, size, bar):
@@ -2092,8 +2124,10 @@ class Simulator:
 
 
     def apply(self, i, side, size, price, rate, taker, order, reason, reference,
-              costs=None):
-        """Accounting: a fill's fee, its cash, its position and its round trip."""
+              costs=None, moment="bar"):
+        """Accounting: a fill's fee, its cash, its position and its round trip. The
+        moment says where in its bar the fill sat: "before" the bar opened, inside
+        the "bar", or at its "close"."""
         t     = self.t
         inst  = self.instruments[i]
         costs = costs or dict(spread=0.0, slippage=0.0, impact=0.0, adjustment=0.0)
@@ -2124,6 +2158,16 @@ class Simulator:
 
         if closed > 0.0:
             trip = self.trip[i]
+            # Round trips: one carried into this bar lived through it up to the fill
+            # from its open, all of it when the fill came at the close, and none of
+            # it when the fill came before the bar opened
+            bar = self.bars[t][i]
+            if trip.open_bar != t and bar is not None:
+                if moment == "bar":
+                    trip.see(bar.open)
+                elif moment == "close":
+                    trip.see(bar.high, bar.low)
+
             trip.close(closed, price)
             trip.realized += realized
             trip.fees += fee * closed / size

@@ -429,7 +429,7 @@ FILL_FIELDS = ("bar", "order", "side", "size", "price", "reference", "spread",
                "slippage", "impact", "fee", "adjustment", "taker", "reason")
 EVENT_FIELDS = ("bar", "kind", "order", "size", "price")
 TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees",
-                "funding", "pnl", "ret", "reason", "open")
+                "funding", "pnl", "ret", "best", "worst", "reason", "open")
 
 
 def log_difference(what, fields, mine, theirs):
