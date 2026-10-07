@@ -219,6 +219,9 @@ class Backtester:
 
     def run(self, strategy):
         engine = Engine(self._candles, report=True, **self._config)
+        # both wallets' opening cash, whichever form quote took
+        initial = engine.reset()["equity"]
+
         engine.run(strategy)
 
         trades = engine.trades()
@@ -228,7 +231,7 @@ class Backtester:
             stats            = engine.stats(self._periods_per_year, self._risk_free),
             equity_curve     = engine.equity_curve(),
             trades           = trades,
-            initial          = self._config["quote"],
+            initial          = initial,
             periods_per_year = self._periods_per_year,
             risk_free        = self._risk_free,
             config           = self._config,

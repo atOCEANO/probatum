@@ -217,6 +217,20 @@ def test_a_run_that_ended_at_zero_says_so_on_the_result():
     assert alive.to_dict()["bust"] is False
 
 
+def test_a_run_opened_with_both_wallets_starts_from_both():
+    wallets = {"spot": 500.0, "margin": 1_000.0}
+    result  = Backtester(
+        series(),
+        market    = "perp",
+        quote     = wallets,
+        fee_taker = 0.0,
+        fee_maker = 0.0,
+    ).run(BuyThenClose())
+
+    assert result.initial == 1_500.0
+    assert result.equity_curve[-1] == 1_600.0       # bought at 200, closed at 300
+
+
 def test_editing_the_array_after_handing_it_over_cannot_change_a_run():
     # ascontiguousarray hands back the caller's own object when it is already
     # contiguous float64, and run() builds a fresh Engine off it every call, so a

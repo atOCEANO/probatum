@@ -46,6 +46,7 @@ pub(super) fn cfg() -> EngineConfig {
     EngineConfig {
         market: Market::Spot,
         quote: 10_000.0,
+        idle_cash: 0.0,
         fee_taker: 0.0,
         fee_maker: 0.0,
         slippage_bps: 0.0,

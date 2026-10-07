@@ -1,5 +1,5 @@
 //! Small plain enums shared across the engine: order side, type, time in force,
-//! and market kind.
+//! market kind and wallet.
 
 /// The direction of an order or a position change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +58,38 @@ pub enum Market {
     Spot,
     /// Perpetual future: a signed position with margin, no expiry.
     Perp,
+}
+
+impl Market {
+    /// The wallet a position in this market settles in: spot holdings in the spot
+    /// wallet, a perpetual against the margin wallet (ADR 0008).
+    #[inline]
+    pub const fn wallet(self) -> Wallet {
+        match self {
+            Market::Spot => Wallet::Spot,
+            Market::Perp => Wallet::Margin,
+        }
+    }
+}
+
+/// One of the account's two wallets (ADR 0008).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wallet {
+    /// Cash and spot holdings. It never borrows and is never liquidated.
+    Spot,
+    /// The collateral behind the perpetuals, in cross margin.
+    Margin,
+}
+
+impl Wallet {
+    /// The other wallet, the one a transfer into this one comes out of.
+    #[inline]
+    pub const fn other(self) -> Wallet {
+        match self {
+            Wallet::Spot => Wallet::Margin,
+            Wallet::Margin => Wallet::Spot,
+        }
+    }
 }
 
 #[cfg(test)]

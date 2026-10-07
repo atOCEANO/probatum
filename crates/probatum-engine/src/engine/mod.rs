@@ -3,21 +3,21 @@
 //! step against the NEW bar, marks the account, and returns the new `State`. An
 //! order decided on one bar fills on the next, never the bar the decision saw.
 //!
-//! Within a step the order of events follows the bar. Funding stamped between the
-//! last row and this one comes first, at the last mark, and then the fence. The
-//! price the position's margin runs out at is worked out before any order is
-//! resolved: a bar that OPENED past it killed the account before it opened, so the
-//! forced close happens first and nothing on that bar fills, and any other bar is
-//! clipped there, so an order that would have filled beyond the fence never
-//! triggers. Then, against that clipped candle: 1. pending market orders fill at
-//! the open, 2. resting limit and stop orders fill against the range, 3.
-//! liquidation is checked at the bar's own adverse extreme, counting any debit
-//! stamped inside the bar, 4. the funding the row owns is charged at its close on
-//! the position still held, and an account a debit takes to zero is closed there.
-//! Equity is then marked at the close. A fill that reduces a perp is bounded once
-//! more as it lands, because the fence was read from the position carried into the
-//! bar and one grown or opened during the bar has none of its own (ADRs 0017, 0018,
-//! 0020).
+//! Within a step the order of events follows the bar. Transfers decided at the last
+//! close land first, then funding stamped between the last row and this one, at
+//! the last mark, and then the fence. The price the position's margin runs out at
+//! is worked out before any order is resolved: a bar that OPENED past it killed
+//! the account before it opened, so the forced close happens first and nothing on
+//! that bar fills, and any other bar is clipped there, so an order that would have
+//! filled beyond the fence never triggers. Then, against that clipped candle: 1.
+//! pending market orders fill at the open, 2. resting limit and stop orders fill
+//! against the range, 3. liquidation is checked at the bar's own adverse extreme,
+//! counting any debit stamped inside the bar, 4. the funding the row owns is
+//! charged at its close on the position still held, and an account a debit takes
+//! to zero is closed there. Equity is then marked at the close. A fill that reduces
+//! a perp is bounded once more as it lands, because the fence was read from the
+//! position carried into the bar and one grown or opened during the bar has none
+//! of its own (ADRs 0008, 0017, 0018, 0020).
 
 #[cfg(test)]
 mod fixtures;
@@ -27,9 +27,10 @@ mod liquidation;
 mod margin;
 mod orders;
 mod resolution;
+mod transfers;
 
 use probatum_core::{
-    Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State,
+    Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
 };
 
 use crate::candles::Candles;
@@ -47,7 +48,12 @@ const CLOSE_EPS: f64 = 1e-9;
 #[derive(Clone, Copy, Debug)]
 pub struct EngineConfig {
     pub market: Market,
+    /// Opening cash of the wallet the market settles in: the spot wallet on spot,
+    /// the margin wallet on a perp.
     pub quote: f64,
+    /// Opening cash of the other wallet, which backs nothing until a transfer
+    /// moves it across (ADR 0008).
+    pub idle_cash: f64,
     pub fee_taker: f64,
     pub fee_maker: f64,
     pub slippage_bps: f64,
@@ -72,6 +78,7 @@ impl Default for EngineConfig {
         EngineConfig {
             market: Market::Spot,
             quote: 10_000.0,
+            idle_cash: 0.0,
             fee_taker: 0.0006,
             fee_maker: 0.0002,
             slippage_bps: 0.0,
@@ -101,6 +108,9 @@ pub struct Engine {
     book: RestingOrderBook,
     reporter: Option<Reporter>,
     pending: Vec<Order>,
+    /// Transfers decided since the last step, in order, each an amount and the
+    /// wallet it goes into.
+    transfers: Vec<(f64, Wallet)>,
     tick: usize,
     id_counter: u64,
     /// The tick at which the current position first became non-flat, used to
@@ -118,9 +128,9 @@ pub struct Engine {
     /// Funding paid since the last reset, in quote, positive when paid away. The
     /// account returned each payment and this is what keeps it (ADR 0020).
     funding_paid: f64,
-    /// Set when the account is dead: force-closed by a perp liquidation, or marked
-    /// at a non-positive equity on either market, which is terminal too (ADR 0008).
-    /// A terminal event for the RL env. Cleared on reset.
+    /// Set when the account is dead: its equity, both wallets together, marked at
+    /// or below zero, where a perp liquidation leaves it unless the spot wallet
+    /// holds cash (ADR 0008). A terminal event for the RL env. Cleared on reset.
     bust: bool,
 }
 
@@ -140,7 +150,7 @@ impl Engine {
                 fee_taker: config.fee_taker,
                 fee_maker: config.fee_maker,
             },
-            account: Account::new(config.market, config.quote),
+            account: Account::new(config.market, config.quote).with_idle(config.idle_cash),
             book: RestingOrderBook::new(config.max_open_orders),
             reporter: if config.report {
                 Some(Reporter::new())
@@ -148,6 +158,7 @@ impl Engine {
                 None
             },
             pending: Vec::new(),
+            transfers: Vec::new(),
             tick: 0,
             id_counter: 1,
             position_entry_tick: 0,
@@ -169,9 +180,11 @@ impl Engine {
     /// bar. The vectorized env uses this to give each env its own random start
     /// offset. `start_tick` is clamped to the last bar.
     pub fn reset_at(&mut self, start_tick: usize) -> State {
-        self.account = Account::new(self.config.market, self.config.quote);
+        self.account =
+            Account::new(self.config.market, self.config.quote).with_idle(self.config.idle_cash);
         self.book.cancel_all();
         self.pending.clear();
+        self.transfers.clear();
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));
         // The id counter deliberately survives a reset. Restarting it made an id
         // handed out in one episode name a live order in the next, so a handle
@@ -187,8 +200,9 @@ impl Engine {
         self.state()
     }
 
-    /// True when the account died since the last reset, by a perp liquidation or by
-    /// equity reaching zero on either market. The RL env's terminal signal (ADR 0008).
+    /// True when the account died since the last reset: its equity, both wallets
+    /// together, reached zero, on either market. A perp liquidation does that
+    /// unless the spot wallet holds cash. The RL env's terminal signal (ADR 0008).
     /// The engine does not stop on it; a driver that wants to halt checks it.
     pub fn is_bust(&self) -> bool {
         self.bust
@@ -250,15 +264,19 @@ impl Engine {
             self.tick += 1;
             let bar = self.candles.get(self.tick).expect("tick in range");
 
+            // transfers decided at the last close land first, before funding and
+            // before any fill, so cash moved into the margin wallet backs the orders
+            // decided with it (ADR 0008)
+            self.apply_transfers(last);
+
             // funding stamped between the last row and this one, across a closure or
-            // a hole in the data, is charged at the last mark before anything else,
-            // so a debit that takes the account to its trigger liquidates it at the
-            // start of the gap, there if it is dead already and on the gap below if
-            // the open lies past the fence (ADR 0020)
+            // a hole in the data, is charged next, at the last mark and before the
+            // path, so a debit that takes the account to its trigger liquidates it
+            // at the start of the gap, there if it is dead already and on the gap
+            // below if the open lies past the fence (ADR 0020)
             self.charge_between(last);
             if self.account.is_bust_at(Price(last)) {
                 self.liquidate_at(Price(last));
-                self.bust = true;
             }
 
             // 0. the price a position's margin runs out at is a point on this bar's
@@ -279,7 +297,6 @@ impl Engine {
             let gapped = fence.is_some_and(|f| if long { bar.open <= f } else { bar.open >= f });
             if gapped {
                 self.liquidate();
-                self.bust = true;
             }
             let resolving = match fence {
                 Some(f) if !gapped => Engine::fenced(&bar, f, long),
@@ -304,7 +321,6 @@ impl Engine {
             if self.dead_at(adverse, debits) {
                 self.pay_debits_inside(bar.close);
                 self.liquidate();
-                self.bust = true;
             }
 
             // 4. the funding the row owns, at its close and after the check, because
@@ -316,15 +332,15 @@ impl Engine {
             self.charge_funding(bar.close);
             if self.account.is_bust_at(Price(bar.close)) {
                 self.liquidate_at(Price(bar.close));
-                self.bust = true;
             }
         }
 
         let state = self.state();
-        // A dead account is terminal, marked at the close, for both markets: perp
-        // liquidation force-closes above, but a spot account (or a perp drained by
-        // fees or funding) can still reach zero equity without a forced close, and
-        // that is a true terminal, not a truncation (ADR 0008).
+        // A dead account is terminal, marked at the close, for both markets: its
+        // equity, both wallets together, at or below zero. A perp liquidation leaves
+        // it there unless the spot wallet holds cash, and a spot account or a perp
+        // drained by fees or funding can reach it without a forced close; either way
+        // it is a true terminal, not a truncation (ADR 0008).
         if state.equity <= 0.0 {
             self.bust = true;
         }
@@ -345,11 +361,11 @@ impl Engine {
     }
 
     /// Performance statistics for the run, or `None` when reporting is off. The
-    /// starting equity is the configured quote.
+    /// starting equity is both wallets' opening cash.
     pub fn stats(&self, periods_per_year: f64, risk_free: f64) -> Option<Stats> {
         self.reporter.as_ref().map(|reporter| {
             reporter.stats(
-                self.config.quote,
+                self.config.quote + self.config.idle_cash,
                 periods_per_year,
                 risk_free,
                 self.fills,
@@ -383,7 +399,9 @@ impl Engine {
             } else {
                 0.0
             },
-            quote: self.account.quote,
+            quote: self.account.spot_cash + self.account.margin_cash,
+            spot_cash: self.account.spot_cash,
+            margin_cash: self.account.margin_cash,
             position,
             avg_entry: self.account.position.avg_entry.get(),
             equity: self.account.equity(mark),
@@ -615,6 +633,7 @@ mod tests {
         EngineConfig {
             market: Market::Perp,
             quote: 10_000.0,
+            idle_cash: 0.0,
             fee_taker: 0.0006,
             fee_maker: 0.0002,
             slippage_bps: 5.0,

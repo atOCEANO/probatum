@@ -107,6 +107,8 @@ def config(rng, times):
     return dict(
         market=market,
         quote=rng.choice([1_000.0, 10_000.0]),
+        # the other wallet's opening cash, which only a transfer puts to work
+        idle=rng.choice([0.0, 0.0, 500.0, 5_000.0]),
         fee_taker=rng.choice([0.0, 0.0006, 0.002]),
         fee_maker=rng.choice([0.0, 0.0002]),
         slippage_bps=rng.choice([0.0, 5.0, 50.0]),
@@ -118,12 +120,27 @@ def config(rng, times):
     )
 
 
+def balance(cfg):
+    """The opening cash both take: a number for the wallet the market settles in, or
+    both wallets by name when the other holds cash too."""
+    if not cfg["idle"]:
+        return cfg["quote"]
+
+    if cfg["market"] == "spot":
+        return {"spot": cfg["quote"], "margin": cfg["idle"]}
+    return {"spot": cfg["idle"], "margin": cfg["quote"]}
+
+
+def money(cfg):
+    return cfg["quote"] + cfg["idle"]
+
+
 # every order surface both simulators have, so the gate exercises all of them.
 # Narrow it with KINDS=limit when a disagreement needs isolating
 KINDS = os.environ.get(
     "KINDS",
     "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,"
-    "cancel_all,reduce_limit,stop_entry,exits",
+    "cancel_all,reduce_limit,stop_entry,exits,transfer",
 ).split(",")
 
 # the kinds that only mean something with a live position or order to act on; a run
@@ -187,7 +204,7 @@ def make_engine(bars, cfg, times):
     return probatum.Engine(
         array,
         market            = cfg["market"],
-        quote             = cfg["quote"],
+        quote             = balance(cfg),
         fee_taker         = cfg["fee_taker"],
         fee_maker         = cfg["fee_maker"],
         slippage_bps      = cfg["slippage_bps"],
@@ -218,7 +235,7 @@ def make_reference(bars, cfg, times, interval=None, events=None):
 
     kind  = "spot" if cfg["market"] == "spot" else "linear"
     venue = Venue(
-        balance         = cfg["quote"],
+        balance         = balance(cfg),
         maker           = cfg["fee_maker"],
         taker           = cfg["fee_taker"],
         leverage        = cfg["leverage"],
@@ -308,6 +325,12 @@ def place(engine, sim, action, close, mine, theirs, reached=None):
                 mine.append(got_mine)
             if resting(sim, got_theirs):
                 theirs.append(got_theirs)
+    elif kind == "transfer":
+        # into the margin wallet on a buy and out of it on a sell, from a twentieth
+        # of the balance to twelve times it, so both clamps bind
+        to = "margin" if side == "buy" else "spot"
+        engine.transfer(size * close, to)
+        sim.transfer(size * close, to=to)
     elif kind == "cancel":
         if mine and theirs:
             engine.cancel(mine.pop(0))
@@ -360,10 +383,10 @@ def run(bars, times, cfg, actions, reached=None):
         state = engine.step()
         sim.step()
         funded += sim.ledger[-1]["funding"]
-        cash = sim.spot_cash if cfg["market"] == "spot" else sim.margin_cash
-        rows.append(((state["position"], state["equity"], state["quote"],
-                      state["funding_paid"]),
-                     (sim.position[0], sim.equity(), cash, funded)))
+        rows.append(((state["position"], state["equity"], state["spot_cash"],
+                      state["margin_cash"], state["funding_paid"]),
+                     (sim.position[0], sim.equity(), sim.spot_cash, sim.margin_cash,
+                      funded)))
         if engine.done():
             break
 
@@ -379,7 +402,7 @@ def set_aside(sim):
     return None
 
 
-FIELDS = ("position", "equity", "cash", "funding_paid")
+FIELDS = ("position", "equity", "spot_cash", "margin_cash", "funding_paid")
 
 
 def close_enough(a, b, scale=1.0):
@@ -390,7 +413,7 @@ def close_enough(a, b, scale=1.0):
 
 def first_difference(rows, cfg):
     """The first bar the two disagree on and what about, or None."""
-    scales = (1.0, cfg["quote"], cfg["quote"], cfg["quote"])
+    scales = (1.0,) + (money(cfg),) * 4
 
     for i, (mine, theirs) in enumerate(rows):
         for name, a, b, scale in zip(FIELDS, mine, theirs, scales):

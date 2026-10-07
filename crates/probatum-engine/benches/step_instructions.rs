@@ -28,6 +28,7 @@ fn engine(bars: usize) -> Engine {
     let config = EngineConfig {
         market: Market::Perp,
         quote: 1_000_000.0,
+        idle_cash: 0.0,
         fee_taker: 0.0006,
         fee_maker: 0.0002,
         slippage_bps: 2.0,

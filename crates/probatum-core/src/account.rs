@@ -1,10 +1,12 @@
-//! The account: a cash balance plus a netted position, with spot and perp
-//! equity. Cash moves differently per market. On spot the full notional moves on
-//! every fill (a buy spends quote, a sell receives it), so realized PnL is
-//! implicit in the cash. On a perp only realized PnL moves quote on a close, and
-//! the open position is marked separately.
+//! The account: two wallets and the netted position they back, with spot and perp
+//! equity. A position settles in its market's wallet, and cash moves differently
+//! per market. On spot the full notional moves through the spot wallet on every
+//! fill (a buy spends cash, a sell receives it), so realized PnL is implicit in the
+//! cash. On a perp only realized PnL moves the margin wallet on a close, and the
+//! open position is marked separately. The other wallet holds cash that backs
+//! nothing until a transfer moves it across (ADR 0008).
 
-use crate::enums::Market;
+use crate::enums::{Market, Wallet};
 use crate::fill::Fill;
 use crate::position::{moves_position, Position, POS_EPS};
 use crate::units::{Price, Qty};
@@ -17,54 +19,96 @@ fn tradeable(price: Price) -> bool {
     price.get().is_finite() && price.get() > 0.0
 }
 
-/// A cash balance and the netted position it backs.
+/// The two wallets' cash and the netted position they back.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Account {
     pub market: Market,
-    /// Cash balance in the quote asset.
-    pub quote: f64,
+    /// The spot wallet's cash, in the quote asset.
+    pub spot_cash: f64,
+    /// The margin wallet's cash, in the quote asset: the perp's collateral, which
+    /// its realized PnL, fees and funding move.
+    pub margin_cash: f64,
     pub position: Position,
 }
 
 impl Account {
-    /// A fresh account with `quote` cash and no position. Nothing is validated
-    /// here; the Python boundary is where a negative or non-finite quote is
-    /// refused (ADR 0007).
+    /// A fresh account with `quote` cash in the wallet `market` settles in, the
+    /// other wallet empty, and no position. Nothing is validated here; the Python
+    /// boundary is where a negative or non-finite quote is refused (ADR 0007).
     pub fn new(market: Market, quote: f64) -> Account {
-        Account {
+        let mut account = Account {
             market,
-            quote,
+            spot_cash: 0.0,
+            margin_cash: 0.0,
             position: Position::flat(),
+        };
+        *account.cash_mut(market.wallet()) = quote;
+        account
+    }
+
+    /// The same account with `cash` in the wallet its market does not settle in.
+    pub fn with_idle(mut self, cash: f64) -> Account {
+        *self.cash_mut(self.market.wallet().other()) = cash;
+        self
+    }
+
+    /// The cash `wallet` holds.
+    #[inline]
+    pub fn cash(&self, wallet: Wallet) -> f64 {
+        match wallet {
+            Wallet::Spot => self.spot_cash,
+            Wallet::Margin => self.margin_cash,
         }
     }
 
-    /// Apply a fill and its fee, moving cash by the market's convention. A fill
-    /// the position refuses (non-finite, or sized at or below the dust epsilon)
-    /// moves no cash and pays no fee, so quote can never change without the
-    /// position changing with it (ADR 0014).
+    #[inline]
+    fn cash_mut(&mut self, wallet: Wallet) -> &mut f64 {
+        match wallet {
+            Wallet::Spot => &mut self.spot_cash,
+            Wallet::Margin => &mut self.margin_cash,
+        }
+    }
+
+    /// Apply a fill and its fee to the market's wallet, moving cash by the market's
+    /// convention. A fill the position refuses (non-finite, or sized at or below
+    /// the dust epsilon) moves no cash and pays no fee, so a wallet can never change
+    /// without the position changing with it (ADR 0014).
     pub fn apply_fill(&mut self, fill: &Fill, fee: f64) {
         if !moves_position(fill) {
             return;
         }
         let realized = self.position.apply(fill);
-        self.quote -= fee;
-        match self.market {
+        let market = self.market;
+        let cash = self.cash_mut(market.wallet());
+        *cash -= fee;
+        match market {
             Market::Spot => {
-                self.quote -= fill.side.sign() * fill.size.get() * fill.price.get();
+                *cash -= fill.side.sign() * fill.size.get() * fill.price.get();
             }
             Market::Perp => {
-                self.quote += realized;
+                *cash += realized;
             }
         }
     }
 
-    /// Account value marked in the quote asset: `quote + base * price` on spot,
-    /// `quote + unrealized` on a perp.
-    pub fn equity(&self, mark: Price) -> f64 {
-        match self.market {
-            Market::Spot => self.quote + self.position.qty.get() * mark.get(),
-            Market::Perp => self.quote + self.position.unrealized(mark),
+    /// What `wallet` is worth at `mark`, in quote: its cash, plus the holding at
+    /// `mark` when it is the spot wallet of a spot account, or the unrealized PnL
+    /// when it is the margin wallet of a perp. The margin wallet's is the equity the
+    /// cap and the liquidation read, and the spot wallet's cash backs no perp.
+    pub fn wallet_equity(&self, wallet: Wallet, mark: Price) -> f64 {
+        let cash = self.cash(wallet);
+        if wallet != self.market.wallet() {
+            return cash;
         }
+        match self.market {
+            Market::Spot => cash + self.position.qty.get() * mark.get(),
+            Market::Perp => cash + self.position.unrealized(mark),
+        }
+    }
+
+    /// Account value marked in the quote asset, the sum of both wallets.
+    pub fn equity(&self, mark: Price) -> f64 {
+        self.wallet_equity(Wallet::Spot, mark) + self.wallet_equity(Wallet::Margin, mark)
     }
 
     /// Unrealized PnL of the open position at `mark`, in quote: the price move
@@ -75,7 +119,7 @@ impl Account {
     }
 
     /// Cumulative realized PnL since the account was built, in quote, gross of
-    /// fees: a fee comes straight off `quote` and never enters this.
+    /// fees: a fee comes straight off the wallet and never enters this.
     #[inline]
     pub fn realized(&self) -> f64 {
         self.position.realized
@@ -101,21 +145,29 @@ impl Account {
         Qty(cash / price.get())
     }
 
-    /// Apply one funding charge at `rate` on the position marked at `mark`. A
-    /// long pays when the rate is positive and a short receives; spot has no
-    /// funding. Returns the amount paid (positive) or received (negative), in
-    /// quote.
+    /// Apply one funding charge at `rate` on the position marked at `mark`, to the
+    /// margin wallet. A long pays when the rate is positive and a short receives;
+    /// spot has no funding. Returns the amount paid (positive) or received
+    /// (negative), in quote.
     pub fn apply_funding(&mut self, rate: f64, mark: Price) -> f64 {
         if self.market != Market::Perp || !rate.is_finite() || !mark.get().is_finite() {
             return 0.0;
         }
         let payment = self.position.qty.get() * mark.get() * rate;
-        self.quote -= payment;
+        self.margin_cash -= payment;
         payment
     }
 
-    /// True when the position is dead at `mark`: a perp whose equity has fallen to
-    /// zero or below. Spot and a flat position are never liquidated (ADR 0017).
+    /// Move `amount` into the `to` wallet from the other one. The engine clamps it
+    /// first, since what may leave the margin wallet depends on the cap.
+    pub fn transfer(&mut self, amount: f64, to: Wallet) {
+        *self.cash_mut(to.other()) -= amount;
+        *self.cash_mut(to) += amount;
+    }
+
+    /// True when the position is dead at `mark`: a perp whose margin wallet has
+    /// fallen to zero or below. Spot and a flat position are never liquidated, and
+    /// the spot wallet's cash does not keep a perp alive (ADRs 0008, 0017).
     ///
     /// The test is the trigger only. The price the position is then closed at is
     /// `bankruptcy_price`, which is not this mark: `mark` is the worst the bar
@@ -124,20 +176,20 @@ impl Account {
         self.market == Market::Perp
             && !self.position.is_flat()
             && mark.get().is_finite()
-            && self.equity(mark) <= 0.0
+            && self.wallet_equity(Wallet::Margin, mark) <= 0.0
     }
 
     /// The price at which closing the whole position, and paying `fee_rate` on the
-    /// closing notional, leaves the account with exactly nothing.
+    /// closing notional, leaves the margin wallet with exactly nothing.
     ///
-    /// Solving `quote + qty * (price - entry) - |qty| * price * fee_rate == 0` for
-    /// price. This is what makes a liquidation unable to leave a debt: the loss is
-    /// bounded by the margin because the exit is priced at the point the margin
-    /// runs out, rather than at whatever the bar happened to print afterwards. It
-    /// also answers where a fee comes from when nothing is left to pay it with:
-    /// the close lands far enough before ruin that the fee fits inside what
-    /// remains (ADR 0018). `None` when the position is dust or the arithmetic is
-    /// degenerate.
+    /// Solving `W + qty * (price - entry) - |qty| * price * fee_rate == 0` for
+    /// price, with `W` the margin wallet's cash. This is what makes a liquidation
+    /// unable to leave a debt: the loss is bounded by the margin because the exit is
+    /// priced at the point the margin runs out, rather than at whatever the bar
+    /// happened to print afterwards. It also answers where a fee comes from when
+    /// nothing is left to pay it with: the close lands far enough before ruin that
+    /// the fee fits inside what remains (ADR 0018). `None` when the position is
+    /// dust or the arithmetic is degenerate.
     pub fn bankruptcy_price(&self, fee_rate: f64) -> Option<Price> {
         let qty = self.position.qty.get();
         let size = qty.abs();
@@ -148,7 +200,7 @@ impl Account {
         if denominator.abs() <= f64::EPSILON {
             return None;
         }
-        let price = (qty * self.position.avg_entry.get() - self.quote) / denominator;
+        let price = (qty * self.position.avg_entry.get() - self.margin_cash) / denominator;
         if price.is_finite() && price > 0.0 {
             Some(Price(price))
         } else {
@@ -160,7 +212,7 @@ impl Account {
 #[cfg(test)]
 mod tests {
     use super::Account;
-    use crate::enums::{Market, Side};
+    use crate::enums::{Market, Side, Wallet};
     use crate::fill::Fill;
     use crate::units::{Price, Qty};
     use proptest::prelude::*;
@@ -182,7 +234,7 @@ mod tests {
     fn spot_buy_spends_quote_and_holds_base() {
         let mut a = Account::new(Market::Spot, 1000.0);
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0);
-        assert!(close(a.quote, 800.0));
+        assert!(close(a.spot_cash, 800.0));
         assert!(close(a.equity(Price(100.0)), 1000.0)); // no PnL at entry
         assert!(close(a.equity(Price(110.0)), 1020.0)); // +20 unrealized
     }
@@ -192,7 +244,7 @@ mod tests {
         let mut a = Account::new(Market::Spot, 1000.0);
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0);
         a.apply_fill(&fill(Side::Sell, 2.0, 110.0), 0.0);
-        assert!(close(a.quote, 1020.0));
+        assert!(close(a.spot_cash, 1020.0));
         assert!(a.position.is_flat());
         // Flat: equity is just the cash, independent of mark, and not double-counted.
         assert!(close(a.equity(Price(999.0)), 1020.0));
@@ -202,7 +254,7 @@ mod tests {
     fn perp_holds_margin_and_marks_unrealized() {
         let mut a = Account::new(Market::Perp, 1000.0);
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0);
-        assert!(close(a.quote, 1000.0)); // opening a perp moves no cash
+        assert!(close(a.margin_cash, 1000.0)); // opening a perp moves no cash
         assert!(close(a.equity(Price(110.0)), 1020.0));
     }
 
@@ -211,7 +263,7 @@ mod tests {
         let mut a = Account::new(Market::Perp, 1000.0);
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0);
         a.apply_fill(&fill(Side::Sell, 2.0, 110.0), 0.0);
-        assert!(close(a.quote, 1020.0));
+        assert!(close(a.margin_cash, 1020.0));
         assert!(a.position.is_flat());
     }
 
@@ -219,7 +271,7 @@ mod tests {
     fn fee_reduces_quote() {
         let mut a = Account::new(Market::Perp, 1000.0);
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.12);
-        assert!(close(a.quote, 999.88));
+        assert!(close(a.margin_cash, 999.88));
     }
 
     #[test]
@@ -241,7 +293,7 @@ mod tests {
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0);
         let paid = a.apply_funding(0.0001, Price(100.0));
         assert!(close(paid, 0.02)); // 2 * 100 * 0.0001
-        assert!(close(a.quote, 999.98));
+        assert!(close(a.margin_cash, 999.98));
     }
 
     #[test]
@@ -250,7 +302,7 @@ mod tests {
         a.apply_fill(&fill(Side::Sell, 2.0, 100.0), 0.0);
         let paid = a.apply_funding(0.0001, Price(100.0));
         assert!(close(paid, -0.02)); // received
-        assert!(close(a.quote, 1000.02));
+        assert!(close(a.margin_cash, 1000.02));
     }
 
     #[test]
@@ -258,14 +310,14 @@ mod tests {
         let mut a = Account::new(Market::Spot, 1000.0);
         a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0); // quote 800
         assert_eq!(a.apply_funding(0.01, Price(100.0)), 0.0);
-        assert!(close(a.quote, 800.0));
+        assert!(close(a.spot_cash, 800.0));
     }
 
     #[test]
     fn flat_position_pays_no_funding() {
         let mut a = Account::new(Market::Perp, 1000.0);
         assert_eq!(a.apply_funding(0.01, Price(100.0)), 0.0);
-        assert!(close(a.quote, 1000.0));
+        assert!(close(a.margin_cash, 1000.0));
     }
 
     #[test]
@@ -304,7 +356,7 @@ mod tests {
             };
             a.apply_fill(&fill(closing, 10.0, price.get()), 0.0);
             assert!(a.position.is_flat());
-            assert!(close(a.quote, 0.0), "{side:?} left {}", a.quote);
+            assert!(close(a.margin_cash, 0.0), "{side:?} left {}", a.margin_cash);
         }
     }
 
@@ -318,7 +370,7 @@ mod tests {
         assert!(price.get() > 90.0, "priced at {}", price.get()); // before ruin, not after
         let fee = 10.0 * price.get() * 0.0006;
         a.apply_fill(&fill(Side::Sell, 10.0, price.get()), fee);
-        assert!(close(a.quote, 0.0), "left {}", a.quote);
+        assert!(close(a.margin_cash, 0.0), "left {}", a.margin_cash);
     }
 
     #[test]
@@ -341,6 +393,37 @@ mod tests {
     }
 
     #[test]
+    fn a_number_funds_the_wallet_the_market_settles_in() {
+        let spot = Account::new(Market::Spot, 1000.0).with_idle(300.0);
+        assert_eq!((spot.spot_cash, spot.margin_cash), (1000.0, 300.0));
+        let perp = Account::new(Market::Perp, 1000.0).with_idle(300.0);
+        assert_eq!((perp.spot_cash, perp.margin_cash), (300.0, 1000.0));
+        assert_eq!(perp.cash(Wallet::Margin), 1000.0);
+    }
+
+    #[test]
+    fn the_spot_wallet_counts_toward_equity_but_backs_no_perp() {
+        let mut a = Account::new(Market::Perp, 100.0).with_idle(1000.0);
+        a.apply_fill(&fill(Side::Buy, 10.0, 100.0), 0.0);
+        // at 90 the margin wallet is worth nothing, whatever the spot wallet holds
+        assert!(close(a.wallet_equity(Wallet::Margin, Price(90.0)), 0.0));
+        assert!(close(a.equity(Price(90.0)), 1000.0));
+        assert!(a.is_bust_at(Price(90.0)));
+        assert!(close(a.bankruptcy_price(0.0).unwrap().get(), 90.0));
+    }
+
+    #[test]
+    fn a_transfer_moves_cash_from_the_other_wallet() {
+        let mut a = Account::new(Market::Spot, 1000.0);
+        a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0); // 800 left, long 2
+        a.transfer(300.0, Wallet::Margin);
+        assert_eq!((a.spot_cash, a.margin_cash), (500.0, 300.0));
+        assert!(close(a.equity(Price(100.0)), 1000.0));
+        a.transfer(100.0, Wallet::Spot);
+        assert_eq!((a.spot_cash, a.margin_cash), (600.0, 200.0));
+    }
+
+    #[test]
     fn a_sub_dust_fill_moves_neither_position_nor_cash() {
         // the position ignores anything at or below POS_EPS, so the cash move and
         // the fee must be gated on the same test or quote drifts on its own (ADR 0014)
@@ -359,7 +442,7 @@ mod tests {
         a.apply_fill(&fill(Side::Buy, 1.0, f64::NAN), 1.0);
         a.apply_fill(&fill(Side::Buy, -100.0, 100.0), -20_000.0);
         assert_eq!(a, before);
-        assert!(a.quote.is_finite());
+        assert!(a.spot_cash.is_finite());
     }
 
     #[test]
@@ -395,8 +478,8 @@ mod tests {
             for f in &seq {
                 a.apply_fill(f, 0.0);
             }
-            prop_assert!(a.quote.is_finite());
-            prop_assert!((a.quote - (10_000.0 + a.position.realized)).abs() < 1e-6);
+            prop_assert!(a.margin_cash.is_finite());
+            prop_assert!((a.margin_cash - (10_000.0 + a.position.realized)).abs() < 1e-6);
         }
 
         #[test]
@@ -413,7 +496,7 @@ mod tests {
             a.apply_fill(&buy, 0.0);
             a.apply_fill(&sell, 0.0);
             prop_assert!(a.position.is_flat());
-            prop_assert!((a.quote - (1_000_000.0 + size * (q - p))).abs() < 1e-6);
+            prop_assert!((a.spot_cash - (1_000_000.0 + size * (q - p))).abs() < 1e-6);
         }
     }
 }

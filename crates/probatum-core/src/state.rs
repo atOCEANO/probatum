@@ -11,7 +11,10 @@ pub struct State {
     pub tick_index: usize,
     /// Base-asset balance on spot; zero on a perp.
     pub base: f64,
+    /// Cash across both wallets, in the quote asset.
     pub quote: f64,
+    pub spot_cash: f64,
+    pub margin_cash: f64,
     /// Signed position in base units, negative is short.
     pub position: f64,
     /// Volume-weighted entry price, zero when flat.

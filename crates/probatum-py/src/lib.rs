@@ -20,7 +20,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use probatum_core::candle::floats;
-use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
+use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce, Wallet};
 use probatum_engine::schedule::every;
 use probatum_engine::{Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 
@@ -291,6 +291,37 @@ fn at_least(name: &str, value: f64, low: f64) -> PyResult<f64> {
     Ok(value)
 }
 
+/// The opening cash as `quote` takes it: a number for the wallet the market settles
+/// in, or a dict naming each wallet's, `{"spot": s, "margin": m}` (ADR 0008).
+enum Opening {
+    Cash(f64),
+    Wallets { spot: f64, margin: f64 },
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Opening> {
+        let Ok(wallets) = obj.cast::<PyDict>() else {
+            return Ok(Opening::Cash(obj.extract()?));
+        };
+        let (mut spot, mut margin) = (0.0, 0.0);
+        for (name, cash) in wallets.iter() {
+            let name: String = name.extract()?;
+            match name.as_str() {
+                "spot" => spot = cash.extract()?,
+                "margin" => margin = cash.extract()?,
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "quote: a wallet named {name:?}; name spot and margin"
+                    )))
+                }
+            }
+        }
+        Ok(Opening::Wallets { spot, margin })
+    }
+}
+
 /// Reject a fee rate at or below -1. A rebate larger than the notional turns the
 /// spot cash clamp's `1 + rate` divisor non-positive and mints equity out of a
 /// fill that never happened. Its own function because the per-env arrays need the
@@ -310,7 +341,7 @@ fn a_rebate(name: &str, rate: f64) -> PyResult<f64> {
 #[allow(clippy::too_many_arguments)]
 fn build_config(
     market: &str,
-    quote: f64,
+    quote: Opening,
     fee_taker: f64,
     fee_maker: f64,
     slippage_bps: f64,
@@ -330,9 +361,22 @@ fn build_config(
     for (name, rate) in [("fee_taker", fee_taker), ("fee_maker", fee_maker)] {
         a_rebate(name, rate)?;
     }
+    let market = parse_market(market)?;
+    let (quote, idle_cash) = match quote {
+        Opening::Cash(cash) => (at_least("quote", cash, 0.0)?, 0.0),
+        Opening::Wallets { spot, margin } => {
+            let spot = at_least("quote[\"spot\"]", spot, 0.0)?;
+            let margin = at_least("quote[\"margin\"]", margin, 0.0)?;
+            match market {
+                Market::Spot => (spot, margin),
+                Market::Perp => (margin, spot),
+            }
+        }
+    };
     Ok(EngineConfig {
-        market: parse_market(market)?,
-        quote: at_least("quote", quote, 0.0)?,
+        market,
+        quote,
+        idle_cash,
         fee_taker,
         fee_maker,
         // slippage and impact are adverse by definition (ADR 0013); a
@@ -411,6 +455,8 @@ fn state_to_dict<'py>(py: Python<'py>, state: &State) -> PyResult<Bound<'py, PyD
     d.set_item("tick_index", state.tick_index)?;
     d.set_item("base", state.base)?;
     d.set_item("quote", state.quote)?;
+    d.set_item("spot_cash", state.spot_cash)?;
+    d.set_item("margin_cash", state.margin_cash)?;
     d.set_item("position", state.position)?;
     d.set_item("avg_entry", state.avg_entry)?;
     d.set_item("equity", state.equity)?;
@@ -538,7 +584,7 @@ impl Engine {
     #[pyo3(signature = (
         candles,
         market = "spot",
-        quote = 10_000.0,
+        quote = Opening::Cash(10_000.0),
         fee_taker = 0.0006,
         fee_maker = 0.0002,
         slippage_bps = 0.0,
@@ -558,7 +604,7 @@ impl Engine {
     fn new(
         candles: PyReadonlyArray2<'_, f64>,
         market: &str,
-        quote: f64,
+        quote: Opening,
         fee_taker: f64,
         fee_maker: f64,
         slippage_bps: f64,
@@ -796,9 +842,39 @@ impl Engine {
         self.inner.cancel_all()
     }
 
-    /// True when the account died since the last reset: a perp liquidation, or
-    /// equity reaching zero on either market (ADR 0008). The engine does not stop on
-    /// it, so a backtest that wants to halt has to read it.
+    /// Move `amount` of cash into the `to` wallet, "spot" or "margin", from the
+    /// other one. It lands at the start of the next bar, before any fill, held to
+    /// the cash the wallet it leaves holds and, out of the margin wallet, to what
+    /// leaves the cap's requirement covered (ADR 0008).
+    fn transfer(&mut self, amount: f64, to: &str) -> PyResult<()> {
+        if !amount.is_finite() {
+            return Err(PyValueError::new_err(format!(
+                "amount: {amount} is not a finite number; pass the cash to move"
+            )));
+        }
+        if amount < 0.0 {
+            return Err(PyValueError::new_err(format!(
+                "amount: {amount} is negative; pass the cash to move and name the wallet \
+                 it goes into with to"
+            )));
+        }
+        let to = match to.to_ascii_lowercase().as_str() {
+            "spot" => Wallet::Spot,
+            "margin" => Wallet::Margin,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "to: {to:?} is not a wallet; use spot or margin"
+                )))
+            }
+        };
+        self.inner.transfer(amount, to);
+        Ok(())
+    }
+
+    /// True when the account died since the last reset: its equity, both wallets
+    /// together, reached zero, on either market. A perp liquidation does that unless
+    /// the spot wallet holds cash (ADR 0008). The engine does not stop on it, so a
+    /// backtest that wants to halt has to read it.
     fn is_bust(&self) -> bool {
         self.inner.is_bust()
     }
@@ -1005,7 +1081,7 @@ impl Batch {
         candles,
         num_envs,
         market = "spot",
-        quote = 10_000.0,
+        quote = Opening::Cash(10_000.0),
         fee_taker = 0.0006,
         fee_maker = 0.0002,
         slippage_bps = 0.0,
@@ -1030,7 +1106,7 @@ impl Batch {
         candles: PyReadonlyArray2<'_, f64>,
         num_envs: usize,
         market: &str,
-        quote: f64,
+        quote: Opening,
         fee_taker: f64,
         fee_maker: f64,
         slippage_bps: f64,
@@ -1269,7 +1345,7 @@ impl Batch {
     }
 
     /// Per-env termination flags as a `(num_envs,)` array: true where the account
-    /// died, by a perp liquidation or by equity reaching zero (ADR 0008).
+    /// died, its equity, both wallets together, reaching zero (ADR 0008).
     fn busts<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
         PyArray1::from_vec(py, self.inner.busts())
     }

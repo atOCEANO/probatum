@@ -36,6 +36,8 @@ SHARED = [
     "a stop triggered",
     "a takeover",
     "a taker's price held inside the bar",
+    "a transfer",
+    "a transfer clamped",
     "an account over the cap kept from growing",
     "an ioc or fok limit expiring after one bar",
     "funding at the close of its row",

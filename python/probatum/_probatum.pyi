@@ -13,7 +13,7 @@ class Engine:
         self,
         candles: np.ndarray,
         market: str = ...,
-        quote: float = ...,
+        quote: float | dict[str, float] = ...,
         fee_taker: float = ...,
         fee_maker: float = ...,
         slippage_bps: float = ...,
@@ -69,6 +69,7 @@ class Engine:
     def close(self) -> Optional[int]: ...
     def cancel(self, order_id: int) -> bool: ...
     def cancel_all(self) -> int: ...
+    def transfer(self, amount: float, to: str) -> None: ...
     def replace(
         self,
         order_id: int,
@@ -95,7 +96,7 @@ class Batch:
         candles: np.ndarray,
         num_envs: int,
         market: str = ...,
-        quote: float = ...,
+        quote: float | dict[str, float] = ...,
         fee_taker: float = ...,
         fee_maker: float = ...,
         slippage_bps: float = ...,

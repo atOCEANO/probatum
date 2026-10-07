@@ -145,7 +145,7 @@ from probatum import Engine
 eng = Engine(
     candles,                 # (T, 5) numpy float64: open, high, low, close, volume
     market="spot",           # "spot" or "perp"
-    quote=10_000.0,          # starting quote balance
+    quote=10_000.0,          # opening cash, or {"spot": s, "margin": m}
     fee_taker=0.0006,        # taker fee, fraction of notional
     fee_maker=0.0002,        # maker fee, fraction of notional
     slippage_bps=0.0,        # slippage on market fills, basis points
@@ -164,6 +164,8 @@ eng = Engine(
 ```
 
 `eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
+
+**The account keeps two wallets**, as a venue does. The spot wallet holds cash and spot holdings, never borrows and is never liquidated; the margin wallet holds the collateral behind a perp, and the cap, the liquidation and funding read it alone. A number for `quote` opens the wallet the market settles in, the spot wallet on spot and the margin wallet on a perp, and `{"spot": s, "margin": m}` opens each by name. Cash crosses only by `transfer`, which out of the margin wallet leaves unrealized profit and the cap's requirement behind. Equity is both wallets together, so a perp closed out with cash in the spot wallet leaves an account that is still alive ([ADR 0008](Decisions.md)).
 
 ### Stepping
 
@@ -185,8 +187,9 @@ eng = Engine(
 | `close()` | id or `None` | Queue a reduce-only market order sized to the whole position. `None` when flat. |
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
 | `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
+| `transfer(amount, to)` | `None` | Move cash into the `"spot"` or `"margin"` wallet from the other. It lands at the start of the next bar, before any fill, held to what the wallet it leaves can give ([ADR 0008](Decisions.md)). |
 | `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order: cancel it and rest a replacement with the same side, type and flags. `None`, and nothing placed, if it is no longer resting. |
-| `is_bust()` | bool | True when the account died: a perp liquidation, or equity reaching zero ([ADR 0008](Decisions.md)). The engine does not stop on it. |
+| `is_bust()` | bool | True when the account died: its equity, both wallets together, reached zero, which a perp liquidation does unless the spot wallet holds cash ([ADR 0008](Decisions.md)). The engine does not stop on it. |
 | `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
 | `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
 | `qty_from_quote(cash)` | float | Base size for a `cash` amount in quote, at the current close. |
@@ -232,7 +235,9 @@ Every `reset` and `step` returns a plain dict:
 | :--- | :--- | :--- |
 | `tick_index` | int | Current bar index. |
 | `base` | float | Base-asset balance (spot; zero on a perp). |
-| `quote` | float | Quote-asset balance. |
+| `quote` | float | Cash across both wallets. |
+| `spot_cash` | float | The spot wallet's cash. |
+| `margin_cash` | float | The margin wallet's cash. |
 | `position` | float | Signed size in base units, negative is short. |
 | `avg_entry` | float | Volume-weighted entry price, zero when flat. |
 | `equity` | float | Account value, marked in quote. |

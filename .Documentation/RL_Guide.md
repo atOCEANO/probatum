@@ -235,7 +235,7 @@ The per-env cost draw and the start offsets come from independent generators, bo
 
 An env ends in one of two ways, reported as separate `(num_envs,)` boolean arrays:
 
-- **`terminations[i]`** is true when env `i`'s equity fell to zero or below, a true terminal. On perp that is a liquidation, force-closed at the bar's adverse extreme; on either market an account otherwise drained to zero at the close terminates too ([ADR 0008](Decisions.md)).
+- **`terminations[i]`** is true when env `i`'s equity, both wallets together, fell to zero or below, a true terminal. On a perp a liquidation does that unless the spot wallet holds cash; on either market an account otherwise drained to zero at the close terminates too ([ADR 0008](Decisions.md)).
 - **`truncations[i]`** is true when env `i` reached the last bar, or `episode_len` steps if that is set, a time limit.
 
 Finished envs auto-reset on the same step: the observation returned for a done env is already the first observation of its next episode, at a fresh random offset. The true final observation and equity of the episode that ended are placed in `infos`:

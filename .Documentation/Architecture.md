@@ -35,7 +35,7 @@ The library is a cargo workspace: a pure-Rust core exposed to Python through one
 
 Three crates, each building only on the one beneath it:
 
-1. **`probatum-core`** (pure Rust; no Python, no candle series, no parallelism). The fidelity-neutral primitives: unit newtypes, the OHLCV bar, the order and fill types, the netted position, and the account (spot and perp equity, funding, liquidation, realized and unrealized PnL), the cost model, and the fixed-slot resting order book. This is the reuse seam a future tick or L2 engine would share, so nothing here holds the candle series, the windows over it, or any bar-level fill logic.
+1. **`probatum-core`** (pure Rust; no Python, no candle series, no parallelism). The fidelity-neutral primitives: unit newtypes, the OHLCV bar, the order and fill types, the netted position, and the account (its spot and margin wallets, spot and perp equity, funding, liquidation, realized and unrealized PnL), the cost model, and the fixed-slot resting order book. This is the reuse seam a future tick or L2 engine would share, so nothing here holds the candle series, the windows over it, or any bar-level fill logic.
 2. **`probatum-engine`** (pure Rust; no Python). The bar-level realization: the shared candle series with zero-copy windows, the next-bar fill model, the single `step()` state machine, the optional reporter and its stats, and the Rayon batched runner. It builds only on `probatum-core`.
 3. **`probatum-py`** (the only Python-linked crate; PyO3, compiled to `probatum._probatum`). A thin shell over `probatum-engine`: it parses arguments, copies candles once from numpy, hands state back as dicts, vends the zero-copy observation view, and releases the GIL around the batched step. It holds no simulation logic.
 
@@ -58,12 +58,12 @@ The Python package `probatum` re-exports the compiled `Engine` and `Batch` and a
 
 The defining rule is **no same-bar lookahead**: an order decided while looking at bar `t` is resolved against bar `t+1`, never the bar the decision saw. Within a step the events follow the bar, numbered as the engine's own comments number them:
 
-Funding stamped between the last row and this one, across a closure or a hole in the data, is charged first, at the last mark, on the position carried through it; an account it leaves with nothing is closed there, before the bar opens ([ADR 0020](Decisions.md)).
+Transfers decided at the last close land first, before any fill, so cash moved into the margin wallet backs the orders decided with it ([ADR 0008](Decisions.md)). Funding stamped between the last row and this one, across a closure or a hole in the data, is charged next, at the last mark, on the position carried through it; an account it leaves with nothing is closed there, before the bar opens ([ADR 0020](Decisions.md)).
 
 0. The liquidation fence is worked out next, before anything resolves. A perp position's margin runs out at a price that is a point on this bar's own path, and everything past it belongs to a market the account had already been closed out of, so the bar is clipped there. A bar that OPENED past it killed the account before it opened, so that is closed first and nothing on the bar fills ([ADR 0017](Decisions.md)).
 1. Pending market orders fill at the open.
 2. Resting limit and stop orders fill against the bar's range (a gap through a limit still fills at the limit, never better; a triggered stop fills at the worse of open and trigger).
-3. Liquidation is checked at the bar's adverse extreme, the low for a long, the high for a short, with any funding debit stamped inside the bar counted against it, and the forced close is then priced where the margin ran out rather than at that extreme, so a loss cannot exceed the margin behind it ([ADR 0018](Decisions.md)).
+3. Liquidation is checked at the bar's adverse extreme, the low for a long, the high for a short, with any funding debit stamped inside the bar counted against it, and the forced close is then priced where the margin ran out rather than at that extreme, so a loss cannot exceed the margin behind it, and every order the account left behind is cancelled ([ADR 0018](Decisions.md)).
 4. The funding the row owns is charged at its close on the position still held, after the check, because a stamp at the bar's end comes after every price the bar printed; an account the check closed out pays nothing, and one a debit takes to zero is closed at the close ([ADR 0020](Decisions.md)).
 5. Equity is marked at the close, and the new state is returned.
 
@@ -73,12 +73,12 @@ Steps 1 and 2 read the clipped bar, which is what makes the fence a rule about t
 
 <div align="center">
   <img src="imgs/205314.png" alt="The within-bar event order" width="25%" />
-  <p style="margin: 0;"><i>The events resolved within one <code>step()</code>, in order: funding between the rows, the liquidation fence, market fills, resting fills, the liquidation check, the funding the row owns, then the close mark.</i></p>
+  <p style="margin: 0;"><i>The events resolved within one <code>step()</code>, in order: transfers, funding between the rows, the liquidation fence, market fills, resting fills, the liquidation check, the funding the row owns, then the close mark.</i></p>
 </div>
 
 <br>
 
-Equity is the authoritative account value: `quote + base * price` on spot, `quote + unrealized` on a perp. The `realized_pnl` field is cumulative realized trading PnL and is never added on top of equity.
+Equity is the authoritative account value, both wallets together: `quote + base * price` on spot and `quote + unrealized` on a perp, with `quote` the cash in both. The `realized_pnl` field is cumulative realized trading PnL and is never added on top of equity.
 
 <br>
 

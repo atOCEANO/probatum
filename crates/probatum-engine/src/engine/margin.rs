@@ -4,16 +4,16 @@
 //! a reduce-only order may only shrink the position. Every clamp works on a copy,
 //! so an all-or-nothing order is judged against what would really be booked.
 
-use probatum_core::{Fill, Market, Price, Qty, Side};
+use probatum_core::{Fill, Market, Price, Qty, Side, Wallet};
 
 use super::{Engine, CLOSE_EPS};
 
 impl Engine {
     /// Clamp a fill so it does not grow the position past the perp margin cap
-    /// (`max_leverage` times equity in notional). Reductions are never capped, and
-    /// a position already over the cap (from an equity drop) is not force-reduced,
-    /// only blocked from growing. With no cap set only an insolvent account is
-    /// held, to reductions. No-op on spot.
+    /// (`max_leverage` times the margin wallet's equity, in notional). Reductions
+    /// are never capped, and a position already over the cap (from an equity drop)
+    /// is not force-reduced, only blocked from growing. With no cap set only an
+    /// insolvent account is held, to reductions. No-op on spot.
     fn cap_leverage(&self, fill: &mut Fill) {
         if self.config.market != Market::Perp {
             return;
@@ -22,7 +22,7 @@ impl Engine {
         if !mark.is_finite() || mark <= 0.0 {
             return;
         }
-        let equity = self.account.equity(Price(mark));
+        let equity = self.account.wallet_equity(Wallet::Margin, Price(mark));
         // No equity backs new notional, so an insolvent account may only shrink. It
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
@@ -55,6 +55,16 @@ impl Engine {
         }
     }
 
+    /// The margin the cap asks of the position at `mark`: its notional over
+    /// `max_leverage`, and nothing on spot or with the cap off. A transfer out of
+    /// the margin wallet has to leave it covered (ADR 0008).
+    pub(super) fn requirement(&self, mark: f64) -> f64 {
+        if self.config.market != Market::Perp || self.config.max_leverage <= 0.0 {
+            return 0.0;
+        }
+        self.account.position.qty.get().abs() * mark / self.config.max_leverage
+    }
+
     /// On spot, keep the position from going below zero: a sell may not exceed the
     /// current long, so it can flatten but never open or extend a short (ADR 0008).
     /// A sell from flat is clamped to nothing. No-op on perp, where a short is a
@@ -71,7 +81,7 @@ impl Engine {
     }
 
     /// On spot, keep a buy within the cash on hand: its cost, notional plus fee,
-    /// may not exceed the quote balance, so the balance never goes negative. This
+    /// may not exceed the spot wallet's cash, so the wallet never goes negative. This
     /// is the buy-side mirror of `cap_spot_short`; spot has no borrow and no margin,
     /// so credit is refused rather than pretended (ADR 0008). No-op on perp, where
     /// the margin cap governs, and on a sell.
@@ -83,7 +93,7 @@ impl Engine {
         if !price.is_finite() || price <= 0.0 {
             return;
         }
-        if self.account.quote <= 0.0 {
+        if self.account.spot_cash <= 0.0 {
             fill.size = Qty(0.0);
             return;
         }
@@ -92,7 +102,7 @@ impl Engine {
         } else {
             self.cost.fee_maker
         };
-        let affordable = self.account.quote / (price * (1.0 + fee_rate));
+        let affordable = self.account.spot_cash / (price * (1.0 + fee_rate));
         if fill.size.get() > affordable {
             fill.size = Qty(affordable);
         }
@@ -201,6 +211,27 @@ mod tests {
         let s = e.step();
         assert!((s.position - 10_000.0 / 202.0).abs() < 1e-9);
         assert!(s.quote >= -1e-9 && s.quote < 1e-6); // lands at ~0, never negative
+    }
+
+    #[test]
+    fn the_spot_wallet_pays_for_what_its_cash_covers_fee_included() {
+        // the Specification's example: 1,000 buys 20 at an open of 100 with a taker
+        // fee of 0.1%, and its cash pays for 1,000 / (100 * 1.001) = 9.99001
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            fee_taker: 0.001,
+            ..cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(20.0);
+        let s = e.step();
+        assert!((s.position - 9.99001).abs() < 5e-6, "filled {}", s.position);
+        assert!(s.spot_cash.abs() < 1e-9, "left {}", s.spot_cash);
     }
 
     #[test]

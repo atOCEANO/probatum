@@ -741,6 +741,40 @@ def test_a_clock_out_of_order_or_short_of_a_bar_is_refused():
         engine(times=np.array([0, HOUR], dtype=np.int64))
 
 
+def test_quote_opens_both_wallets_by_name_and_a_transfer_lands_on_the_next_bar():
+    e = engine(market="perp", quote={"spot": 300.0, "margin": 1_000.0})
+    s = e.reset()
+
+    assert (s["spot_cash"], s["margin_cash"]) == (300.0, 1_000.0)
+    assert s["quote"] == s["equity"] == 1_300.0
+
+    e.transfer(300.0, to="margin")
+    e.market_buy(1.0)
+    s = e.step()
+
+    assert (s["spot_cash"], s["margin_cash"]) == (0.0, 1_300.0)
+    assert s["position"] == 1.0
+
+
+def test_a_wallet_or_a_transfer_the_engine_cannot_use_is_refused():
+    with pytest.raises(ValueError, match='quote: a wallet named "savings"'):
+        engine(quote={"spot": 1.0, "savings": 1.0})
+
+    with pytest.raises(ValueError, match=r'quote\["margin"\] must be at least 0'):
+        engine(market="perp", quote={"margin": -1.0})
+
+    e = engine()
+
+    with pytest.raises(ValueError, match="amount: -5 is negative"):
+        e.transfer(-5.0, "margin")
+
+    with pytest.raises(ValueError, match="amount: NaN is not a finite number"):
+        e.transfer(float("nan"), "margin")
+
+    with pytest.raises(ValueError, match='to: "savings" is not a wallet'):
+        e.transfer(5.0, "savings")
+
+
 def test_stop_takes_reduce_only_so_it_cannot_open_the_other_side():
     # a fall that crosses the trigger while flat: a protective stop fills nothing,
     # a bare one opens a short on a perp (ADR 0010)

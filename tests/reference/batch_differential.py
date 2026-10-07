@@ -25,8 +25,8 @@ import sys
 import numpy as np
 
 import probatum
-from .differential import (clock, close_enough, config, engine_funding, make_reference,
-                           set_aside, walk)
+from .differential import (balance, clock, close_enough, config, engine_funding,
+                           make_reference, money, set_aside, walk)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -56,7 +56,7 @@ def drive_batch(bars, times, cfg, offsets, actions):
         array,
         num_envs          = len(offsets),
         market            = cfg["market"],
-        quote             = cfg["quote"],
+        quote             = balance(cfg),
         fee_taker         = cfg["fee_taker"],
         fee_maker         = cfg["fee_maker"],
         slippage_bps      = cfg["slippage_bps"],
@@ -146,8 +146,8 @@ def observation_disagreement(batch, bars, offsets, window):
 def compare_runs(mine, theirs, cfg, num_envs):
     for step, (a, b) in enumerate(zip(mine, theirs)):
         for env in range(num_envs):
-            for key, scale in (("position", 1.0), ("equity", cfg["quote"]),
-                               ("mark_price", 1.0), ("funding_paid", cfg["quote"])):
+            for key, scale in (("position", 1.0), ("equity", money(cfg)),
+                               ("mark_price", 1.0), ("funding_paid", money(cfg))):
                 if not close_enough(float(a[key][env]), float(b[key][env]), scale):
                     return (f"step {step + 1} env {env}: {key} "
                             f"{float(a[key][env]):.6f} against {float(b[key][env]):.6f}")
@@ -200,7 +200,7 @@ def compare(cases, seed):
                 np.array([list(bar) for bar in bars], dtype=np.float64),
                 num_envs = num_envs,
                 market   = cfg["market"],
-                quote    = cfg["quote"],
+                quote    = balance(cfg),
                 report   = False,
             )
             fresh.reset_at_each(np.array(offsets, dtype=np.int64))

@@ -4,19 +4,19 @@
 //! extreme, and no fill that reduces the position books past that price, so an
 //! account can end at zero but never owing (ADR 0018).
 
-use probatum_core::{Candle, CostModel, Fill, Market, Price, Qty, Side};
+use probatum_core::{Candle, CostModel, Fill, Market, Price, Qty, Side, Wallet};
 
 use super::Engine;
 
 impl Engine {
     /// True when a perp position is dead at `mark` once `debits` of funding are
-    /// counted against its equity: the check at a bar's adverse extreme, with the
-    /// debits stamped inside the bar (ADRs 0017, 0020).
+    /// counted against the margin wallet: the check at a bar's adverse extreme, with
+    /// the debits stamped inside the bar (ADRs 0008, 0017, 0020).
     pub(super) fn dead_at(&self, mark: f64, debits: f64) -> bool {
         self.config.market == Market::Perp
             && !self.account.position.is_flat()
             && mark.is_finite()
-            && self.account.equity(Price(mark)) - debits <= 0.0
+            && self.account.wallet_equity(Wallet::Margin, Price(mark)) - debits <= 0.0
     }
 
     /// The price this bar would take the position's margin to zero at, or `None`
@@ -77,7 +77,7 @@ impl Engine {
     }
 
     /// Force-close the whole position at `price`, paying the liquidation fee, and
-    /// leave the wallet at exactly zero: whatever it then holds, positive or
+    /// leave the margin wallet at exactly zero: whatever it then holds, positive or
     /// negative, is the liquidation charge. A funding debit that takes the account to
     /// its trigger at a bar's close is closed here at that close (ADR 0020).
     pub(super) fn liquidate_at(&mut self, price: Price) {
@@ -100,7 +100,12 @@ impl Engine {
         // side of it in floating point, and a hair above zero is equity the cap
         // levers: with the cap off, an account closed out there opened a position
         // again on the next bar. So the wallet ends at exactly zero (ADRs 0015, 0018).
-        self.account.quote = 0.0;
+        self.account.margin_cash = 0.0;
+        // Every order the closed-out account left goes with it. The empty wallet
+        // refused them anyway until a transfer could fund it again, after which
+        // they filled for an account that had already left the market (ADR 0018).
+        self.book.cancel_all();
+        self.pending.clear();
     }
 
     /// No fill closes a perp past the point the margin behind it ran out.
@@ -153,7 +158,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
-    use probatum_core::{Market, Side};
+    use probatum_core::{Market, Side, Wallet};
 
     #[test]
     fn leveraged_long_is_liquidated_on_a_crashing_bar() {
@@ -174,6 +179,32 @@ mod tests {
         assert!(e.is_bust());
         e.reset();
         assert!(!e.is_bust());
+    }
+
+    #[test]
+    fn a_liquidation_cancels_the_orders_the_account_left_behind() {
+        // the spot wallet funds the margin wallet again, and a sell limit the
+        // closed-out account left resting would have opened a short with it
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 80.0, 85.0, 1e6),
+            ohlc(85.0, 120.0, 85.0, 110.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            idle_cash: 500.0,
+            ..levered()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(10.0);
+        e.limit_sell(1.0, 115.0);
+        let s = e.step(); // the long dies at 90 on the way to 80
+        assert_eq!(s.position, 0.0);
+        assert!(s.open_orders.is_empty());
+        e.transfer(500.0, Wallet::Margin);
+        let s = e.step(); // the bar trades through 115
+        assert_eq!(s.position, 0.0);
+        assert_eq!(s.margin_cash, 500.0);
     }
 
     /// Perp at 10x with a fee, reporting on, over `crash_series`.
