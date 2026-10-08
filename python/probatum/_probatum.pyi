@@ -4,28 +4,28 @@ Hand-maintained; keep in sync with ``crates/probatum-py/src/lib.rs``. Order, fil
 event records come back as plain dicts, typed here as ``dict[str, Any]``.
 """
 
-from typing import Any, Optional
+from typing import Any, Final, Optional
 
 import numpy as np
 
 class State:
-    tick_index: int
-    base: float
-    quote: float
-    spot_cash: float
-    margin_cash: float
-    position: float
-    avg_entry: float
-    equity: float
-    mark_price: float
-    bar_open: float
-    bar_high: float
-    bar_low: float
-    bar_close: float
-    bar_volume: float
-    realized_pnl: float
-    unrealized_pnl: float
-    funding_paid: float
+    tick_index: Final[int]
+    base: Final[float]
+    quote: Final[float]
+    spot_cash: Final[float]
+    margin_cash: Final[float]
+    position: Final[float]
+    avg_entry: Final[float]
+    equity: Final[float]
+    mark_price: Final[float]
+    bar_open: Final[float]
+    bar_high: Final[float]
+    bar_low: Final[float]
+    bar_close: Final[float]
+    bar_volume: Final[float]
+    realized_pnl: Final[float]
+    unrealized_pnl: Final[float]
+    funding_paid: Final[float]
     @property
     def open_orders(self) -> list[dict[str, Any]]: ...
     def __getitem__(self, key: str) -> Any: ...

@@ -479,8 +479,11 @@ fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyD
 
 /// The account and its bar as a step left them, read by attribute or by key:
 /// `state.position` and `state["position"]` are the same number. The resting
-/// orders become dicts only when they are read.
-#[pyclass(frozen, name = "State")]
+/// orders become dicts only when they are read. Two states are equal when every
+/// field is, as the dicts they replace were, and the class is a mapping so that
+/// no sequence protocol is read off its `__getitem__`.
+#[pyclass(frozen, eq, mapping, name = "State")]
+#[derive(PartialEq)]
 struct PyState {
     #[pyo3(get)]
     tick_index: usize,

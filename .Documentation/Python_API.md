@@ -229,7 +229,7 @@ The position is netted: net long, net short, or flat, never both. Adding on the 
 
 ### The state
 
-Every `reset` and `step` returns a `State`, read by attribute or by key, so `state.position` and `state["position"]` are the same number:
+Every `reset` and `step` returns the state, a typed record read by attribute or by key: `state.position` and `state["position"]` are the same number, two states are equal when every field is, and nothing can be written to one.
 
 | Field | Type | Meaning |
 | :--- | :--- | :--- |

@@ -52,9 +52,8 @@ def test_reset_starts_flat_at_the_first_bar():
 
 
 def test_the_state_is_one_record_read_by_attribute_or_by_key():
-    e = engine()
-    e.reset()
-
+    e     = engine()
+    first = e.reset()
     e.limit_buy(1.0, 50.0)
     s = e.step()
 
@@ -63,6 +62,7 @@ def test_the_state_is_one_record_read_by_attribute_or_by_key():
         assert getattr(s, name) == s[name]
 
     assert s.open_orders[0]["price"] == 50.0
+    assert first == engine().reset() and first != s
 
     with pytest.raises(KeyError):
         s["entry"]

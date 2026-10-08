@@ -407,6 +407,19 @@ def test_a_recorder_leaves_a_bar_it_never_reached_as_a_gap():
     assert log["value"].tolist()[2:5] == [2.0, 3.0, 4.0]
 
 
+def test_a_recorder_reads_the_bar_off_a_state_or_takes_it_as_a_number():
+    from probatum import Engine
+    engine = Engine(np.full((4, 5), 100.0))
+    engine.reset()
+    log = Recorder(engine)
+
+    log.at_bar(engine.step(), value=1.0)
+    log.at_bar({"tick_index": 2}, value=2.0)
+    log.at_bar(np.float64(3.0), value=3.0)
+
+    assert log["value"].tolist()[1:] == [1.0, 2.0, 3.0]
+
+
 def test_a_recorder_gives_one_value_per_bar_whatever_was_recorded():
     log = Recorder(9)
 
