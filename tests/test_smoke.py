@@ -2,7 +2,7 @@
 
 These run against the installed abi3 wheel on each Python in the Docker gate, so
 they double as the "works on most Python versions" check and the behavioral check
-for the Python boundary: numpy candles in, a state dict out, and the cross-bar
+for the Python boundary: numpy candles in, a typed state out, and the cross-bar
 no-lookahead rule holding through the binding.
 """
 
@@ -49,6 +49,26 @@ def test_reset_starts_flat_at_the_first_bar():
     assert s["quote"]       == 10_000.0
     assert s["bar_open"]    == 100.0
     assert s["open_orders"] == []
+
+
+def test_the_state_is_one_record_read_by_attribute_or_by_key():
+    e = engine()
+    e.reset()
+
+    e.limit_buy(1.0, 50.0)
+    s = e.step()
+
+    for name in ("tick_index", "position", "equity", "spot_cash", "margin_cash",
+                 "bar_close", "funding_paid", "open_orders"):
+        assert getattr(s, name) == s[name]
+
+    assert s.open_orders[0]["price"] == 50.0
+
+    with pytest.raises(KeyError):
+        s["entry"]
+
+    with pytest.raises(AttributeError):
+        s.position = 1.0
 
 
 def test_market_order_fills_on_the_next_open_not_the_decision_bar():

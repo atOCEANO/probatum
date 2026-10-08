@@ -675,7 +675,7 @@ class Recorder:
 
 
     def _write(self, shift, at, values):
-        bar = at["tick_index"] if isinstance(at, dict) else int(at)
+        bar = int(at) if isinstance(at, (int, np.integer)) else at["tick_index"]
 
         for key, value in values.items():
             store = self._series.get(key)

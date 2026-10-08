@@ -1,7 +1,7 @@
 //! probatum-py: the PyO3 binding layer, compiled to the `probatum._probatum` extension. This
 //! is the only Python-linked crate, and it is a thin shell over `probatum-engine`: it
 //! parses arguments, copies the candles once from a numpy array into the
-//! Rust-owned series, and hands `State` back as a plain dict. No simulation logic
+//! Rust-owned series, and hands `State` back as a typed record. No simulation logic
 //! lives here.
 //!
 //! The crate-level allow silences a clippy false positive: pyo3's `#[pymethods]`
@@ -15,7 +15,7 @@ use numpy::npyffi::flags::NPY_ARRAY_WRITEABLE;
 use numpy::{
     PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
 };
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -453,37 +453,122 @@ fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyD
     Ok(d)
 }
 
-fn state_to_dict<'py>(py: Python<'py>, state: &State) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new(py);
-    d.set_item("tick_index", state.tick_index)?;
-    d.set_item("base", state.base)?;
-    d.set_item("quote", state.quote)?;
-    d.set_item("spot_cash", state.spot_cash)?;
-    d.set_item("margin_cash", state.margin_cash)?;
-    d.set_item("position", state.position)?;
-    d.set_item("avg_entry", state.avg_entry)?;
-    d.set_item("equity", state.equity)?;
-    d.set_item("mark_price", state.mark_price)?;
-    d.set_item("bar_open", state.bar_open)?;
-    d.set_item("bar_high", state.bar_high)?;
-    d.set_item("bar_low", state.bar_low)?;
-    d.set_item("bar_close", state.bar_close)?;
-    d.set_item("bar_volume", state.bar_volume)?;
-    d.set_item("realized_pnl", state.realized_pnl)?;
-    d.set_item("unrealized_pnl", state.unrealized_pnl)?;
-    d.set_item("funding_paid", state.funding_paid)?;
-    let orders = PyList::empty(py);
-    for order in &state.open_orders {
-        orders.append(order_to_dict(py, order)?)?;
-    }
-    d.set_item("open_orders", orders)?;
-    Ok(d)
+/// The account and its bar as a step left them, read by attribute or by key:
+/// `state.position` and `state["position"]` are the same number. The resting
+/// orders become dicts only when they are read.
+#[pyclass(frozen, name = "State")]
+struct PyState {
+    #[pyo3(get)]
+    tick_index: usize,
+    #[pyo3(get)]
+    base: f64,
+    #[pyo3(get)]
+    quote: f64,
+    #[pyo3(get)]
+    spot_cash: f64,
+    #[pyo3(get)]
+    margin_cash: f64,
+    #[pyo3(get)]
+    position: f64,
+    #[pyo3(get)]
+    avg_entry: f64,
+    #[pyo3(get)]
+    equity: f64,
+    #[pyo3(get)]
+    mark_price: f64,
+    #[pyo3(get)]
+    bar_open: f64,
+    #[pyo3(get)]
+    bar_high: f64,
+    #[pyo3(get)]
+    bar_low: f64,
+    #[pyo3(get)]
+    bar_close: f64,
+    #[pyo3(get)]
+    bar_volume: f64,
+    #[pyo3(get)]
+    realized_pnl: f64,
+    #[pyo3(get)]
+    unrealized_pnl: f64,
+    #[pyo3(get)]
+    funding_paid: f64,
+    orders: Vec<Order>,
 }
 
-fn states_to_list<'py>(py: Python<'py>, states: &[State]) -> PyResult<Bound<'py, PyList>> {
+impl From<State> for PyState {
+    fn from(state: State) -> PyState {
+        PyState {
+            tick_index: state.tick_index,
+            base: state.base,
+            quote: state.quote,
+            spot_cash: state.spot_cash,
+            margin_cash: state.margin_cash,
+            position: state.position,
+            avg_entry: state.avg_entry,
+            equity: state.equity,
+            mark_price: state.mark_price,
+            bar_open: state.bar_open,
+            bar_high: state.bar_high,
+            bar_low: state.bar_low,
+            bar_close: state.bar_close,
+            bar_volume: state.bar_volume,
+            realized_pnl: state.realized_pnl,
+            unrealized_pnl: state.unrealized_pnl,
+            funding_paid: state.funding_paid,
+            orders: state.open_orders,
+        }
+    }
+}
+
+#[pymethods]
+impl PyState {
+    /// The resting limit and stop orders, each a dict.
+    #[getter]
+    fn open_orders<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for order in &self.orders {
+            list.append(order_to_dict(py, order)?)?;
+        }
+        Ok(list)
+    }
+
+    fn __getitem__<'py>(&self, py: Python<'py>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+        let value = match key {
+            "tick_index" => return Ok(self.tick_index.into_pyobject(py)?.into_any()),
+            "open_orders" => return Ok(self.open_orders(py)?.into_any()),
+            "base" => self.base,
+            "quote" => self.quote,
+            "spot_cash" => self.spot_cash,
+            "margin_cash" => self.margin_cash,
+            "position" => self.position,
+            "avg_entry" => self.avg_entry,
+            "equity" => self.equity,
+            "mark_price" => self.mark_price,
+            "bar_open" => self.bar_open,
+            "bar_high" => self.bar_high,
+            "bar_low" => self.bar_low,
+            "bar_close" => self.bar_close,
+            "bar_volume" => self.bar_volume,
+            "realized_pnl" => self.realized_pnl,
+            "unrealized_pnl" => self.unrealized_pnl,
+            "funding_paid" => self.funding_paid,
+            _ => return Err(PyKeyError::new_err(key.to_string())),
+        };
+        Ok(value.into_pyobject(py)?.into_any())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "State(tick_index={}, position={}, equity={})",
+            self.tick_index, self.position, self.equity
+        )
+    }
+}
+
+fn states_to_list<'py>(py: Python<'py>, states: Vec<State>) -> PyResult<Bound<'py, PyList>> {
     let list = PyList::empty(py);
     for state in states {
-        list.append(state_to_dict(py, state)?)?;
+        list.append(Bound::new(py, PyState::from(state))?)?;
     }
     Ok(list)
 }
@@ -749,16 +834,14 @@ impl Engine {
     }
 
     /// Reset to the first bar and return the initial state.
-    fn reset<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let state = self.inner.reset();
-        state_to_dict(py, &state)
+    fn reset<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyState>> {
+        Bound::new(py, PyState::from(self.inner.reset()))
     }
 
     /// Advance one bar, resolve the orders placed since the last step, mark the
     /// account, and return the new state.
-    fn step<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let state = self.inner.step();
-        state_to_dict(py, &state)
+    fn step<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyState>> {
+        Bound::new(py, PyState::from(self.inner.step()))
     }
 
     /// True when there is no next bar to step into.
@@ -1202,7 +1285,7 @@ impl Engine {
     fn run<'py>(
         slf: Bound<'py, Self>,
         strategy: Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyDict>> {
+    ) -> PyResult<Bound<'py, PyState>> {
         let py = slf.py();
 
         // Each engine borrow below is scoped and dropped before Python runs, so
@@ -1210,8 +1293,7 @@ impl Engine {
         // double-borrow panic.
         let mut state = {
             let mut engine = slf.borrow_mut();
-            let initial = engine.inner.reset();
-            state_to_dict(py, &initial)?
+            Bound::new(py, PyState::from(engine.inner.reset()))?
         };
 
         if strategy.hasattr("init")? {
@@ -1239,8 +1321,7 @@ impl Engine {
             }
             state = {
                 let mut engine = slf.borrow_mut();
-                let next = engine.inner.step();
-                state_to_dict(py, &next)?
+                Bound::new(py, PyState::from(engine.inner.step()))?
             };
             tick += 1;
         }
@@ -1408,17 +1489,17 @@ impl Batch {
         self.inner.periods_per_year()
     }
 
-    /// Reset every env to the first bar, returning one initial state dict per env
-    /// in env order.
+    /// Reset every env to the first bar, returning one initial state per env in
+    /// env order.
     fn reset_all<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let states = py.detach(|| self.inner.reset_all());
-        states_to_list(py, &states)
+        states_to_list(py, states)
     }
 
     /// Apply the per-env `actions` as market orders (positive buys, negative
     /// sells, zero holds), then step every env one bar in parallel with the GIL
-    /// released, returning the per-env state dicts. `actions` is a 1-D float64
-    /// array of length num_envs, or None to step placing no new orders.
+    /// released, returning the per-env states. `actions` is a 1-D float64 array of
+    /// length num_envs, or None to step placing no new orders.
     #[pyo3(signature = (actions = None))]
     fn step_all<'py>(
         &mut self,
@@ -1444,7 +1525,7 @@ impl Batch {
             self.inner.step_all()
         });
 
-        states_to_list(py, &states)
+        states_to_list(py, states)
     }
 
     // --- Batched RL surface (used by probatum.rl.VectorEnv) ---
@@ -1657,6 +1738,7 @@ fn periods_per_year(times: PyReadonlyArray1<'_, i64>) -> PyResult<Option<f64>> {
 fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_class::<Batch>()?;
+    m.add_class::<PyState>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
     Ok(())
 }

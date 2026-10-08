@@ -229,7 +229,7 @@ The position is netted: net long, net short, or flat, never both. Adding on the 
 
 ### The state
 
-Every `reset` and `step` returns a plain dict:
+Every `reset` and `step` returns a `State`, read by attribute or by key, so `state.position` and `state["position"]` are the same number:
 
 | Field | Type | Meaning |
 | :--- | :--- | :--- |
@@ -299,7 +299,7 @@ import numpy as np
 from probatum import Batch
 
 b = Batch(candles, num_envs=512, market="spot", quote=10_000.0)  # same engine knobs
-b.reset_all()                                # list of per-env state dicts
+b.reset_all()                                # list of per-env states
 actions = np.array([...], dtype=np.float64)  # length num_envs, signed size
 states = b.step_all(actions)                 # positive buys, negative sells, zero holds
 ```

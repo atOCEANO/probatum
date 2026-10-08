@@ -46,8 +46,8 @@ def _fingerprint(candles):
 class Strategy:
     """Base class for a backtest strategy.
 
-    Override ``next``: it is called once per bar with the current state dict and
-    the engine, and places orders through the engine's methods (``market_buy``,
+    Override ``next``: it is called once per bar with the current state and the
+    engine, and places orders through the engine's methods (``market_buy``,
     ``limit_buy``, ``stop``, ``close``, ...). ``init`` is optional and runs once
     after reset, before the first bar.
 
