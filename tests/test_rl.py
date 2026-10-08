@@ -210,6 +210,15 @@ def test_per_env_cost_range_is_reproducible_from_the_seed():
     assert np.array_equal(rollout(), rollout())  # same seed draws the same costs
 
 
+def test_a_seed_starts_the_same_episodes_at_construction_and_at_reset():
+    # both read the offsets from the stream the seed names, on a rising series
+    # where every start offset observes a different window
+    built = VectorEnv(make_data(200), num_envs=4, window=4, seed=3)
+    later = VectorEnv(make_data(200), num_envs=4, window=4)
+
+    assert np.array_equal(built.reset()[0], later.reset(seed=3)[0])
+
+
 def drawn_fees(rewards, price=100.0, size=1.0):
     # on a flat series with no slippage the whole equity delta of a buy IS the fee,
     # so the reward reads back the per-env taker fee the env was given

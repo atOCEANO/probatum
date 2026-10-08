@@ -227,7 +227,7 @@ env = VectorEnv(
 
 The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning is in [ADR 0038](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`probatum.Batch`](Python_API.md#batch) directly.
 
-The per-env cost draw and the start offsets come from independent generators, both spawned from the constructor `seed`, so a given `seed` produces the same start offsets whether or not a cost range is passed. The cost draw is fixed for the env's life; `reset(seed=...)` re-seeds only the offset stream.
+The per-env cost draw and the start offsets come from two random streams named for what they draw, each derived from the `seed` through a NumPy `SeedSequence` ([ADR 0021](Decisions.md)), so a given `seed` produces the same start offsets whether or not a cost range is passed, and `reset(seed=...)` starts the episodes where the same `seed` given to the constructor does. The cost draw is fixed for the env's life; `reset(seed=...)` re-seeds only the offset stream.
 
 <br>
 

@@ -38,6 +38,7 @@ from gymnasium.vector.utils import batch_space
 
 from ._data import to_float2d, to_ohlcv
 from ._probatum import Batch
+from ._streams import stream
 
 # gymnasium's newer vector API tags a vector env's autoreset style so wrappers
 # treat it correctly; probatum resets on the same step (ADR 0038), which older
@@ -107,13 +108,13 @@ class VectorEnv(gym.vector.VectorEnv):
 
         self._has_features = features is not None
 
-        # independent streams: the per-env cost draw and the start offsets come from
-        # separate generators, so a fixed seed gives the same offsets whether or not
-        # a (low, high) cost knob is passed. Costs are drawn once here and fixed for
-        # the env's life; reset(seed=...) re-seeds only the offset stream (ADR 0038)
-        cost_seed, offset_seed = np.random.SeedSequence(seed).spawn(2)
-        self._cost_rng = np.random.default_rng(cost_seed)
-        self._rng      = np.random.default_rng(offset_seed)
+        # the per-env cost draw and the start offsets come from streams named for
+        # what they draw, so a fixed seed gives the same offsets whether or not a
+        # (low, high) cost knob is passed, and reset(seed=...) the offsets the same
+        # seed gives here. Costs are drawn once here and fixed for the env's life;
+        # reset re-seeds only the offset stream (ADRs 0021, 0038)
+        self._cost_rng = stream(seed, "costs")
+        self._rng      = stream(seed, "offsets")
         fee_taker, fee_taker_per_env = self._cost_arg("fee_taker", fee_taker)
         fee_maker, fee_maker_per_env = self._cost_arg("fee_maker", fee_maker)
         slippage_bps, slippage_bps_per_env = self._cost_arg("slippage_bps", slippage_bps)
@@ -246,7 +247,7 @@ class VectorEnv(gym.vector.VectorEnv):
 
     def reset(self, *, seed=None, options=None):
         if seed is not None:
-            self._rng = np.random.default_rng(seed)
+            self._rng = stream(seed, "offsets")
 
         offsets = self._random_offsets(self.num_envs)
         self._batch.reset_at_each(offsets)
