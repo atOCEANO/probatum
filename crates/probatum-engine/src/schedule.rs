@@ -145,6 +145,36 @@ mod tests {
     }
 
     #[test]
+    fn a_stamp_a_hair_before_a_boundary_is_on_it_too() {
+        // 07:59:59.997 is taken as 08:00, as 08:00:00.003 is
+        let schedule = Schedule::new(&hourly(10), &[(8 * HOUR - 3_000_000, 0.0001)]);
+        assert_eq!(schedule.owned(7), &[(0.0001, false)]);
+    }
+
+    #[test]
+    fn the_events_keep_to_utc_hours_whatever_day_the_clock_opens() {
+        // a clock opening at midnight on 1 January 2024 is charged at its 08:00,
+        // its 16:00 and the next midnight, as one opening at 0 is
+        let start = 1_704_067_200 * 1_000_000_000;
+        let times: Vec<i64> = (0..25).map(|row| start + row * HOUR).collect();
+        let clock = Clock::new(times);
+        let stamps: Vec<i64> = every(&clock, 8.0, 0.0001)
+            .iter()
+            .map(|&(stamp, _)| stamp)
+            .collect();
+        assert_eq!(
+            stamps,
+            vec![start + 8 * HOUR, start + 16 * HOUR, start + 24 * HOUR]
+        );
+    }
+
+    #[test]
+    fn an_interval_under_a_nanosecond_or_an_empty_clock_places_nothing() {
+        assert!(every(&hourly(3), 1e-13, 0.0001).is_empty());
+        assert!(every(&Clock::new(Vec::<i64>::new()), 8.0, 0.0001).is_empty());
+    }
+
+    #[test]
     fn an_event_inside_a_bar_is_owned_by_it_and_marked_inside() {
         // daily bars against 8-hour funding: 08:00 and 16:00 fall inside the day,
         // and the next 00:00 is its end

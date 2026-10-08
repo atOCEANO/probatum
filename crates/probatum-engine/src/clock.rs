@@ -131,6 +131,22 @@ mod tests {
     }
 
     #[test]
+    fn the_span_runs_from_the_first_open_wherever_the_clock_starts() {
+        // two hourly rows opening on 1 January 2024 annualise as two from 0 do
+        let start = 1_704_067_200 * 1_000_000_000;
+        assert_eq!(
+            Clock::new(vec![start, start + HOUR]).periods_per_year(),
+            Some(8_760.0)
+        );
+    }
+
+    #[test]
+    fn a_clock_is_empty_only_without_rows() {
+        assert!(Clock::new(Vec::<i64>::new()).is_empty());
+        assert!(!regular(1, HOUR).is_empty());
+    }
+
+    #[test]
     #[should_panic(expected = "times must increase")]
     fn a_clock_that_runs_backwards_is_refused() {
         Clock::new(vec![0, 2 * HOUR, HOUR]);

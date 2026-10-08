@@ -203,9 +203,10 @@ mod tests {
     use crate::engine::fixtures::{
         cfg, crash_series, flat_series, levered, ohlc, perp_cfg, report_cfg, series,
     };
+    use crate::engine::CLOSE_EPS;
     use crate::engine::{Engine, EngineConfig};
     use crate::execution::FillCosts;
-    use crate::reporter::{BarCosts, FillReason, FillRecord, RoundTrip};
+    use crate::reporter::{BarCosts, EventKind, FillReason, FillRecord, RoundTrip};
     use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side, Wallet};
 
     fn fills(e: &Engine) -> &[FillRecord] {
@@ -935,5 +936,120 @@ mod tests {
                 "bar {t}: equity moved {change}, price PnL {pnl} less costs {costs}"
             );
         }
+    }
+
+    #[test]
+    fn a_fill_at_its_reference_pays_nothing_beyond_it_and_costs_its_bar_its_fee() {
+        // 2 at the open of 200 with no slippage: 0.4 of fee and nothing else
+        let config = EngineConfig {
+            fee_taker: 0.001,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.market_buy(2.0);
+        e.step();
+        let [fill] = fills(&e) else {
+            panic!("one fill");
+        };
+        let measured = FillCosts {
+            reference: 200.0,
+            ..FillCosts::default()
+        };
+        assert_eq!(fill.costs, measured);
+        let costs = e.reporter().expect("reporting is on").ledger()[1].costs;
+        assert!((costs.fees - 0.4).abs() < 1e-12);
+        let charged = BarCosts {
+            fees: costs.fees,
+            ..BarCosts::default()
+        };
+        assert_eq!(costs, charged);
+    }
+
+    #[test]
+    fn a_lift_by_the_margin_bound_is_a_negative_liquidation_charge_on_its_bar() {
+        // the stop of the test above is booked 901 / 9.99 - 90 a unit over its
+        // trigger, and the bar books that lift as a negative charge
+        let config = EngineConfig {
+            market: Market::Perp,
+            quote: 100.0,
+            fee_taker: 0.001,
+            max_leverage: 10.0,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(crash_series(), config);
+        e.reset();
+        e.market_buy(10.0);
+        e.stop(Side::Sell, 10.0, 90.0, true);
+        e.step();
+        let row = e.reporter().expect("reporting is on").ledger()[1];
+        let lift = 10.0 * (901.0 / 9.99 - 90.0);
+        assert!(
+            (row.costs.liquidation + lift).abs() < 1e-9,
+            "{}",
+            row.costs.liquidation
+        );
+    }
+
+    #[test]
+    fn a_fill_short_of_its_order_by_the_dust_epsilon_is_not_a_clamp() {
+        // a bar trading 0.5 caps a buy of 0.5 and a dust's worth at 0.5, which is
+        // the whole order to within the dust the engine ignores
+        let bars = Candles::new(vec![ohlc(100.0, 100.0, 100.0, 100.0, 0.5); 2]);
+        let mut e = Engine::new(bars, report_cfg());
+        e.reset();
+        e.market_buy(0.5 + CLOSE_EPS);
+        e.step();
+        let kinds: Vec<EventKind> = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .iter()
+            .map(|event| event.kind)
+            .collect();
+        assert_eq!(kinds, vec![EventKind::Placed, EventKind::Filled]);
+    }
+
+    #[test]
+    fn an_exit_inside_its_bar_counts_the_bar_from_its_open_to_the_fill() {
+        // long 1 from 100; the next bar opens at 110 and falls through the stop at
+        // 95, so the round trip saw 110 at that open and 95 at its exit
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(110.0, 110.0, 90.0, 92.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, report_cfg());
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        e.stop(Side::Sell, 1.0, 95.0, true);
+        e.step();
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert_eq!((t.exit, t.reason), (95.0, Some(FillReason::Stop)));
+        assert!((t.best - 0.1).abs() < 1e-12, "best {}", t.best);
+        assert!((t.worst + 0.05).abs() < 1e-12, "worst {}", t.worst);
+    }
+
+    #[test]
+    fn a_ledger_row_levers_notional_over_equity_and_a_dead_one_reads_zero() {
+        // 2 bought at 200 and marked at 250 is 500 of notional on 10,100 of equity,
+        // and an account liquidated to nothing has no leverage and no weight
+        let mut e = Engine::new(series(), report_cfg());
+        e.reset();
+        e.market_buy(2.0);
+        e.step();
+        let row = e.reporter().expect("reporting is on").ledger()[1];
+        assert_eq!(row.leverage, 500.0 / 10_100.0);
+
+        let mut dead = Engine::new(crash_series(), levered());
+        dead.reset();
+        dead.market_buy(10.0);
+        dead.step();
+        let row = dead.reporter().expect("reporting is on").ledger()[1];
+        assert_eq!((row.equity, row.position), (0.0, 0.0));
+        assert_eq!((row.leverage, row.weight), (0.0, 0.0));
     }
 }

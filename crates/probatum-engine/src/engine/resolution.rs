@@ -233,6 +233,7 @@ mod tests {
         cfg, crash_series, dip_series, ohlc, perp_cfg, report_cfg, series,
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
+    use crate::reporter::EventKind;
     use probatum_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, TimeInForce};
 
     #[test]
@@ -812,5 +813,46 @@ mod tests {
             );
         }
         assert!(long_loss < f64::INFINITY);
+    }
+
+    #[test]
+    fn a_fok_order_every_clamp_leaves_whole_fills_whole_at_any_size() {
+        // at 20,000,000 units half an ulp is larger than the dust epsilon, so what
+        // filled is compared with what was asked without leaning on it
+        for kind in [OrderType::Market, OrderType::Limit] {
+            for size in [10.0, 20_000_000.0] {
+                let config = EngineConfig {
+                    quote: 100_000_000.0,
+                    ..report_cfg()
+                };
+                let flat = ohlc(1.0, 1.0, 1.0, 1.0, 1e8);
+                let mut e = Engine::new(Candles::new(vec![flat; 2]), config);
+                e.reset();
+                e.order(
+                    Side::Buy,
+                    size,
+                    kind,
+                    Some(1.0),
+                    None,
+                    false,
+                    false,
+                    TimeInForce::Fok,
+                );
+                let state = e.step();
+                assert_eq!(state.position, size, "{kind:?} of {size}");
+                let kinds: Vec<EventKind> = e
+                    .reporter()
+                    .expect("reporting is on")
+                    .events()
+                    .iter()
+                    .map(|event| event.kind)
+                    .collect();
+                assert_eq!(
+                    kinds,
+                    vec![EventKind::Placed, EventKind::Filled],
+                    "{kind:?} of {size}"
+                );
+            }
+        }
     }
 }

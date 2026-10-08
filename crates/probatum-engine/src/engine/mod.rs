@@ -500,6 +500,63 @@ mod tests {
     }
 
     #[test]
+    fn the_engine_reads_back_its_series_and_each_bars_open_time() {
+        let day = 86_400 * 1_000_000_000;
+        let bars = series().as_slice().to_vec();
+        let timed = Candles::on_clock(bars.clone(), Clock::new(vec![0, day, 4 * day]));
+        let e = Engine::new(timed, cfg());
+        assert_eq!(e.candles_all(), bars.as_slice());
+        assert_eq!((e.open_time(2), e.open_time(3)), (Some(4 * day), None));
+        assert_eq!(Engine::new(series(), cfg()).open_time(0), None);
+    }
+
+    #[test]
+    fn stepping_past_the_last_bar_stands_still_and_records_nothing() {
+        let mut e = Engine::new(series(), report_cfg());
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        let last = e.step();
+        assert_eq!(e.step(), last);
+        assert_eq!(e.tick(), 2);
+        let reporter = e.reporter().expect("reporting is on");
+        assert_eq!(
+            (reporter.equity_curve().len(), reporter.ledger().len()),
+            (2, 3)
+        );
+    }
+
+    #[test]
+    fn the_stats_start_from_both_wallets_and_count_the_bars_held() {
+        // 10,000 in the spot wallet and 5,000 in the margin wallet: one unit bought
+        // at the open of 200 is marked at 350, for 15,150 against 15,000, and it is
+        // held on both steps
+        let config = EngineConfig {
+            idle_cash: 5_000.0,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        assert_eq!(e.step().equity, 15_150.0);
+        let s = e.stats(1.0, 0.0).expect("reporting is on");
+        assert!((s.total_return_pct - 1.0).abs() < 1e-9);
+        assert_eq!(s.exposure_pct, 100.0);
+    }
+
+    #[test]
+    fn the_base_balance_is_the_spot_holding_and_nothing_on_a_perp() {
+        for (config, base) in [(cfg(), 2.0), (perp_cfg(), 0.0)] {
+            let mut e = Engine::new(series(), config);
+            e.reset();
+            e.market_buy(2.0);
+            let s = e.step();
+            assert_eq!((s.position, s.base), (2.0, base));
+        }
+    }
+
+    #[test]
     fn the_rows_run_straight_across_a_weekend() {
         // the Specification's example: Thursday, Friday and Monday are three rows
         // of the clock, so a market order decided at Friday's close fills at

@@ -477,4 +477,59 @@ mod tests {
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades[0].exit, 91.0);
     }
+
+    #[test]
+    fn a_round_trip_nets_the_funding_charged_while_it_was_open() {
+        // long 1 from 200 pays 0.25 at the close of 250, and the close at 300
+        // realizes 100, so the round trip nets 99.75, what the equity gained
+        let config = EngineConfig {
+            quote: 10_000.0,
+            funding_rate: 0.001,
+            funding_interval: 1,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        e.close();
+        let last = e.step();
+        let [t] = e.reporter().expect("reporting is on").trades() else {
+            panic!("one round trip");
+        };
+        assert!((t.funding - 0.25).abs() < 1e-12);
+        assert!((t.pnl - 99.75).abs() < 1e-9, "pnl {}", t.pnl);
+        assert!((t.pnl - (last.equity - 10_000.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_debit_inside_a_bar_that_closes_a_short_is_paid_and_one_at_its_end_is_not() {
+        // short 10 from 100 on 100 of margin holds 5 at the high of 109.5, and a
+        // debit of 10.5 inside the bar takes it under. It is paid, and the close
+        // comes where the 89.5 left runs out, at 108.95; the event at the bar's end
+        // finds it flat
+        let bars = on_clock(
+            &[
+                (100.0, 100.0, 100.0, 100.0),
+                (100.0, 109.5, 99.0, 105.0),
+                (105.0, 105.0, 105.0, 105.0),
+            ],
+            vec![0, DAY, 2 * DAY],
+            &[(DAY + 8 * HOUR, -0.01), (2 * DAY, -0.01)],
+        );
+        let mut e = Engine::new(bars, levered());
+        e.reset();
+        e.market_sell(10.0);
+        let state = e.step();
+        assert!(e.is_bust());
+        assert_eq!((state.position, state.equity), (0.0, 0.0));
+        assert!((state.funding_paid - 10.5).abs() < 1e-9);
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert!(
+            (trades[0].exit - 108.95).abs() < 1e-9,
+            "exit {}",
+            trades[0].exit
+        );
+    }
 }

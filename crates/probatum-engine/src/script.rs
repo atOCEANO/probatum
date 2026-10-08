@@ -232,6 +232,22 @@ mod tests {
     }
 
     #[test]
+    fn a_script_played_again_names_the_orders_of_its_new_run() {
+        // ids carry on across the reset, so the second run's bid is a new order and
+        // its cancel has to name that one rather than the first run's
+        let mut e = engine(8);
+        let mut script = Script::new(vec![
+            vec![bid(90.0)],
+            vec![Action::Cancel(OrderRef::Placed(0))],
+        ]);
+        run(&mut e, &mut script);
+        let last = run(&mut e, &mut script);
+        assert_eq!(script.placed.len(), 1);
+        assert_eq!(cancelled(&e), vec![script.placed[0].expect("rests")]);
+        assert!(last.open_orders.is_empty());
+    }
+
+    #[test]
     fn an_action_is_taken_at_its_bar_and_fills_on_the_next() {
         let mut e = engine(8);
         let buy = Action::Order {

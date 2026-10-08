@@ -210,6 +210,7 @@ pub struct BatchSnapshot {
 mod tests {
     use super::EnvBatch;
     use crate::candles::Candles;
+    use crate::clock::Clock;
     use crate::engine::{Engine, EngineConfig};
     use probatum_core::{Candle, Market, State};
     use proptest::prelude::*;
@@ -256,6 +257,22 @@ mod tests {
             funding_rate: 0.0,
             funding_interval: 0,
         }
+    }
+
+    #[test]
+    fn periods_per_year_reads_the_shared_clock() {
+        // three rows a day apart span two days, so a year holds 365 of them, and
+        // bars without times have no clock to count
+        let day = 86_400 * 1_000_000_000;
+        let timed = Candles::on_clock(
+            series().as_slice().to_vec(),
+            Clock::new(vec![0, day, 2 * day]),
+        );
+        assert_eq!(
+            EnvBatch::new(2, timed, cfg()).periods_per_year(),
+            Some(365.0)
+        );
+        assert_eq!(EnvBatch::new(2, series(), cfg()).periods_per_year(), None);
     }
 
     #[test]

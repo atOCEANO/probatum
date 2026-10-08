@@ -164,7 +164,7 @@ mod tests {
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::{EventKind, FillReason};
-    use probatum_core::{Candle, OrderType, Side, TimeInForce};
+    use probatum_core::{Candle, Fill, OrderType, Price, Qty, Side, TimeInForce};
 
     #[test]
     fn default_config_caps_perp_leverage_at_ten() {
@@ -634,5 +634,25 @@ mod tests {
         assert_eq!(state.equity, 700.0);
         assert_eq!(e.num_fills(), 2);
         assert!(!e.is_bust());
+    }
+
+    #[test]
+    fn a_fill_with_no_real_size_or_price_is_refused_before_any_clamp() {
+        // an infinite size or a price that is not a number is no trade, so it moves
+        // nothing rather than reaching the clamps that divide by it
+        let e = Engine::new(series(), cfg());
+        for (size, price) in [(f64::INFINITY, 100.0), (1.0, f64::NAN)] {
+            let fill = Fill {
+                side: Side::Buy,
+                size: Qty(size),
+                price: Price(price),
+                is_taker: true,
+            };
+            assert_eq!(
+                e.clamp_fill(false, &fill).size.get(),
+                0.0,
+                "{size} at {price}"
+            );
+        }
     }
 }

@@ -503,7 +503,10 @@ mod tests {
             ohlc(100.0, 101.0, 50.0, 60.0, 1_000.0),
             ohlc(60.0, 61.0, 59.0, 60.0, 1_000.0),
         ]);
-        for (trigger, want_equity, want_exit) in [(95.0, 50.0, 95.0), (60.0, 0.0, 90.0)] {
+        for (trigger, want_equity, want_exit, reason) in [
+            (95.0, 50.0, 95.0, FillReason::Stop),
+            (60.0, 0.0, 90.0, FillReason::Liquidation),
+        ] {
             let mut e = Engine::new(bars.clone(), levered());
             e.reset();
             e.market_buy(10.0);
@@ -513,6 +516,7 @@ mod tests {
             assert_eq!(state.equity, want_equity, "stop at {trigger}");
             let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades[0].exit, want_exit, "stop at {trigger}");
+            assert_eq!(trades[0].reason, Some(reason), "stop at {trigger}");
         }
     }
 
@@ -660,7 +664,10 @@ mod tests {
             ohlc(100.0, 150.0, 99.0, 140.0, 1e6),
             ohlc(140.0, 141.0, 139.0, 140.0, 1e6),
         ]);
-        for (trigger, want_equity, want_exit) in [(105.0, 50.0, 105.0), (140.0, 0.0, 110.0)] {
+        for (trigger, want_equity, want_exit, reason) in [
+            (105.0, 50.0, 105.0, FillReason::Stop),
+            (140.0, 0.0, 110.0, FillReason::Liquidation),
+        ] {
             let mut e = Engine::new(bars.clone(), levered());
             e.reset();
             e.market_sell(10.0);
@@ -670,6 +677,83 @@ mod tests {
             assert_eq!(state.equity, want_equity, "stop at {trigger}");
             let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades[0].exit, want_exit, "stop at {trigger}");
+            assert_eq!(trades[0].reason, Some(reason), "stop at {trigger}");
         }
+    }
+
+    #[test]
+    fn a_long_gapped_past_its_fence_is_closed_before_its_bar_can_fill_a_target() {
+        // long 10 from 100 on 100 of margin runs out at 90, and the next bar opens at
+        // 85: the account is closed at 90 before that bar opens, so the take-profit
+        // at 94 its high of 95 reaches never fills
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 101.0, 92.0, 93.0, 1e6),
+            ohlc(85.0, 95.0, 80.0, 90.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, levered());
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.limit_sell(10.0, 94.0);
+        let state = e.step();
+        assert!(e.is_bust());
+        assert_eq!(state.equity, 0.0);
+        let [t] = e.reporter().expect("reporting is on").trades() else {
+            panic!("one round trip");
+        };
+        assert_eq!((t.exit, t.reason), (90.0, Some(FillReason::Liquidation)));
+    }
+
+    #[test]
+    fn a_close_out_at_the_close_books_the_wallets_deficit_as_a_negative_charge() {
+        // a debit of 200 of funding leaves 100 of margin at -100 at the close, the
+        // close at 100 realizes nothing, and the deficit the venue absorbs is a
+        // charge of -100, so the bar costs 200 - 100 and equity falls by 100
+        let config = EngineConfig {
+            funding_rate: 1.0,
+            funding_interval: 1,
+            report: true,
+            ..perp_cfg()
+        };
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1_000.0);
+        let mut e = Engine::new(Candles::new(vec![flat; 2]), config);
+        e.reset();
+        e.market_buy(2.0);
+        e.step();
+        let ledger = e.reporter().expect("reporting is on").ledger();
+        let costs = ledger[1].costs;
+        assert_eq!((costs.funding, costs.liquidation), (200.0, -100.0));
+        assert_eq!(ledger[1].equity - ledger[0].equity, -100.0);
+    }
+
+    #[test]
+    fn a_fill_that_grows_the_position_keeps_its_own_price_under_the_margin_bound() {
+        // long 10 from 100 with a fee of 1% leaves 90 of margin; at an open of 91.5
+        // the account still holds 5, and a buy of 1 there adds at 91.5, so the
+        // entry averages to 1,091.5 / 11 and equity is 89.085 - 85
+        let config = EngineConfig {
+            market: Market::Perp,
+            quote: 100.0,
+            fee_taker: 0.01,
+            ..cfg()
+        };
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(91.5, 91.5, 91.5, 91.5, 1e6),
+        ]);
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.market_buy(1.0);
+        let state = e.step();
+        assert!((state.avg_entry - 1_091.5 / 11.0).abs() < 1e-9);
+        assert!(
+            (state.equity - 4.085).abs() < 1e-9,
+            "equity {}",
+            state.equity
+        );
     }
 }

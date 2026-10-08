@@ -470,7 +470,7 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
-    use super::{FillReason, Reporter, RoundTrip};
+    use super::{EventKind, FillReason, Reporter, RoundTrip};
     use probatum_core::Side;
 
     #[test]
@@ -514,5 +514,71 @@ mod tests {
     #[test]
     fn default_is_empty() {
         assert!(Reporter::new().is_empty());
+    }
+
+    #[test]
+    fn the_logs_name_reasons_and_kinds_as_the_specification_does() {
+        let reasons = [
+            FillReason::Market,
+            FillReason::Limit,
+            FillReason::Stop,
+            FillReason::Liquidation,
+        ];
+        assert_eq!(
+            reasons.map(|reason| reason.name()),
+            ["market", "limit", "stop", "liquidation"]
+        );
+        let kinds = [
+            EventKind::Placed,
+            EventKind::Refused,
+            EventKind::Clamped,
+            EventKind::Filled,
+            EventKind::NotFilled,
+            EventKind::Expired,
+            EventKind::Cancelled,
+        ];
+        assert_eq!(
+            kinds.map(|kind| kind.name()),
+            [
+                "placed",
+                "refused",
+                "clamped",
+                "filled",
+                "not_filled",
+                "expired",
+                "cancelled"
+            ]
+        );
+    }
+
+    #[test]
+    fn its_entry_and_exit_weigh_each_fill_by_its_size() {
+        // 2 at 100 and 3 at 200 enter at 160; 1 at 150 and 4 at 200 leave at 190
+        let mut trip = RoundTrip::open(Side::Buy, 0, 2.0, 100.0, 0.0);
+        trip.grow(3.0, 200.0, 0.0);
+        trip.shrink(1.0, 150.0, 0.0, 0.0);
+        trip.shrink(4.0, 200.0, 0.0, 0.0);
+        assert_eq!((trip.entry, trip.exit), (160.0, 190.0));
+    }
+
+    #[test]
+    fn exposure_counts_the_steps_recorded_in_a_position() {
+        let mut r = Reporter::new();
+        r.record_equity(1000.0, false);
+        r.record_equity(1010.0, true);
+        r.record_equity(1020.0, true);
+        r.record_equity(1030.0, false);
+        assert_eq!(r.stats(1000.0, 365.0, 0.0, 0, 0.0).exposure_pct, 50.0);
+    }
+
+    #[test]
+    fn a_reporter_holding_anything_is_not_empty() {
+        let mut marked = Reporter::new();
+        marked.record_equity(1000.0, false);
+        assert!(!marked.is_empty());
+        let mut tripped = Reporter::new();
+        tripped.open_trip(RoundTrip::open(Side::Buy, 1, 1.0, 100.0, 0.0));
+        assert_eq!(tripped.len(), 0);
+        assert!(!tripped.is_empty());
     }
 }

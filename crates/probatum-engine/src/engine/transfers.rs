@@ -149,6 +149,41 @@ mod tests {
     }
 
     #[test]
+    fn a_transfer_the_wallet_covers_moves_whole_and_logs_nothing() {
+        let config = EngineConfig {
+            idle_cash: 300.0,
+            report: true,
+            ..cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.transfer(100.0, Wallet::Spot);
+        let s = e.step();
+        assert_eq!((s.spot_cash, s.margin_cash), (10_100.0, 200.0));
+        assert!(e.reporter().expect("reporting is on").events().is_empty());
+    }
+
+    #[test]
+    fn a_margin_wallet_already_short_of_the_caps_requirement_gives_nothing() {
+        // long 10 from 100 on 100 at 10x, marked at 95: it must keep the cap's 95
+        // and the loss's 50, 145 of cash, and holds 100, so nothing moves and
+        // nothing is made up
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 95.0, 95.0, 1e6),
+            ohlc(95.0, 95.0, 95.0, 95.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, levered());
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.transfer(1_000.0, Wallet::Spot);
+        let s = e.step();
+        assert_eq!((s.spot_cash, s.margin_cash), (0.0, 100.0));
+        assert_eq!(s.equity, 50.0);
+    }
+
+    #[test]
     fn with_the_cap_off_a_transfer_can_take_the_margin_wallet_to_its_trigger() {
         // long 1.5 from 100 on 999.7, marked at 95.1: only the loss stays behind, and
         // the long is closed at that close before the next bar opens. At these

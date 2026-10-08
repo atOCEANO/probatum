@@ -669,6 +669,15 @@ mod tests {
     }
 
     #[test]
+    fn a_constant_return_keeps_its_volatility_finite_when_its_mean_rounds() {
+        // equity growing by 9/5 a bar gives three equal returns whose mean rounds a
+        // hair above them, so each deviation is squared as it stands, where a
+        // difference of squares can come out below zero
+        let s = compute(1000.0, &[1800.0, 3240.0, 5832.0], &[], 1.0, 0.0, 3);
+        assert!(s.volatility_pct.is_finite() && s.volatility_pct < 1e-9);
+    }
+
+    #[test]
     fn a_run_with_no_closed_trades_reports_zeros_rather_than_nan() {
         // both trade ratios divide by the trade count. Reaching that division with
         // no trades is 0/0, and ADR 0030 says nothing here is ever NaN
