@@ -24,7 +24,8 @@ use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, Time
 use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{
-    Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, RoundTrip, Stats,
+    Action, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, OrderRef, RoundTrip,
+    Script, Stats,
 };
 
 /// Parse a market string into the core enum, case-insensitively.
@@ -322,6 +323,29 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
             }
         }
         Ok(Opening::Wallets { spot, margin })
+    }
+}
+
+/// The wallet a transfer of `amount` goes `to`, once the amount is known to be cash
+/// that can move. `at` leads each error, to say where in a script it came from.
+fn transfer_to(at: &str, amount: f64, to: &str) -> PyResult<Wallet> {
+    if !amount.is_finite() {
+        return Err(PyValueError::new_err(format!(
+            "{at}amount: {amount} is not a finite number; pass the cash to move"
+        )));
+    }
+    if amount < 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "{at}amount: {amount} is negative; pass the cash to move and name the wallet \
+             it goes into with to"
+        )));
+    }
+    match to.to_ascii_lowercase().as_str() {
+        "spot" => Ok(Wallet::Spot),
+        "margin" => Ok(Wallet::Margin),
+        _ => Err(PyValueError::new_err(format!(
+            "{at}to: {to:?} is not a wallet; use spot or margin"
+        ))),
     }
 }
 
@@ -707,6 +731,82 @@ fn event_to_dict<'py>(
     Ok(d)
 }
 
+fn round_trips_of<'py>(
+    py: Python<'py>,
+    engine: &BarEngine,
+) -> PyResult<Option<Bound<'py, PyList>>> {
+    if engine.reporter().is_none() {
+        return Ok(None);
+    }
+    let list = PyList::empty(py);
+    for trade in engine.round_trips() {
+        list.append(trade_to_dict(py, &trade, engine)?)?;
+    }
+    Ok(Some(list))
+}
+
+fn fills_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'py, PyList>>> {
+    let Some(reporter) = engine.reporter() else {
+        return Ok(None);
+    };
+    let list = PyList::empty(py);
+    for fill in reporter.fills() {
+        list.append(fill_to_dict(py, fill, engine.open_time(fill.tick))?)?;
+    }
+    Ok(Some(list))
+}
+
+fn ledger_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let Some(reporter) = engine.reporter() else {
+        return Ok(None);
+    };
+    let rows = reporter.ledger();
+    let column = |get: Column| -> Vec<f64> { rows.iter().map(get).collect() };
+    let d = PyDict::new(py);
+    let bars: Vec<usize> = rows.iter().map(|row| row.tick).collect();
+    d.set_item("bar", PyArray1::from_vec(py, bars))?;
+    let times: Option<Vec<i64>> = rows.iter().map(|row| engine.open_time(row.tick)).collect();
+    d.set_item("time", times.map(|times| PyArray1::from_vec(py, times)))?;
+    let columns: [(&str, Column); 21] = [
+        ("equity", |row| row.equity),
+        ("spot_cash", |row| row.spot_cash),
+        ("margin_cash", |row| row.margin_cash),
+        ("gross_exposure", |row| row.gross_exposure),
+        ("net_exposure", |row| row.net_exposure),
+        ("leverage", |row| row.leverage),
+        ("margin_used", |row| row.margin_used),
+        ("maintenance", |row| row.maintenance),
+        ("fees", |row| row.costs.fees),
+        ("funding", |row| row.costs.funding),
+        ("spread", |row| row.costs.spread),
+        ("slippage", |row| row.costs.slippage),
+        ("impact", |row| row.costs.impact),
+        ("liquidation", |row| row.costs.liquidation),
+        ("dust", |row| row.costs.dust),
+        ("position", |row| row.position),
+        ("entry", |row| row.entry),
+        ("mark", |row| row.mark),
+        ("notional", |row| row.notional),
+        ("unrealized", |row| row.unrealized),
+        ("weight", |row| row.weight),
+    ];
+    for (name, get) in columns {
+        d.set_item(name, PyArray1::from_vec(py, column(get)))?;
+    }
+    Ok(Some(d))
+}
+
+fn order_log_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'py, PyList>>> {
+    let Some(reporter) = engine.reporter() else {
+        return Ok(None);
+    };
+    let list = PyList::empty(py);
+    for event in reporter.events() {
+        list.append(event_to_dict(py, event, engine.open_time(event.tick))?)?;
+    }
+    Ok(Some(list))
+}
+
 /// Build a read-only, zero-copy `(rows, 5)` numpy view over `window`, a slice of an
 /// engine's immutable candle buffer. `container` (the engine pyobject, which owns
 /// the `Arc`) becomes the array's base so the data outlives the view, and the array
@@ -1031,26 +1131,7 @@ impl Engine {
     /// the cash the wallet it leaves holds and, out of the margin wallet, to what
     /// leaves the cap's requirement covered (ADR 0008).
     fn transfer(&mut self, amount: f64, to: &str) -> PyResult<()> {
-        if !amount.is_finite() {
-            return Err(PyValueError::new_err(format!(
-                "amount: {amount} is not a finite number; pass the cash to move"
-            )));
-        }
-        if amount < 0.0 {
-            return Err(PyValueError::new_err(format!(
-                "amount: {amount} is negative; pass the cash to move and name the wallet \
-                 it goes into with to"
-            )));
-        }
-        let to = match to.to_ascii_lowercase().as_str() {
-            "spot" => Wallet::Spot,
-            "margin" => Wallet::Margin,
-            _ => {
-                return Err(PyValueError::new_err(format!(
-                    "to: {to:?} is not a wallet; use spot or margin"
-                )))
-            }
-        };
+        let to = transfer_to("", amount, to)?;
         self.inner.transfer(amount, to);
         Ok(())
     }
@@ -1176,14 +1257,7 @@ impl Engine {
     /// and then the one still open, marked at the current close with `open` true,
     /// or None when reporting is off (ADR 0023).
     fn trades<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        if self.inner.reporter().is_none() {
-            return Ok(None);
-        }
-        let list = PyList::empty(py);
-        for trade in self.inner.round_trips() {
-            list.append(trade_to_dict(py, &trade, &self.inner)?)?;
-        }
-        Ok(Some(list))
+        round_trips_of(py, &self.inner)
     }
 
     /// The fill log as a list of dicts, one per fill in the order they landed, or
@@ -1193,17 +1267,7 @@ impl Engine {
     /// beyond that per unit, its fee, whether it took liquidity, and its reason
     /// (ADR 0022).
     fn fills<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        match self.inner.reporter() {
-            Some(reporter) => {
-                let list = PyList::empty(py);
-                for fill in reporter.fills() {
-                    let time = self.inner.open_time(fill.tick);
-                    list.append(fill_to_dict(py, fill, time)?)?;
-                }
-                Ok(Some(list))
-            }
-            None => Ok(None),
-        }
+        fills_of(py, &self.inner)
     }
 
     /// The ledger as a dict of `(T,)` numpy columns, one row per bar from the opening
@@ -1213,46 +1277,7 @@ impl Engine {
     /// impact, the liquidation charge and dust, and the position, its entry, mark,
     /// notional, unrealized PnL and weight (ADR 0022).
     fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(reporter) = self.inner.reporter() else {
-            return Ok(None);
-        };
-        let rows = reporter.ledger();
-        let column = |get: Column| -> Vec<f64> { rows.iter().map(get).collect() };
-        let d = PyDict::new(py);
-        let bars: Vec<usize> = rows.iter().map(|row| row.tick).collect();
-        d.set_item("bar", PyArray1::from_vec(py, bars))?;
-        let times: Option<Vec<i64>> = rows
-            .iter()
-            .map(|row| self.inner.open_time(row.tick))
-            .collect();
-        d.set_item("time", times.map(|times| PyArray1::from_vec(py, times)))?;
-        let columns: [(&str, Column); 21] = [
-            ("equity", |row| row.equity),
-            ("spot_cash", |row| row.spot_cash),
-            ("margin_cash", |row| row.margin_cash),
-            ("gross_exposure", |row| row.gross_exposure),
-            ("net_exposure", |row| row.net_exposure),
-            ("leverage", |row| row.leverage),
-            ("margin_used", |row| row.margin_used),
-            ("maintenance", |row| row.maintenance),
-            ("fees", |row| row.costs.fees),
-            ("funding", |row| row.costs.funding),
-            ("spread", |row| row.costs.spread),
-            ("slippage", |row| row.costs.slippage),
-            ("impact", |row| row.costs.impact),
-            ("liquidation", |row| row.costs.liquidation),
-            ("dust", |row| row.costs.dust),
-            ("position", |row| row.position),
-            ("entry", |row| row.entry),
-            ("mark", |row| row.mark),
-            ("notional", |row| row.notional),
-            ("unrealized", |row| row.unrealized),
-            ("weight", |row| row.weight),
-        ];
-        for (name, get) in columns {
-            d.set_item(name, PyArray1::from_vec(py, column(get)))?;
-        }
-        Ok(Some(d))
+        ledger_of(py, &self.inner)
     }
 
     /// The order log as a list of dicts, one per event in the order they happened,
@@ -1262,17 +1287,7 @@ impl Engine {
     /// reason. A refused placement is here under the id it would have had
     /// (ADRs 0010, 0022).
     fn order_log<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        match self.inner.reporter() {
-            Some(reporter) => {
-                let list = PyList::empty(py);
-                for event in reporter.events() {
-                    let time = self.inner.open_time(event.tick);
-                    list.append(event_to_dict(py, event, time)?)?;
-                }
-                Ok(Some(list))
-            }
-            None => Ok(None),
-        }
+        order_log_of(py, &self.inner)
     }
 
     /// Drive `strategy` over the whole series and return the final state. Resets,
@@ -1725,6 +1740,290 @@ impl Batch {
     }
 }
 
+/// The verbs a script takes, as an error lists them.
+const VERBS: &str = "buy, sell, close, cancel, cancel_all, replace or transfer";
+
+/// One script action's arguments, read by name, with `at` naming the action in an
+/// error. A value of None is read as an argument left out.
+struct Arguments<'a, 'py> {
+    at: &'a str,
+    verb: &'a str,
+    given: &'a Bound<'py, PyDict>,
+}
+
+impl<'py> Arguments<'_, 'py> {
+    fn value(&self, name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Ok(self.given.get_item(name)?.filter(|value| !value.is_none()))
+    }
+
+    fn number(&self, name: &str) -> PyResult<Option<f64>> {
+        let Some(value) = self.value(name)? else {
+            return Ok(None);
+        };
+        value.extract::<f64>().map(Some).map_err(|_| {
+            PyValueError::new_err(format!("{}: {name} {value} is not a number", self.at))
+        })
+    }
+
+    /// A limit, a stop or a trigger, which a bar can only reach if it is finite.
+    fn price(&self, name: &str) -> PyResult<Option<f64>> {
+        let price = self.number(name)?;
+        match price {
+            Some(p) if !p.is_finite() => Err(PyValueError::new_err(format!(
+                "{}: {name} {p} is not a price; give a finite number",
+                self.at
+            ))),
+            _ => Ok(price),
+        }
+    }
+
+    fn flag(&self, name: &str) -> PyResult<bool> {
+        let Some(value) = self.value(name)? else {
+            return Ok(false);
+        };
+        value.extract::<bool>().map_err(|_| {
+            PyValueError::new_err(format!("{}: {name} {value} is not True or False", self.at))
+        })
+    }
+
+    fn text(&self, name: &str, default: &str) -> PyResult<String> {
+        let Some(value) = self.value(name)? else {
+            return Ok(default.to_string());
+        };
+        value.extract::<String>().map_err(|_| {
+            PyValueError::new_err(format!("{}: {name} {value} is not a string", self.at))
+        })
+    }
+
+    /// The order a cancel or a replace names, given the `placements` the script
+    /// made before it.
+    fn order(&self, placements: usize) -> PyResult<OrderRef> {
+        let Some(value) = self.value("order")? else {
+            return Err(PyValueError::new_err(format!(
+                "{}: {} needs an order; name an earlier placement, counted from 0, or \
+                 \"oldest\"",
+                self.at, self.verb
+            )));
+        };
+        if value.extract::<String>().is_ok_and(|text| text == "oldest") {
+            return Ok(OrderRef::Oldest);
+        }
+        match value.extract::<usize>() {
+            Ok(n) if n < placements => Ok(OrderRef::Placed(n)),
+            _ => Err(PyValueError::new_err(format!(
+                "{}: order {value} is not one of the {placements} placements before it; \
+                 name one counted from 0, or \"oldest\"",
+                self.at
+            ))),
+        }
+    }
+
+    /// At one instrument there is only instrument 0 to name.
+    fn instrument(&self) -> PyResult<()> {
+        match self.value("instrument")? {
+            Some(value) if value.extract::<usize>().ok() != Some(0) => {
+                Err(PyValueError::new_err(format!(
+                    "{}: instrument {value} is not one the engine holds; it holds one, 0",
+                    self.at
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Read one script action, `placements` being how many the script made before it.
+fn read_action(
+    at: &str,
+    verb: &str,
+    given: &Bound<'_, PyDict>,
+    placements: usize,
+) -> PyResult<Action> {
+    let takes: &[&str] = match verb {
+        "buy" | "sell" => &[
+            "size",
+            "limit",
+            "stop",
+            "tif",
+            "post_only",
+            "reduce_only",
+            "instrument",
+        ],
+        "close" | "cancel_all" => &["instrument"],
+        "cancel" => &["order"],
+        "replace" => &["order", "price", "trigger", "size"],
+        "transfer" => &["amount", "to"],
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "{at}: {verb:?} is not a verb; use {VERBS}"
+            )))
+        }
+    };
+    for name in given.keys() {
+        let name: String = name.extract()?;
+        if !takes.contains(&name.as_str()) {
+            return Err(PyValueError::new_err(format!(
+                "{at}: {verb} takes no {name}; it takes {}",
+                takes.join(", ")
+            )));
+        }
+    }
+    let args = Arguments { at, verb, given };
+    let action = match verb {
+        "buy" | "sell" => {
+            args.instrument()?;
+            let Some(size) = args.number("size")? else {
+                return Err(PyValueError::new_err(format!("{at}: {verb} needs a size")));
+            };
+            let (price, trigger) = (args.price("limit")?, args.price("stop")?);
+            let kind = match (price, trigger) {
+                (None, None) => OrderType::Market,
+                (Some(_), None) => OrderType::Limit,
+                (None, Some(_)) => OrderType::Stop,
+                (Some(limit), Some(stop)) => {
+                    return Err(PyValueError::new_err(format!(
+                        "{at}: {verb} has a limit {limit} and a stop {stop}; an order is \
+                         one or the other"
+                    )))
+                }
+            };
+            let tif = args.text("tif", "gtc")?;
+            Action::Order {
+                side: if verb == "buy" { Side::Buy } else { Side::Sell },
+                size,
+                kind,
+                price,
+                trigger,
+                reduce_only: args.flag("reduce_only")?,
+                post_only: args.flag("post_only")?,
+                tif: parse_tif(&tif).map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "{at}: tif {tif:?} is not one; use gtc, ioc or fok"
+                    ))
+                })?,
+            }
+        }
+        "close" => {
+            args.instrument()?;
+            Action::Close
+        }
+        "cancel_all" => {
+            args.instrument()?;
+            Action::CancelAll
+        }
+        "cancel" => Action::Cancel(args.order(placements)?),
+        "replace" => Action::Replace {
+            order: args.order(placements)?,
+            size: args.number("size")?,
+            price: args.price("price")?,
+            trigger: args.price("trigger")?,
+        },
+        _ => {
+            let Some(amount) = args.number("amount")? else {
+                return Err(PyValueError::new_err(format!(
+                    "{at}: transfer needs an amount"
+                )));
+            };
+            let to = args.text("to", "margin")?;
+            Action::Transfer {
+                amount,
+                to: transfer_to(&format!("{at}: "), amount, &to)?,
+            }
+        }
+    };
+    Ok(action)
+}
+
+/// Read a script: a dict from a bar to the actions taken at its close, each a verb
+/// and a dict of its arguments, into the actions of each of the `bars`. A decision
+/// on the last bar or after it could never fill, so it is refused.
+fn read_script<'py>(script: &Bound<'py, PyDict>, bars: usize) -> PyResult<Vec<Vec<Action>>> {
+    let mut entries = Vec::with_capacity(script.len());
+    for (bar, actions) in script.iter() {
+        let Ok(t) = bar.extract::<usize>() else {
+            return Err(PyValueError::new_err(format!(
+                "script: {bar} is not a bar; key each bar's actions by its index from 0"
+            )));
+        };
+        if t + 1 >= bars {
+            return Err(PyValueError::new_err(format!(
+                "script: bar {t} is not before the last bar, {}; a decision there never fills",
+                bars.saturating_sub(1)
+            )));
+        }
+        entries.push((t, actions));
+    }
+    // placements are counted in the order the run takes them
+    entries.sort_by_key(|(t, _)| *t);
+    let mut out = vec![Vec::new(); bars];
+    let mut placements = 0;
+    for (t, actions) in entries {
+        for (k, action) in actions.try_iter()?.enumerate() {
+            let action = action?;
+            let at = format!("script[{t}][{k}]");
+            let Ok((verb, given)) = action.extract::<(String, Bound<'py, PyDict>)>() else {
+                return Err(PyValueError::new_err(format!(
+                    "{at}: {action} is not a verb and its arguments; write \
+                     (\"buy\", {{\"size\": 1.0}})"
+                )));
+            };
+            let action = read_action(&at, &verb, &given, placements)?;
+            if matches!(action, Action::Order { .. } | Action::Close) {
+                placements += 1;
+            }
+            out[t].push(action);
+        }
+    }
+    Ok(out)
+}
+
+/// Play `script` over `candles` at `venue` in one call and return what the run
+/// recorded: its ledger, fill log, order log and round trips, as `Engine` hands
+/// them out. `venue` takes `Engine`'s settings by name. `script` maps a bar to the
+/// actions taken at its close, each a verb and a dict of its arguments: `buy` and
+/// `sell` with a `size`, and a `limit` or a `stop`, `tif`, `post_only` and
+/// `reduce_only`; `close` and `cancel_all`; `cancel` and `replace` naming an
+/// `order`, the second with the `price`, `trigger` or `size` it moves to; and
+/// `transfer` with an `amount` and the wallet it goes `to`. An order is named by
+/// an earlier placement in the script, counting its buys, sells and closes from 0,
+/// which names nothing once the engine refused that placement, or as `"oldest"`,
+/// the oldest order still resting. The comparison with the reference simulator
+/// and the tests drive the engine through this.
+#[pyfunction]
+#[pyo3(name = "run", signature = (candles, venue, script, times = None))]
+fn run_script<'py>(
+    py: Python<'py>,
+    candles: Bound<'py, PyAny>,
+    venue: Option<Bound<'py, PyDict>>,
+    script: Bound<'py, PyDict>,
+    times: Option<Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let settings = match &venue {
+        Some(venue) => venue.copy()?,
+        None => PyDict::new(py),
+    };
+    if let Some(times) = times {
+        settings.set_item("times", times)?;
+    }
+    settings.set_item("report", true)?;
+    let engine = py
+        .get_type::<Engine>()
+        .call((candles,), Some(&settings))?
+        .cast_into::<Engine>()?;
+    let mut engine = engine.borrow_mut();
+    let mut script = Script::new(read_script(&script, engine.inner.num_bars())?);
+    let inner = &mut engine.inner;
+    py.detach(|| {
+        probatum_engine::run(inner, &mut script);
+    });
+    let out = PyDict::new(py);
+    out.set_item("ledger", ledger_of(py, &engine.inner)?)?;
+    out.set_item("fills", fills_of(py, &engine.inner)?)?;
+    out.set_item("order_log", order_log_of(py, &engine.inner)?)?;
+    out.set_item("trades", round_trips_of(py, &engine.inner)?)?;
+    Ok(out)
+}
+
 /// Bars a year on the clock `times`, each bar's open in UTC nanoseconds: the rows
 /// less one per 365 days of their span, or `None` with fewer than two rows
 /// (ADR 0004).
@@ -1740,5 +2039,6 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Batch>()?;
     m.add_class::<PyState>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
+    m.add_function(wrap_pyfunction!(run_script, m)?)?;
     Ok(())
 }

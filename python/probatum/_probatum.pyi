@@ -1,5 +1,5 @@
 """Type stubs for the compiled ``probatum._probatum`` extension: ``Engine``, ``Batch``,
-``State`` and ``periods_per_year``.
+``State``, ``periods_per_year`` and ``run``.
 Hand-maintained; keep in sync with ``crates/probatum-py/src/lib.rs``. Order, fill and
 event records come back as plain dicts, typed here as ``dict[str, Any]``.
 """
@@ -158,3 +158,9 @@ class Batch:
     def reset_masked(self, mask: np.ndarray, offsets: np.ndarray) -> None: ...
 
 def periods_per_year(times: np.ndarray) -> Optional[float]: ...
+def run(
+    candles: np.ndarray,
+    venue: Optional[dict[str, Any]],
+    script: dict[int, list[tuple[str, dict[str, Any]]]],
+    times: Optional[np.ndarray] = ...,
+) -> dict[str, Any]: ...

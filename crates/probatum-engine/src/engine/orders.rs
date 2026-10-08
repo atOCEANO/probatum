@@ -342,6 +342,12 @@ impl Engine {
         ids.len()
     }
 
+    /// The resting order placed first, or `None` with nothing resting. A replace
+    /// keeps an order's id, and so its age.
+    pub fn oldest_resting(&self) -> Option<OrderId> {
+        self.book.iter().map(|order| order.id).min_by_key(|id| id.0)
+    }
+
     /// Flatten the position with a reduce-only market order. `None` when flat.
     pub fn close(&mut self) -> Option<OrderId> {
         let pos = self.account.position.qty.get();

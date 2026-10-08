@@ -223,6 +223,68 @@ def test_the_order_log_follows_each_order_and_keeps_a_refused_one():
     assert (clamp["size"], clamp["reason"]) == (5.0, "5 of the 20 asked fits")
 
 
+def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():
+    venue  = dict(market="perp", quote=10_000.0, fee_taker=0.0006, leverage=5.0)
+    played = probatum._probatum.run(series(), venue, {
+        0: [("buy", {"size": 2.0}), ("sell", {"size": 1.0, "limit": 255.0})],
+        1: [("close", {})],
+    })
+
+    e = probatum.Engine(series(), report=True, **venue)
+    e.reset()
+    e.market_buy(2.0)
+    e.limit_sell(1.0, 255.0)
+    e.step()
+    e.close()
+    e.step()
+
+    assert played["fills"]     == e.fills()
+    assert played["order_log"] == e.order_log()
+    assert played["trades"]    == e.trades()
+
+    by_hand = e.ledger()
+    assert played["ledger"].keys() == by_hand.keys()
+    for name, column in by_hand.items():
+        np.testing.assert_array_equal(played["ledger"][name], column)
+
+
+def test_a_script_names_an_order_by_its_placement_or_as_the_oldest_resting():
+    bids   = [("buy", {"size": 1.0, "limit": price}) for price in (50.0, 40.0, 30.0)]
+    played = probatum._probatum.run(series(), None, {
+        0: bids,
+        1: [("cancel", {"order": 1}), ("cancel", {"order": "oldest"})],
+    })
+
+    log       = played["order_log"]
+    placed    = [event["order"] for event in log if event["kind"] == "placed"]
+    cancelled = [event["order"] for event in log if event["kind"] == "cancelled"]
+
+    assert cancelled == [placed[1], placed[0]]
+
+    # with one slot the second bid is refused, and naming it cancels nothing
+    played = probatum._probatum.run(series(), {"max_open_orders": 1}, {
+        0: bids[:2],
+        1: [("cancel", {"order": 1})],
+    })
+
+    assert [event["kind"] for event in played["order_log"]] == ["placed", "refused"]
+
+
+@pytest.mark.parametrize("script, says", [
+    ({0: [("hold", {})]}, '"hold" is not a verb'),
+    ({0: [("buy", {"size": 1.0, "price": 99.0})]}, "buy takes no price"),
+    ({0: [("buy", {"size": 1.0, "limit": 99.0, "stop": 98.0})]},
+     "an order is one or the other"),
+    ({0: [("buy", {"size": 1.0, "limit": float("nan")})]}, "limit NaN is not a price"),
+    ({0: [("cancel", {"order": 0})]}, "is not one of the 0 placements before it"),
+    ({0: [("transfer", {"amount": -1.0})]}, "amount: -1 is negative"),
+    ({2: [("close", {})]}, "bar 2 is not before the last bar"),
+])
+def test_a_script_the_engine_cannot_play_is_refused(script, says):
+    with pytest.raises(ValueError, match=re.escape(says)):
+        probatum._probatum.run(series(), None, script)
+
+
 def test_observation_is_a_zero_copy_readonly_view():
     e = engine()
     e.reset()  # tick 0
