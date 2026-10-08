@@ -17,6 +17,7 @@ repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
 pyo3 = "0.29"
 numpy = "0.29"
 rayon = "1"
+libm = "0.2"
 criterion = "0.5"
 proptest = "1"
 

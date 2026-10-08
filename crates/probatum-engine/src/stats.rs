@@ -104,7 +104,7 @@ impl Stats {
         let (total_return, cagr) = if initial > 0.0 && n_returns > 0 {
             let tr = final_equity / initial - 1.0;
             // A wipeout (final equity at or below zero, e.g. a perp bust past zero)
-            // annualizes to -100%; computing it as powf of a non-positive ratio
+            // annualizes to -100%; computing it as a power of a non-positive ratio
             // would be NaN and poison a sweep's argmax (ADR 0030).
             //
             // At the other end it overflows. Annualizing raises the ratio to
@@ -120,7 +120,10 @@ impl Stats {
             // because an annualized rate off a few hours is an extrapolation
             // and not a measurement (ADR 0030).
             let cagr = if final_equity > 0.0 {
-                let raw = (final_equity / initial).powf(periods_per_year / n_returns as f64) - 1.0;
+                // libm's pow, since the platform's may differ in the last bit
+                // (ADR 0021)
+                let years = periods_per_year / n_returns as f64;
+                let raw = libm::pow(final_equity / initial, years) - 1.0;
                 raw.min(CAGR_CEILING)
             } else {
                 -1.0
@@ -154,11 +157,15 @@ impl Stats {
         let (sharpe, sortino, volatility) = if returns.len() >= 2 {
             let count = returns.len() as f64;
             let mean = returns.iter().sum::<f64>() / count;
-            let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (count - 1.0);
+            let variance =
+                returns.iter().map(|r| (r - mean) * (r - mean)).sum::<f64>() / (count - 1.0);
             let std = variance.sqrt();
             let downside = (returns
                 .iter()
-                .map(|r| (r - rf_per).min(0.0).powi(2))
+                .map(|r| {
+                    let short = (r - rf_per).min(0.0);
+                    short * short
+                })
                 .sum::<f64>()
                 / count)
                 .sqrt();
@@ -266,9 +273,9 @@ impl Stats {
 // EQUIVALENT, not gaps. Recorded so nobody spends an afternoon on them again:
 //
 //   `n_returns > 0` at zero    the series is just the initial value, so the ratio
-//                              is 1.0, powf of 1.0 is 1.0, and both branches
+//                              is 1.0, its power is 1.0, and both branches
 //                              return (0.0, 0.0)
-//   `final_equity > 0.0` at 0  `0.0.powf(positive)` is 0.0, so raw is -1.0, which
+//   `final_equity > 0.0` at 0  `pow(0.0, positive)` is 0.0, so raw is -1.0, which
 //                              is the -1.0 the other branch hands back
 //   `w[0] > 0.0` at zero       the division gives an infinity or a NaN and the
 //                              `is_finite` check below already maps both to 0.0
@@ -642,7 +649,7 @@ mod tests {
         let deviation = 0.02_f64.sqrt();
         // only the -0.1 return falls below the rate, by 0.12, and the downside
         // deviation divides by the FULL count rather than the shortfall count
-        let downside = (0.12_f64.powi(2) / 2.0).sqrt();
+        let downside = (0.12 * 0.12 / 2.0_f64).sqrt();
         assert!(
             approx(s.sharpe, excess / deviation * 2.0),
             "sharpe {} against {}",
