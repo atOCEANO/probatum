@@ -206,26 +206,29 @@ mod tests {
     }
 
     #[test]
-    fn the_oldest_resting_order_keeps_its_age_through_a_replace() {
-        // a replace moves the first bid into the first free slot and keeps its id,
-        // so it is still the oldest order resting
+    fn the_oldest_resting_order_is_the_first_placed_whatever_its_slot() {
+        // cancelling the first of three bids frees slot 0 and the replace moves the
+        // third into it, so slot order would give the third where the oldest order
+        // still resting is the second
         let mut e = engine(8);
         let mut script = Script::new(vec![
-            vec![bid(90.0), bid(80.0)],
+            vec![bid(90.0), bid(80.0), bid(70.0)],
             vec![
+                Action::Cancel(OrderRef::Placed(0)),
                 Action::Replace {
-                    order: OrderRef::Placed(0),
+                    order: OrderRef::Placed(2),
                     size: None,
-                    price: Some(85.0),
+                    price: Some(75.0),
                     trigger: None,
                 },
                 Action::Cancel(OrderRef::Oldest),
             ],
         ]);
         let last = run(&mut e, &mut script);
-        assert_eq!(cancelled(&e), vec![script.placed[0].expect("rests")]);
+        let placed: Vec<OrderId> = script.placed.iter().map(|id| id.expect("rests")).collect();
+        assert_eq!(cancelled(&e), vec![placed[0], placed[1]]);
         assert_eq!(last.open_orders.len(), 1);
-        assert_eq!(Some(last.open_orders[0].id), script.placed[1]);
+        assert_eq!(last.open_orders[0].id, placed[2]);
     }
 
     #[test]

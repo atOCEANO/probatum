@@ -249,17 +249,20 @@ def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():
 
 
 def test_a_script_names_an_order_by_its_placement_or_as_the_oldest_resting():
+    # the first bid is cancelled by its placement and the replace moves the third
+    # into the slot that frees, so the oldest still resting is the second
     bids   = [("buy", {"size": 1.0, "limit": price}) for price in (50.0, 40.0, 30.0)]
     played = probatum._probatum.run(series(), None, {
         0: bids,
-        1: [("cancel", {"order": 1}), ("cancel", {"order": "oldest"})],
+        1: [("cancel", {"order": 0}), ("replace", {"order": 2, "price": 35.0}),
+            ("cancel", {"order": "oldest"})],
     })
 
     log       = played["order_log"]
     placed    = [event["order"] for event in log if event["kind"] == "placed"]
     cancelled = [event["order"] for event in log if event["kind"] == "cancelled"]
 
-    assert cancelled == [placed[1], placed[0]]
+    assert cancelled == [placed[0], placed[1]]
 
     # with one slot the second bid is refused, and naming it cancels nothing
     played = probatum._probatum.run(series(), {"max_open_orders": 1}, {
