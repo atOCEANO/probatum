@@ -1743,6 +1743,14 @@ impl Batch {
 /// The verbs a script takes, as an error lists them.
 const VERBS: &str = "buy, sell, close, cancel, cancel_all, replace or transfer";
 
+/// A value as it arrived, for an error to name: its repr, so "1" and 1 read apart.
+fn shown(value: &Bound<'_, PyAny>) -> String {
+    value
+        .repr()
+        .map(|repr| repr.to_string())
+        .unwrap_or_else(|_| "a value".to_string())
+}
+
 /// One script action's arguments, read by name, with `at` naming the action in an
 /// error. A value of None is read as an argument left out.
 struct Arguments<'a, 'py> {
@@ -1761,7 +1769,11 @@ impl<'py> Arguments<'_, 'py> {
             return Ok(None);
         };
         value.extract::<f64>().map(Some).map_err(|_| {
-            PyValueError::new_err(format!("{}: {name} {value} is not a number", self.at))
+            PyValueError::new_err(format!(
+                "{}: {name} {} is not a number; give a float",
+                self.at,
+                shown(&value)
+            ))
         })
     }
 
@@ -1782,16 +1794,24 @@ impl<'py> Arguments<'_, 'py> {
             return Ok(false);
         };
         value.extract::<bool>().map_err(|_| {
-            PyValueError::new_err(format!("{}: {name} {value} is not True or False", self.at))
+            PyValueError::new_err(format!(
+                "{}: {name} {} is not True or False; give a bool",
+                self.at,
+                shown(&value)
+            ))
         })
     }
 
-    fn text(&self, name: &str, default: &str) -> PyResult<String> {
+    fn text(&self, name: &str, default: &str, choices: &str) -> PyResult<String> {
         let Some(value) = self.value(name)? else {
             return Ok(default.to_string());
         };
         value.extract::<String>().map_err(|_| {
-            PyValueError::new_err(format!("{}: {name} {value} is not a string", self.at))
+            PyValueError::new_err(format!(
+                "{}: {name} {} is not a string; use {choices}",
+                self.at,
+                shown(&value)
+            ))
         })
     }
 
@@ -1800,7 +1820,7 @@ impl<'py> Arguments<'_, 'py> {
     fn order(&self, placements: usize) -> PyResult<OrderRef> {
         let Some(value) = self.value("order")? else {
             return Err(PyValueError::new_err(format!(
-                "{}: {} needs an order; name an earlier placement, counted from 0, or \
+                "{}: {} has no order; name an earlier placement, counted from 0, or \
                  \"oldest\"",
                 self.at, self.verb
             )));
@@ -1811,9 +1831,10 @@ impl<'py> Arguments<'_, 'py> {
         match value.extract::<usize>() {
             Ok(n) if n < placements => Ok(OrderRef::Placed(n)),
             _ => Err(PyValueError::new_err(format!(
-                "{}: order {value} is not one of the {placements} placements before it; \
+                "{}: order {} is not one of the {placements} placements before it; \
                  name one counted from 0, or \"oldest\"",
-                self.at
+                self.at,
+                shown(&value)
             ))),
         }
     }
@@ -1823,8 +1844,10 @@ impl<'py> Arguments<'_, 'py> {
         match self.value("instrument")? {
             Some(value) if value.extract::<usize>().ok() != Some(0) => {
                 Err(PyValueError::new_err(format!(
-                    "{}: instrument {value} is not one the engine holds; it holds one, 0",
-                    self.at
+                    "{}: instrument {} is not one the engine holds; name 0, the one it \
+                     holds, or leave it out",
+                    self.at,
+                    shown(&value)
                 )))
             }
             _ => Ok(()),
@@ -1859,8 +1882,13 @@ fn read_action(
             )))
         }
     };
-    for name in given.keys() {
-        let name: String = name.extract()?;
+    for key in given.keys() {
+        let Ok(name) = key.extract::<String>() else {
+            return Err(PyValueError::new_err(format!(
+                "{at}: {} is not an argument's name; name each argument with a string",
+                shown(&key)
+            )));
+        };
         if !takes.contains(&name.as_str()) {
             return Err(PyValueError::new_err(format!(
                 "{at}: {verb} takes no {name}; it takes {}",
@@ -1873,7 +1901,9 @@ fn read_action(
         "buy" | "sell" => {
             args.instrument()?;
             let Some(size) = args.number("size")? else {
-                return Err(PyValueError::new_err(format!("{at}: {verb} needs a size")));
+                return Err(PyValueError::new_err(format!(
+                    "{at}: {verb} has no size; give it one, in base units"
+                )));
             };
             let (price, trigger) = (args.price("limit")?, args.price("stop")?);
             let kind = match (price, trigger) {
@@ -1882,12 +1912,12 @@ fn read_action(
                 (None, Some(_)) => OrderType::Stop,
                 (Some(limit), Some(stop)) => {
                     return Err(PyValueError::new_err(format!(
-                        "{at}: {verb} has a limit {limit} and a stop {stop}; an order is \
-                         one or the other"
+                        "{at}: {verb} has a limit {limit} and a stop {stop}; give one or \
+                         the other"
                     )))
                 }
             };
-            let tif = args.text("tif", "gtc")?;
+            let tif = args.text("tif", "gtc", "gtc, ioc or fok")?;
             Action::Order {
                 side: if verb == "buy" { Side::Buy } else { Side::Sell },
                 size,
@@ -1898,7 +1928,7 @@ fn read_action(
                 post_only: args.flag("post_only")?,
                 tif: parse_tif(&tif).map_err(|_| {
                     PyValueError::new_err(format!(
-                        "{at}: tif {tif:?} is not one; use gtc, ioc or fok"
+                        "{at}: tif {tif:?} is not a time in force; use gtc, ioc or fok"
                     ))
                 })?,
             }
@@ -1921,10 +1951,10 @@ fn read_action(
         _ => {
             let Some(amount) = args.number("amount")? else {
                 return Err(PyValueError::new_err(format!(
-                    "{at}: transfer needs an amount"
+                    "{at}: transfer has no amount; give it the cash to move"
                 )));
             };
-            let to = args.text("to", "margin")?;
+            let to = args.text("to", "margin", "spot or margin")?;
             Action::Transfer {
                 amount,
                 to: transfer_to(&format!("{at}: "), amount, &to)?,
@@ -1942,13 +1972,17 @@ fn read_script<'py>(script: &Bound<'py, PyDict>, bars: usize) -> PyResult<Vec<Ve
     for (bar, actions) in script.iter() {
         let Ok(t) = bar.extract::<usize>() else {
             return Err(PyValueError::new_err(format!(
-                "script: {bar} is not a bar; key each bar's actions by its index from 0"
+                "script: {} is not a bar; key each bar's actions by its index from 0",
+                shown(&bar)
             )));
         };
-        if t + 1 >= bars {
+        if t >= bars.saturating_sub(1) {
+            let fix = match bars {
+                0 | 1 => "a script needs two bars or more".to_string(),
+                _ => format!("key decisions by the bars from 0 to {}", bars - 2),
+            };
             return Err(PyValueError::new_err(format!(
-                "script: bar {t} is not before the last bar, {}; a decision there never fills",
-                bars.saturating_sub(1)
+                "script: bar {t} has no bar after it to fill on; {fix}"
             )));
         }
         entries.push((t, actions));
@@ -1958,13 +1992,20 @@ fn read_script<'py>(script: &Bound<'py, PyDict>, bars: usize) -> PyResult<Vec<Ve
     let mut out = vec![Vec::new(); bars];
     let mut placements = 0;
     for (t, actions) in entries {
-        for (k, action) in actions.try_iter()?.enumerate() {
+        let Ok(actions_iter) = actions.try_iter() else {
+            return Err(PyValueError::new_err(format!(
+                "script: bar {t} holds {}; give it a list of actions",
+                shown(&actions)
+            )));
+        };
+        for (k, action) in actions_iter.enumerate() {
             let action = action?;
             let at = format!("script[{t}][{k}]");
             let Ok((verb, given)) = action.extract::<(String, Bound<'py, PyDict>)>() else {
                 return Err(PyValueError::new_err(format!(
-                    "{at}: {action} is not a verb and its arguments; write \
-                     (\"buy\", {{\"size\": 1.0}})"
+                    "{at}: {} is not a verb and its arguments; write \
+                     (\"buy\", {{\"size\": 1.0}})",
+                    shown(&action)
                 )));
             };
             let action = read_action(&at, &verb, &given, placements)?;
@@ -1984,11 +2025,13 @@ fn read_script<'py>(script: &Bound<'py, PyDict>, bars: usize) -> PyResult<Vec<Ve
 /// `sell` with a `size`, and a `limit` or a `stop`, `tif`, `post_only` and
 /// `reduce_only`; `close` and `cancel_all`; `cancel` and `replace` naming an
 /// `order`, the second with the `price`, `trigger` or `size` it moves to; and
-/// `transfer` with an `amount` and the wallet it goes `to`. An order is named by
-/// an earlier placement in the script, counting its buys, sells and closes from 0,
-/// which names nothing once the engine refused that placement, or as `"oldest"`,
-/// the oldest order still resting. The comparison with the reference simulator
-/// and the tests drive the engine through this.
+/// `transfer` with an `amount` and the wallet it goes `to`, the margin wallet
+/// unless named. `buy`, `sell`, `close` and `cancel_all` take `instrument` too,
+/// which at one instrument can only be 0. An order is named by an earlier placement
+/// in the script, counting its buys, sells and closes from 0, which names nothing
+/// once the engine refused that placement or a close found nothing to close, or as
+/// `"oldest"`, the oldest order still resting. The comparison with the reference
+/// simulator and the tests drive the engine through this.
 #[pyfunction]
 #[pyo3(name = "run", signature = (candles, venue, script, times = None))]
 fn run_script<'py>(
