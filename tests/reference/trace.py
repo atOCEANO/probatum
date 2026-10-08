@@ -26,14 +26,14 @@ def diverges(bars, times, cfg, actions):
     both model is not a disagreement, so a shrink that wanders out of it is not one
     either."""
     try:
-        rows, engine, sim = D.run(bars, times, cfg, actions)
+        rows, records, sim = D.run(bars, times, cfg, actions)
     except Exception:
         return None
 
     if D.set_aside(sim) is not None:
         return None
 
-    found = D.disagreement(rows, engine, sim, cfg)
+    found = D.disagreement(rows, records, sim, cfg)
     return None if found is None else found[0]
 
 
@@ -71,50 +71,47 @@ def rounded(value):
     return round(value, 6) if isinstance(value, float) else value
 
 
+COSTS = ("fees", "slippage", "funding", "liquidation")
+
+
+def on_bar(log, t):
+    return [{k: rounded(v) for k, v in entry.items()} for entry in log
+            if entry["bar"] == t]
+
+
 def trace(bars, times, cfg, actions):
-    """Bar by bar, both sides, so the exact step that parts them is visible."""
-    engine = D.make_engine(bars, cfg, times)
-    sim    = D.make_reference(bars, cfg, times)
-    engine.reset()
+    """Bar by bar, both sides, so the exact step that parts them is visible: each
+    side's account at the close, and the events and fills it recorded on the bar."""
+    _, records, sim = D.run(bars, times, cfg, actions)
+    ledger = records["ledger"]
+    rows   = []
 
-    mine, theirs, rows = [], [], []
-    for t, action in enumerate(actions):
-        D.place(engine, sim, action, bars[t].close, mine, theirs)
-        state = engine.step()
-        sim.step()
-
-        ledger = sim.ledger[-1]
+    for t in range(1, len(bars)):
+        theirs = sim.ledger[t]
+        held   = theirs["instruments"][0]
         rows.append(dict(
-            bar=sim.t,
-            ohlcv=[round(x, 4) for x in bars[sim.t]],
-            placed=action,
-            engine=dict(position=rounded(state["position"]),
-                        equity=rounded(state["equity"]),
-                        entry=rounded(state["avg_entry"]),
-                        spot_cash=rounded(state["spot_cash"]),
-                        margin_cash=rounded(state["margin_cash"]),
-                        funding=rounded(state["funding_paid"]),
-                        bust=engine.is_bust(),
-                        live=list(mine)),
-            reference=dict(position=rounded(sim.position[0]),
-                           equity=rounded(sim.equity()),
-                           entry=rounded(sim.entry[0]),
-                           spot_cash=rounded(sim.spot_cash),
-                           margin_cash=rounded(sim.margin_cash),
-                           costs={k: rounded(ledger[k]) for k in (
-                               "fees", "slippage", "funding", "liquidation")},
-                           liquidations=sim.liquidations,
-                           live=list(theirs),
-                           resting=[dict(id=o["id"], kind=o["kind"], side=o["side"],
-                                         size=rounded(o["size"]),
-                                         filled=rounded(o["filled"]),
-                                         price=o["price"], trigger=o["trigger"])
-                                    for o in sim.resting()]),
+            bar=t,
+            ohlcv=[round(x, 4) for x in bars[t]],
+            placed=actions[t - 1],
+            engine=dict(position=rounded(float(ledger["position"][t])),
+                        equity=rounded(float(ledger["equity"][t])),
+                        entry=rounded(float(ledger["entry"][t])),
+                        spot_cash=rounded(float(ledger["spot_cash"][t])),
+                        margin_cash=rounded(float(ledger["margin_cash"][t])),
+                        costs={k: rounded(float(ledger[k][t])) for k in COSTS},
+                        events=on_bar(records["order_log"], t),
+                        fills=on_bar(records["fills"], t)),
+            reference=dict(position=rounded(held["position"]),
+                           equity=rounded(theirs["equity"]),
+                           entry=rounded(held["entry"]),
+                           spot_cash=rounded(theirs["spot_cash"]),
+                           margin_cash=rounded(theirs["margin_cash"]),
+                           costs={k: rounded(theirs[k]) for k in COSTS},
+                           events=on_bar(sim.events, t),
+                           fills=on_bar(sim.fills, t)),
         ))
-        if engine.done():
-            break
 
-    return rows, engine, sim
+    return rows, records, sim
 
 
 def main():
@@ -131,16 +128,14 @@ def main():
             continue
 
         bars, times, actions, at = shrink(bars, times, cfg, actions)
-        rows, engine, sim = trace(bars, times, cfg, actions)
-
+        rows, records, sim = trace(bars, times, cfg, actions)
         out = dict(
             seed=seed, case=case, config=cfg, diverges_at_row=at,
             bars=[list(b) for b in bars], times=times, actions=actions, rows=rows,
             engine_trades=[{k: rounded(v) for k, v in trade.items()}
-                           for trade in (engine.trades() or [])],
-            reference_fills=[{k: rounded(v) for k, v in fill.items()}
-                             for fill in sim.fills],
-            reference_events=sim.events,
+                           for trade in records["trades"]],
+            reference_trades=[{k: rounded(v) for k, v in trade.items()}
+                              for trade in sim.round_trips()],
         )
 
         path = f"/diff/case-seed{seed}.json"

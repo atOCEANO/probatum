@@ -1,8 +1,11 @@
 """Run the engine and the reference over the same random cases and diff them.
 
-The reference is written from the Specification and never from the engine, so a case
-the two part company on is a question about a rule, and somebody has to decide which
-reading is wrong. The engine still carries emsl's rules where the Specification has
+The reference decides each case's actions on its own account as it goes, and they
+are written down as a script the engine then plays in one call through the
+binding's `run`, which names an order by the placement that made it. The reference
+is written from the Specification and never from the engine, so a case the two part
+company on is a question about a rule, and somebody has to decide which reading is
+wrong. The engine still carries emsl's rules where the Specification has
 moved on, so a case is compared only where the reference applied none of the rules
 the engine has yet to take up. The reference counts every rule it applies, which is
 what decides it, and a stage that brings a rule into the engine takes it off
@@ -201,23 +204,21 @@ def engine_funding(source):
     return {}
 
 
-def make_engine(bars, cfg, times):
-    array = np.array([list(bar) for bar in bars], dtype=np.float64)
-    return probatum.Engine(
-        array,
-        market            = cfg["market"],
-        quote             = balance(cfg),
-        fee_taker         = cfg["fee_taker"],
-        fee_maker         = cfg["fee_maker"],
-        slippage_bps      = cfg["slippage_bps"],
-        max_fill_fraction = 1.0,
-        max_open_orders   = cfg["max_open_orders"],
-        leverage          = cfg["leverage"],
-        impact            = 0.0,
-        times             = np.array(times, dtype=np.int64),
-        report            = True,
-        **engine_funding(cfg["funding"]),
+def venue(cfg):
+    """The engine's settings for a case, as the binding takes them."""
+    return dict(
+        market=cfg["market"], quote=balance(cfg), fee_taker=cfg["fee_taker"],
+        fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
+        max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
+        leverage=cfg["leverage"], impact=0.0, **engine_funding(cfg["funding"]),
     )
+
+
+def play(bars, times, cfg, script):
+    """The engine through a whole script in one call, and what it recorded."""
+    array = np.array([list(bar) for bar in bars], dtype=np.float64)
+    return probatum._probatum.run(array, venue(cfg), script.bars,
+                                  times=np.array(times, dtype=np.int64))
 
 
 def make_reference(bars, cfg, times, interval=None, events=None):
@@ -264,9 +265,32 @@ def resting(sim, order_id):
     return order is not None and order["status"] == "resting"
 
 
-def place(engine, sim, action, close, mine, theirs, reached=None):
-    """One action on both sides. `mine` and `theirs` hold the ids each believes it
-    placed, in order, so a cancel or a replace addresses the same order in each."""
+class Script:
+    """The engine's script, written as the reference decides: each bar's actions,
+    and how many placements came before, which is how a cancel or a replace names
+    its order."""
+
+
+    def __init__(self):
+        self.bars       = {}
+        self.placements = 0
+
+
+    def take(self, t, verb, **arguments):
+        """Write one action at bar `t`, returning the placement it makes, if any."""
+        self.bars.setdefault(t, []).append((verb, arguments))
+        if verb not in ("buy", "sell", "close"):
+            return None
+
+        self.placements += 1
+        return self.placements - 1
+
+
+def place(sim, action, t, close, theirs, script, reached=None):
+    """One action, decided by the reference on its own account and taken there, and
+    written into `script` for the engine. `theirs` holds the reference's resting
+    orders, each its id and the placement that made it, oldest first, so a cancel
+    or a replace names the same order on both sides."""
     if action is None:
         return
 
@@ -278,34 +302,33 @@ def place(engine, sim, action, close, mine, theirs, reached=None):
         # no telling that from a real agreement
         if kind in ("close", "reduce", "exits") and sim.position[0] != 0.0:
             reached[kind] += 1
-        elif kind in ("cancel", "replace") and theirs and resting(sim, theirs[0]):
+        elif kind in ("cancel", "replace") and theirs and resting(sim, theirs[0][0]):
             reached[kind] += 1
         elif kind == "cancel_all" and sim.resting():
             reached[kind] += 1
 
-    mine_got = theirs_got = None
+    got = None
     if kind in ("market", "fok", "reduce"):
         tif         = "fok" if kind == "fok" else "ioc"
         reduce_only = kind == "reduce"
-        mine_got    = engine.order(side, size, "market", None, None, reduce_only, False,
-                                   tif)
-        theirs_got = sim.order(0, side, size, tif=tif, reduce_only=reduce_only)
+        script.take(t, side, size=size, tif=tif, reduce_only=reduce_only)
+        sim.order(0, side, size, tif=tif, reduce_only=reduce_only)
     elif kind in ("limit", "post", "ioc_limit", "fok_limit", "reduce_limit"):
         price = limit_price(side, close, u)
         tif   = {"ioc_limit": "ioc", "fok_limit": "fok"}.get(kind, "gtc")
         post_only, reduce_only = kind == "post", kind == "reduce_limit"
-        mine_got = engine.order(side, size, "limit", price, None, reduce_only,
-                                post_only, tif)
-        theirs_got = sim.order(0, side, size, limit=price, tif=tif, post_only=post_only,
-                               reduce_only=reduce_only)
+        placed = script.take(t, side, size=size, limit=price, tif=tif,
+                             post_only=post_only, reduce_only=reduce_only)
+        got = (sim.order(0, side, size, limit=price, tif=tif, post_only=post_only,
+                         reduce_only=reduce_only), placed)
     elif kind in ("stop", "stop_entry"):
         # a protective stop only shrinks the position; a breakout stop opens one
         trigger, reduce_only = stop_price(close, u), kind == "stop"
-        mine_got   = engine.stop(side, size, trigger, reduce_only)
-        theirs_got = sim.order(0, side, size, stop=trigger, reduce_only=reduce_only)
+        placed = script.take(t, side, size=size, stop=trigger, reduce_only=reduce_only)
+        got    = (sim.order(0, side, size, stop=trigger, reduce_only=reduce_only), placed)
     elif kind == "close":
-        mine_got   = engine.close()
-        theirs_got = sim.close(0)
+        script.take(t, "close")
+        sim.close(0)
     elif kind == "exits":
         # a protective stop and a take-profit on the position held, which one wide
         # bar can reach both of, so the worse is tried first
@@ -316,84 +339,73 @@ def place(engine, sim, action, close, mine, theirs, reached=None):
         side = "sell" if held > 0.0 else "buy"
         low, high = close * (0.8 + 0.19 * u), close * (1.01 + 0.19 * u)
         trigger, price = (low, high) if held > 0.0 else (high, low)
-        placed = [
-            (engine.stop(side, size, trigger, True),
-             sim.order(0, side, size, stop=trigger, reduce_only=True)),
-            (engine.order(side, size, "limit", price, None, True, False, "gtc"),
-             sim.order(0, side, size, limit=price, reduce_only=True)),
-        ]
-        for got_mine, got_theirs in placed:
-            if got_mine is not None:
-                mine.append(got_mine)
-            if resting(sim, got_theirs):
-                theirs.append(got_theirs)
+
+        for leg in (dict(stop=trigger), dict(limit=price)):
+            placed = script.take(t, side, size=size, reduce_only=True, **leg)
+            order  = sim.order(0, side, size, reduce_only=True, **leg)
+            if resting(sim, order):
+                theirs.append((order, placed))
     elif kind == "transfer":
         # into the margin wallet on a buy and out of it on a sell, from a twentieth
         # of the balance to twelve times it, so both clamps bind
         to = "margin" if side == "buy" else "spot"
-        engine.transfer(size * close, to)
+        script.take(t, "transfer", amount=size * close, to=to)
         sim.transfer(size * close, to=to)
     elif kind == "cancel":
-        if mine and theirs:
-            engine.cancel(mine.pop(0))
-            sim.cancel(theirs.pop(0))
+        if theirs:
+            order, placed = theirs.pop(0)
+            script.take(t, "cancel", order=placed)
+            sim.cancel(order)
     elif kind == "cancel_all":
-        engine.cancel_all()
+        script.take(t, "cancel_all")
         sim.cancel_all()
-        mine.clear()
         theirs.clear()
-    elif kind == "replace" and mine and theirs:
+    elif kind == "replace" and theirs:
         # the side and kind stay the order's own: a replacement moves an order, it
-        # never turns one into another
-        order = sim.orders[theirs[0]]
-        size  = size / 2.0
-        if order["kind"] == "stop":
+        # never turns one into another, and it keeps its id on both sides
+        order, placed = theirs[0]
+        size = size / 2.0
+        if sim.orders[order]["kind"] == "stop":
             trigger = stop_price(close, u)
-            moved   = engine.replace(mine[0], size, None, trigger)
-            sim.replace(theirs[0], trigger=trigger, size=size)
+            script.take(t, "replace", order=placed, size=size, trigger=trigger)
+            sim.replace(order, trigger=trigger, size=size)
         else:
             # now and then only the size moves, which is no new placement for
             # post_only, so the close is not read against the order again
-            price = None if u < 0.25 else limit_price(order["side"], close, u)
-            moved = engine.replace(mine[0], size, price, None)
-            sim.replace(theirs[0], price=price, size=size)
-        # a refused replacement leaves the original under its own id on both sides
-        if moved is not None:
-            mine[0] = moved
+            price = None if u < 0.25 else limit_price(sim.orders[order]["side"],
+                                                      close, u)
+            script.take(t, "replace", order=placed, size=size, price=price)
+            sim.replace(order, price=price, size=size)
 
-    if kind in ("limit", "post", "ioc_limit", "fok_limit", "reduce_limit", "stop",
-                "stop_entry"):
-        if mine_got is not None:
-            mine.append(mine_got)
-        if resting(sim, theirs_got):
-            theirs.append(theirs_got)
-        if reached is not None and resting(sim, theirs_got) and kind in (
-                "ioc_limit", "fok_limit", "reduce_limit", "stop_entry"):
+    if got is not None and resting(sim, got[0]):
+        theirs.append(got)
+        if reached is not None and kind in ("ioc_limit", "fok_limit", "reduce_limit",
+                                            "stop_entry"):
             reached[kind] += 1
 
 
 def run(bars, times, cfg, actions, reached=None):
-    """Both simulators through the case, a row of each per bar."""
-    engine = make_engine(bars, cfg, times)
-    sim    = make_reference(bars, cfg, times)
-    engine.reset()
-
-    mine, theirs, rows = [], [], []
+    """The reference through the case, deciding as it goes, then the engine through
+    the same decisions in one call: a row of each per bar, what the engine recorded,
+    and the reference."""
+    sim = make_reference(bars, cfg, times)
+    script, theirs, rows = Script(), [], []
     funded = 0.0
 
     for t, action in enumerate(actions):
-        place(engine, sim, action, bars[t].close, mine, theirs, reached)
-        state = engine.step()
+        place(sim, action, t, bars[t].close, theirs, script, reached)
         sim.step()
         funded += sim.ledger[-1]["funding"]
-        rows.append(((state["position"], state["equity"], state["spot_cash"],
-                      state["margin_cash"], state["funding_paid"]),
-                     (sim.position[0], sim.equity(), sim.spot_cash, sim.margin_cash,
-                      funded)))
-        if engine.done():
-            break
+        rows.append((sim.position[0], sim.equity(), sim.spot_cash, sim.margin_cash,
+                     funded))
 
-    return rows, engine, sim
+    records = play(bars, times, cfg, script)
+    ledger  = records["ledger"]
+    paid    = np.cumsum(ledger["funding"])
+    mine    = [(ledger["position"][t], ledger["equity"][t], ledger["spot_cash"][t],
+                ledger["margin_cash"][t], paid[t]) for t in range(1, len(rows) + 1)]
+
+    return list(zip(mine, rows)), records, sim
 
 
 def set_aside(sim):
@@ -480,7 +492,7 @@ def log_difference(what, fields, mine, theirs):
     return None
 
 
-def disagreement(rows, engine, sim, cfg):
+def disagreement(rows, records, sim, cfg):
     """Where the two first part company on any record, as the bar and what about, or
     None: the account bar by bar, then the fill log, the order log, the round trips
     and the ledger."""
@@ -488,11 +500,11 @@ def disagreement(rows, engine, sim, cfg):
     if found is not None:
         return found[0] + 1, found[1]
 
-    return (log_difference("fill", FILL_FIELDS, engine.fills(), sim.fills)
-            or log_difference("event", EVENT_FIELDS, engine.order_log(), sim.events)
-            or log_difference("round trip", TRIP_FIELDS, engine.trades(),
+    return (log_difference("fill", FILL_FIELDS, records["fills"], sim.fills)
+            or log_difference("event", EVENT_FIELDS, records["order_log"], sim.events)
+            or log_difference("round trip", TRIP_FIELDS, records["trades"],
                               sim.round_trips())
-            or ledger_difference(engine.ledger(), sim.ledger))
+            or ledger_difference(records["ledger"], sim.ledger))
 
 
 Outcome = collections.namedtuple(
@@ -514,7 +526,7 @@ def compare(cases, seed):
         counted = collections.Counter()
 
         try:
-            rows, engine, sim = run(bars, times, cfg, actions, counted)
+            rows, records, sim = run(bars, times, cfg, actions, counted)
         except Exception as exc:
             disagreed.append((case, cfg, bars, actions,
                               f"raised: {type(exc).__name__}: {exc}"))
@@ -527,7 +539,7 @@ def compare(cases, seed):
 
         reached.update(counted)
         rules.update(sim.reached)
-        found = disagreement(rows, engine, sim, cfg)
+        found = disagreement(rows, records, sim, cfg)
         if found is None:
             agreed += 1
         else:
