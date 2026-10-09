@@ -174,9 +174,10 @@ def compare(cases, seed):
     agreed, disagreed = 0, []
 
     for case in range(cases):
-        bars     = walk(rng, rng.randint(12, 40))
-        times    = clock(rng, len(bars))
-        cfg      = config(rng, times)
+        bars  = walk(rng, rng.randint(12, 40))
+        times = clock(rng, len(bars))
+        # the batch takes no tier table until it runs universes
+        cfg      = dict(config(rng, times), tiers=None)
         num_envs = rng.randint(2, 5)
         offsets  = offsets_for(rng, bars, num_envs)
         window   = rng.randint(1, 6)

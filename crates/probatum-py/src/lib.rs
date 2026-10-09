@@ -20,7 +20,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use probatum_core::candle::floats;
-use probatum_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce, Wallet};
+use probatum_core::{
+    Candle, Market, Order, OrderId, OrderType, Side, State, Tier, TierBasis, TierError, Tiers,
+    TimeInForce, Wallet,
+};
 use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{
@@ -347,6 +350,84 @@ fn transfer_to(at: &str, amount: f64, to: &str) -> PyResult<Wallet> {
             "{at}to: {to:?} is not a wallet; use spot or margin"
         ))),
     }
+}
+
+/// A venue's tier table, rows of (up_to, leverage, rate, amount) whose bounds
+/// measure notional or size as `by` says, refused as the loader refuses it and
+/// wherever a number cannot be one (ADR 0007).
+fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
+    let basis = match by.to_ascii_lowercase().as_str() {
+        "notional" => TierBasis::Notional,
+        "quantity" => TierBasis::Quantity,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "tiers_by: {by:?} is not a basis; use notional or quantity"
+            )))
+        }
+    };
+    let mut table = Vec::with_capacity(rows.len());
+    let mut below = 0.0;
+    for (row, numbers) in rows.into_iter().enumerate() {
+        let [up_to, leverage, rate, amount] = numbers[..] else {
+            return Err(PyValueError::new_err(format!(
+                "tiers[{row}]: {} numbers; give (up_to, leverage, rate, amount)",
+                numbers.len()
+            )));
+        };
+        let named = [
+            ("up_to", up_to),
+            ("leverage", leverage),
+            ("rate", rate),
+            ("amount", amount),
+        ];
+        for (name, value) in named {
+            if !value.is_finite() {
+                return Err(PyValueError::new_err(format!(
+                    "tiers[{row}]: {name} {value} is not a finite number; give a number"
+                )));
+            }
+        }
+        if up_to <= below {
+            return Err(PyValueError::new_err(format!(
+                "tiers[{row}]: up_to {up_to} is not above the bound before it, {below}; \
+                 list the tiers in rising order"
+            )));
+        }
+        for (name, value) in [("leverage", leverage), ("rate", rate)] {
+            if value < 0.0 {
+                return Err(PyValueError::new_err(format!(
+                    "tiers[{row}]: {name} {value} is negative; give zero or more"
+                )));
+            }
+        }
+        below = up_to;
+        table.push(Tier {
+            up_to,
+            leverage,
+            rate,
+            amount,
+        });
+    }
+    Tiers::new(basis, table).map_err(|why| {
+        PyValueError::new_err(match why {
+            TierError::Rate { row, rate } => format!(
+                "tiers[{row}]: a maintenance rate of {rate} is not below one; give a rate \
+                 under 1"
+            ),
+            TierError::Initial { row, rate, initial } => format!(
+                "tiers[{row}]: a maintenance rate of {rate} reaches the initial rate of \
+                 {initial}, one over the leverage; keep it below"
+            ),
+            TierError::Amount {
+                row,
+                amount,
+                wanted,
+            } => format!(
+                "tiers[{row}]: an amount of {amount} breaks continuity at the bound before \
+                 it; continuity needs {wanted}"
+            ),
+        })
+    })
 }
 
 /// Reject a fee rate at or below -1. A rebate larger than the notional turns the
@@ -888,6 +969,8 @@ impl Engine {
         funding_hours = 0.0,
         funding_times = None,
         funding_rates = None,
+        tiers = None,
+        tiers_by = "notional",
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -908,6 +991,8 @@ impl Engine {
         funding_hours: f64,
         funding_times: Option<PyReadonlyArray1<'_, i64>>,
         funding_rates: Option<PyReadonlyArray1<'_, f64>>,
+        tiers: Option<Vec<Vec<f64>>>,
+        tiers_by: &str,
     ) -> PyResult<Engine> {
         let config = build_config(
             market,
@@ -931,6 +1016,10 @@ impl Engine {
             funding_times,
             funding_rates,
         )?;
+        let series = match tiers {
+            Some(rows) => series.with_tiers(tiers_from(rows, tiers_by)?),
+            None => series,
+        };
         Ok(Engine {
             inner: BarEngine::new(series, config),
         })

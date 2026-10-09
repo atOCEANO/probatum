@@ -50,6 +50,8 @@ class Engine:
         funding_hours: float = ...,
         funding_times: Optional[np.ndarray] = ...,
         funding_rates: Optional[np.ndarray] = ...,
+        tiers: Optional[list[tuple[float, float, float, float]]] = ...,
+        tiers_by: str = ...,
     ) -> None: ...
     @property
     def shape(self) -> tuple[int, int]: ...

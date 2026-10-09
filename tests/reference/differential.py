@@ -109,7 +109,7 @@ def config(rng, times):
             ("data", stamps(rng, times)),
         ])
 
-    return dict(
+    cfg = dict(
         market=market,
         quote=rng.choice([1_000.0, 10_000.0]),
         # the other wallet's opening cash, which only a transfer puts to work
@@ -123,6 +123,24 @@ def config(rng, times):
         leverage=rng.choice([0.0, 3.0, 10.0]) if perp else 10.0,
         funding=funding,
     )
+    cfg["tiers"], cfg["tiers_by"] = tier_table(rng, cfg["quote"], perp)
+
+    return cfg
+
+
+def tier_table(rng, quote, perp):
+    """No table for most cases, and for some perpetuals three tiers of falling
+    leverage, their bounds a few times the balance in notional, or in size at the
+    walk's opening price of 100, so the cap meets them."""
+    if not perp or rng.random() < 0.6:
+        return None, "notional"
+
+    basis    = rng.choice(["notional", "quantity"])
+    scale    = quote if basis == "notional" else quote / 100.0
+    bounds   = sorted(rng.sample([1.0, 2.0, 4.0, 8.0, 16.0], 3))
+    leverage = sorted(rng.sample([20.0, 10.0, 5.0, 3.0, 2.0], 3), reverse=True)
+
+    return [(scale * b, lev, 0.0, 0.0) for b, lev in zip(bounds, leverage)], basis
 
 
 def balance(cfg):
@@ -210,7 +228,8 @@ def venue(cfg):
         market=cfg["market"], quote=balance(cfg), fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
         max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
-        leverage=cfg["leverage"], impact=0.0, **engine_funding(cfg["funding"]),
+        leverage=cfg["leverage"], impact=0.0, tiers=cfg["tiers"],
+        tiers_by=cfg["tiers_by"], **engine_funding(cfg["funding"]),
     )
 
 
@@ -249,11 +268,17 @@ def make_reference(bars, cfg, times, interval=None, events=None):
 
     if events is not None:
         events = [(stamp, None, rate) for stamp, rate in events]
+    instrument = Instrument(
+        "X",
+        kind     = kind,
+        tiers    = cfg.get("tiers"),
+        tiers_by = cfg.get("tiers_by", "notional"),
+    )
 
     return Simulator(
         times,
         [[bar] for bar in bars],
-        [Instrument("X", kind=kind)],
+        [instrument],
         venue,
         interval = interval,
         funding  = events,

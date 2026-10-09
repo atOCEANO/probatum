@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use probatum_core::Candle;
+use probatum_core::{Candle, Tiers};
 
 use crate::clock::Clock;
 use crate::schedule::Schedule;
@@ -15,6 +15,7 @@ pub struct Candles {
     bars: Arc<[Candle]>,
     clock: Option<Clock>,
     funding: Option<Arc<Schedule>>,
+    tiers: Option<Arc<Tiers>>,
 }
 
 impl Candles {
@@ -26,6 +27,7 @@ impl Candles {
             bars: bars.into(),
             clock: None,
             funding: None,
+            tiers: None,
         }
     }
 
@@ -38,6 +40,7 @@ impl Candles {
             bars,
             clock: Some(clock),
             funding: None,
+            tiers: None,
         }
     }
 
@@ -53,6 +56,18 @@ impl Candles {
     /// The series' clock, or `None` when its bars came without times.
     pub fn clock(&self) -> Option<&Clock> {
         self.clock.as_ref()
+    }
+
+    /// The same series under the venue's tier table for its instrument, which every
+    /// env that shares it reads.
+    pub fn with_tiers(mut self, tiers: Tiers) -> Candles {
+        self.tiers = Some(Arc::new(tiers));
+        self
+    }
+
+    /// The tier table, or `None` when the venue sets none.
+    pub fn tiers(&self) -> Option<&Tiers> {
+        self.tiers.as_deref()
     }
 
     /// The funding events placed on the clock, or `None` when the series has none.

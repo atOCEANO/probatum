@@ -4,7 +4,7 @@
 //! a reduce-only order may only shrink the position. Every clamp works on a copy,
 //! so an all-or-nothing order is judged against what would really be booked.
 
-use probatum_core::{Fill, Market, Price, Qty, Side, Wallet};
+use probatum_core::{Fill, Market, Price, Qty, Side, TierBasis, Wallet};
 
 use super::{Engine, CLOSE_EPS};
 
@@ -32,10 +32,8 @@ impl Engine {
         // with none has nothing to lever (ADR 0015).
         let max_size = if equity <= 0.0 {
             0.0
-        } else if self.config.max_leverage > 0.0 {
-            self.config.max_leverage * equity / mark
         } else {
-            f64::INFINITY
+            self.max_size(mark, equity)
         };
         let pos = self.account.position.qty.get();
         let new_pos = pos + fill.side.sign() * fill.size.get();
@@ -55,14 +53,63 @@ impl Engine {
         }
     }
 
-    /// The margin the cap asks of the position at `mark`: its notional over
-    /// `max_leverage`, and nothing on spot or with the cap off. A transfer out of
-    /// the margin wallet has to leave it covered (ADR 0008).
+    /// The largest position `room` of margin equity carries at `price`. Through a
+    /// tier table the requirement is the notional over its tier's leverage, which
+    /// rises with the size and jumps up at each bound, so the answer lies in the
+    /// first tier that cannot carry its own bound, and never past the table's last
+    /// bound, where a fill is held (ADR 0015).
+    fn max_size(&self, price: f64, room: f64) -> f64 {
+        let Some(tiers) = self
+            .candles
+            .tiers()
+            .filter(|tiers| !tiers.rows().is_empty())
+        else {
+            return if self.config.max_leverage > 0.0 {
+                self.config.max_leverage * room / price
+            } else {
+                f64::INFINITY
+            };
+        };
+        let mut low = 0.0;
+        for tier in tiers.rows() {
+            let high = match tiers.basis() {
+                TierBasis::Notional => tier.up_to / price,
+                TierBasis::Quantity => tier.up_to,
+            };
+            if tier.leverage > 0.0 {
+                let carried = tier.leverage * room / price;
+                if carried < high {
+                    return carried.max(low);
+                }
+            }
+            low = high;
+        }
+        low
+    }
+
+    /// The margin the cap asks of the position at `mark`: its notional over the
+    /// leverage of its tier, or of the venue without a table, and nothing on spot or
+    /// with the cap off. A transfer out of the margin wallet has to leave it covered
+    /// (ADR 0008).
     pub(super) fn requirement(&self, mark: f64) -> f64 {
-        if self.config.market != Market::Perp || self.config.max_leverage <= 0.0 {
+        if self.config.market != Market::Perp {
             return 0.0;
         }
-        self.account.position.qty.get().abs() * mark / self.config.max_leverage
+        let size = self.account.position.qty.get().abs();
+        let notional = size * mark;
+        let leverage = match self
+            .candles
+            .tiers()
+            .and_then(|tiers| tiers.tier(size, notional))
+        {
+            Some(tier) => tier.leverage,
+            None => self.config.max_leverage,
+        };
+        if leverage > 0.0 {
+            notional / leverage
+        } else {
+            0.0
+        }
     }
 
     /// On spot, keep the position from going below zero: a sell may not exceed the
@@ -164,7 +211,9 @@ mod tests {
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::{EventKind, FillReason};
-    use probatum_core::{Candle, Fill, OrderType, Price, Qty, Side, TimeInForce};
+    use probatum_core::{
+        Candle, Fill, OrderType, Price, Qty, Side, Tier, TierBasis, Tiers, TimeInForce,
+    };
 
     #[test]
     fn default_config_caps_perp_leverage_at_ten() {
@@ -654,5 +703,54 @@ mod tests {
                 "{size} at {price}"
             );
         }
+    }
+
+    fn tier(up_to: f64, leverage: f64) -> Tier {
+        Tier {
+            up_to,
+            leverage,
+            rate: 0.0,
+            amount: 0.0,
+        }
+    }
+
+    /// The position a market buy of 5 reaches at 60,000 on `margin` under `tiers`.
+    fn bought_under(tiers: Tiers, margin: f64) -> f64 {
+        let flat = ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6);
+        let bars = Candles::new(vec![flat; 2]).with_tiers(tiers);
+        let config = EngineConfig {
+            quote: margin,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(5.0);
+        e.step().position
+    }
+
+    #[test]
+    fn a_tier_table_holds_the_position_where_its_margin_stops_carrying_it() {
+        // 20x up to 100,000 of notional and 10x to a million: 10,000 of margin
+        // carries the 20x tier to its bound and only 100,000 in the 10x tier, so a
+        // buy of 5 is held at the bound; 15,000 carries 150,000 in the 10x tier
+        let tiers = Tiers::new(
+            TierBasis::Notional,
+            vec![tier(100_000.0, 20.0), tier(1_000_000.0, 10.0)],
+        )
+        .expect("a table");
+        assert_eq!(bought_under(tiers.clone(), 10_000.0), 100_000.0 / 60_000.0);
+        assert_eq!(bought_under(tiers, 15_000.0), 2.5);
+    }
+
+    #[test]
+    fn a_fill_is_held_at_the_last_bound_of_a_notional_or_a_quantity_table() {
+        let notional =
+            Tiers::new(TierBasis::Notional, vec![tier(100_000.0, 20.0)]).expect("a table");
+        assert_eq!(bought_under(notional, 10_000.0), 100_000.0 / 60_000.0);
+        // 20x up to 1 BTC and 5x to 10: the 5x tier carries 0.83 BTC, less than
+        // the 1 the 20x tier already holds, so the position stops at 1
+        let quantity = Tiers::new(TierBasis::Quantity, vec![tier(1.0, 20.0), tier(10.0, 5.0)])
+            .expect("a table");
+        assert_eq!(bought_under(quantity, 10_000.0), 1.0);
     }
 }

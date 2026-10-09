@@ -160,8 +160,12 @@ eng = Engine(
     funding_hours=0.0,       # or funding every this many hours from 00:00 UTC; needs times
     funding_times=None,      # or the venue's own (K,) int64 stamps; needs times
     funding_rates=None,      # and the (K,) rate of each stamp
+    tiers=None,              # or the venue's tiers: rows of (up_to, leverage, rate, amount)
+    tiers_by="notional",     # what the tiers' bounds measure: "notional" or "quantity"
 )
 ```
+
+**A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound. The table is refused where the Specification's loader refuses it: a maintenance rate not below one, one reaching its tier's initial rate, one over the leverage, or a notional table whose amounts break continuity ([Specification](Specification.md#the-cap)).
 
 `eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
 

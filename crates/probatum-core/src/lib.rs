@@ -13,6 +13,7 @@ pub mod fill;
 pub mod order;
 pub mod position;
 pub mod state;
+pub mod tiers;
 pub mod units;
 
 pub use account::Account;
@@ -24,4 +25,5 @@ pub use fill::Fill;
 pub use order::{Order, OrderId};
 pub use position::Position;
 pub use state::State;
+pub use tiers::{Tier, TierBasis, TierError, Tiers};
 pub use units::{Bps, Notional, Price, Qty};

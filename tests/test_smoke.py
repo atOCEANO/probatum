@@ -223,6 +223,39 @@ def test_the_order_log_follows_each_order_and_keeps_a_refused_one():
     assert (clamp["size"], clamp["reason"]) == (5.0, "5 of the 20 asked fits")
 
 
+def test_a_tier_table_holds_a_perp_where_its_margin_stops_carrying_it():
+    # 20x up to 100,000 of notional and 10x after: 10,000 of margin holds a buy of
+    # 5 at 60,000 at the bound
+    bars = np.full((2, 5), 60_000.0)
+    bars[:, 4] = 1e6
+    e = probatum.Engine(
+        bars,
+        market    = "perp",
+        quote     = 10_000.0,
+        fee_taker = 0.0,
+        tiers     = [(100_000.0, 20.0, 0.0, 0.0), (1e6, 10.0, 0.0, 0.0)],
+    )
+
+    e.reset()
+    e.market_buy(5.0)
+
+    assert e.step().position == pytest.approx(100_000.0 / 60_000.0)
+
+
+@pytest.mark.parametrize("tiers, tiers_by, says", [
+    ([(300_000.0, 125.0, 0.004, 0.0), (800_000.0, 100.0, 0.005, 250.0)], "notional",
+     "continuity needs 300"),
+    ([(10.0, 20.0, 0.05, 0.0)], "quantity", "reaches the initial rate of 0.05"),
+    ([(10.0, 20.0, 0.0, 0.0), (5.0, 10.0, 0.0, 0.0)], "notional",
+     "is not above the bound before it"),
+    ([(10.0, 20.0, 0.0)], "notional", "3 numbers"),
+    ([(10.0, 20.0, 0.0, 0.0)], "contracts", "is not a basis"),
+])
+def test_a_tier_table_the_loader_cannot_trust_is_refused(tiers, tiers_by, says):
+    with pytest.raises(ValueError, match=re.escape(says)):
+        probatum.Engine(series(), market="perp", tiers=tiers, tiers_by=tiers_by)
+
+
 def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():
     venue  = dict(market="perp", quote=10_000.0, fee_taker=0.0006, leverage=5.0)
     played = probatum._probatum.run(series(), venue, {
