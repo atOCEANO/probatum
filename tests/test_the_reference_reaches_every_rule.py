@@ -28,6 +28,7 @@ RULES = [
     "a corner or the closes reaching the trigger",
     "a delisting",
     "a favourable exit held back on a liquidating bar",
+    "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
     "a flip",

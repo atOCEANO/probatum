@@ -14,6 +14,7 @@ from reference import differential
 # the rules both simulators apply, each of which a comparison at length must reach
 SHARED = [
     "a bar clipped",
+    "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
     "a flip",

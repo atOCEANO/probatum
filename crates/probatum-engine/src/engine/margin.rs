@@ -49,7 +49,13 @@ impl Engine {
         };
         if new_pos.abs() > max_abs {
             let capped_new = max_abs * new_pos.signum();
-            fill.size = Qty((capped_new - pos).abs());
+            let mut size = (capped_new - pos).abs();
+            // the position books pos plus the size, and that sum can round an ulp
+            // past a tier's bound, into a tier that asks more than the cap allowed
+            while (pos + fill.side.sign() * size).abs() > max_abs {
+                size = size.next_down();
+            }
+            fill.size = Qty(size);
         }
     }
 
@@ -73,7 +79,15 @@ impl Engine {
         let mut low = 0.0;
         for tier in tiers.rows() {
             let high = match tiers.basis() {
-                TierBasis::Notional => tier.up_to / price,
+                TierBasis::Notional => {
+                    // the quotient can carry a notional an ulp past the bound, where
+                    // the tier after it would be read
+                    let mut high = tier.up_to / price;
+                    while high * price > tier.up_to {
+                        high = high.next_down();
+                    }
+                    high
+                }
                 TierBasis::Quantity => tier.up_to,
             };
             if tier.leverage > 0.0 {
@@ -752,5 +766,40 @@ mod tests {
         let quantity = Tiers::new(TierBasis::Quantity, vec![tier(1.0, 20.0), tier(10.0, 5.0)])
             .expect("a table");
         assert_eq!(bought_under(quantity, 10_000.0), 1.0);
+    }
+
+    #[test]
+    fn a_position_held_at_a_bound_stays_in_the_tier_that_carried_it() {
+        // a bound reached through a quotient, 100,000 / 11,000, or through a sum, 0.3
+        // held and 0.6 more to a bound of 0.9, can land an ulp past it, where the
+        // tier after it asks more than the 6,000 of margin holds
+        let cases = [
+            (TierBasis::Notional, 100_000.0, 10.0, 11_000.0, vec![20.0]),
+            (TierBasis::Quantity, 0.9, 5.0, 60_000.0, vec![0.3, 5.0]),
+        ];
+        for (basis, bound, after, price, buys) in cases {
+            let rows = vec![tier(bound, 20.0), tier(10_000_000.0, after)];
+            let tiers = Tiers::new(basis, rows).expect("a table");
+            let flat = ohlc(price, price, price, price, 1e6);
+            let bars = Candles::new(vec![flat; buys.len() + 1]).with_tiers(tiers);
+            let config = EngineConfig {
+                quote: 6_000.0,
+                report: true,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            let mut held = 0.0;
+            for size in buys {
+                e.market_buy(size);
+                held = e.step().position;
+            }
+            let ledger = e.reporter().expect("reporting is on").ledger();
+            let used = ledger.last().expect("a row").margin_used;
+            assert!(
+                (used - held * price / 20.0).abs() < 1e-9,
+                "{basis:?}: {used} on {held}"
+            );
+        }
     }
 }

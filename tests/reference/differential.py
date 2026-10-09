@@ -472,7 +472,7 @@ TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees"
 
 LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
                  "slippage", "impact", "liquidation", "dust", "position", "entry",
-                 "mark", "notional", "unrealized", "weight")
+                 "mark", "notional", "unrealized", "weight", "margin_used")
 
 
 def ledger_difference(mine, theirs):
@@ -482,7 +482,8 @@ def ledger_difference(mine, theirs):
         held = row["instruments"][0]
         want = dict(row, position=held["position"], entry=held["entry"],
                     mark=held["mark"], notional=held["notional"],
-                    unrealized=held["upnl"], weight=held["weight"])
+                    unrealized=held["upnl"], weight=held["weight"],
+                    margin_used=held["margin_used"])
         for name in LEDGER_FIELDS:
             x = float(mine[name][t])
             if not close_enough(x, want[name]):

@@ -60,6 +60,20 @@ def first_zero(f, lo=0.0, hi=1.0):
     return hi
 
 
+def last_within(f, lo, hi):
+    """The last point in [lo, hi] where f stays at or above zero, by bisection, for
+    an f at or above zero at lo and below it at hi that changes sign once there,
+    a jump included."""
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if f(mid) >= 0.0:
+            lo = mid
+        else:
+            hi = mid
+
+    return lo
+
+
 class Instrument:
 
     def __init__(self, name, kind="linear", contract=None, lot=0.0, tick=0.0,
@@ -593,10 +607,16 @@ class Simulator:
                 if inst.tiers_by == "quantity":
                     self.hit("tiers by quantity")
 
+            used = 0.0
+            if held and inst.kind != "spot":
+                leverage = self.leverage_of(i, abs(q), abs(exposure))
+                used     = abs(exposure) / leverage if leverage > 0.0 else 0.0
+
             out["instruments"].append(dict(
                 position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
                 upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
                 weight=exposure / equity if held and equity > 0.0 else 0.0,
+                margin_used=used,
             ))
 
         return out
@@ -2056,8 +2076,15 @@ class Simulator:
             return reducing + limit
 
         self.hit("a fill held to the margin cap")
-        # the requirement only rises with the fill's size, through every tier
-        return reducing + first_zero(lambda x: equity - need(x), 0.0, limit)
+        # the requirement only rises with the fill's size, through every tier, and
+        # jumps at a tier's bound, where the last size that fits is the bound itself
+        extra = last_within(lambda x: equity - need(x), 0.0, limit)
+        per   = abs(inst.notional(1.0, price)) if inst.tiers_by == "notional" else 1.0
+        if any(abs(base + extra - tier.up_to / per) <= 1e-9 * tier.up_to / per
+               for tier in inst.tiers[:-1]):
+            self.hit("a fill held at a tier's bound")
+
+        return reducing + extra
 
 
     def bound(self, i, side, size, price, bar, rate, costs):
