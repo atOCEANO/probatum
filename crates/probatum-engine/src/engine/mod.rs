@@ -441,7 +441,7 @@ impl Engine {
             net_exposure: net,
             leverage: if alive { net.abs() / equity } else { 0.0 },
             margin_used: self.requirement(bar.close),
-            maintenance: 0.0,
+            maintenance: self.maintenance(bar.close),
             costs: BarCosts::default(),
             position,
             entry: self.account.position.avg_entry.get(),

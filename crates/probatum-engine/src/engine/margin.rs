@@ -101,6 +101,28 @@ impl Engine {
         low
     }
 
+    /// The maintenance the position keeps at `mark`: its notional times its tier's
+    /// rate, less the tier's amount on a notional table, and nothing without a table
+    /// or on spot. The trigger stays at zero equity until the liquidation path reads
+    /// this.
+    pub(super) fn maintenance(&self, mark: f64) -> f64 {
+        if self.config.market != Market::Perp {
+            return 0.0;
+        }
+        let size = self.account.position.qty.get().abs();
+        let notional = size * mark;
+        let Some(tiers) = self.candles.tiers() else {
+            return 0.0;
+        };
+        match tiers.tier(size, notional) {
+            Some(tier) if tier.rate > 0.0 && notional > 0.0 => match tiers.basis() {
+                TierBasis::Notional => notional * tier.rate - tier.amount,
+                TierBasis::Quantity => notional * tier.rate,
+            },
+            _ => 0.0,
+        }
+    }
+
     /// The margin the cap asks of the position at `mark`: its notional over the
     /// leverage of its tier, or of the venue without a table, and nothing on spot or
     /// with the cap off. A transfer out of the margin wallet has to leave it covered
@@ -799,6 +821,49 @@ mod tests {
             assert!(
                 (used - held * price / 20.0).abs() < 1e-9,
                 "{basis:?}: {used} on {held}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_maintenance_is_continuous_across_binances_first_btc_bound() {
+        // the Specification's example: 0.4% up to 300,000 with no amount, then 0.5%
+        // less 300, so 5 BTC at 60,000 keep 1,200 in either tier and 6 keep 1,500
+        let tiers = Tiers::new(
+            TierBasis::Notional,
+            vec![
+                Tier {
+                    up_to: 300_000.0,
+                    leverage: 125.0,
+                    rate: 0.004,
+                    amount: 0.0,
+                },
+                Tier {
+                    up_to: 800_000.0,
+                    leverage: 100.0,
+                    rate: 0.005,
+                    amount: 300.0,
+                },
+            ],
+        )
+        .expect("continuous");
+        for (size, kept) in [(5.0, 1_200.0), (6.0, 1_500.0)] {
+            let flat = ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6);
+            let bars = Candles::new(vec![flat; 2]).with_tiers(tiers.clone());
+            let config = EngineConfig {
+                quote: 100_000.0,
+                report: true,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            e.market_buy(size);
+            e.step();
+            let row = e.reporter().expect("reporting is on").ledger()[1];
+            assert!(
+                (row.maintenance - kept).abs() < 1e-9,
+                "{size}: {}",
+                row.maintenance
             );
         }
     }

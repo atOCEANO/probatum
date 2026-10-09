@@ -39,6 +39,8 @@ NOT_IN_THE_ENGINE = {
     "a wallet that fees left below zero set to zero",
     "a forced close of a leg that joined during the bar",
     "a check closing the account at the open",
+    "a liquidation at the maintenance trigger",
+    "a reducing fill bounded at a fee of its own",
 }
 
 
@@ -131,16 +133,25 @@ def config(rng, times):
 def tier_table(rng, quote, perp):
     """No table for most cases, and for some perpetuals three tiers of falling
     leverage, their bounds a few times the balance in notional, or in size at the
-    walk's opening price of 100, so the cap meets them."""
+    walk's opening price of 100, so the cap meets them. Half keep maintenance at
+    rising rates, a notional table's amounts continuous across its bounds."""
     if not perp or rng.random() < 0.6:
         return None, "notional"
 
     basis    = rng.choice(["notional", "quantity"])
     scale    = quote if basis == "notional" else quote / 100.0
-    bounds   = sorted(rng.sample([1.0, 2.0, 4.0, 8.0, 16.0], 3))
+    bounds   = [scale * b for b in sorted(rng.sample([1.0, 2.0, 4.0, 8.0, 16.0], 3))]
     leverage = sorted(rng.sample([20.0, 10.0, 5.0, 3.0, 2.0], 3), reverse=True)
+    rates    = [0.0] * 3
+    if rng.random() < 0.5:
+        rates = sorted(rng.sample([0.002, 0.005, 0.01, 0.02], 3))
 
-    return [(scale * b, lev, 0.0, 0.0) for b, lev in zip(bounds, leverage)], basis
+    amounts = [0.0] * 3
+    if basis == "notional":
+        for k in (1, 2):
+            amounts[k] = amounts[k - 1] + (rates[k] - rates[k - 1]) * bounds[k - 1]
+
+    return list(zip(bounds, leverage, rates, amounts)), basis
 
 
 def balance(cfg):
@@ -355,17 +366,19 @@ def place(sim, action, t, close, theirs, script, reached=None):
         script.take(t, "close")
         sim.close(0)
     elif kind == "exits":
-        # a protective stop and a take-profit on the position held, which one wide
-        # bar can reach both of, so the worse is tried first
+        # a protective stop and a take-profit on the position held, the take-profit
+        # in the earlier slot, which one wide bar can reach both of, so the worse is
+        # moved ahead of it. The two tighten together, so a bar of any width can
+        # reach both
         held = sim.position[0]
         if held == 0.0:
             return
 
         side = "sell" if held > 0.0 else "buy"
-        low, high = close * (0.8 + 0.19 * u), close * (1.01 + 0.19 * u)
+        low, high = close * (0.8 + 0.19 * u), close * (1.2 - 0.19 * u)
         trigger, price = (low, high) if held > 0.0 else (high, low)
 
-        for leg in (dict(stop=trigger), dict(limit=price)):
+        for leg in (dict(limit=price), dict(stop=trigger)):
             placed = script.take(t, side, size=size, reduce_only=True, **leg)
             order  = sim.order(0, side, size, reduce_only=True, **leg)
             if resting(sim, order):
@@ -472,7 +485,8 @@ TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees"
 
 LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
                  "slippage", "impact", "liquidation", "dust", "position", "entry",
-                 "mark", "notional", "unrealized", "weight", "margin_used")
+                 "mark", "notional", "unrealized", "weight", "margin_used",
+                 "maintenance")
 
 
 def ledger_difference(mine, theirs):
@@ -483,7 +497,8 @@ def ledger_difference(mine, theirs):
         want = dict(row, position=held["position"], entry=held["entry"],
                     mark=held["mark"], notional=held["notional"],
                     unrealized=held["upnl"], weight=held["weight"],
-                    margin_used=held["margin_used"])
+                    margin_used=held["margin_used"], maintenance=held["maintenance"])
+
         for name in LEDGER_FIELDS:
             x = float(mine[name][t])
             if not close_enough(x, want[name]):

@@ -607,16 +607,17 @@ class Simulator:
                 if inst.tiers_by == "quantity":
                     self.hit("tiers by quantity")
 
-            used = 0.0
+            used = kept = 0.0
             if held and inst.kind != "spot":
                 leverage = self.leverage_of(i, abs(q), abs(exposure))
                 used     = abs(exposure) / leverage if leverage > 0.0 else 0.0
+                kept     = self.maintenance_of(i, abs(q), abs(exposure))
 
             out["instruments"].append(dict(
                 position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
                 upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
                 weight=exposure / equity if held and equity > 0.0 else 0.0,
-                margin_used=used,
+                margin_used=used, maintenance=kept,
             ))
 
         return out
@@ -1281,6 +1282,7 @@ class Simulator:
             return None
 
         if maintained:
+            self.hit("a liquidation at the maintenance trigger")
             return trigger, trigger
 
         # with no maintenance the account leaves where it stays at or past the close
@@ -2114,12 +2116,15 @@ class Simulator:
             """What closing that part at `p` realizes, net of the fill's own fee."""
             return inst.profit(part, self.entry[i], p) - own_fee(p)
 
-        def level(p):
+        def level(p, paid=rate):
             rest = sum(abs(self.instruments[j].notional(self.position[j], others[j]))
                        for j in others)
             rest += abs(inst.notional(abs(q) - closed, p))
-            return self.margin_equity({**others, i: p}) - own_fee(p) - fee * rest
+            return (self.margin_equity({**others, i: p})
+                    - abs(inst.notional(closed, p)) * paid - fee * rest)
 
+        if rate != fee and min(level(price), level(price, fee)) < 0.0:
+            self.hit("a reducing fill bounded at a fee of its own")
         if level(price) >= 0.0:
             return price, costs
 

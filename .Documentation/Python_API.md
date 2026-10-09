@@ -468,7 +468,7 @@ Each column of `ledger()` holds one value per bar, the first for the opening bal
 | `gross_exposure`, `net_exposure` | The position's notional at the close, unsigned and signed. |
 | `leverage` | Gross exposure over equity, zero once equity is gone. |
 | `margin_used` | What the margin cap asks of the position at the close. |
-| `maintenance` | The maintenance requirement, zero until maintenance tables are modelled. |
+| `maintenance` | The maintenance requirement the tier table sets, zero without one. |
 | `fees`, `funding`, `spread`, `slippage`, `impact` | What the bar cost, in quote: a fill's spread, slippage and impact are what it paid beyond its reference, each in proportion when the bar's range held its price back. |
 | `liquidation` | What a forced close left in the margin wallet, taken by the venue or absorbed by it, less what the margin bound lifted fills by ([ADR 0018](Decisions.md)). |
 | `dust` | The value of positions too small to trade, zeroed at the close, which nothing makes until sizes are modelled. |

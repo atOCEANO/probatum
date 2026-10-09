@@ -310,7 +310,7 @@ pub struct LedgerRow {
     pub leverage: f64,
     /// What the margin cap asks of the position at the close.
     pub margin_used: f64,
-    /// The maintenance requirement, which no table sets yet.
+    /// The maintenance requirement its tier table sets, zero without one.
     pub maintenance: f64,
     pub costs: BarCosts,
     pub position: f64,
