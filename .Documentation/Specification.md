@@ -380,7 +380,7 @@ Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the 
 
 - **Notional tiers** (Binance, Bybit, Hyperliquid): a position's requirement is `M_i = N_i * m_k - c_k` in the tier its notional falls in, and the account's is the sum. The cumulative amounts make it continuous across tier boundaries: `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`.
 - **Quantity tiers** (OKX): the tier is chosen by the position's size in contracts, and its rate applies to the whole position.
-- The loader refuses a notional table whose amounts break continuity, any rate not below one, and any tier whose maintenance rate reaches its initial rate `1 / L_k`.
+- The loader refuses a notional table whose amounts break continuity, any rate not below one, any tier whose maintenance rate reaches its initial rate `1 / L_k`, and a table whose bounds do not rise or whose leverage rises from one tier to the next, a leverage of 0.0 standing for no cap, since the cap's requirement has to grow with the position.
 
 **Worked example.** BTCUSDT's first two Binance tiers: up to 300,000 at 0.4% with no amount, then up to 800,000 at 0.5% with an amount of 300. At 300,000 of notional the first asks `0.004 * 300,000 = 1,200` and the second `0.005 * 300,000 - 300 = 1,200`.
 

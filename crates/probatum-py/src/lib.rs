@@ -366,7 +366,6 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
         }
     };
     let mut table = Vec::with_capacity(rows.len());
-    let mut below = 0.0;
     for (row, numbers) in rows.into_iter().enumerate() {
         let [up_to, leverage, rate, amount] = numbers[..] else {
             return Err(PyValueError::new_err(format!(
@@ -387,12 +386,6 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
                 )));
             }
         }
-        if up_to <= below {
-            return Err(PyValueError::new_err(format!(
-                "tiers[{row}]: up_to {up_to} is not above the bound before it, {below}; \
-                 list the tiers in rising order"
-            )));
-        }
         for (name, value) in [("leverage", leverage), ("rate", rate)] {
             if value < 0.0 {
                 return Err(PyValueError::new_err(format!(
@@ -400,7 +393,6 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
                 )));
             }
         }
-        below = up_to;
         table.push(Tier {
             up_to,
             leverage,
@@ -425,6 +417,18 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
             } => format!(
                 "tiers[{row}]: an amount of {amount} breaks continuity at the bound before \
                  it; continuity needs {wanted}"
+            ),
+            TierError::Bound { row, up_to, below } => format!(
+                "tiers[{row}]: up_to {up_to} is not above the bound before it, {below}; \
+                 list the tiers in rising order"
+            ),
+            TierError::Leverage {
+                row,
+                leverage,
+                below,
+            } => format!(
+                "tiers[{row}]: leverage {leverage} is above the tier before it, {below}, \
+                 0.0 standing for no cap; let the leverage fall as the bounds rise"
             ),
         })
     })

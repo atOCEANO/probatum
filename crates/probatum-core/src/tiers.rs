@@ -36,6 +36,14 @@ pub enum TierError {
         amount: f64,
         wanted: f64,
     },
+    /// A bound not above the one before it, or not above zero in the first row.
+    Bound { row: usize, up_to: f64, below: f64 },
+    /// A leverage above the one before it, 0.0 standing for no cap.
+    Leverage {
+        row: usize,
+        leverage: f64,
+        below: f64,
+    },
 }
 
 /// A tier table, checked as the Specification's loader checks it. An empty table
@@ -48,11 +56,37 @@ pub struct Tiers {
 
 impl Tiers {
     /// The table of `rows` on `basis`, refused when a maintenance rate is not below
-    /// one or reaches its tier's initial rate, or when a notional table's amounts
-    /// break continuity: `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`.
+    /// one or reaches its tier's initial rate, when a notional table's amounts break
+    /// continuity, `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`, and when the
+    /// bounds do not rise or the leverage rises with them, since the cap's
+    /// requirement has to grow with the position.
     pub fn new(basis: TierBasis, rows: Vec<Tier>) -> Result<Tiers, TierError> {
+        let cap = |leverage: f64| {
+            if leverage > 0.0 {
+                leverage
+            } else {
+                f64::INFINITY
+            }
+        };
         let mut previous: Option<Tier> = None;
         for (row, tier) in rows.iter().copied().enumerate() {
+            let below = previous.map_or(0.0, |previous| previous.up_to);
+            if tier.up_to <= below {
+                return Err(TierError::Bound {
+                    row,
+                    up_to: tier.up_to,
+                    below,
+                });
+            }
+            if let Some(previous) = previous {
+                if cap(tier.leverage) > cap(previous.leverage) {
+                    return Err(TierError::Leverage {
+                        row,
+                        leverage: tier.leverage,
+                        below: previous.leverage,
+                    });
+                }
+            }
             if tier.rate >= 1.0 {
                 return Err(TierError::Rate {
                     row,
@@ -174,5 +208,40 @@ mod tests {
         .expect("checked");
         assert_eq!(tiers.tier(20.0, 1.0).map(|t| t.leverage), Some(20.0));
         assert_eq!(Tiers::default().tier(20.0, 1.0), None);
+    }
+
+    #[test]
+    fn a_table_whose_requirement_would_not_grow_with_the_size_is_refused() {
+        let quantity = |rows| Tiers::new(TierBasis::Quantity, rows);
+        assert_eq!(
+            quantity(vec![tier(0.0, 20.0, 0.0, 0.0)]),
+            Err(TierError::Bound {
+                row: 0,
+                up_to: 0.0,
+                below: 0.0
+            })
+        );
+        assert_eq!(
+            quantity(vec![tier(10.0, 20.0, 0.0, 0.0), tier(5.0, 10.0, 0.0, 0.0)]),
+            Err(TierError::Bound {
+                row: 1,
+                up_to: 5.0,
+                below: 10.0
+            })
+        );
+        for higher in [20.0, 0.0] {
+            assert_eq!(
+                quantity(vec![
+                    tier(10.0, 10.0, 0.0, 0.0),
+                    tier(50.0, higher, 0.0, 0.0)
+                ]),
+                Err(TierError::Leverage {
+                    row: 1,
+                    leverage: higher,
+                    below: 10.0
+                })
+            );
+        }
+        assert!(quantity(vec![tier(10.0, 0.0, 0.0, 0.0), tier(50.0, 10.0, 0.0, 0.0)]).is_ok());
     }
 }

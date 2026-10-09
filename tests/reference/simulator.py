@@ -98,10 +98,21 @@ class Instrument:
 
     def check_tiers(self):
         """Margin, Maintenance: the loader refuses a notional table whose amounts break
-        continuity, any rate not below one, and a maintenance rate that reaches the
-        tier's initial rate."""
+        continuity, any rate not below one, a maintenance rate that reaches the tier's
+        initial rate, and a table whose bounds do not rise or whose leverage rises
+        from one tier to the next, a leverage of 0.0 standing for no cap."""
+        def cap(leverage):
+            return leverage if leverage > 0.0 else math.inf
+
         previous = None
         for tier in self.tiers:
+            below = 0.0 if previous is None else previous.up_to
+            if tier.up_to <= below:
+                raise ValueError(f"tiers: a bound of {tier.up_to} not above {below}")
+            if previous is not None and cap(tier.leverage) > cap(previous.leverage):
+                raise ValueError(f"tiers: a leverage of {tier.leverage} above the "
+                                 f"{previous.leverage} before it")
+
             if tier.rate >= 1.0:
                 raise ValueError(f"tiers: a rate of {tier.rate} is not below one")
             if tier.leverage > 0.0 and tier.rate >= 1.0 / tier.leverage:
