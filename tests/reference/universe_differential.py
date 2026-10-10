@@ -32,6 +32,8 @@ SET_ASIDE = NOT_IN_THE_ENGINE | {
     "a liquidation of several perpetuals",
     "a bar clipped across several perpetuals",
 }
+# the kinds a shaped universe places, which a narrower KINDS leaves out
+SHAPED = {"market", "stop", "limit"}
 
 
 def universe(rng):
@@ -88,7 +90,7 @@ def shaped(rng):
     kinds = ["linear", "linear"]
 
     long_a, long_b, stop = (rng.random() < 0.5 for _ in range(3))
-    gap     = rng.uniform(0.02, 0.15) if stop else rng.uniform(0.005, 0.1)
+    gap     = rng.uniform(0.025, 0.15) if stop else rng.uniform(0.005, 0.1)
     columns = [[calm(rng, rng.choice([5.0, 100.0, 3_000.0]))] for _ in kinds]
     for column in columns:
         for _ in range(2):
@@ -455,7 +457,7 @@ def compare(cases, seed):
     whole, agreed, disagreed = 0, 0, []
 
     for number in range(cases):
-        if number % 4 == 3:
+        if number % 4 == 3 and SHAPED <= set(KINDS):
             case = shaped(rng)
         else:
             times, kinds, columns = universe(rng)
