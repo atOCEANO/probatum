@@ -87,6 +87,11 @@ impl Engine {
     /// it. On the trigger the account is taken over at the clip point recomputed for
     /// it, a leg yet to join at its fill price, and the debits it counted are paid.
     pub(super) fn check(&mut self) {
+        // asked here as well as in the decision, so a bar with no perp held costs
+        // this test and nothing of the decision's frame
+        if self.account.perps_held() == 0 {
+            return;
+        }
         match self.check_point() {
             Found::Clip(clip) => {
                 let (a, b) = self.spans[clip.piece];
