@@ -1289,6 +1289,16 @@ class Simulator:
             self.pay_funding(i, charge)
 
 
+    def counted_inside(self, t):
+        """Funding, When an event is charged: the charges stamped inside bar `t` that
+        `intrabar` counts toward its path, on the positions as they stand, a debit
+        under the pessimistic setting and a credit under the optimistic one."""
+        return [(i, charge) for i, charge, inside
+                in self.funding_due(self.owned[t], t, at_close=True) if inside
+                and (charge > 0.0 if self.venue.intrabar == "pessimistic"
+                     else charge < 0.0)]
+
+
     def state_at(self, piece, wallet, s):
         """Margin equity, the maintenance requirement and the notional on a piece of
         the path at fraction s, with every leg at the same fraction of its move."""
@@ -1307,31 +1317,32 @@ class Simulator:
         return equity, requirement, sum(notionals.values())
 
 
-    def solve(self, path, wallet, share=1.0):
+    def solve(self, path, wallets, share=1.0):
         """Liquidation, The trigger, close and clip points: the first point on the
         path where margin equity falls to `share` of the requirement, and the point
-        the account leaves the market. Both are found by bisection: on a piece, equity
-        less the requirement is concave for linear legs, and both it and the close
-        level are monotone for an inverse account's one leg, so each crosses once."""
+        the account leaves the market, the margin wallet holding `wallets[k]` on piece
+        `k`. Both are found by bisection: on a piece, equity less the requirement is
+        concave for linear legs, and both it and the close level are monotone for an
+        inverse account's one leg, so each crosses once."""
         maintained = any(self.has_maintenance(leg.instrument)
                          for piece in path for leg in piece)
         fee = self.venue.taker if maintained else self.venue.liquidation_fee
 
-        def g(piece, s):
-            equity, requirement, _ = self.state_at(piece, wallet, s)
+        def g(k, s):
+            equity, requirement, _ = self.state_at(path[k], wallets[k], s)
             return equity - share * requirement
 
-        def h(piece, s):
-            equity, _, notional = self.state_at(piece, wallet, s)
+        def h(k, s):
+            equity, _, notional = self.state_at(path[k], wallets[k], s)
             return equity - fee * notional
 
         trigger = None
-        for k, piece in enumerate(path):
-            if g(piece, 0.0) <= 0.0:
+        for k in range(len(path)):
+            if g(k, 0.0) <= 0.0:
                 trigger = (k, 0.0)
                 break
-            if g(piece, 1.0) <= 0.0:
-                trigger = (k, first_zero(lambda s, piece=piece: g(piece, s)))
+            if g(k, 1.0) <= 0.0:
+                trigger = (k, first_zero(lambda s, k=k: g(k, s)))
                 break
 
         if trigger is None:
@@ -1343,14 +1354,13 @@ class Simulator:
 
         # with no maintenance the account leaves where it stays at or past the close
         # level all the way to the trigger; a leg joining the check's path adds to
-        # the closing fee, so the level can step down where one piece meets the next
+        # the closing fee and funding counted from the open lowers the wallet, so the
+        # level can step down where one piece meets the next
         k, s = trigger
         while True:
-            piece = path[k]
-            if h(piece, 0.0) > 0.0:
-                return trigger, (k, first_zero(lambda u, piece=piece: h(piece, u),
-                                               0.0, s))
-            if k == 0 or h(path[k - 1], 1.0) > 0.0:
+            if h(k, 0.0) > 0.0:
+                return trigger, (k, first_zero(lambda u, k=k: h(k, u), 0.0, s))
+            if k == 0 or h(k - 1, 1.0) > 0.0:
                 return trigger, (k, 0.0)
             k, s = k - 1, 1.0
 
@@ -1381,30 +1391,35 @@ class Simulator:
 
 
     def solve_carried(self, t):
-        """Liquidation, The rule, 1 to 3: the path for the positions carried in. A clip
-        on the gap segment liquidates before the bar opens; one on the bar segment
-        clips every held perpetual's bar there."""
+        """Liquidation, The rule, 1 to 3: the path for the positions carried in, the
+        funding stamped inside the bar counted on its bar segment as the check counts
+        it, since it comes after the open. A clip on the gap segment liquidates before
+        the bar opens; one on the bar segment clips every held perpetual's bar there."""
         path = self.carried_path(t)
         if not path[0]:
             return
 
-        result = self.solve(path, self.margin_cash)
+        counted = self.counted_inside(t)
+        if counted:
+            self.hit("funding inside a bar counted toward the path carried in")
+
+        inside  = self.margin_cash - sum(charge for _, charge in counted)
+        wallets = [self.margin_cash, inside]
+        result  = self.solve(path, wallets)
         if result is None:
             return
 
         trigger, (k, s) = result
-
         # the gap is one move for every path; inside the bars, the optimistic setting
         # waits for every path to reach the trigger
-        if trigger[0] == 1 and not self.reached_by_every_path(path[1], self.margin_cash,
-                                                               t):
+        if trigger[0] == 1 and not self.reached_by_every_path(path[1], inside, t):
             return
 
         if k == 0:
             self.hit("a liquidation before the bar opens")
             closes = [(leg.instrument, leg.q, leg.start + s * (leg.end - leg.start))
                       for leg in path[0]]
-            self.liquidate(closes, t, path, self.margin_cash, trigger, moment="before")
+            self.liquidate(closes, t, path, wallets, trigger, moment="before")
             return
 
         self.hit("a bar clipped")
@@ -1568,11 +1583,8 @@ class Simulator:
         if not held:
             return False
 
-        counted = [(i, charge) for i, charge, inside
-                   in self.funding_due(self.owned[t], t, at_close=True) if inside
-                   and (charge > 0.0 if self.venue.intrabar == "pessimistic"
-                        else charge < 0.0)]
-        wallet = self.margin_cash - sum(charge for _, charge in counted)
+        counted = self.counted_inside(t)
+        wallet  = self.margin_cash - sum(charge for _, charge in counted)
 
         if counted:
             self.hit("funding inside a bar counted toward the check")
@@ -1582,7 +1594,8 @@ class Simulator:
             self.hit("a leg joining the check after the open")
 
         path, spans = self.pieces(legs)
-        result = self.solve(path, wallet)
+        wallets = [wallet] * len(path)
+        result  = self.solve(path, wallets)
         if result is None or not self.reached_by_every_path(held, wallet, t):
             return False
 
@@ -1605,7 +1618,7 @@ class Simulator:
                 self.hit("a forced close of a leg that joined during the bar")
             closes.append((leg.instrument, leg.q, price))
 
-        self.liquidate(closes, t, path, wallet, trigger)
+        self.liquidate(closes, t, path, wallets, trigger)
         return True
 
 
@@ -1649,7 +1662,7 @@ class Simulator:
                 trip.see(bar.high, bar.low)
 
 
-    def liquidate(self, closes, t, path=None, wallet=None, trigger=None, moment="bar"):
+    def liquidate(self, closes, t, path=None, wallets=None, trigger=None, moment="bar"):
         """Liquidation, The forced close: takeover closes every leg at its price at the
         clip, and book then backstop sells each from its trigger as a taker unless the
         path reaches the backstop level or the sale's costs would cross it."""
@@ -1676,9 +1689,8 @@ class Simulator:
                 paid += abs(inst.notional(q, sold)) * self.venue.taker
 
             k, s = trigger
-            equity, requirement, _ = self.state_at(path[k], wallet, s)
-            reached = self.solve(path, wallet, share=share) is not None
-
+            equity, requirement, _ = self.state_at(path[k], wallets[k], s)
+            reached = self.solve(path, wallets, share=share) is not None
             if not reached and equity - paid >= share * requirement:
                 self.hit("book then backstop selling on the book")
                 for i, q, sold, costs in sales:

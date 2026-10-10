@@ -72,7 +72,7 @@ impl Engine {
     }
 
     /// Whether the bar counts a funding `charge` of the `event`th event the row owns,
-    /// stamped inside it, toward its check. A bar cannot show whether such an event
+    /// stamped inside it, toward its path. A bar cannot show whether such an event
     /// came before its worst price: the pessimistic way counts a debit and not a
     /// credit, the optimistic way a credit and not a debit, and a random setting
     /// draws the way of each event.
@@ -90,8 +90,9 @@ impl Engine {
         }
     }
 
-    /// What the charges stamped inside this row the bar counts toward its check come
-    /// to, on the positions as they now stand, at their closes.
+    /// What the charges stamped inside this row the bar counts toward its path come
+    /// to, on the positions as they now stand, at their closes: those carried in for
+    /// the path solved before the fills, those the fills left for the check.
     #[inline]
     pub(super) fn counted_inside(&self) -> f64 {
         let Some(schedule) = self.candles.funding() else {

@@ -276,20 +276,25 @@ impl Engine {
         bounds.sort_by(f64::total_cmp);
     }
 
-    /// The trigger and the clip point on `path` for `wallet`, or none (The trigger,
-    /// close and clip points). With maintenance the account leaves at its trigger;
-    /// with none, from the point it stays at or past the close level, equity at the
-    /// closing fee on every notional held, all the way to the trigger. A leg joining
-    /// the check's path adds to that fee, so the level can step down where one piece
-    /// meets the next.
-    pub(super) fn solve(&self, path: &Path, wallet: f64) -> Option<(Point, Point)> {
+    /// The trigger and the clip point on `path`, the margin wallet holding
+    /// `wallet(k)` on piece `k`, or none (The trigger, close and clip points). With
+    /// maintenance the account leaves at its trigger; with none, from the point it
+    /// stays at or past the close level, equity at the closing fee on every notional
+    /// held, all the way to the trigger. A leg joining the check's path adds to that
+    /// fee, and funding counted from the open lowers the wallet, so the level can
+    /// step down where one piece meets the next.
+    pub(super) fn solve(
+        &self,
+        path: &Path,
+        wallet: impl Fn(usize) -> f64,
+    ) -> Option<(Point, Point)> {
         let legs = |k: usize| {
             let (from, to) = path.pieces[k];
             &path.legs[from..to]
         };
         let maintained = path.legs.iter().any(|leg| self.has_maintenance(leg.i));
         let trigger = (0..path.pieces.len()).find_map(|k| {
-            self.crossing(legs(k), wallet, maintained)
+            self.crossing(legs(k), wallet(k), maintained)
                 .map(|at| Point { piece: k, at })
         })?;
         if maintained {
@@ -297,7 +302,7 @@ impl Engine {
         }
         let fee = self.cost.fee_taker;
         let close = |k: usize, u: f64| {
-            let at = self.level(legs(k), u, wallet);
+            let at = self.level(legs(k), u, wallet(k));
             at.equity - fee * at.notional
         };
         let (mut k, mut s) = (trigger.piece, trigger.at);
@@ -583,7 +588,9 @@ mod tests {
         // the way along the second piece. The closing fee on 1,045 of notional takes
         // the close level from 4.05 at the end of the first piece to -5.45 where B
         // joins, so the account leaves at the start of the second
-        let (trigger, clip) = engine(false).solve(&joining(), 10.0).expect("liquidated");
+        let (trigger, clip) = engine(false)
+            .solve(&joining(), |_| 10.0)
+            .expect("liquidated");
         assert_eq!(trigger.piece, 1);
         assert!(
             (trigger.at - 5.0 / 105.0).abs() < 1e-12,
@@ -597,7 +604,9 @@ mod tests {
     fn the_clip_steps_back_across_a_piece_that_stays_past_the_close_level() {
         // on 5.5 the close level is already -0.45 where the first piece ends, so the
         // account leaves on it, where 4.5 - 4.95u reaches zero
-        let (trigger, clip) = engine(false).solve(&joining(), 5.5).expect("liquidated");
+        let (trigger, clip) = engine(false)
+            .solve(&joining(), |_| 5.5)
+            .expect("liquidated");
         assert_eq!(trigger.piece, 1);
         assert_eq!(clip.piece, 0);
         assert!((clip.at - 4.5 / 4.95).abs() < 1e-12, "clip at {}", clip.at);
@@ -608,7 +617,9 @@ mod tests {
         // B keeps 5% of 950 when it joins, 47.5, which takes 40 of margin from 35 over
         // its trigger at the end of the first piece to 12.5 under it at the start of
         // the second; with maintenance the account leaves at its trigger
-        let (trigger, clip) = engine(true).solve(&joining(), 40.0).expect("liquidated");
+        let (trigger, clip) = engine(true)
+            .solve(&joining(), |_| 40.0)
+            .expect("liquidated");
         assert_eq!(trigger, Point { piece: 1, at: 0.0 });
         assert_eq!(clip, trigger);
     }

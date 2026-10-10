@@ -32,9 +32,11 @@ enum Found {
 
 impl Engine {
     /// The rule, 1 to 3: the path of the perps carried into the bar, solved once the
-    /// funding between rows is charged. A clip on the gap, its start included, means
-    /// the account was liquidated before the bar opened, and it is closed there
-    /// first; one inside the bar clips every held perp's bar at its price there.
+    /// funding between rows is charged, with the funding stamped inside the bar
+    /// counted from the open as the check counts it. A clip on the gap, its start
+    /// included, means the account was liquidated before the bar opened, and it is
+    /// closed there first; one inside the bar clips every held perp's bar at its
+    /// price there.
     pub(super) fn solve_carried(&mut self) {
         if self.clipped {
             self.clips.fill(None);
@@ -43,13 +45,18 @@ impl Engine {
         if self.account.perps_held() == 0 {
             return;
         }
+        // the funding the bar counts comes after the open, so it moves the bar's
+        // piece of the path and never the gap's: counted on the gap, a debit would
+        // liquidate an account on a payment not yet due
+        let wallet = self.account.margin_cash;
+        let inside = wallet - self.counted_inside();
         // equity less the requirement is concave on the gap and never rises inside
         // the bar, so a path clear of the trigger at the last marks and at the
-        // adverse corner never reaches it; the last closes found the account clear at
-        // those marks unless a transfer or a funding charge has moved it since
-        let wallet = self.account.margin_cash;
+        // adverse corner, read with the lower of the two wallets, never reaches it;
+        // the last closes found the account clear at those marks unless a transfer
+        // or a funding charge has moved it since
         if (self.cleared || self.clear_of_trigger(wallet, |i, _| self.marks[i]))
-            && self.clear_of_trigger(wallet, |i, q| self.adverse(i, q))
+            && self.clear_of_trigger(wallet.min(inside), |i, q| self.adverse(i, q))
         {
             return;
         }
@@ -58,8 +65,8 @@ impl Engine {
         // the gap is one move for every path; inside the bars the optimistic way
         // waits for every path to reach the trigger
         let found = self
-            .solve(&path, wallet)
-            .filter(|(trigger, _)| trigger.piece == 0 || self.every_path_reaches(wallet));
+            .solve(&path, |piece| if piece == 0 { wallet } else { inside })
+            .filter(|(trigger, _)| trigger.piece == 0 || self.every_path_reaches(inside));
         if let Some((_, clip)) = found {
             let (from, to) = path.pieces[clip.piece];
             let at = |leg: &PathLeg| leg.start + clip.at * (leg.end - leg.start);
@@ -144,7 +151,7 @@ impl Engine {
         Engine::check_path(&checked, &mut cuts, &mut spans, &mut path);
         let held = checked.iter().any(|leg| leg.leave.is_none());
         let found = match self
-            .solve(&path, wallet)
+            .solve(&path, |_| wallet)
             .filter(|_| held && self.every_path_reaches(wallet))
         {
             Some((_, clip)) => Found::Clip(clip),
@@ -1926,6 +1933,52 @@ mod tests {
         let row = reporter.ledger()[2];
         assert!((row.costs.funding - 10.25).abs() < 1e-9);
         assert!((row.costs.liquidation - 100.55).abs() < 0.005);
+    }
+
+    /// Half a bitcoin with 0.5% maintenance on a 07:00 bar from 60,000 down to `low`
+    /// that closes at 41,000, one funding event at `rate` stamped at 07:30, inside it,
+    /// and a reduce-only stop to sell the half at `stop`; returned after that bar.
+    fn stopped_inside(rate: f64, low: f64, stop: f64, intrabar: Intrabar) -> (Engine, f64) {
+        let bars = bitcoin(&[ohlc(60_000.0, 60_000.0, low, 41_000.0, 1e6)]);
+        let clock = Clock::new(vec![5 * HOUR, 6 * HOUR, 7 * HOUR]);
+        let candles = Candles::on_clock(bars, clock)
+            .with_funding(&[(7 * HOUR + 30 * 60 * 1_000_000_000, rate)])
+            .with_tiers(maintained());
+        let mut e = half_a_bitcoin_at(candles, intrabar);
+        e.stop(Side::Sell, 0.5, stop, true);
+        let kept = e.step().margin_cash;
+        (e, kept)
+    }
+
+    #[test]
+    fn a_debit_inside_the_bar_clips_it_above_a_stop_a_debit_first_never_reaches() {
+        // the debit of 10.25 moves the trigger to 40,221.61, and the path carried in
+        // counts it from the open as the check does, so the bar is clipped there and
+        // the stop at 40,215 below it never fills: the debit could have come before
+        // the fall, and the account closes at its trigger
+        let (e, kept) = stopped_inside(0.0005, 40_210.0, 40_215.0, Intrabar::Pessimistic);
+        let fills = priced(&e);
+        assert_eq!(fills.len(), 2, "{fills:?}");
+        assert_eq!(fills[1].0, FillReason::Liquidation);
+        assert!(
+            (fills[1].1 - 40_221.61).abs() < 0.005,
+            "closed at {}",
+            fills[1].1
+        );
+        assert_eq!(kept, 0.0);
+    }
+
+    #[test]
+    fn an_optimistic_credit_inside_the_bar_leaves_it_whole_for_a_stop_to_fill() {
+        // the credit of 10.25 moves the trigger to 40,180.40, below the low of 40,200,
+        // so the optimistic path carried in reaches no trigger and clips nothing, and
+        // the stop at 40,200.50 fills on the whole bar: 10,000 - 9,899.75 - 10.05
+        let (e, kept) = stopped_inside(-0.0005, 40_200.0, 40_200.5, Intrabar::Optimistic);
+        assert_eq!(
+            priced(&e),
+            vec![(FillReason::Limit, 60_000.0), (FillReason::Stop, 40_200.5)]
+        );
+        assert!((kept - 90.199_875).abs() < 1e-9, "kept {kept}");
     }
 
     #[test]

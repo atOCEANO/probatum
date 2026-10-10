@@ -62,6 +62,7 @@ SHARED = [
     "funding at the close of its row",
     "funding between rows",
     "funding inside a bar counted toward the check",
+    "funding inside a bar counted toward the path carried in",
     "slippage paid",
     "the cap with the other legs at the fill's fraction",
     "the margin bound beside another perp",
