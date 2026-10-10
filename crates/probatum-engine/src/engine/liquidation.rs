@@ -18,6 +18,18 @@ use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord};
 
+/// What the check finds for the account as it stands.
+enum Found {
+    /// The point the account leaves the market at, with the legs and the spans its
+    /// path was solved on left in their buffers.
+    Clip(Point),
+    /// Clear of the trigger with every leg at its adverse extreme, which holds at the
+    /// closes until a funding charge moves the account.
+    Clear,
+    /// No perp held, or a path that never reaches the trigger.
+    Nothing,
+}
+
 impl Engine {
     /// The rule, 1 to 3: the path of the perps carried into the bar, solved once the
     /// funding between rows is charged. A clip on the gap, its start included, means
@@ -75,47 +87,44 @@ impl Engine {
     /// it. On the trigger the account is taken over at the clip point recomputed for
     /// it, a leg yet to join at its fill price, and the debits it counted are paid.
     pub(super) fn check(&mut self) {
+        match self.check_point() {
+            Found::Clip(clip) => {
+                let (a, b) = self.spans[clip.piece];
+                let mut closes = std::mem::take(&mut self.closes);
+                closes.clear();
+                for leg in self.checked.iter().filter(|leg| leg.leave.is_none()) {
+                    let (start, end) = leg.ends(a, b);
+                    closes.push((leg.i, leg.q, start + clip.at * (end - start)));
+                }
+                self.pay_debits_inside();
+                self.take_over(&closes, Moment::InBar);
+                self.closes = closes;
+            }
+            Found::Clear => self.clear_through = true,
+            Found::Nothing => {}
+        }
+    }
+
+    /// Whether the check would find the trigger for the account as it stands, which
+    /// decides whether a bar holds its favourable exits back (The rule, 4).
+    pub(super) fn reaches_trigger(&mut self) -> bool {
+        matches!(self.check_point(), Found::Clip(_))
+    }
+
+    /// What the check finds for the account as it stands, its path solved against
+    /// the margin wallet less the debits stamped inside the bar. One decision serves
+    /// the check and the exits it holds back, so the two never part.
+    fn check_point(&mut self) -> Found {
         if self.account.perps_held() == 0 {
-            return;
+            return Found::Nothing;
         }
         let wallet = self.account.margin_cash - self.debits_inside();
         // with no flip on the bar the check's path never rises, so one clear of the
         // trigger where every leg ends never reaches it; a flip's old side leaving
         // takes its requirement with it, and the level can step up there
         if !self.flipped && self.clear_of_trigger(wallet, |i, q| self.adverse(i, q)) {
-            self.clear_through = true;
-            return;
+            return Found::Clear;
         }
-        let Some(clip) = self.check_clip(wallet) else {
-            return;
-        };
-        let (a, b) = self.spans[clip.piece];
-        let mut closes = std::mem::take(&mut self.closes);
-        closes.clear();
-        for leg in self.checked.iter().filter(|leg| leg.leave.is_none()) {
-            let (start, end) = leg.ends(a, b);
-            closes.push((leg.i, leg.q, start + clip.at * (end - start)));
-        }
-        self.pay_debits_inside();
-        self.take_over(&closes, Moment::InBar);
-        self.closes = closes;
-    }
-
-    /// Whether the check would find the trigger for the account as it stands, which
-    /// decides whether a bar holds its favourable exits back (The rule, 4).
-    pub(super) fn reaches_trigger(&mut self) -> bool {
-        if self.account.perps_held() == 0 {
-            return false;
-        }
-        let wallet = self.account.margin_cash - self.debits_inside();
-        (self.flipped || !self.clear_of_trigger(wallet, |i, q| self.adverse(i, q)))
-            && self.check_clip(wallet).is_some()
-    }
-
-    /// The check's path for the account as it stands, solved against `wallet`: the
-    /// point it leaves the market at with a leg still held, or none. The legs and the
-    /// spans it was solved on stay in their buffers.
-    fn check_clip(&mut self, wallet: f64) -> Option<Point> {
         let mut checked = std::mem::take(&mut self.checked);
         let mut cuts = std::mem::take(&mut self.cuts);
         let mut spans = std::mem::take(&mut self.spans);
@@ -124,15 +133,15 @@ impl Engine {
         self.check_legs(&mut checked);
         Engine::check_path(&checked, &mut cuts, &mut spans, &mut path);
         let held = checked.iter().any(|leg| leg.leave.is_none());
-        let clip = self
-            .solve(&path, wallet)
-            .filter(|_| held)
-            .map(|(_, clip)| clip);
+        let found = match self.solve(&path, wallet).filter(|_| held) {
+            Some((_, clip)) => Found::Clip(clip),
+            None => Found::Nothing,
+        };
         self.checked = checked;
         self.cuts = cuts;
         self.spans = spans;
         self.path = path;
-        clip
+        found
     }
 
     /// The rule, 6: once the row's own funding is charged, an account a debit took
