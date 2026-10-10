@@ -24,13 +24,26 @@ impl Engine {
     /// the account was liquidated before the bar opened, and it is closed there
     /// first; one inside the bar clips every held perp's bar at its price there.
     pub(super) fn solve_carried(&mut self) {
-        self.clips.fill(None);
+        if self.clipped {
+            self.clips.fill(None);
+            self.clipped = false;
+        }
         if self.account.perps_held() == 0 {
+            return;
+        }
+        // equity less the requirement is concave on the gap and never rises inside
+        // the bar, so a path clear of the trigger at the last marks and at the
+        // adverse corner never reaches it; the last closes found the account clear at
+        // those marks unless a transfer or a funding charge has moved it since
+        let wallet = self.account.margin_cash;
+        if (self.cleared || self.clear_of_trigger(wallet, |i, _| self.marks[i]))
+            && self.clear_of_trigger(wallet, |i, q| self.adverse(i, q))
+        {
             return;
         }
         let mut path = std::mem::take(&mut self.path);
         self.carried_path(&mut path);
-        if let Some((_, clip)) = self.solve(&path, self.account.margin_cash) {
+        if let Some((_, clip)) = self.solve(&path, wallet) {
             let (from, to) = path.pieces[clip.piece];
             let at = |leg: &PathLeg| leg.start + clip.at * (leg.end - leg.start);
             if clip.piece == 0 {
@@ -48,6 +61,7 @@ impl Engine {
                     let bar = self.candles.bar(self.tick, leg.i);
                     if printed(&bar) {
                         self.clips[leg.i] = Some(Engine::fenced(&bar, at(leg), leg.q > 0.0));
+                        self.clipped = true;
                     }
                 }
             }
@@ -64,14 +78,23 @@ impl Engine {
         if self.account.perps_held() == 0 {
             return;
         }
+        let wallet = self.account.margin_cash - self.debits_inside();
+        // with no flip on the bar the check's path never rises, so one clear of the
+        // trigger where every leg ends never reaches it; a flip's old side leaving
+        // takes its requirement with it, and the level can step up there
+        if !self.flipped && self.clear_of_trigger(wallet, |i, q| self.adverse(i, q)) {
+            self.clear_through = true;
+            return;
+        }
         let mut checked = std::mem::take(&mut self.checked);
         let mut cuts = std::mem::take(&mut self.cuts);
         let mut spans = std::mem::take(&mut self.spans);
         let mut path = std::mem::take(&mut self.path);
+        self.build_legs();
         self.check_legs(&mut checked);
         Engine::check_path(&checked, &mut cuts, &mut spans, &mut path);
-        let wallet = self.account.margin_cash - self.debits_inside();
-        if let Some((_, clip)) = self.solve(&path, wallet) {
+        let held = checked.iter().any(|leg| leg.leave.is_none());
+        if let Some((_, clip)) = self.solve(&path, wallet).filter(|_| held) {
             let (a, b) = spans[clip.piece];
             let mut closes = std::mem::take(&mut self.closes);
             closes.clear();
@@ -96,30 +119,28 @@ impl Engine {
         if self.account.perps_held() == 0 {
             return;
         }
-        let mut path = std::mem::take(&mut self.path);
-        path.legs.clear();
-        path.pieces.clear();
+        // every leg stands at its close no worse than at its adverse extreme, so an
+        // account the check found clear there, with no funding charged since, is
+        // clear here
+        if self.clear_through {
+            self.cleared = true;
+            return;
+        }
+        let (level, _) = self.margin_level(self.account.margin_cash, |i, _| self.close_of(i));
+        self.cleared = level > 0.0;
+        if self.cleared {
+            return;
+        }
+        let mut closes = std::mem::take(&mut self.closes);
+        closes.clear();
         for (i, position) in self.account.positions.iter().enumerate() {
             let q = position.qty.get();
             if self.account.markets[i] == Market::Perp && q != 0.0 {
-                let close = self.close_of(i);
-                path.legs.push(PathLeg {
-                    i,
-                    q,
-                    entry: position.avg_entry.get(),
-                    start: close,
-                    end: close,
-                });
+                closes.push((i, q, self.close_of(i)));
             }
         }
-        if self.at_trigger(&path.legs, self.account.margin_cash) {
-            let mut closes = std::mem::take(&mut self.closes);
-            closes.clear();
-            closes.extend(path.legs.iter().map(|leg| (leg.i, leg.q, leg.start)));
-            self.take_over(&closes, Moment::AtClose);
-            self.closes = closes;
-        }
-        self.path = path;
+        self.take_over(&closes, Moment::AtClose);
+        self.closes = closes;
     }
 
     /// The bar as far as this account got: a long sees nothing below `fence` and a

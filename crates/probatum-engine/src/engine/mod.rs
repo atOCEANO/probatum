@@ -37,7 +37,7 @@ mod path;
 mod resolution;
 mod transfers;
 
-use path::{CheckLeg, HeldLeg, Path};
+use path::{CheckLeg, FillNote, HeldLeg, Path};
 
 use probatum_core::{
     Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
@@ -141,11 +141,26 @@ pub struct Engine {
     /// on, NaN until its first bar.
     marks: Vec<f64>,
     /// What each perp's position did during the bar, for the check: the part
-    /// carried into it and the parts opened or flipped during it (The path).
+    /// carried into it and the parts opened or flipped during it (The path), built
+    /// from the notes of the bar's perp fills on a bar whose check needs them.
     legs: Vec<Vec<HeldLeg>>,
+    notes: Vec<FillNote>,
     /// Each instrument's bar clipped where the account left the market on it, or
-    /// none, for the orders a bar resolves.
+    /// none, for the orders a bar resolves, and whether any is.
     clips: Vec<Option<Candle>>,
+    clipped: bool,
+    /// Whether a perp flipped on this bar, whose old side then left the path.
+    flipped: bool,
+    /// Whether the last closes left the account clear of its trigger, which holds
+    /// at the next bar's last marks until a transfer or a funding charge moves it.
+    cleared: bool,
+    /// Whether this bar's check found the account clear with every leg at its
+    /// adverse extreme, which leaves it clear at the closes unless the row's funding
+    /// is charged first.
+    clear_through: bool,
+    /// Whether each instrument's tier table keeps any maintenance, which it does
+    /// for the engine's whole life.
+    maintains: Vec<bool>,
     // the path's buffers, refilled on every bar so a step allocates nothing
     path: Path,
     checked: Vec<CheckLeg>,
@@ -165,6 +180,9 @@ impl Engine {
             .map(|i| candles.market(i).unwrap_or(config.market))
             .collect();
         let (spot, margin) = Engine::opening(&config);
+        let maintains = (0..width)
+            .map(|i| candles.tiers(i).rows().iter().any(|tier| tier.rate > 0.0))
+            .collect();
         let mut engine = Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
@@ -193,6 +211,12 @@ impl Engine {
             marks: vec![f64::NAN; width],
             legs: vec![Vec::new(); width],
             clips: vec![None; width],
+            clipped: false,
+            flipped: false,
+            cleared: false,
+            clear_through: false,
+            notes: Vec::new(),
+            maintains,
             path: Path::default(),
             checked: Vec::new(),
             cuts: Vec::new(),
@@ -384,7 +408,9 @@ impl Engine {
             //    held perp's bar there, so an order that would have filled beyond it
             //    never triggers (ADR 0017)
             self.solve_carried();
-            self.start_legs();
+            self.notes.clear();
+            self.flipped = false;
+            self.clear_through = false;
 
             // 1. pending market orders fill at the open
             self.resolve_pending();

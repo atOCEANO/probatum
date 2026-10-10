@@ -217,24 +217,14 @@ impl Engine {
         low
     }
 
-    /// The maintenance instrument `i`'s position keeps at `mark`: its notional
-    /// times its tier's rate, less the tier's amount on a notional table, and
-    /// nothing without a table or on spot. The trigger stays at zero equity until
-    /// the liquidation path reads this.
+    /// The maintenance instrument `i`'s position keeps at `mark`, as the liquidation
+    /// path counts it, and nothing on spot.
     pub(super) fn maintenance(&self, i: usize, mark: f64) -> f64 {
         if self.account.markets[i] != Market::Perp {
             return 0.0;
         }
         let size = self.account.positions[i].qty.get().abs();
-        let notional = size * mark;
-        let tiers = self.candles.tiers(i);
-        match tiers.tier(size, notional) {
-            Some(tier) if tier.rate > 0.0 && notional > 0.0 => match tiers.basis() {
-                TierBasis::Notional => notional * tier.rate - tier.amount,
-                TierBasis::Quantity => notional * tier.rate,
-            },
-            _ => 0.0,
-        }
+        self.maintenance_of(i, size, size * mark)
     }
 
     /// The margin the cap asks of instrument `i`'s position at `mark`: its notional

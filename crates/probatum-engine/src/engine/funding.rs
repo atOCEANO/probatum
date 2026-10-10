@@ -60,6 +60,7 @@ impl Engine {
     pub(super) fn charge_between(&mut self) {
         if let Some(schedule) = self.candles.funding() {
             for &(rate, instrument) in schedule.between(self.tick) {
+                self.cleared = false;
                 for i in 0..self.marks.len() {
                     if self.charges(instrument, i) {
                         let paid = self.account.apply_funding(i, rate, Price(self.marks[i]));
@@ -119,6 +120,7 @@ impl Engine {
     /// nothing.
     pub(super) fn charge_funding(&mut self) {
         if self.owns_every_bars() {
+            self.clear_through = false;
             for i in 0..self.marks.len() {
                 if self.charges(None, i) {
                     let rate = self.config.funding_rate;
@@ -129,6 +131,7 @@ impl Engine {
         }
         if let Some(schedule) = self.candles.funding() {
             for &(rate, _, instrument) in schedule.owned(self.tick) {
+                self.clear_through = false;
                 for i in 0..self.marks.len() {
                     if self.charges(instrument, i) {
                         let paid = self.account.apply_funding(i, rate, Price(self.close_of(i)));

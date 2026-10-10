@@ -25,6 +25,9 @@ impl Engine {
     /// Apply the transfers decided at the last closes, each held to what the wallet
     /// it leaves may give.
     pub(super) fn apply_transfers(&mut self) {
+        if !self.transfers.is_empty() {
+            self.cleared = false;
+        }
         for k in 0..self.transfers.len() {
             let (amount, to) = self.transfers[k];
             // the cash the margin wallet keeps: what still covers the requirement once

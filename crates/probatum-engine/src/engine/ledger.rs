@@ -4,6 +4,7 @@
 
 use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Side};
 
+use super::path::FillNote;
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
 use crate::execution::FillCosts;
@@ -62,15 +63,21 @@ impl Engine {
         self.account.margin_cash += credit;
         self.account.apply_fill(i, &fill, fee);
         if self.account.markets[i] == Market::Perp {
-            let (held, _, _) = before;
+            let (held, entry, _) = before;
             let signed = fill.side.sign() * applied;
             let closed = if held * signed < 0.0 {
                 applied.min(held.abs())
             } else {
                 0.0
             };
-            let after = self.account.positions[i].qty.get();
-            self.track(i, held, after, fill.price.get(), applied - closed);
+            self.note(FillNote {
+                i,
+                before: held,
+                entry,
+                after: self.account.positions[i].qty.get(),
+                price: fill.price.get(),
+                opened: applied - closed,
+            });
         }
         self.book_fill(
             i,

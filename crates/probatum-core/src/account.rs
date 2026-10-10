@@ -30,12 +30,10 @@ pub struct Account {
     pub positions: Vec<Position>,
     /// The market each instrument trades in, which decides the wallet it settles in.
     pub markets: Vec<Market>,
-    // the perps holding a position, the one that does when it is one, and the
-    // realized PnL of every position, kept as the fills land so a step reads them
-    // without a pass over the instruments; a position moves only through
-    // `apply_fill`
+    // the perps holding a position and the realized PnL of every position, kept as
+    // the fills land so a step reads them without a pass over the instruments; a
+    // position moves only through `apply_fill`
     perps: usize,
-    sole: usize,
     realized: f64,
 }
 
@@ -59,7 +57,6 @@ impl Account {
             positions: vec![Position::flat(); markets.len()],
             markets,
             perps: 0,
-            sole: 0,
             realized: 0.0,
         }
     }
@@ -113,20 +110,8 @@ impl Account {
         self.realized += realized;
         if market == Market::Perp {
             match (held, self.positions[i].is_flat()) {
-                (false, false) => {
-                    self.perps += 1;
-                    self.sole = i;
-                }
-                (true, true) => {
-                    self.perps -= 1;
-                    if self.perps == 1 {
-                        self.sole = (0..self.positions.len())
-                            .find(|&j| {
-                                self.markets[j] == Market::Perp && !self.positions[j].is_flat()
-                            })
-                            .unwrap_or(0);
-                    }
-                }
+                (false, false) => self.perps += 1,
+                (true, true) => self.perps -= 1,
                 _ => {}
             }
         }
@@ -196,12 +181,6 @@ impl Account {
     #[inline]
     pub fn perps_held(&self) -> usize {
         self.perps
-    }
-
-    /// The perp holding a position when exactly one does.
-    #[inline]
-    pub fn sole_perp(&self) -> Option<usize> {
-        (self.perps == 1).then_some(self.sole)
     }
 
     /// Base size worth `fraction` of the equity at `marks`, at `price`. `fraction`
@@ -492,7 +471,7 @@ mod tests {
         a.apply_fill(2, &fill(Side::Buy, 3.0, 40.0), 0.0);
         assert_eq!(a.perps_held(), 2);
         a.apply_fill(0, &fill(Side::Sell, 1.0, 110.0), 0.0);
-        assert_eq!((a.perps_held(), a.sole_perp()), (1, Some(2)));
+        assert_eq!(a.perps_held(), 1);
         assert!(close(a.realized(), 30.0));
         a.reset(1_000.0, 1_000.0);
         assert_eq!((a.perps_held(), a.realized()), (0, 0.0));

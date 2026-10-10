@@ -52,6 +52,18 @@ pub(super) struct HeldLeg {
     pub(super) long: bool,
 }
 
+/// What a perp fill on instrument `i` did: its position from `before`, at average
+/// entry `entry`, to `after`, at `price`, `opened` of it a new side.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FillNote {
+    pub(super) i: usize,
+    pub(super) before: f64,
+    pub(super) entry: f64,
+    pub(super) after: f64,
+    pub(super) price: f64,
+    pub(super) opened: f64,
+}
+
 /// A leg of the check's path: its instrument and signed size, and where along the
 /// bar it joins and leaves.
 #[derive(Clone, Copy, Debug)]
@@ -97,11 +109,7 @@ struct Level {
 impl Engine {
     /// Whether instrument `i`'s tier table asks any maintenance.
     pub(super) fn has_maintenance(&self, i: usize) -> bool {
-        self.candles
-            .tiers(i)
-            .rows()
-            .iter()
-            .any(|tier| tier.rate > 0.0)
+        self.maintains[i]
     }
 
     /// The maintenance a position of `size` and `notional` on instrument `i` keeps:
@@ -134,7 +142,9 @@ impl Engine {
                 held += leg.q.abs() * price;
                 k += 1;
             }
-            maintenance += self.maintenance_of(i, size, held);
+            if self.maintains[i] {
+                maintenance += self.maintenance_of(i, size, held);
+            }
             notional += held;
         }
         Level {
@@ -144,11 +154,45 @@ impl Engine {
         }
     }
 
-    /// Whether margin equity is at or below the maintenance requirement, or at or
-    /// below zero without one, with `legs` where they start.
-    pub(super) fn at_trigger(&self, legs: &[PathLeg], wallet: f64) -> bool {
-        let at = self.level(legs, 0.0, wallet);
-        at.equity - at.maintenance <= 0.0
+    /// Margin equity less the maintenance requirement, and the notional held, with
+    /// `wallet` the margin wallet's cash and every perp held at the price `at` gives
+    /// it for its signed size.
+    pub(super) fn margin_level(&self, wallet: f64, at: impl Fn(usize, f64) -> f64) -> (f64, f64) {
+        let (mut equity, mut maintenance, mut notional) = (wallet, 0.0, 0.0);
+        for (i, position) in self.account.positions.iter().enumerate() {
+            let q = position.qty.get();
+            if q == 0.0 || self.account.markets[i] != Market::Perp {
+                continue;
+            }
+            let price = at(i, q);
+            equity += q * (price - position.avg_entry.get());
+            if self.maintains[i] {
+                maintenance += self.maintenance_of(i, q.abs(), q.abs() * price);
+            }
+            notional += q.abs() * price;
+        }
+        (equity - maintenance, notional)
+    }
+
+    /// Whether the account stands clear of its trigger with every perp held at the
+    /// price `at` gives it, by more than the rounding a path's own sums could leave,
+    /// so a solve that reached that point would find no crossing there either.
+    pub(super) fn clear_of_trigger(&self, wallet: f64, at: impl Fn(usize, f64) -> f64) -> bool {
+        let (level, notional) = self.margin_level(wallet, at);
+        level > 1e-12 * (wallet.abs() + notional)
+    }
+
+    /// Instrument `i`'s adverse extreme on the bar for a position of `q`, or its mark
+    /// where it printed no bar.
+    pub(super) fn adverse(&self, i: usize, q: f64) -> f64 {
+        let bar = self.candles.bar(self.tick, i);
+        if !printed(&bar) {
+            self.marks[i]
+        } else if q > 0.0 {
+            bar.low
+        } else {
+            bar.high
+        }
     }
 
     /// The first fraction on `legs` where equity falls to zero, less the
@@ -289,16 +333,34 @@ impl Engine {
         }
     }
 
-    /// Start the check's record of each perp held: one leg carried into the bar.
-    pub(super) fn start_legs(&mut self) {
+    /// Note what a perp fill did to its position, for the check's legs, which are
+    /// built only on a bar whose check needs its whole path.
+    pub(super) fn note(&mut self, note: FillNote) {
+        self.flipped |= note.before * note.after < 0.0;
+        self.notes.push(note);
+    }
+
+    /// The check's record of what each perp did during the bar: one leg carried into
+    /// it, from the position the bar's first fill on it found, and then each fill
+    /// noted, in turn.
+    pub(super) fn build_legs(&mut self) {
+        let notes = std::mem::take(&mut self.notes);
         for (i, legs) in self.legs.iter_mut().enumerate() {
             legs.clear();
+            if self.account.markets[i] != Market::Perp {
+                continue;
+            }
             let position = &self.account.positions[i];
-            let q = position.qty.get();
-            if self.account.markets[i] == Market::Perp && q != 0.0 {
+            let (q, entry) = notes
+                .iter()
+                .find(|note| note.i == i)
+                .map_or((position.qty.get(), position.avg_entry.get()), |note| {
+                    (note.before, note.entry)
+                });
+            if q != 0.0 {
                 legs.push(HeldLeg {
                     size: q.abs(),
-                    entry: position.avg_entry.get(),
+                    entry,
                     start: None,
                     join: 0.0,
                     leave: None,
@@ -306,6 +368,10 @@ impl Engine {
                 });
             }
         }
+        for note in &notes {
+            self.track(note.i, note.before, note.after, note.price, note.opened);
+        }
+        self.notes = notes;
     }
 
     /// Carry a perp fill on instrument `i` into the check's legs, the position going
@@ -328,7 +394,7 @@ impl Engine {
             legs.retain(|leg| leg.leave.is_some());
         } else if after.abs() < before.abs() {
             for leg in legs.iter_mut().filter(|leg| leg.leave.is_none()) {
-                leg.size *= after.abs() / before.abs();
+                leg.size = leg.size * after.abs() / before.abs();
             }
         }
         if opened > DUST && after != 0.0 {
