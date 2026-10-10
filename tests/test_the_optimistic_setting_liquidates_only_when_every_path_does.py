@@ -1,12 +1,15 @@
 """Under intrabar="optimistic" an account of several perps is liquidated on a bar only
 if every path through the bars would have reached its trigger, which the engine
 decides at each perp's corner and at the closes (Specification, The path). These
-tests hold its decisions to paths of their own. On a bar where it liquidated, paths
-drawn at random through the bars must every one reach the trigger; on a bar where it
-did not, the path the Specification builds, from the opens out to every favourable
-extreme, to each adverse extreme and back in turn, then to the closes, must never
-reach it. Equity less the requirement is concave along a straight move of the prices,
-so a path that moves straight between its corners is judged at its corners alone."""
+tests hold its decisions to paths of their own. On a bar where it liquidated, the
+path the Specification builds, from the opens out to every favourable extreme, to
+each adverse extreme and back in turn, then to the closes, must reach the trigger,
+and so must paths drawn at random through the bars; on a bar where it did not, the
+built path must never reach it. Equity less the requirement is concave along a
+straight move of the prices, so a path that moves straight between its corners is
+judged at its corners alone. Funding stamped inside a bar is taken the way most
+favourable to the account, as the optimistic setting takes it: a credit from the
+open and a debit at the close, where every path has paid it."""
 
 import random
 
@@ -14,6 +17,8 @@ import numpy as np
 import pytest
 
 import probatum
+
+HOUR = 3_600 * 1_000_000_000
 
 
 def walk(rng, rows, width):
@@ -57,14 +62,22 @@ def requirement(tiers, notional):
     return notional * tier[2] - tier[3]
 
 
-def above(account, prices):
-    """How far the account's margin equity sits above its maintenance at `prices`."""
-    wallet, legs = account
+def above(wallet, legs, prices):
+    """How far margin equity on `wallet` sits above the maintenance at `prices`."""
     value = wallet
     for (q, entry, tiers), price in zip(legs, prices):
         value += q * (price - entry) - requirement(tiers, abs(q) * price)
 
     return value
+
+
+def lowest(wallets, legs, path):
+    """The least the account stands above its trigger at the corners of `path`: the
+    last marks and the opens on the wallet the bar opened with, the corners inside
+    the bar with the funding it counts, and the closes once all of it is charged."""
+    opened, inside, closed = wallets
+    held = [opened, opened] + [inside] * (len(path) - 3) + [closed]
+    return min(above(wallet, legs, prices) for wallet, prices in zip(held, path))
 
 
 def drawn(rng, bars):
@@ -82,27 +95,30 @@ def drawn(rng, bars):
             for moment in moments]
 
 
-def built(bars, legs):
-    """The Specification's path through `bars`, as the prices at its corners: the
-    opens, every leg at its favourable extreme, each leg in turn at its adverse
-    extreme with the others still at their favourable, and the closes."""
+def corners(bars, legs):
+    """The corners of the Specification's path through `bars`: every leg at its
+    favourable extreme, then each leg in turn at its adverse extreme with the others
+    still at their favourable."""
     favourable = [high if q > 0.0 else low
                   for (q, _, _), (_, high, low, _) in zip(legs, bars)]
+
     adverse = [low if q > 0.0 else high
                for (q, _, _), (_, high, low, _) in zip(legs, bars)]
-    corners = [favourable[:k] + [adverse[k]] + favourable[k + 1:]
-               for k in range(len(legs))]
 
-    return [[bar[0] for bar in bars], favourable, *corners, [bar[3] for bar in bars]]
+    return [favourable] + [favourable[:k] + [adverse[k]] + favourable[k + 1:]
+                           for k in range(len(legs))]
 
 
 def universe(rng):
-    """A universe of two to four perps, an account opening a position in each on its
-    first bar at a few times its margin, and the engine's run of it."""
+    """A universe of two to four perps on hourly bars, an account opening a position
+    in each on its first bar at a few times its margin, funding stamped at the half
+    hour inside some of the bars, and the engine's run of it."""
     width   = rng.randint(2, 4)
     quote   = 10_000.0
     candles = walk(rng, 24, width)
     tiers   = [table(rng, quote) for _ in range(width)]
+    stamped = sorted(rng.sample(range(1, 24), 8))
+    funding = {t: rng.uniform(-0.002, 0.002) for t in stamped}
     script  = {0: [(rng.choice(["buy", "sell"]),
                     {"size": quote * rng.uniform(1.0, 5.0) / candles[0, i, 3],
                      "instrument": i})
@@ -110,25 +126,29 @@ def universe(rng):
 
     venue = dict(market="perp", quote=quote, fee_taker=0.0005, fee_maker=0.0002,
                  leverage=0.0, intrabar="optimistic",
+                 funding_times=np.array([t * HOUR + HOUR // 2 for t in stamped]),
+                 funding_rates=np.array([funding[t] for t in stamped]),
                  instruments=[{"market": "perp", "tiers": rows} if rows else
                               {"market": "perp"} for rows in tiers])
 
-    return candles, tiers, probatum._probatum.run(candles, venue, script)
+    times = np.arange(len(candles), dtype=np.int64) * HOUR
+    return candles, tiers, funding, probatum._probatum.run(candles, venue, script,
+                                                           times)
 
 
 def judged(seed, universes):
     """Every bar the account carried perps into and traded nothing on, judged by the
-    paths: how many it was liquidated on, and how many it outlived although every
-    perp at its adverse extreme at once would have reached the trigger."""
+    paths: how many it was liquidated on at a corner, opens and closes clear, and
+    how many it outlived although every perp at its adverse extreme at once would
+    have reached the trigger."""
     rng = random.Random(f"every path {seed}")
 
-    liquidated = outlived = 0
-
+    cornered = outlived = 0
     for _ in range(universes):
-        candles, tiers, out = universe(rng)
+        candles, tiers, funding, out = universe(rng)
         ledger = out["ledger"]
         closed = {fill["bar"] for fill in out["fills"] if fill["reason"] == "liquidation"}
-        traded = {fill["bar"] for fill in out["fills"]} - closed
+        traded = {fill["bar"] for fill in out["fills"] if fill["reason"] != "liquidation"}
 
         for t in range(1, len(candles)):
             held = [i for i in range(candles.shape[1]) if ledger["position"][t - 1][i]]
@@ -137,36 +157,48 @@ def judged(seed, universes):
 
             legs = [(ledger["position"][t - 1][i], ledger["entry"][t - 1][i], tiers[i])
                     for i in held]
-            account = ledger["margin_cash"][t - 1], legs
             bars    = [candles[t, i, :4] for i in held]
             marks   = [ledger["mark"][t - 1][i] for i in held]
-            scale   = abs(account[0]) + sum(abs(q) * mark for (q, _, _), mark
-                                            in zip(legs, marks))
+            opens   = [bar[0] for bar in bars]
+            closes  = [bar[3] for bar in bars]
+            charges = [q * close * funding.get(t, 0.0)
+                       for (q, _, _), close in zip(legs, closes)]
+            wallet  = ledger["margin_cash"][t - 1]
+            wallets = (wallet, wallet - sum(c for c in charges if c < 0.0),
+                       wallet - sum(charges))
+
+            built = [marks, opens, *corners(bars, legs), closes]
+            scale = abs(wallet) + sum(abs(q) * mark for (q, _, _), mark
+                                      in zip(legs, marks))
             tolerance = 1e-9 * scale
 
             if t in closed:
-                liquidated += 1
+                assert lowest(wallets, legs, built) <= tolerance, (
+                    f"seed {seed}: bar {t} liquidated where the built path never "
+                    f"reaches the trigger: {built}")
                 for _ in range(32):
                     path = [marks, *drawn(rng, bars)]
-                    assert min(above(account, prices) for prices in path) <= tolerance, (
+                    assert lowest(wallets, legs, path) <= tolerance, (
                         f"seed {seed}: bar {t} liquidated where a path never reaches "
                         f"the trigger: {path}")
+
+                cornered += (above(wallet, legs, opens) > 0.0
+                             and above(wallets[2], legs, closes) > 0.0)
             else:
-                path   = [marks, *built(bars, legs)]
-                lowest = min(above(account, prices) for prices in path)
-                assert lowest > -tolerance, (
+                least = lowest(wallets, legs, built)
+                assert least > -tolerance, (
                     f"seed {seed}: bar {t} outlived where the built path reaches the "
-                    f"trigger, {lowest} below it: {path}")
+                    f"trigger, {least} below it: {built}")
 
                 adverse = [low if q > 0.0 else high
                            for (q, _, _), (_, high, low, _) in zip(legs, bars)]
-                outlived += above(account, adverse) <= 0.0
+                outlived += above(wallets[1], legs, adverse) <= 0.0
 
-    return liquidated, outlived
+    return cornered, outlived
 
 
 @pytest.mark.parametrize("seed", [1, 7, 42])
 def test_a_bar_liquidates_only_where_every_path_reaches_the_trigger(seed):
-    liquidated, outlived = judged(seed, 150)
+    cornered, outlived = judged(seed, 150)
 
-    assert liquidated and outlived, (liquidated, outlived)
+    assert cornered and outlived, (cornered, outlived)
