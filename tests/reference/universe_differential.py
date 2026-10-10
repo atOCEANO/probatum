@@ -24,8 +24,8 @@ import numpy as np
 import probatum
 from .differential import (KINDS, Script, before, clock, close_enough,
                            closed_before, cut, limit_price, live, log_difference,
-                           resting, stamps, stop_price, tally, tier_table, walk,
-                           worded)
+                           resting, setting, stamps, stop_price, tally,
+                           tier_table, walk, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -195,8 +195,10 @@ def take_profit(rng, band):
         share = rng.choice([0.5, 1.0])
     else:
         beside = rng.choice(["stop", "against", "absent", "opened"])
-        size   = worth * rng.uniform(3.0 if beside == "opened" else 1.0,
-                                     2.0 if beside == "absent" else 6.0)
+        # the take-profit a liquidating bar holds back is the pessimistic setting's
+        cfg["intrabar"] = "pessimistic"
+        size = worth * rng.uniform(3.0 if beside == "opened" else 1.0,
+                                   2.0 if beside == "absent" else 6.0)
 
         a.append(calm(rng, a[-1].close))
         b.append(calm(rng, b[-1].close))
@@ -232,9 +234,9 @@ def take_profit(rng, band):
             cfg["tiers"][0] = (None, "notional")
         else:
             b_worth = cfg["quote"] / b[1].close
+            most    = 1.0 if beside == "absent" else 6.0
             actions[1] = (1, "market", "buy" if long_b else "sell",
-                          b_worth * rng.uniform(0.3, 1.0 if beside == "absent" else 6.0),
-                          0.0)
+                          b_worth * rng.uniform(0.3, most), 0.0)
             if beside == "against":
                 b.append(against(rng, b[-1].close, long_b, rng.uniform(0.05, 0.6)))
             else:
@@ -448,7 +450,9 @@ def make_reference(times, kinds, columns, cfg):
         max_open_orders = cfg["max_open_orders"],
         slippage        = cfg["slippage_bps"],
         funding         = funding,
+        intrabar        = cfg["intrabar"],
     )
+
     instruments = [Instrument(f"I{k}", kind=kind, tiers=cfg["tiers"][k][0],
                               tiers_by=cfg["tiers"][k][1])
                    for k, kind in enumerate(kinds)]
@@ -464,6 +468,7 @@ def venue(cfg):
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
         max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
         leverage=cfg["leverage"], impact=0.0,
+        intrabar=cfg["intrabar"],
         instruments=[dict(market="spot" if kind == "spot" else "perp", tiers=rows,
                           tiers_by=by)
                      for kind, (rows, by) in zip(cfg["kinds"], cfg["tiers"])],
@@ -587,6 +592,8 @@ def compare(cases, seed):
             times, kinds, columns = universe(rng)
             cfg  = config(rng, times, kinds, columns)
             case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
+
+        case[3].setdefault("intrabar", setting(seed, number))
 
         counted = collections.defaultdict(collections.Counter)
         try:

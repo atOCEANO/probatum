@@ -236,7 +236,8 @@ def venue(cfg):
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
         max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
         leverage=cfg["leverage"], impact=0.0, tiers=cfg["tiers"],
-        tiers_by=cfg["tiers_by"], **engine_funding(cfg["funding"]),
+        tiers_by=cfg["tiers_by"], intrabar=cfg["intrabar"],
+        **engine_funding(cfg["funding"]),
     )
 
 
@@ -271,6 +272,7 @@ def make_reference(bars, cfg, times, interval=None, events=None):
         max_open_orders = cfg["max_open_orders"],
         slippage        = cfg["slippage_bps"],
         funding         = funding,
+        intrabar        = cfg["intrabar"],
     )
 
     if events is not None:
@@ -599,6 +601,13 @@ Outcome = collections.namedtuple(
     "Outcome", "compared agreed disagreed set_aside rules reached")
 
 
+def setting(seed, case):
+    """How case `case` of `seed` decides what its bars cannot show, drawn apart from
+    the stream the cases come from, which it leaves as it was."""
+    draw = random.Random(f"intrabar {seed} {case}")
+    return draw.choice(["pessimistic", "optimistic"])
+
+
 def compare(cases, seed):
     """`cases` random cases from `seed` through both: how many were compared whole
     and agreed, the disagreements, the rules each case was cut at, and the rules and
@@ -610,9 +619,10 @@ def compare(cases, seed):
     whole, agreed, disagreed = 0, 0, []
 
     for case in range(cases):
-        bars    = walk(rng, rng.randint(8, 40))
-        times   = clock(rng, len(bars))
-        cfg     = config(rng, times)
+        bars  = walk(rng, rng.randint(8, 40))
+        times = clock(rng, len(bars))
+        cfg   = config(rng, times)
+        cfg["intrabar"] = setting(seed, case)
         actions = plan(rng, bars, cfg)
         counted = collections.defaultdict(collections.Counter)
         try:

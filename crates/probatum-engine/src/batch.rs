@@ -211,7 +211,7 @@ mod tests {
     use super::EnvBatch;
     use crate::candles::Candles;
     use crate::clock::Clock;
-    use crate::engine::{Engine, EngineConfig};
+    use crate::engine::{Engine, EngineConfig, Intrabar};
     use probatum_core::{Candle, Market, State};
     use proptest::prelude::*;
 
@@ -256,6 +256,7 @@ mod tests {
             impact: 0.0,
             funding_rate: 0.0,
             funding_interval: 0,
+            intrabar: Intrabar::Pessimistic,
         }
     }
 
@@ -478,6 +479,7 @@ mod tests {
             impact: 0.1,
             funding_rate: 0.0001,
             funding_interval: 2,
+            intrabar: Intrabar::Pessimistic,
         }
     }
 

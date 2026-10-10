@@ -26,7 +26,7 @@ import numpy as np
 
 import probatum
 from .differential import (balance, clock, close_enough, config, engine_funding,
-                           make_reference, money, set_aside, walk)
+                           make_reference, money, set_aside, setting, walk)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -66,6 +66,7 @@ def drive_batch(bars, times, cfg, offsets, actions):
         impact            = 0.0,
         times             = np.array(times, dtype=np.int64),
         report            = False,
+        intrabar          = cfg["intrabar"],
         **engine_funding(cfg["funding"]),
     )
     batch.reset_at_each(np.array(offsets, dtype=np.int64))
@@ -177,7 +178,7 @@ def compare(cases, seed):
         bars  = walk(rng, rng.randint(12, 40))
         times = clock(rng, len(bars))
         # the batch takes no tier table until it runs universes
-        cfg      = dict(config(rng, times), tiers=None)
+        cfg      = dict(config(rng, times), tiers=None, intrabar=setting(seed, case))
         num_envs = rng.randint(2, 5)
         offsets  = offsets_for(rng, bars, num_envs)
         window   = rng.randint(1, 6)

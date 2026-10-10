@@ -55,6 +55,29 @@ use crate::stats::Stats;
 /// not log a phantom trade.
 const CLOSE_EPS: f64 = 1e-9;
 
+/// How a venue decides every event a bar's four prices cannot order (ADR 0012).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Intrabar {
+    /// The worse way for the account, every time: the default everywhere.
+    Pessimistic,
+    /// The better way, every time.
+    Optimistic,
+}
+
+/// How the bar on hand decides each event its prices cannot order, true where it
+/// takes the worse way (Specification, What a bar cannot show).
+#[derive(Clone, Debug)]
+struct Unseen {
+    /// The way of a fixed setting, which every event takes.
+    worse: bool,
+    /// Several perps reach their worst prices at the same moment.
+    together: bool,
+    /// Exits on a liquidating bar are held back.
+    hold: bool,
+    /// Each instrument's exits fill worst first.
+    exits: Vec<bool>,
+}
+
 /// Construction parameters for an engine.
 #[derive(Clone, Copy, Debug)]
 pub struct EngineConfig {
@@ -82,6 +105,8 @@ pub struct EngineConfig {
     pub funding_rate: f64,
     /// Bars between funding events. Zero disables funding (ADR 0020).
     pub funding_interval: usize,
+    /// How every event a bar's prices cannot order is decided (ADR 0012).
+    pub intrabar: Intrabar,
 }
 
 impl Default for EngineConfig {
@@ -100,6 +125,7 @@ impl Default for EngineConfig {
             impact: 0.0,
             funding_rate: 0.0,
             funding_interval: 0,
+            intrabar: Intrabar::Pessimistic,
         }
     }
 }
@@ -167,6 +193,7 @@ pub struct Engine {
     /// opened at it, the reference of the fill that opened or flipped it otherwise,
     /// NaN while it is flat.
     starts: Vec<f64>,
+    unseen: Unseen,
     // the path's buffers, refilled on every bar so a step allocates nothing
     path: Path,
     checked: Vec<CheckLeg>,
@@ -224,6 +251,15 @@ impl Engine {
             notes: Vec::new(),
             maintains,
             starts: vec![f64::NAN; width],
+            unseen: {
+                let worse = config.intrabar == Intrabar::Pessimistic;
+                Unseen {
+                    worse,
+                    together: worse,
+                    hold: worse,
+                    exits: vec![worse; width],
+                }
+            },
             path: Path::default(),
             checked: Vec::new(),
             cuts: Vec::new(),
@@ -626,7 +662,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::fixtures::{cfg, ohlc, perp_cfg, report_cfg, series, universe, ABSENT};
-    use super::{Engine, EngineConfig};
+    use super::{Engine, EngineConfig, Intrabar};
     use crate::candles::{printed, Candles, Instrument};
     use crate::clock::Clock;
     use probatum_core::TimeInForce::Ioc;
@@ -1011,6 +1047,7 @@ mod tests {
             impact: 0.5,
             funding_rate: 0.0001,
             funding_interval: 3,
+            intrabar: Intrabar::Pessimistic,
         }
     }
 

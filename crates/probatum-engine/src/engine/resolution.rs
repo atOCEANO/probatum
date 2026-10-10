@@ -139,7 +139,7 @@ impl Engine {
             return;
         }
         let fills = self.offers();
-        let hold = self.may_hold(&fills) && self.liquidates_without(&fills);
+        let hold = self.unseen.hold && self.may_hold(&fills) && self.liquidates_without(&fills);
         self.fill_offers(fills, hold);
 
         // IOC and FOK limits get one bar of exposure, the first their instrument
@@ -299,8 +299,12 @@ impl Engine {
         if slots.len() < 2 {
             return;
         }
+        // the worse first, or under the optimistic setting the better, ties left in
+        // slot order either way
+        let worse = self.unseen.exits[i];
         let mut ordered: Vec<usize> = slots.clone();
         ordered.sort_by(|&a, &b| {
+            let (a, b) = if worse { (a, b) } else { (b, a) };
             rank(&fills[a])
                 .partial_cmp(&rank(&fills[b]))
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -391,7 +395,7 @@ mod tests {
     use crate::engine::fixtures::{
         cfg, crash_series, dip_series, ohlc, perp_cfg, report_cfg, series, universe, ABSENT,
     };
-    use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
+    use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
     use crate::reporter::EventKind;
     use crate::reporter::FillReason;
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
@@ -707,6 +711,37 @@ mod tests {
         assert!(s.open_orders.is_empty()); // IOC: nothing rests
     }
 
+    /// Where a long of 1 from 100 exits on one wide bar that reaches a stop at 90 and
+    /// a target at 110, typed in the order `stop_first` says.
+    fn both_reached(stop_first: bool, intrabar: Intrabar) -> f64 {
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+            ohlc(100.0, 120.0, 80.0, 100.0, 1000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+        ]);
+        let config = EngineConfig {
+            intrabar,
+            ..report_cfg() // spot, so a sell clamps
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        if stop_first {
+            e.stop(Side::Sell, 1.0, 90.0, true);
+            e.limit_sell(1.0, 110.0);
+        } else {
+            e.limit_sell(1.0, 110.0);
+            e.stop(Side::Sell, 1.0, 90.0, true);
+        }
+        let s = e.step();
+        assert_eq!(s.position, 0.0, "stop_first={stop_first}");
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert_eq!(trades.len(), 1, "stop_first={stop_first}");
+        trades[0].exit
+    }
+
     #[test]
     fn a_bar_reaching_both_a_stop_and_a_target_books_the_stop_either_way() {
         // the engine cannot know which the bar touched first. It used to answer
@@ -714,30 +749,18 @@ mod tests {
         // every ambiguous bar and swapping the two lines booked a win: the sign of
         // a bracket strategy's result was decided by the order it was typed in
         for stop_first in [true, false] {
-            let candles = Candles::new(vec![
-                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
-                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
-                // one wide bar that reaches the stop at 90 AND the target at 110
-                ohlc(100.0, 120.0, 80.0, 100.0, 1000.0),
-                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
-            ]);
-            let mut e = Engine::new(candles, report_cfg()); // spot, so a sell clamps
-            e.reset();
-            e.market_buy(1.0);
-            e.step(); // long 1 at 100
-            if stop_first {
-                e.stop(Side::Sell, 1.0, 90.0, true);
-                e.limit_sell(1.0, 110.0);
-            } else {
-                e.limit_sell(1.0, 110.0);
-                e.stop(Side::Sell, 1.0, 90.0, true);
-            }
-            let s = e.step();
-            assert_eq!(s.position, 0.0, "stop_first={stop_first}");
-            let trades = e.reporter().expect("reporting is on").trades();
-            assert_eq!(trades.len(), 1, "stop_first={stop_first}");
-            assert_eq!(trades[0].exit, 90.0, "stop_first={stop_first}");
-            assert!(trades[0].pnl < 0.0, "stop_first={stop_first}");
+            let exit = both_reached(stop_first, Intrabar::Pessimistic);
+            assert_eq!(exit, 90.0, "stop_first={stop_first}");
+        }
+    }
+
+    #[test]
+    fn an_optimistic_bar_reaching_both_books_the_target_either_way() {
+        // the optimistic setting takes the better exit first, whichever was typed
+        // first, which with the pessimistic run brackets what the bar could hold
+        for stop_first in [true, false] {
+            let exit = both_reached(stop_first, Intrabar::Optimistic);
+            assert_eq!(exit, 110.0, "stop_first={stop_first}");
         }
     }
 

@@ -8,7 +8,7 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use probatum_core::{Candle, Market};
-use probatum_engine::{Candles, Engine, EngineConfig, EnvBatch};
+use probatum_engine::{Candles, Engine, EngineConfig, EnvBatch, Intrabar};
 
 const BARS: usize = 1_000;
 
@@ -46,6 +46,7 @@ fn perp_config() -> EngineConfig {
         impact: 0.0,
         funding_rate: 0.0,
         funding_interval: 0,
+        intrabar: Intrabar::Pessimistic,
     }
 }
 

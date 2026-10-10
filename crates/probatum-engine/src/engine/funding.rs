@@ -71,34 +71,44 @@ impl Engine {
         }
     }
 
-    /// What the debits stamped inside this row come to on the positions as they now
-    /// stand, at their closes. A bar cannot show whether such an event came before
-    /// its worst price, so a debit counts toward the bar's liquidation check and a
-    /// credit does not, the pessimistic reading.
+    /// Whether the bar counts a funding `charge` stamped inside it toward its check.
+    /// A bar cannot show whether such an event came before its worst price: the
+    /// pessimistic way counts a debit and not a credit, the optimistic way a credit
+    /// and not a debit.
+    fn counts(&self, charge: f64) -> bool {
+        if self.unseen.worse {
+            charge > 0.0
+        } else {
+            charge < 0.0
+        }
+    }
+
+    /// What the charges stamped inside this row the bar counts toward its check come
+    /// to, on the positions as they now stand, at their closes.
     #[inline]
-    pub(super) fn debits_inside(&self) -> f64 {
+    pub(super) fn counted_inside(&self) -> f64 {
         let Some(schedule) = self.candles.funding() else {
             return 0.0;
         };
-        let mut debits = 0.0;
+        let mut counted = 0.0;
         for &(rate, inside, instrument) in schedule.owned(self.tick) {
             for i in 0..self.marks.len() {
                 if !inside || !self.charges(instrument, i) {
                     continue;
                 }
                 let charge = self.account.positions[i].qty.get() * self.close_of(i) * rate;
-                if charge > 0.0 {
-                    debits += charge;
+                if self.counts(charge) {
+                    counted += charge;
                 }
             }
         }
-        debits
+        counted
     }
 
-    /// Pay the debits stamped inside this row, at the closes, which the check
-    /// counted against an account it then liquidated: counted is paid, and the
-    /// credits it did not count are not.
-    pub(super) fn pay_debits_inside(&mut self) {
+    /// Pay the charges stamped inside this row, at the closes, which the check
+    /// counted against an account it then liquidated: counted is paid, and what it
+    /// did not count is not.
+    pub(super) fn pay_counted_inside(&mut self) {
         if let Some(schedule) = self.candles.funding() {
             for &(rate, inside, instrument) in schedule.owned(self.tick) {
                 for i in 0..self.marks.len() {
@@ -106,7 +116,8 @@ impl Engine {
                         continue;
                     }
                     let close = self.close_of(i);
-                    if self.account.positions[i].qty.get() * close * rate > 0.0 {
+                    let charge = self.account.positions[i].qty.get() * close * rate;
+                    if self.counts(charge) {
                         let paid = self.account.apply_funding(i, rate, Price(close));
                         pay(&mut self.funding_paid, &mut self.reporter, i, paid);
                     }

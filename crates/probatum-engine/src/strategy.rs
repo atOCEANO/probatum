@@ -37,7 +37,7 @@ pub fn run(engine: &mut Engine, strategy: &mut dyn Strategy) -> State {
 mod tests {
     use super::{run, Strategy};
     use crate::candles::Candles;
-    use crate::engine::{Engine, EngineConfig};
+    use crate::engine::{Engine, EngineConfig, Intrabar};
     use probatum_core::{Candle, Market, State};
 
     fn series() -> Candles {
@@ -81,6 +81,7 @@ mod tests {
             impact: 0.0,
             funding_rate: 0.0,
             funding_interval: 0,
+            intrabar: Intrabar::Pessimistic,
         }
     }
 

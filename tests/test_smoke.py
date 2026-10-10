@@ -263,6 +263,14 @@ def test_a_tier_table_the_loader_cannot_trust_is_refused(tiers, tiers_by, says):
         probatum.Engine(series(), market="perp", tiers=tiers, tiers_by=tiers_by)
 
 
+def test_an_intrabar_setting_it_does_not_know_is_refused():
+    says = 'intrabar: "neutral" is not a setting; use pessimistic or optimistic'
+
+    for build in (probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
+        with pytest.raises(ValueError, match=re.escape(says)):
+            build(series(), intrabar="neutral")
+
+
 def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():
     venue  = dict(market="perp", quote=10_000.0, fee_taker=0.0006, leverage=5.0)
     played = probatum._probatum.run(series(), venue, {

@@ -140,7 +140,7 @@ impl Strategy for Script {
 mod tests {
     use super::{Action, OrderRef, Script};
     use crate::candles::Candles;
-    use crate::engine::{Engine, EngineConfig};
+    use crate::engine::{Engine, EngineConfig, Intrabar};
     use crate::reporter::EventKind;
     use crate::strategy::run;
     use probatum_core::{Candle, Market, OrderId, OrderType, Side, TimeInForce};
@@ -168,6 +168,7 @@ mod tests {
             impact: 0.0,
             funding_rate: 0.0,
             funding_interval: 0,
+            intrabar: Intrabar::Pessimistic,
         };
         Engine::new(Candles::new(vec![bar; 4]), config)
     }

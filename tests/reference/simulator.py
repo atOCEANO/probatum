@@ -1992,9 +1992,11 @@ class Simulator:
 
             if hold_favourable and self.favourable(order, reference, t):
                 held += 1
-                if not ((before[i] > 0.0 and side == "sell")
-                        or (before[i] < 0.0 and side == "buy")):
-                    self.hit("an exit held back from a position the bar's orders opened")
+                reduced = ((before[i] > 0.0 and side == "sell")
+                           or (before[i] < 0.0 and side == "buy"))
+                if not reduced:
+                    self.hit("an exit held back from a position the bar's orders "
+                             "opened")
                 continue
 
             remaining = (abs(self.position[i]) if order["size"] is None

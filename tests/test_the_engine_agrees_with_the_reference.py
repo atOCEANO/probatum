@@ -63,7 +63,7 @@ def built(*actions, shaped):
     times = [k * differential.HOUR for k in range(len(bars))]
     cfg   = dict(market="perp", quote=100.0, idle=0.0, fee_taker=0.0, fee_maker=0.0,
                  slippage_bps=0.0, max_open_orders=8, leverage=10.0, funding=("none",),
-                 tiers=None, tiers_by="notional")
+                 tiers=None, tiers_by="notional", intrabar="pessimistic")
 
     return bars, times, cfg, list(actions)
 

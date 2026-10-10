@@ -55,7 +55,12 @@ impl Engine {
         }
         let mut path = std::mem::take(&mut self.path);
         self.carried_path(&mut path);
-        if let Some((_, clip)) = self.solve(&path, wallet) {
+        // the gap is one move for every path; inside the bars the optimistic way
+        // waits for every path to reach the trigger
+        let found = self
+            .solve(&path, wallet)
+            .filter(|(trigger, _)| trigger.piece == 0 || self.every_path_reaches(wallet));
+        if let Some((_, clip)) = found {
             let (from, to) = path.pieces[clip.piece];
             let at = |leg: &PathLeg| leg.start + clip.at * (leg.end - leg.start);
             if clip.piece == 0 {
@@ -101,7 +106,7 @@ impl Engine {
                     let (start, end) = leg.ends(a, b);
                     closes.push((leg.i, leg.q, start + clip.at * (end - start)));
                 }
-                self.pay_debits_inside();
+                self.pay_counted_inside();
                 self.take_over(&closes, Moment::InBar);
                 self.closes = closes;
             }
@@ -117,13 +122,13 @@ impl Engine {
     }
 
     /// What the check finds for the account as it stands, its path solved against
-    /// the margin wallet less the debits stamped inside the bar. One decision serves
-    /// the check and the exits it holds back, so the two never part.
+    /// the margin wallet less the charges stamped inside the bar it counts. One
+    /// decision serves the check and the exits it holds back, so the two never part.
     fn check_point(&mut self) -> Found {
         if self.account.perps_held() == 0 {
             return Found::Nothing;
         }
-        let wallet = self.account.margin_cash - self.debits_inside();
+        let wallet = self.account.margin_cash - self.counted_inside();
         // with no flip on the bar the check's path never rises, so one clear of the
         // trigger where every leg ends never reaches it; a flip's old side leaving
         // takes its requirement with it, and the level can step up there
@@ -138,7 +143,10 @@ impl Engine {
         self.check_legs(&mut checked);
         Engine::check_path(&checked, &mut cuts, &mut spans, &mut path);
         let held = checked.iter().any(|leg| leg.leave.is_none());
-        let found = match self.solve(&path, wallet).filter(|_| held) {
+        let found = match self
+            .solve(&path, wallet)
+            .filter(|_| held && self.every_path_reaches(wallet))
+        {
             Some((_, clip)) => Found::Clip(clip),
             None => Found::Nothing,
         };
@@ -147,6 +155,39 @@ impl Engine {
         self.spans = spans;
         self.path = path;
         found
+    }
+
+    /// Whether every path inside the bars takes the account as it stands, against
+    /// `wallet`, to its trigger, which the optimistic way asks before it liquidates
+    /// an account of several perps; the pessimistic way and an account of one take
+    /// the synchronous path for every path. Every path passes each perp's adverse
+    /// extreme at some moment, when the others are no better than their favourable
+    /// extremes, and ends at the closes, so it is enough that one such corner or the
+    /// closes reach the trigger; if none does, a path exists that never does
+    /// (Specification, The path).
+    fn every_path_reaches(&self, wallet: f64) -> bool {
+        if self.unseen.together || self.account.perps_held() < 2 {
+            return true;
+        }
+        let corner = |k: usize| {
+            self.margin_level(wallet, |i, q| {
+                let bar = self.candles.bar(self.tick, i);
+                if !printed(&bar) {
+                    self.marks[i]
+                } else if (i == k) == (q > 0.0) {
+                    bar.low
+                } else {
+                    bar.high
+                }
+            })
+        };
+        (0..self.account.positions.len())
+            .filter(|&k| {
+                self.account.markets[k] == Market::Perp
+                    && self.account.positions[k].qty.get() != 0.0
+            })
+            .any(|k| corner(k) <= 0.0)
+            || self.margin_level(wallet, |i, _| self.close_of(i)) <= 0.0
     }
 
     /// The rule, 6: once the row's own funding is charged, an account a debit took
@@ -369,7 +410,7 @@ mod tests {
     use crate::candles::{Candles, Instrument};
     use crate::clock::Clock;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, universe};
-    use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
+    use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
     use crate::reporter::{EventKind, EventReason, FillReason};
     use probatum_core::{
         Candle, Market, OrderType, Side, Tier, TierBasis, Tiers, TimeInForce, Wallet,
@@ -1379,12 +1420,18 @@ mod tests {
     /// 0.02% and 0.05%, buying 0.5 BTC with a limit at 60,000 on a bar that opens on
     /// it, a taker's fill of 15 that leaves 10,000; returned after that bar.
     fn half_a_bitcoin(bars: Candles) -> Engine {
+        half_a_bitcoin_at(bars, Intrabar::Pessimistic)
+    }
+
+    /// `half_a_bitcoin` deciding what its bars cannot show by `intrabar`.
+    fn half_a_bitcoin_at(bars: Candles, intrabar: Intrabar) -> Engine {
         let config = EngineConfig {
             quote: 10_015.0,
             fee_maker: 0.0002,
             fee_taker: 0.0005,
             max_leverage: 10.0,
             report: true,
+            intrabar,
             ..perp_cfg()
         };
         let mut e = Engine::new(bars, config);
@@ -1528,6 +1575,50 @@ mod tests {
             "kept {}",
             last.margin_cash
         );
+    }
+
+    #[test]
+    fn under_the_optimistic_setting_the_limit_at_42_000_fills_and_keeps_995_80() {
+        // the Specification's example: on the bar down to 39,000 the optimistic
+        // setting has the limit fill first, and the account keeps 10,000 - 9,000 -
+        // 4.20, as emsl booked it
+        let mut e = half_a_bitcoin_at(Candles::new(bitcoin(&[WIDE])), Intrabar::Optimistic);
+        e.limit_sell(0.5, 42_000.0);
+        let last = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![(FillReason::Limit, 60_000.0), (FillReason::Limit, 42_000.0)]
+        );
+        assert!(
+            (last.margin_cash - 995.8).abs() < 1e-9,
+            "kept {}",
+            last.margin_cash
+        );
+    }
+
+    #[test]
+    fn an_optimistic_bar_counts_a_credit_stamped_inside_it_toward_its_check() {
+        // half a bitcoin with 0.5% maintenance on a bar down to 40,200, below the
+        // trigger at 40,201.01, and a credit of 10.25 stamped at 07:30. The
+        // pessimistic setting leaves the credit out and closes the account at the
+        // trigger; the optimistic one counts it, which moves the trigger to where
+        // 0.5p - 19,989.75 falls to 0.0025p, 40,180.40, below the bar, and the
+        // account keeps 10,000 - 9,500 + 10.25 at the close
+        for (intrabar, kept) in [(Intrabar::Pessimistic, 0.0), (Intrabar::Optimistic, 510.25)] {
+            let bars = bitcoin(&[ohlc(60_000.0, 60_000.0, 40_200.0, 41_000.0, 1e6)]);
+            let clock = Clock::new(vec![5 * HOUR, 6 * HOUR, 7 * HOUR]);
+            let stamp = 7 * HOUR + 30 * 60 * 1_000_000_000;
+            let candles = Candles::on_clock(bars, clock)
+                .with_funding(&[(stamp, -0.0005)])
+                .with_tiers(maintained());
+            let mut e = half_a_bitcoin_at(candles, intrabar);
+            let last = e.step();
+            assert!(
+                (last.equity - kept).abs() < 1e-9,
+                "{intrabar:?} kept {}",
+                last.equity
+            );
+        }
     }
 
     #[test]
@@ -1845,13 +1936,68 @@ mod tests {
         // short of 20 ETH, on a bar where BTC falls to 54,000 and ETH rises to 3,300.
         // Equity on the path is 10,000 - 12,000s and the closing fee a constant 60,
         // so both close where s is 0.8283, at 55,030.00 and 3,248.50
+        let mut e = bitcoin_and_ether((57_000.0, 3_150.0), Intrabar::Pessimistic);
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let closes: Vec<(usize, f64)> = reporter
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .map(|fill| (fill.instrument, fill.price))
+            .collect();
+        let [(0, btc), (1, eth)] = closes.as_slice() else {
+            panic!("BTC and ETH closed, in that order: {closes:?}");
+        };
+        assert!((btc - 55_030.0).abs() < 0.005, "BTC closed at {btc}");
+        assert!((eth - 3_248.50).abs() < 0.005, "ETH closed at {eth}");
+        assert!((reporter.ledger()[2].costs.fees - 60.0).abs() < 0.005);
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn the_optimistic_setting_liquidates_bitcoin_and_ether_only_where_every_path_does() {
+        // the corners are BTC at 54,000 beside ETH at its low of 3,000 and ETH at
+        // 3,300 beside BTC at its high of 60,000, and equity is 4,000 at each and at
+        // closes of 57,000 and 3,150: a path exists that never reaches the trigger,
+        // and the account survives the bar. Closing at 55,000 and 3,250 every path
+        // ends at zero, so it is closed at the synchronous path's clip
+        let mut e = bitcoin_and_ether((57_000.0, 3_150.0), Intrabar::Optimistic);
+        let last = e.step();
+        assert_eq!(e.num_fills(), 2, "nothing but the two entries");
+        assert!(
+            (last.equity - 4_000.0).abs() < 1e-9,
+            "equity {}",
+            last.equity
+        );
+        let mut e = bitcoin_and_ether((55_000.0, 3_250.0), Intrabar::Optimistic);
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let closes: Vec<f64> = reporter
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .map(|fill| fill.price)
+            .collect();
+        let [btc, eth] = closes.as_slice() else {
+            panic!("BTC and ETH closed: {closes:?}");
+        };
+        assert!((btc - 55_030.0).abs() < 0.005, "BTC closed at {btc}");
+        assert!((eth - 3_248.50).abs() < 0.005, "ETH closed at {eth}");
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    /// The Specification's account at two instruments, 10,060 of margin buying 1
+    /// BTC at 60,000 and selling 20 ETH at 3,000 for fees of 30 each, then a bar
+    /// where BTC falls to 54,000 and ETH rises to 3,300 and they close at `closes`;
+    /// returned after the entry, the bar to come.
+    fn bitcoin_and_ether(closes: (f64, f64), intrabar: Intrabar) -> Engine {
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let rows = [
             vec![flat(60_000.0), flat(3_000.0)],
             vec![flat(60_000.0), flat(3_000.0)],
             vec![
-                ohlc(60_000.0, 60_000.0, 54_000.0, 57_000.0, 1e6),
-                ohlc(3_000.0, 3_300.0, 3_000.0, 3_150.0, 1e6),
+                ohlc(60_000.0, 60_000.0, 54_000.0, closes.0, 1e6),
+                ohlc(3_000.0, 3_300.0, 3_000.0, closes.1, 1e6),
             ],
         ]
         .concat();
@@ -1873,6 +2019,7 @@ mod tests {
             quote: 10_060.0,
             fee_taker: 0.0005,
             report: true,
+            intrabar,
             ..perp_cfg()
         };
         let mut e = Engine::new(bars, config);
@@ -1894,21 +2041,7 @@ mod tests {
         assert!(
             (e.reporter().expect("reporting is on").ledger()[1].equity - 10_000.0).abs() < 1e-9
         );
-        let last = e.step();
-        let reporter = e.reporter().expect("reporting is on");
-        let closes: Vec<(usize, f64)> = reporter
-            .fills()
-            .iter()
-            .filter(|fill| fill.reason == FillReason::Liquidation)
-            .map(|fill| (fill.instrument, fill.price))
-            .collect();
-        let [(0, btc), (1, eth)] = closes.as_slice() else {
-            panic!("BTC and ETH closed, in that order: {closes:?}");
-        };
-        assert!((btc - 55_030.0).abs() < 0.005, "BTC closed at {btc}");
-        assert!((eth - 3_248.50).abs() < 0.005, "ETH closed at {eth}");
-        assert!((reporter.ledger()[2].costs.fees - 60.0).abs() < 0.005);
-        assert_eq!(last.margin_cash, 0.0);
+        e
     }
 
     #[test]

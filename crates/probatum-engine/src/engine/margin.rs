@@ -115,14 +115,19 @@ impl Engine {
         }
     }
 
-    /// Perp `j` at fraction `s` of its own bar's adverse move, or at its last mark
-    /// where it printed no bar.
+    /// Perp `j` at fraction `s` of its own bar's adverse move, at its favourable
+    /// extreme where the bar takes the optimistic way, each perp reaching its worst
+    /// while the others sit at their best, or at its last mark where it printed no
+    /// bar.
     fn at_fraction(&self, j: usize, s: f64) -> f64 {
         let bar = self.candles.bar(self.tick, j);
         if !printed(&bar) {
             return self.marks[j];
         }
         let long = self.account.positions[j].qty.get() > 0.0;
+        if !self.unseen.together {
+            return if long { bar.high } else { bar.low };
+        }
         let adverse = if long { bar.low } else { bar.high };
         bar.open + s * (adverse - bar.open)
     }
@@ -346,7 +351,7 @@ mod tests {
     use crate::engine::fixtures::{
         cfg, crash_series, flat_series, ohlc, perp_cfg, report_cfg, series, universe,
     };
-    use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
+    use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
     use crate::reporter::{EventKind, FillReason};
     use probatum_core::{
         Candle, Fill, Market, OrderType, Price, Qty, Side, Tier, TierBasis, Tiers, TimeInForce,
@@ -972,7 +977,7 @@ mod tests {
     /// BTC at 20x and ETH at 10x, by tables of one tier, on 10,000 of margin: a long
     /// of 1 BTC bought at the second row's open, and an ETH order decided at its
     /// close, placed by `sell`, filling on the third row. Returns the ETH position.
-    fn eth_beside_btc(third: [Candle; 2], sell: impl Fn(&mut Engine)) -> f64 {
+    fn eth_beside_btc(third: [Candle; 2], sell: impl Fn(&mut Engine), intrabar: Intrabar) -> f64 {
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let rows = [[flat(60_000.0), flat(3_000.0)]; 2].concat();
         let at = |leverage| Instrument {
@@ -984,6 +989,7 @@ mod tests {
         let config = EngineConfig {
             quote: 10_000.0,
             report: true,
+            intrabar,
             ..perp_cfg()
         };
         let mut e = Engine::new(bars, config);
@@ -1005,9 +1011,11 @@ mod tests {
         // long of 1 BTC at 60,000 uses 3,000, so a market sell of 30 ETH at 3,000
         // has room for (10,000 - 3,000) * 10 = 70,000 of notional, 23.333 ETH
         let flat = |price| ohlc(price, price, price, price, 1e6);
-        let held = eth_beside_btc([flat(60_000.0), flat(3_000.0)], |e| {
-            sell_eth(e, OrderType::Market, None, TimeInForce::Ioc)
-        });
+        let held = eth_beside_btc(
+            [flat(60_000.0), flat(3_000.0)],
+            |e| sell_eth(e, OrderType::Market, None, TimeInForce::Ioc),
+            Intrabar::Pessimistic,
+        );
         assert!((held + 70_000.0 / 3_000.0).abs() < 1e-9, "sold {held}");
     }
 
@@ -1022,10 +1030,26 @@ mod tests {
             ohlc(60_000.0, 60_000.0, 54_000.0, 55_000.0, 1e6),
             ohlc(3_000.0, 3_300.0, 3_000.0, 3_100.0, 1e6),
         ];
-        let held = eth_beside_btc(bars, |e| {
-            sell_eth(e, OrderType::Limit, Some(3_300.0), TimeInForce::Gtc)
-        });
+        let held = eth_beside_btc(
+            bars,
+            |e| sell_eth(e, OrderType::Limit, Some(3_300.0), TimeInForce::Gtc),
+            Intrabar::Pessimistic,
+        );
         assert!((held + 13_000.0 / 3_300.0).abs() < 1e-9, "sold {held}");
+    }
+
+    #[test]
+    fn the_optimistic_cap_reads_the_other_perps_at_their_best() {
+        // the same sale under the optimistic setting, ETH reaching its worst while BTC
+        // sits at its best, its high of 60,000: equity is 10,000, BTC uses 3,000, and
+        // the room is 70,000 of notional, 21.2 ETH
+        let bars = [
+            ohlc(60_000.0, 60_000.0, 54_000.0, 55_000.0, 1e6),
+            ohlc(3_000.0, 3_300.0, 3_000.0, 3_100.0, 1e6),
+        ];
+        let sell = |e: &mut Engine| sell_eth(e, OrderType::Limit, Some(3_300.0), TimeInForce::Gtc);
+        let held = eth_beside_btc(bars, sell, Intrabar::Optimistic);
+        assert!((held + 70_000.0 / 3_300.0).abs() < 1e-9, "sold {held}");
     }
 
     #[test]
