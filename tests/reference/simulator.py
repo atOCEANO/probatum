@@ -1448,8 +1448,15 @@ class Simulator:
         elif after == 0.0:
             held = []
         elif abs(after) < abs(before):
+            # in proportion, the last held leg taking what the others leave, so the
+            # legs sum to the position and a lone leg holds its size exactly
             held = [leg._replace(size=leg.size * abs(after) / abs(before))
                     for leg in held]
+            rest = abs(after)
+            for leg in held:
+                rest -= leg.size
+            if held:
+                held[-1] = held[-1]._replace(size=held[-1].size + rest)
 
         if opened > DUST and after != 0.0:
             join = floor if flipped else max(

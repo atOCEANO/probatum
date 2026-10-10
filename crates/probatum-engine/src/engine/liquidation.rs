@@ -126,7 +126,7 @@ impl Engine {
             self.cleared = true;
             return;
         }
-        let (level, _) = self.margin_level(self.account.margin_cash, |i, _| self.close_of(i));
+        let level = self.margin_level(self.account.margin_cash, |i, _| self.close_of(i));
         self.cleared = level > 0.0;
         if self.cleared {
             return;
@@ -1576,5 +1576,54 @@ mod tests {
         assert!((eth - 3_248.50).abs() < 0.005, "ETH closed at {eth}");
         assert!((reporter.ledger()[2].costs.fees - 60.0).abs() < 0.005);
         assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn a_reduce_onto_a_quantity_tiers_bound_is_read_in_the_tier_it_lies_in() {
+        // 82 of margin behind a long of 3 from 100, the first 1.6 at 1% and above it
+        // 5%; the bar falls to 50, which clips it for the 3 carried in at 76.49, and a
+        // sale of 1.4 at the open leaves 1.6, in the first tier. A leg shrunk in
+        // proportion holds 1.6000000000000003, which the second tier's 5% would read
+        // past its trigger; held at the position's own size it keeps 1.2 at the low
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let tiers = Tiers::new(
+            TierBasis::Quantity,
+            vec![
+                Tier {
+                    up_to: 1.6,
+                    leverage: 20.0,
+                    rate: 0.01,
+                    amount: 0.0,
+                },
+                Tier {
+                    up_to: 100.0,
+                    leverage: 10.0,
+                    rate: 0.05,
+                    amount: 0.0,
+                },
+            ],
+        )
+        .expect("a table");
+        let bars = Candles::new(vec![
+            flat(100.0),
+            flat(100.0),
+            ohlc(100.0, 100.0, 50.0, 60.0, 1e6),
+        ])
+        .with_tiers(tiers);
+        let config = EngineConfig {
+            quote: 82.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(3.0);
+        e.step();
+        e.market_sell(1.4);
+        let last = e.step();
+        assert_eq!(last.position, 1.6);
+        let row = e.reporter().expect("reporting is on").ledger()[2];
+        assert!((row.equity - 18.0).abs() < 1e-9, "equity {}", row.equity);
+        assert_eq!(row.costs.liquidation, 0.0);
     }
 }

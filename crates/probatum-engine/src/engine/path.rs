@@ -154,11 +154,11 @@ impl Engine {
         }
     }
 
-    /// Margin equity less the maintenance requirement, and the notional held, with
-    /// `wallet` the margin wallet's cash and every perp held at the price `at` gives
-    /// it for its signed size.
-    pub(super) fn margin_level(&self, wallet: f64, at: impl Fn(usize, f64) -> f64) -> (f64, f64) {
-        let (mut equity, mut maintenance, mut notional) = (wallet, 0.0, 0.0);
+    /// Margin equity less the maintenance requirement, with `wallet` the margin
+    /// wallet's cash and every perp held at the price `at` gives it for its signed
+    /// size.
+    pub(super) fn margin_level(&self, wallet: f64, at: impl Fn(usize, f64) -> f64) -> f64 {
+        let (mut equity, mut maintenance) = (wallet, 0.0);
         for (i, position) in self.account.positions.iter().enumerate() {
             let q = position.qty.get();
             if q == 0.0 || self.account.markets[i] != Market::Perp {
@@ -169,17 +169,34 @@ impl Engine {
             if self.maintains[i] {
                 maintenance += self.maintenance_of(i, q.abs(), q.abs() * price);
             }
-            notional += q.abs() * price;
         }
-        (equity - maintenance, notional)
+        equity - maintenance
     }
 
     /// Whether the account stands clear of its trigger with every perp held at the
     /// price `at` gives it, by more than the rounding a path's own sums could leave,
-    /// so a solve that reached that point would find no crossing there either.
+    /// so a solve that reached that point would find no crossing there either. The
+    /// path prices each leg across its bar and gap from its entry, so the rounding
+    /// scales with those spans; and the legs a reduce shrinks can sum a hair past a
+    /// quantity table's bound, where the next tier's rate takes the whole notional,
+    /// so such a table is read a hair above the size.
     pub(super) fn clear_of_trigger(&self, wallet: f64, at: impl Fn(usize, f64) -> f64) -> bool {
-        let (level, notional) = self.margin_level(wallet, at);
-        level > 1e-12 * (wallet.abs() + notional)
+        let (mut equity, mut maintenance, mut reach) = (wallet, 0.0, wallet.abs());
+        for (i, position) in self.account.positions.iter().enumerate() {
+            let q = position.qty.get();
+            if q == 0.0 || self.account.markets[i] != Market::Perp {
+                continue;
+            }
+            let (price, entry) = (at(i, q), position.avg_entry.get());
+            equity += q * (price - entry);
+            if self.maintains[i] {
+                maintenance += self.maintenance_of(i, q.abs() * (1.0 + 1e-12), q.abs() * price);
+            }
+            let bar = self.candles.bar(self.tick, i);
+            let span = self.marks[i].abs().max(bar.high.abs()).max(bar.low.abs());
+            reach += q.abs() * (span + entry.abs());
+        }
+        equity - maintenance > 1e-12 * reach
     }
 
     /// Instrument `i`'s adverse extreme on the bar for a position of `q`, or its mark
@@ -393,8 +410,19 @@ impl Engine {
         } else if after == 0.0 {
             legs.retain(|leg| leg.leave.is_some());
         } else if after.abs() < before.abs() {
-            for leg in legs.iter_mut().filter(|leg| leg.leave.is_none()) {
-                leg.size = leg.size * after.abs() / before.abs();
+            // in proportion, the last held leg taking what the others leave, so the
+            // legs sum to the position and a lone leg holds its size exactly
+            let mut last = None;
+            let mut rest = after.abs();
+            for (k, leg) in legs.iter_mut().enumerate() {
+                if leg.leave.is_none() {
+                    leg.size = leg.size * after.abs() / before.abs();
+                    rest -= leg.size;
+                    last = Some(k);
+                }
+            }
+            if let Some(k) = last {
+                legs[k].size += rest;
             }
         }
         if opened > DUST && after != 0.0 {
