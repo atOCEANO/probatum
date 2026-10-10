@@ -51,6 +51,7 @@ SHARED = [
     "a transfer",
     "a transfer clamped",
     "an account over the cap kept from growing",
+    "an exit held back from a position the bar's orders opened",
     "an ioc or fok limit expiring after one bar",
     "an order waiting for its instrument's next bar",
     "funding at the close of its row",

@@ -1145,10 +1145,11 @@ class Simulator:
 
     def resolve_resting(self, t):
         """The step, 5 to 7: the resting orders, then the check. Under the pessimistic
-        setting a bar's reducing perpetual fills priced on the favourable side of
-        their open are first held back, and if the check then liquidates, they never
-        happened (Liquidation, The rule, 4)."""
-        if self.venue.intrabar == "pessimistic" and self.favourable_exits(t):
+        setting each perpetual fill that, when its turn comes, would reduce the
+        position it meets at a price on the favourable side of its open is first held
+        back, and if the check then liquidates, it never happened (Liquidation, The
+        rule, 4)."""
+        if self.venue.intrabar == "pessimistic" and self.beyond_open(t):
             saved = self.snapshot()
             held  = self.fill_resting_orders(t, hold_favourable=True)
             if self.check(t):
@@ -1162,18 +1163,28 @@ class Simulator:
         self.check(t)
 
 
-    def favourable_exits(self, t):
+    def beyond_open(self, t):
+        """Whether the bar reaches a resting perpetual order priced on the side of its
+        open that is favourable to a position it would reduce: a sale above the open
+        or a purchase below it, whatever the position when the bar starts."""
         for order in self.resting():
-            bar   = self.bar_for(t, order["instrument"])
+            i     = order["instrument"]
+            bar   = self.bar_for(t, i)
             found = None if bar is None else self.offer(order, bar)
-            if found is not None and self.favourable(order, found[0], t):
+            side  = self.side_of(order)
+            if found is None or side is None or self.instruments[i].kind == "spot":
+                continue
+
+            opened = self.bars[t][i].open
+            if found[0] > opened if side == "sell" else found[0] < opened:
                 return True
 
         return False
 
 
     def favourable(self, order, price, t):
-        """A reducing perpetual fill priced on the favourable side of its open."""
+        """A perpetual fill that reduces the position it meets, priced on the
+        favourable side of its open."""
         i    = order["instrument"]
         q    = self.position[i]
         side = self.side_of(order)
@@ -1927,10 +1938,13 @@ class Simulator:
 
     def fill_resting_orders(self, t, hold_favourable=False):
         """The step, 5: resting orders in slot order, a position's exits reordered by
-        the PnL per unit each would realize, worst first unless optimistic. Returns
-        how many favourable exits it held back."""
+        the PnL per unit each would realize, worst first unless optimistic. With
+        `hold_favourable`, a fill that would reduce the position it meets on the
+        favourable side of its open is held back when its turn comes. Returns how
+        many were."""
         offers = []
         held   = 0
+        start  = list(self.position)
 
         for slot, order in enumerate(self.slots):
             if order is None:
@@ -1952,9 +1966,6 @@ class Simulator:
             found = self.offer(order, bar)
             if found is None:
                 continue
-            if hold_favourable and self.favourable(order, found[0], t):
-                held += 1
-                continue
             offers.append((slot, order, found[0], found[1]))
 
         offers = self.worst_first(offers)
@@ -1968,8 +1979,15 @@ class Simulator:
             if side is None:
                 continue
 
+            if hold_favourable and self.favourable(order, reference, t):
+                held += 1
+                if not ((start[i] > 0.0 and side == "sell")
+                        or (start[i] < 0.0 and side == "buy")):
+                    self.hit("an exit held back from a position the bar's orders opened")
+                continue
+
             remaining = (abs(self.position[i]) if order["size"] is None
-                         else order["size"] - order["filled"])
+                          else order["size"] - order["filled"])
             budget  = self.budget_left.get(i, 0.0)
             allowed = min(remaining, budget)
             if budget < remaining:

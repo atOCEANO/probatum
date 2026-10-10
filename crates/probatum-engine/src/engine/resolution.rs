@@ -129,20 +129,19 @@ impl Engine {
     /// matters; it stays armed for the next bar that can trade instead (ADR 0010).
     ///
     /// A bar that reaches both a take-profit and the liquidation trigger cannot show
-    /// which came first either, and the liquidation is the worse exit. So the bar's
-    /// reducing perp fills priced on the favourable side of their open are held back
-    /// when the check would find the trigger without them, and the liquidation then
-    /// cancels them; otherwise they fill in slot order with the rest (ADR 0012).
+    /// which came first either, and the liquidation is the worse exit. So each perp
+    /// fill that, when its turn comes, would reduce the position it meets at a price
+    /// on the favourable side of its open is held back when the check would find the
+    /// trigger without those fills, and the liquidation then cancels them; otherwise
+    /// they fill in turn with the rest (ADR 0012).
     pub(super) fn resolve_resting(&mut self) {
         if self.book.is_empty() {
             return;
         }
         let mut fills = self.offers();
-        if fills.iter().any(|offer| self.favourable(offer)) && self.liquidates_without(&fills) {
-            fills.retain(|offer| !self.favourable(offer));
-        }
         self.worst_first(&mut fills);
-        self.fill_offers(&fills);
+        let hold = self.may_hold(&fills) && self.liquidates_without(&fills);
+        self.fill_offers(&fills, hold);
 
         // IOC and FOK limits get one bar of exposure, the first their instrument
         // prints, then expire whether or not they filled: they never rest for a
@@ -200,42 +199,59 @@ impl Engine {
         fills
     }
 
-    /// A reducing perp fill priced on the favourable side of its bar's open, for the
-    /// position as the bar's resting orders find it.
-    fn favourable(&self, &(_, i, fill, ..): &Offer) -> bool {
-        if self.account.markets[i] != Market::Perp {
-            return false;
-        }
-        let position = self.account.positions[i].qty.get();
+    /// A perp fill priced on the side of its bar's open a position it reduces gains
+    /// on: a sale above the open, or a purchase below it.
+    fn beyond_open(&self, &(_, i, fill, ..): &Offer) -> bool {
         let open = self.candles.bar(self.tick, i).open;
-        match fill.side {
-            Side::Sell => position > 0.0 && fill.price.get() > open,
-            Side::Buy => position < 0.0 && fill.price.get() < open,
-        }
+        self.account.markets[i] == Market::Perp
+            && match fill.side {
+                Side::Sell => fill.price.get() > open,
+                Side::Buy => fill.price.get() < open,
+            }
+    }
+
+    /// A perp fill that reduces the position as it now stands, priced on the
+    /// favourable side of its bar's open.
+    fn favourable(&self, offer: &Offer) -> bool {
+        let position = self.account.positions[offer.1].qty.get();
+        self.beyond_open(offer)
+            && match offer.2.side {
+                Side::Sell => position > 0.0,
+                Side::Buy => position < 0.0,
+            }
+    }
+
+    /// Whether any offer, in the order they fill, could meet a position it reduces on
+    /// the favourable side of its open: one that reduces the position as the bar's
+    /// resting orders find it, or one an earlier fill on its instrument, on the other
+    /// side, could open or flip that position for.
+    fn may_hold(&self, fills: &[Offer]) -> bool {
+        fills.iter().enumerate().any(|(k, offer)| {
+            self.beyond_open(offer)
+                && (self.favourable(offer)
+                    || fills[..k]
+                        .iter()
+                        .any(|earlier| earlier.1 == offer.1 && earlier.2.side != offer.2.side))
+        })
     }
 
     /// Whether the check would find the trigger had the bar's resting orders filled
-    /// without its favourable exits. With no other perp order among them, the account
-    /// it would check is the one standing; otherwise they fill on that account with
+    /// with its favourable exits held back. Where every perp order among them is one
+    /// such exit as the orders find the account, none fills and the account the check
+    /// would read is the one standing; otherwise they fill on that account with
     /// nothing recorded, and the account and the book are put back.
     fn liquidates_without(&mut self, fills: &[Offer]) -> bool {
-        let mut rest: Vec<Offer> = fills
+        if fills
             .iter()
-            .filter(|offer| !self.favourable(offer))
-            .copied()
-            .collect();
-        if rest
-            .iter()
-            .all(|offer| self.account.markets[offer.1] != Market::Perp)
+            .all(|offer| self.account.markets[offer.1] != Market::Perp || self.favourable(offer))
         {
             return self.reaches_trigger();
         }
         let (account, book) = (self.account.clone(), self.book.clone());
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
         let reporter = self.reporter.take();
-        self.worst_first(&mut rest);
-        self.fill_offers(&rest);
-        let liquidates = self.reaches_trigger();
+        let held = self.fill_offers(fills, true);
+        let liquidates = held && self.reaches_trigger();
         self.account = account;
         self.book = book;
         self.notes.truncate(notes);
@@ -293,9 +309,16 @@ impl Engine {
     }
 
     /// Fill the offers in turn, each clamped against the account the ones before it
-    /// left.
-    fn fill_offers(&mut self, fills: &[Offer]) {
-        for &(id, i, fill, kind, reduce_only, tif, requested, costs) in fills {
+    /// left, with `hold` holding back each that would reduce the position it meets on
+    /// the favourable side of its open. Returns whether any was held back.
+    fn fill_offers(&mut self, fills: &[Offer], hold: bool) -> bool {
+        let mut held = false;
+        for offer in fills {
+            if hold && self.favourable(offer) {
+                held = true;
+                continue;
+            }
+            let &(id, i, fill, kind, reduce_only, tif, requested, costs) = offer;
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the one its offer was made on, and left
@@ -351,6 +374,7 @@ impl Engine {
                 OrderType::Market => {}
             }
         }
+        held
     }
 }
 

@@ -1538,6 +1538,50 @@ mod tests {
     }
 
     #[test]
+    fn a_take_profit_on_a_position_its_own_bar_opened_is_held_back() {
+        // a flat 100 rests a buy at 95 and a sell at 105, and the bar opens at 100.
+        // The buy opens a long the sell would close above the open, so the sell is
+        // held back, and on a bar down to 80 the long, joining the path where 95 lies
+        // on it, reaches its trigger at 85 and is closed there. On a bar that stops
+        // at 90 the trigger is never reached and both fill, keeping 200
+        let cases = [
+            (
+                80.0,
+                vec![(FillReason::Limit, 95.0), (FillReason::Liquidation, 85.0)],
+                0.0,
+            ),
+            (
+                90.0,
+                vec![(FillReason::Limit, 95.0), (FillReason::Limit, 105.0)],
+                200.0,
+            ),
+        ];
+        for (low, fills, kept) in cases {
+            let bars = Candles::new(vec![
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+                ohlc(100.0, 106.0, low, 95.0, 1e6),
+            ]);
+            let config = EngineConfig {
+                max_leverage: 10.0,
+                report: true,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            e.limit_buy(10.0, 95.0);
+            e.limit_sell(10.0, 105.0);
+            let last = e.step();
+            assert_eq!(priced(&e), fills, "a low of {low}");
+            assert_eq!(last.position, 0.0, "a low of {low}");
+            assert!(
+                (last.margin_cash - kept).abs() < 1e-9,
+                "a low of {low} kept {}",
+                last.margin_cash
+            );
+        }
+    }
+
+    #[test]
     fn a_gap_through_the_clip_point_liquidates_the_account_before_the_bar_opens() {
         // the last mark is 40,500 and the next bar opens at 40,010, so the gap
         // crosses the close point, 40,020.01, before the bar opens: the account is

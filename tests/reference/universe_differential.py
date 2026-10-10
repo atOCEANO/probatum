@@ -140,12 +140,13 @@ def take_profit(rng, band):
     second row's open. The take-profit is decided at the third row's close, and the
     fourth row's bar reaches it on the favourable side of its open. Without `band`
     that bar moves against A, to its trigger or short of it, so the take-profit is
-    held back or fills, beside a protective stop the bar reaches first or with B
-    taken at the third row's open and moving against it, or printing no bar while
-    the take-profit flips A past its cap. With `band` the third row leaves the
-    account between its close point and its trigger, with no slippage, cap, funding
-    or maintenance to move either, and the fourth row stays there, where a maker's
-    exit is bounded at its own fee."""
+    held back or fills, beside a protective stop the bar reaches first, with B
+    taken at the third row's open and moving against it, with B printing no bar
+    while the take-profit flips A past its cap, or with A opened on that bar by a
+    limit it reaches first. With `band` the third row leaves the account between its
+    close point and its trigger, with no slippage, cap, funding or maintenance to
+    move either, and the fourth row stays there, where a maker's exit is bounded at
+    its own fee."""
     rows  = rng.randint(5, 9)
     times = clock(rng, rows)
     kinds = ["linear", "linear"]
@@ -169,6 +170,7 @@ def take_profit(rng, band):
         prices = (open_, adverse, favourable, close)
         return Bar(open_, max(prices), min(prices), close, rng.uniform(1e6, 1e7))
 
+    beside = None
     if band:
         cfg.update(slippage_bps=0.0, fee_taker=0.002, leverage=0.0, funding=("none",))
         cfg["tiers"][0] = (None, "notional")
@@ -192,13 +194,21 @@ def take_profit(rng, band):
         b.append(calm(rng, b[-1].close))
         share = rng.choice([0.5, 1.0])
     else:
-        beside = rng.choice(["stop", "against", "absent"])
-        size   = worth * rng.uniform(1.0, 2.0 if beside == "absent" else 6.0)
+        beside = rng.choice(["stop", "against", "absent", "opened"])
+        size   = worth * rng.uniform(3.0 if beside == "opened" else 1.0,
+                                     2.0 if beside == "absent" else 6.0)
+
         a.append(calm(rng, a[-1].close))
         b.append(calm(rng, b[-1].close))
         close = a[2].close
         price = close * (1.0 + sign * rng.uniform(0.002, 0.03))
-        depth = rng.uniform(0.01, 0.1) if beside == "absent" else rng.uniform(0.03, 0.6)
+        entry = rng.uniform(0.02, 0.1)
+        if beside == "absent":
+            depth = rng.uniform(0.01, 0.1)
+        else:
+            # deep enough, for the position A opens on the bar, to reach its trigger
+            depth = rng.uniform(entry + (0.25 if beside == "opened" else 0.02), 0.6)
+
         a.append(bar(close, close * (1.0 - sign * depth),
                      price * (1.0 + sign * rng.uniform(0.0, 0.01)),
                      close * (1.0 + sign * rng.uniform(-depth, 0.0))))
@@ -211,6 +221,15 @@ def take_profit(rng, band):
             actions[1] = (0, "stop", exit_side, size * rng.choice([0.2, 0.5, 1.0]),
                           (0.2 - sign * y) / 0.4)
             b.append(calm(rng, b[-1].close))
+        elif beside == "opened":
+            # a limit placed off the second row's close, past what the third row
+            # trades, that opens A on the fourth row's bar before the bar reaches the
+            # take-profit, which then closes what that bar opened
+            actions[1] = (0, "limit", side, size,
+                          (0.2 - entry) / 0.21 if long_a else (0.01 + entry) / 0.21)
+            b.append(calm(rng, b[-1].close))
+            cfg["leverage"] = 0.0
+            cfg["tiers"][0] = (None, "notional")
         else:
             b_worth = cfg["quote"] / b[1].close
             actions[1] = (1, "market", "buy" if long_b else "sell",
@@ -231,9 +250,14 @@ def take_profit(rng, band):
             last = [row for row in column if row is not None][-1]
             column.append(calm(rng, last.close))
 
-    actions[0] = (0, "market", side, size, 0.0)
+    if beside != "opened":
+        actions[0] = (0, "market", side, size, 0.0)
+
     base = 0.99 if exit_side == "sell" else 0.8
-    actions[2] = (0, "limit", exit_side, size * share, (price / close - base) / 0.21)
+    # reduce-only, as a take-profit is, unless it is to flip A
+    kind = "limit" if share > 1.0 else "reduce_limit"
+    actions[2] = (0, kind, exit_side, size * share, (price / close - base) / 0.21)
+
     return times, kinds, columns, cfg, actions
 
 
