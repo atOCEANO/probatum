@@ -6,9 +6,10 @@ first lists a row or a few late now and then and prints no bar on some rows, so 
 orders wait and its position keeps its mark, and the perpetuals share one margin
 wallet, so the cap, the margin bound and funding run across them. Every fourth
 universe is drawn around a shape random ones rarely reach, a stop beside another
-perp that moves against both or a limit filled on its gap. A case is compared up to
-the bar on which the reference first applied a rule the engine does not have yet,
-as `differential` cuts its own.
+perp that moves against both or a limit filled on its gap, and every eighth around a
+take-profit, on a bar that may liquidate the account or with the account between its
+close point and its trigger. A case is compared up to the bar on which the reference
+first applied a rule the engine does not have yet, as `differential` cuts its own.
 
   python -m reference.universe_differential [cases] [seed]     (from tests/)
 """
@@ -131,6 +132,108 @@ def shaped(rng):
         actions[2] = (0, "limit", close_side, size * rng.choice([0.5, 1.0, 2.0, 4.0]),
                       u)
 
+    return times, kinds, columns, cfg, actions
+
+
+def take_profit(rng, band):
+    """A universe drawn around a take-profit on perpetual A, which is taken at the
+    second row's open. The take-profit is decided at the third row's close, and the
+    fourth row's bar reaches it on the favourable side of its open. Without `band`
+    that bar moves against A, to its trigger or short of it, so the take-profit is
+    held back or fills, beside a protective stop the bar reaches first or with B
+    taken at the third row's open and moving against it, or printing no bar while
+    the take-profit flips A past its cap. With `band` the third row leaves the
+    account between its close point and its trigger, with no slippage, cap, funding
+    or maintenance to move either, and the fourth row stays there, where a maker's
+    exit is bounded at its own fee."""
+    rows  = rng.randint(5, 9)
+    times = clock(rng, rows)
+    kinds = ["linear", "linear"]
+
+    long_a, long_b = (rng.random() < 0.5 for _ in range(2))
+    sign = 1.0 if long_a else -1.0
+    side, exit_side = ("buy", "sell") if long_a else ("sell", "buy")
+
+    columns = [[calm(rng, rng.choice([5.0, 100.0, 3_000.0]))] for _ in kinds]
+    for column in columns:
+        column.append(calm(rng, column[-1].close))
+
+    cfg = config(rng, times, kinds, columns)
+    cfg["max_open_orders"] = 8
+
+    a, b = columns
+    worth   = cfg["quote"] / a[0].close
+    actions = [None] * (rows - 1)
+
+    def bar(open_, adverse, favourable, close):
+        prices = (open_, adverse, favourable, close)
+        return Bar(open_, max(prices), min(prices), close, rng.uniform(1e6, 1e7))
+
+    if band:
+        cfg.update(slippage_bps=0.0, fee_taker=0.002, leverage=0.0, funding=("none",))
+        cfg["tiers"][0] = (None, "notional")
+
+        size    = worth * rng.uniform(2.0, 6.0)
+        wallet  = cfg["quote"] - size * a[1].open * cfg["fee_taker"]
+        trigger = a[1].open - sign * wallet / size
+        # the close point less the trigger, signed toward the favourable side
+        width = trigger / (1.0 - sign * cfg["fee_taker"]) - trigger
+
+        def at(x):
+            return trigger + x * width
+
+        close = at(rng.uniform(0.2, 0.4))
+        a.append(bar(a[1].close, at(rng.uniform(0.05, 0.15)),
+                     a[1].close * (1.0 + sign * rng.uniform(0.0, 0.005)), close))
+        price = at(rng.uniform(0.45, 0.8))
+        a.append(bar(close, at(rng.uniform(0.05, 0.15)), at(rng.uniform(0.85, 0.97)),
+                     at(rng.uniform(0.15, 0.85))))
+        b.append(calm(rng, b[-1].close))
+        b.append(calm(rng, b[-1].close))
+        share = rng.choice([0.5, 1.0])
+    else:
+        beside = rng.choice(["stop", "against", "absent"])
+        size   = worth * rng.uniform(1.0, 2.0 if beside == "absent" else 6.0)
+        a.append(calm(rng, a[-1].close))
+        b.append(calm(rng, b[-1].close))
+        close = a[2].close
+        price = close * (1.0 + sign * rng.uniform(0.002, 0.03))
+        depth = rng.uniform(0.01, 0.1) if beside == "absent" else rng.uniform(0.03, 0.6)
+        a.append(bar(close, close * (1.0 - sign * depth),
+                     price * (1.0 + sign * rng.uniform(0.0, 0.01)),
+                     close * (1.0 + sign * rng.uniform(-depth, 0.0))))
+        share = rng.choice([0.5, 1.0, 2.0])
+
+        if beside == "stop":
+            # a reduce-only stop placed off the second row's close, past what the
+            # third row trades
+            y = rng.uniform(0.02, 0.3)
+            actions[1] = (0, "stop", exit_side, size * rng.choice([0.2, 0.5, 1.0]),
+                          (0.2 - sign * y) / 0.4)
+            b.append(calm(rng, b[-1].close))
+        else:
+            b_worth = cfg["quote"] / b[1].close
+            actions[1] = (1, "market", "buy" if long_b else "sell",
+                          b_worth * rng.uniform(0.3, 1.0 if beside == "absent" else 6.0),
+                          0.0)
+            if beside == "against":
+                b.append(against(rng, b[-1].close, long_b, rng.uniform(0.05, 0.6)))
+            else:
+                # B prints no bar on the fourth row, and the take-profit flips A
+                # past a cap of 3x, which reads B at its last mark
+                b.append(None)
+                cfg["leverage"] = 3.0
+                cfg["tiers"]    = [(None, "notional"), (None, "notional")]
+                share = 4.0
+
+    for column in columns:
+        while len(column) < rows:
+            last = [row for row in column if row is not None][-1]
+            column.append(calm(rng, last.close))
+
+    actions[0] = (0, "market", side, size, 0.0)
+    base = 0.99 if exit_side == "sell" else 0.8
+    actions[2] = (0, "limit", exit_side, size * share, (price / close - base) / 0.21)
     return times, kinds, columns, cfg, actions
 
 
@@ -454,6 +557,8 @@ def compare(cases, seed):
     for number in range(cases):
         if number % 4 == 3 and SHAPED <= set(KINDS):
             case = shaped(rng)
+        elif number % 8 == 1 and SHAPED <= set(KINDS):
+            case = take_profit(rng, rng.random() < 0.5)
         else:
             times, kinds, columns = universe(rng)
             cfg  = config(rng, times, kinds, columns)

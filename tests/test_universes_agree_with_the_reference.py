@@ -15,6 +15,7 @@ from reference import differential, universe_differential
 SHARED = [
     "a bar clipped",
     "a bar clipped across several perpetuals",
+    "a favourable exit held back on a liquidating bar",
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
@@ -38,6 +39,7 @@ SHARED = [
     "a post_only order refused at the last close",
     "a reduce_only order held to the position",
     "a reduce_only order with nothing to reduce",
+    "a reducing fill bounded at a fee of its own",
     "a replace",
     "a round trip closed",
     "a spot buy held to its cash",
@@ -85,6 +87,6 @@ def test_random_universes_agree_on_every_record(seed):
 @pytest.mark.slow
 @pytest.mark.parametrize("seed", [1, 7, 42, 1337, 20261005, 99991])
 def test_random_universes_agree_at_length_and_reach_every_rule_both_apply(seed):
-    out = check(300, seed)
+    out = check(360, seed)
 
     assert not [rule for rule in SHARED if not out.rules[rule]]
