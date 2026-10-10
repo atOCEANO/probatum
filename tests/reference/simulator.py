@@ -2233,27 +2233,38 @@ class Simulator:
             return (self.margin_equity({**others, i: p})
                     - abs(inst.notional(closed, p)) * paid - fee * rest)
 
-        if rate != fee and min(level(price), level(price, fee)) < 0.0:
+        def lift(paid):
+            """Where the fill is lifted to and what the bar cannot hold of the lift,
+            the size it closes paying `paid`."""
+            if level(price, paid) >= 0.0:
+                return price, 0.0
+
+            up   = 1.0 if q > 0.0 else -1.0
+            span = price             # a purchase is lowered toward zero, never past it
+            while up > 0.0 and level(price + span, paid) < 0.0 and span < 1e12:
+                span *= 2.0
+            star = price + up * first_zero(lambda d: -level(price + up * d, paid), 0.0,
+                                           span)
+
+            if q > 0.0:
+                goal   = min(star, self.entry[i])
+                lifted = max(price, min(goal, bar.high))
+            else:
+                goal   = max(star, self.entry[i])
+                lifted = min(price, max(goal, bar.low))
+
+            return lifted, max(kept(goal) - kept(lifted), 0.0)
+
+        lifted, credit = lift(rate)
+        # counted only where the closing fee would have booked something else
+        if rate != fee and lift(fee) != (lifted, credit):
             self.hit("a reducing fill bounded at a fee of its own")
+
         if level(price) >= 0.0:
             return price, costs
 
         if any(self.bars[self.t][j] is None for j in others):
             self.hit("a held perp read at its last mark")
-
-        up   = 1.0 if q > 0.0 else -1.0
-        span = price                 # a purchase is lowered toward zero, never past it
-        while up > 0.0 and level(price + span) < 0.0 and span < 1e12:
-            span *= 2.0
-        star = price + up * first_zero(lambda d: -level(price + up * d), 0.0, span)
-        if q > 0.0:
-            goal   = min(star, self.entry[i])
-            lifted = max(price, min(goal, bar.high))
-        else:
-            goal   = max(star, self.entry[i])
-            lifted = min(price, max(goal, bar.low))
-
-        credit = max(kept(goal) - kept(lifted), 0.0)
         if lifted != price:
             self.hit("the margin bound lifting a fill inside its bar")
         if credit > 0.0:

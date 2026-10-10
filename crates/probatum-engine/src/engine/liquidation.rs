@@ -1268,8 +1268,9 @@ mod tests {
 
     /// 51.5 of margin behind a long of 10 bought at 100 for a taker's fee of 1, on a
     /// bar down to 95, where the 50.5 left sits between the close point, 95.045, and
-    /// the trigger, 94.95; returned after that bar, with `next` to come.
-    fn between_the_close_point_and_the_trigger(next: Candle) -> Engine {
+    /// the trigger, 94.95; returned after that bar, with `next` to come and a maker's
+    /// fee of `maker`.
+    fn between_the_close_point_and_the_trigger(next: Candle, maker: f64) -> Engine {
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let bars = vec![
             flat(100.0),
@@ -1280,6 +1281,7 @@ mod tests {
         let config = EngineConfig {
             quote: 51.5,
             fee_taker: 0.001,
+            fee_maker: maker,
             report: true,
             ..perp_cfg()
         };
@@ -1296,7 +1298,7 @@ mod tests {
         // the Specification's example: a market sale at 95 pays the taker's fee, its
         // close point is 95.045, past the bar, and the 0.45 the bar cannot hold is
         // paid in, so the wallet ends at zero
-        let mut e = between_the_close_point_and_the_trigger(ohlc(95.0, 95.0, 95.0, 95.0, 1e6));
+        let mut e = between_the_close_point_and_the_trigger(ohlc(95.0, 95.0, 95.0, 95.0, 1e6), 0.0);
         e.market_sell(10.0);
         let taker = e.step();
         let charge = e.reporter().expect("reporting is on").ledger()[3]
@@ -1307,7 +1309,8 @@ mod tests {
         // a limit at 95 above an open of 94.96 fills as a maker for no fee, so its
         // close point is the trigger, below the fill: nothing is lifted and the
         // wallet keeps 0.5, where the taker's fee would have paid it 0.45 more
-        let mut e = between_the_close_point_and_the_trigger(ohlc(94.96, 95.0, 94.96, 95.0, 1e6));
+        let mut e =
+            between_the_close_point_and_the_trigger(ohlc(94.96, 95.0, 94.96, 95.0, 1e6), 0.0);
         e.limit_sell(10.0, 95.0);
         let maker = e.step();
         let fill = *e
@@ -1328,6 +1331,39 @@ mod tests {
             "kept {}",
             maker.margin_cash
         );
+    }
+
+    #[test]
+    fn a_partial_or_dearer_maker_exit_is_held_to_the_zero_its_own_fee_sets() {
+        // on a bar from 94.98 to 95.10 the trigger is never reached. A maker's sale
+        // of 5 at 94.99 for no fee leaves the other 5 paying the taker's 0.1%, so the
+        // equity is zero at 949.5 / 9.995, inside the bar, where the sale is lifted
+        let bar = ohlc(94.98, 95.1, 94.97, 95.0, 1e6);
+        let mut e = between_the_close_point_and_the_trigger(bar, 0.0);
+        e.limit_sell(5.0, 94.99);
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let fill = *reporter.fills().last().expect("the sale");
+        let zero = 949.5 / 9.995;
+        assert!((fill.price - zero).abs() < 1e-9, "sold at {}", fill.price);
+        let charge = reporter.ledger()[3].costs.liquidation;
+        assert!(
+            (charge + 5.0 * (zero - 94.99)).abs() < 1e-9,
+            "the charge was {charge}"
+        );
+        // a maker's sale of all 10 at 95.10 paying 0.2%, above the taker's fee, has
+        // its zero at 949.5 / 9.98, past the bar: the 10 * 0.998 * (zero - 95.10)
+        // the bar cannot hold is paid in, net of its own fee, and the wallet ends at
+        // zero
+        let mut e = between_the_close_point_and_the_trigger(bar, 0.002);
+        e.limit_sell(10.0, 95.1);
+        let last = e.step();
+        let charge = e.reporter().expect("reporting is on").ledger()[3]
+            .costs
+            .liquidation;
+        let paid = 10.0 * 0.998 * (949.5 / 9.98 - 95.1);
+        assert!((charge + paid).abs() < 1e-9, "the charge was {charge}");
+        assert!(last.margin_cash.abs() < 1e-9, "kept {}", last.margin_cash);
     }
 
     const HOUR: i64 = 3_600 * 1_000_000_000;
