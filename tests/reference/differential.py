@@ -40,6 +40,7 @@ NOT_IN_THE_ENGINE = {
     "a check closing the account at the open",
     "a liquidation at the maintenance trigger",
     "a reducing fill bounded at a fee of its own",
+    "a waiting market order cancelled",
 }
 
 
@@ -129,16 +130,16 @@ def config(rng, times):
     return cfg
 
 
-def tier_table(rng, quote, perp):
+def tier_table(rng, quote, perp, price=100.0):
     """No table for most cases, and for some perpetuals three tiers of falling
-    leverage, their bounds a few times the balance in notional, or in size at the
-    walk's opening price of 100, so the cap meets them. Half keep maintenance at
-    rising rates, a notional table's amounts continuous across its bounds."""
+    leverage, their bounds a few times the balance in notional, or in size at
+    `price`, the walk's opening price, so the cap meets them. Half keep maintenance
+    at rising rates, a notional table's amounts continuous across its bounds."""
     if not perp or rng.random() < 0.6:
         return None, "notional"
 
     basis    = rng.choice(["notional", "quantity"])
-    scale    = quote if basis == "notional" else quote / 100.0
+    scale    = quote if basis == "notional" else quote / price
     bounds   = [scale * b for b in sorted(rng.sample([1.0, 2.0, 4.0, 8.0, 16.0], 3))]
     leverage = sorted(rng.sample([20.0, 10.0, 5.0, 3.0, 2.0], 3), reverse=True)
     rates    = [0.0] * 3
@@ -495,9 +496,7 @@ def ledger_difference(mine, theirs):
         held = row["instruments"][0]
         want = dict(row, position=held["position"], entry=held["entry"],
                     mark=held["mark"], notional=held["notional"],
-                    unrealized=held["upnl"], weight=held["weight"],
-                    margin_used=held["margin_used"], maintenance=held["maintenance"])
-
+                    unrealized=held["upnl"], weight=held["weight"])
         for name in LEDGER_FIELDS:
             x = float(mine[name][t])
             if not close_enough(x, want[name]):

@@ -1,0 +1,77 @@
+"""The engine against the reference over universes of several instruments.
+
+The comparison `test_the_engine_agrees_with_the_reference` makes, over two to five
+spot and perpetual instruments sharing a clock with holes in it and one margin
+wallet. Every gate stage runs a short comparison, and the slow stage runs it at
+length, where every rule the two share across instruments has to be reached as well.
+"""
+
+import pytest
+
+from reference import universe_differential
+
+# the rules both simulators apply across several instruments, each of which a
+# comparison at length must reach
+SHARED = [
+    "a bar clipped",
+    "a fill held at a tier's bound",
+    "a fill held at the last tier's bound",
+    "a fill held to the margin cap",
+    "a flip",
+    "a flip's old side on the check",
+    "a fok order filling nothing",
+    "a growing fill refused at no equity",
+    "a leg joining the check after the open",
+    "a limit filled as a maker",
+    "a limit filled as a taker",
+    "a liquidation before the bar opens",
+    "a liquidation by the check",
+    "a market order",
+    "a market order filling nothing",
+    "a position held through a row without its bar",
+    "a post_only order refused at the last close",
+    "a reduce_only order held to the position",
+    "a reduce_only order with nothing to reduce",
+    "a replace",
+    "a round trip closed",
+    "a spot buy held to its cash",
+    "a spot sale held to the holding",
+    "a stop triggered",
+    "a takeover",
+    "a taker's price held inside the bar",
+    "a tier above the first",
+    "a transfer",
+    "a transfer clamped",
+    "an account over the cap kept from growing",
+    "an ioc or fok limit expiring after one bar",
+    "an order waiting for its instrument's next bar",
+    "funding at the close of its row",
+    "funding between rows",
+    "funding inside a bar counted toward the check",
+    "slippage paid",
+    "the cap with the other legs at the fill's fraction",
+    "tiers by quantity",
+]
+
+
+def check(cases, seed):
+    out    = universe_differential.compare(cases, seed)
+    report = universe_differential.render(out, cases)
+
+    assert not out.disagreed, report
+    assert out.compared >= cases // 3, report
+
+    return out
+
+
+@pytest.mark.parametrize("seed", [1, 7, 42])
+def test_random_universes_agree_on_every_record(seed):
+    check(40, seed)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seed", [1, 7, 42, 1337, 20261005, 99991])
+def test_random_universes_agree_at_length_and_reach_every_rule_both_apply(seed):
+    out = check(300, seed)
+
+    assert not [rule for rule in SHARED if not out.rules[rule]]

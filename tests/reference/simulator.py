@@ -593,7 +593,8 @@ class Simulator:
         out     = dict(time=self.times[t], equity=equity, spot_cash=self.spot_cash,
                        margin_cash=self.margin_cash, terminal=equity <= 0.0,
                        equity_in_quote=equity * self.mark[0] if inverse else equity,
-                       liquidations=self.liquidations, instruments=[], **costs)
+                       liquidations=self.liquidations, margin_used=0.0, maintenance=0.0,
+                       instruments=[], **costs)
 
         for i, inst in enumerate(self.instruments):
             q, mark = self.position[i], self.mark[i]
@@ -607,17 +608,17 @@ class Simulator:
                 if inst.tiers_by == "quantity":
                     self.hit("tiers by quantity")
 
-            used = kept = 0.0
+            # What a run records: the margin the cap asks and the maintenance are the
+            # account's, summed over its perpetuals
             if held and inst.kind != "spot":
                 leverage = self.leverage_of(i, abs(q), abs(exposure))
-                used     = abs(exposure) / leverage if leverage > 0.0 else 0.0
-                kept     = self.maintenance_of(i, abs(q), abs(exposure))
-
+                if leverage > 0.0:
+                    out["margin_used"] += abs(exposure) / leverage
+                out["maintenance"] += self.maintenance_of(i, abs(q), abs(exposure))
             out["instruments"].append(dict(
                 position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
                 upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
                 weight=exposure / equity if held and equity > 0.0 else 0.0,
-                margin_used=used, maintenance=kept,
             ))
 
         return out
@@ -926,6 +927,8 @@ class Simulator:
             return False
 
         if order["status"] == "pending":
+            if reason == "cancelled by the account":
+                self.hit("a waiting market order cancelled")
             self.pending.remove(order)
         else:
             self.slots[self.slots.index(order)] = None
@@ -1352,6 +1355,9 @@ class Simulator:
             return
 
         self.hit("a bar clipped")
+        if len({leg.instrument for leg in path[1]}) > 1:
+            self.hit("a bar clipped across several perpetuals")
+
         for leg in path[1]:
             bar = self.bars[t][leg.instrument]
             if bar is None:
@@ -1559,6 +1565,8 @@ class Simulator:
 
         if equity - requirement <= 0.0:
             self.hit("a liquidation at the closes")
+            if self.account_maintained():
+                self.hit("a liquidation at the maintenance trigger")
             self.liquidate([(i, self.position[i], prices[i]) for i in held], t,
                            moment="close")
 
@@ -1583,6 +1591,8 @@ class Simulator:
         path reaches the backstop level or the sale's costs would cross it."""
         if len({i for i, _, _ in closes}) < len(closes):
             self.hit("a forced close of a leg that joined during the bar")
+        if len({i for i, _, _ in closes}) > 1:
+            self.hit("a liquidation of several perpetuals")
 
         maintained = self.account_maintained()
         model      = self.venue.liquidation

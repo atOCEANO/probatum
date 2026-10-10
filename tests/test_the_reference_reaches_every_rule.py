@@ -21,6 +21,7 @@ SHORT, LONG = 600, 6_000
 
 RULES = [
     "a bar clipped",
+    "a bar clipped across several perpetuals",
     "a bracket armed",
     "a bracket cancelled with its position",
     "a bracket leg filled",
@@ -45,6 +46,7 @@ RULES = [
     "a liquidation at the maintenance trigger",
     "a liquidation before the bar opens",
     "a liquidation by the check",
+    "a liquidation of several perpetuals",
     "a market order",
     "a market order filling nothing",
     "a path inside the bars that never reaches the trigger",
@@ -69,6 +71,7 @@ RULES = [
     "a transfer",
     "a transfer clamped",
     "a value order",
+    "a waiting market order cancelled",
     "a wallet that fees left below zero set to zero",
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
@@ -93,9 +96,13 @@ RULES = [
     "the margin bound paying what the bar cannot hold",
     "tiers by quantity",
 ]
-# a delisting, a hole in an instrument's bars, and the cap or the corners with other
-# legs need a second instrument, and an inverse contract settles alone
+# a delisting, a hole in an instrument's bars and the order that waits through it, the
+# cap or the corners with other legs, and a clip or a liquidation of several
+# perpetuals need a second instrument, and an inverse contract settles alone
 SEVERAL_ONLY = {
+    "a bar clipped across several perpetuals",
+    "a liquidation of several perpetuals",
+    "a waiting market order cancelled",
     "a delisting",
     "a position held through a row without its bar",
     "an order waiting for its instrument's next bar",
