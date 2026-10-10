@@ -18,6 +18,7 @@ SHARED = [
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
     "a flip",
+    "a flip filled on the gap",
     "a flip's old side on the check",
     "a fok order filling nothing",
     "a growing fill refused at no equity",
@@ -51,6 +52,9 @@ SHARED = [
     "funding inside a bar counted toward the check",
     "slippage paid",
     "the cap with the other legs at the fill's fraction",
+    "the margin bound beside another perp",
+    "the margin bound lifting a fill inside its bar",
+    "the margin bound paying what the bar cannot hold",
     "tiers by quantity",
 ]
 

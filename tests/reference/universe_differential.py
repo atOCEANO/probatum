@@ -4,10 +4,12 @@ The comparison `differential` makes at one instrument, over universes of two to 
 instruments, spot and linear perpetuals, on one clock. An instrument other than the
 first lists a row or a few late now and then and prints no bar on some rows, so its
 orders wait and its position keeps its mark, and the perpetuals share one margin
-wallet, so the cap, the margin bound and funding run across them. A case is
-compared up to the bar on which the reference first applied a rule the engine does
-not have yet, the rules `differential` cuts at and a liquidation or a clip that
-takes several perpetuals at once.
+wallet, so the cap, the margin bound and funding run across them. Every fourth
+universe is drawn around a shape random ones rarely reach, a stop beside another
+perp that moves against both or a limit filled on its gap. A case is compared up to
+the bar on which the reference first applied a rule the engine does not have yet,
+the rules `differential` cuts at and a liquidation or a clip that takes several
+perpetuals at once.
 
   python -m reference.universe_differential [cases] [seed]     (from tests/)
 """
@@ -52,6 +54,87 @@ def universe(rng):
                         else bar for t, bar in enumerate(bars)])
 
     return times, kinds, columns
+
+
+def calm(rng, price):
+    """A quiet bar opening at `price`."""
+    close = price * (1.0 + rng.uniform(-0.01, 0.01))
+    return Bar(price, max(price, close) * (1.0 + rng.uniform(0.0, 0.005)),
+               min(price, close) * (1.0 - rng.uniform(0.0, 0.005)), close,
+               rng.uniform(1e6, 1e7))
+
+
+def against(rng, price, long, depth, room=0.01):
+    """A bar opening at `price` that moves `depth` against a long or a short and up
+    to `room` the other way."""
+    if long:
+        low, high = price * (1.0 - depth), price * (1.0 + rng.uniform(0.0, room))
+    else:
+        low, high = price * (1.0 - rng.uniform(0.0, room)), price * (1.0 + depth)
+
+    return Bar(price, high, low, rng.uniform(low, high), rng.uniform(1e6, 1e7))
+
+
+def shaped(rng):
+    """A universe drawn around a shape random ones rarely reach. Perpetual A is
+    taken at the second row's open, and the fourth row's bar either moves against A
+    through a reduce-only stop resting on it while perpetual B, taken at that bar's
+    open, moves against B too, which is where the margin bound lifts a fill beside
+    another perp, or gaps through a limit decided at the close before it, which
+    fills on the gap and reduces or flips A, with B carried in and moving against
+    it. The rows before are quiet, so the stop rests, and so are the rows after."""
+    rows  = rng.randint(5, 9)
+    times = clock(rng, rows)
+    kinds = ["linear", "linear"]
+
+    long_a, long_b, stop = (rng.random() < 0.5 for _ in range(3))
+    gap     = rng.uniform(0.02, 0.15) if stop else rng.uniform(0.005, 0.1)
+    columns = [[calm(rng, rng.choice([5.0, 100.0, 3_000.0]))] for _ in kinds]
+    for column in columns:
+        for _ in range(2):
+            column.append(calm(rng, column[-1].close))
+
+    a, b = columns[0][2].close, columns[1][2].close
+    if stop:
+        # placed off the second row's close, beyond what the third row trades; the
+        # fourth opens on a gap against A now and then, past its entry, where a lift
+        # toward the entry can go further than the bar
+        trigger = columns[0][1].close * (1.0 - gap if long_a else 1.0 + gap)
+        open_   = a * (1.0 + rng.uniform(0.0, gap / 2.0) * (-1.0 if long_a else 1.0))
+        past    = abs(trigger / open_ - 1.0) + rng.uniform(0.01, 0.3)
+        columns[0].append(against(rng, open_, long_a, past))
+        u = (0.2 - gap if long_a else 0.2 + gap) / 0.4
+    else:
+        limit = a * (1.0 + gap if long_a else 1.0 - gap)
+        open_ = limit * (1.0 + rng.uniform(0.005, 0.1) * (1.0 if long_a else -1.0))
+        columns[0].append(against(rng, open_, not long_a, rng.uniform(0.0, 0.05),
+                                  room=0.004))
+        u = (0.01 + gap if long_a else 0.2 - gap) / 0.21
+
+    columns[1].append(against(rng, b, long_b, rng.uniform(0.05, 0.6)))
+    for column in columns:
+        while len(column) < rows:
+            column.append(calm(rng, column[-1].close))
+
+    cfg   = config(rng, times, kinds, columns)
+    worth = [cfg["quote"] / column[0].close for column in columns]
+    a_side, b_side = ("buy" if long_a else "sell"), ("buy" if long_b else "sell")
+    size = worth[0] * rng.uniform(0.3, 6.0)
+
+    actions = [None] * (rows - 1)
+    actions[0] = (0, "market", a_side, size, 0.0)
+    close_side = "sell" if long_a else "buy"
+    b_order    = (1, "market", b_side, worth[1] * rng.uniform(0.3, 12.0), 0.0)
+
+    if stop:
+        actions[1] = (0, "stop", close_side, size, u)
+        actions[2] = b_order
+    else:
+        actions[1] = b_order
+        actions[2] = (0, "limit", close_side, size * rng.choice([0.5, 1.0, 2.0, 4.0]),
+                      u)
+
+    return times, kinds, columns, cfg, actions
 
 
 def config(rng, times, kinds, columns):
@@ -368,9 +451,13 @@ def compare(cases, seed):
     whole, agreed, disagreed = 0, 0, []
 
     for number in range(cases):
-        times, kinds, columns = universe(rng)
-        cfg     = config(rng, times, kinds, columns)
-        case    = (times, kinds, columns, cfg, plan(rng, columns, cfg))
+        if number % 4 == 3:
+            case = shaped(rng)
+        else:
+            times, kinds, columns = universe(rng)
+            cfg  = config(rng, times, kinds, columns)
+            case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
+
         counted = collections.defaultdict(collections.Counter)
         try:
             records, sim = run(case, counted)
