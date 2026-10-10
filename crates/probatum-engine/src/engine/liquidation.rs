@@ -197,8 +197,9 @@ impl Engine {
     /// so a partial close is bounded by the same number as a full one and no
     /// ordering of fills within a bar can book past it. With other perps held, the
     /// price is solved against the wallet with what they hold beyond their own
-    /// closing fees, so no reducing fill on one leg overdraws the account its other
-    /// legs still stand in.
+    /// closing fees, each at the fraction of its own bar the fill sits at on its
+    /// path, so no reducing fill on one leg overdraws the account its other legs
+    /// still stand in.
     pub(super) fn bound_by_margin(&self, i: usize, fill: &mut Fill) {
         if self.account.markets[i] != Market::Perp {
             return;
@@ -211,7 +212,7 @@ impl Engine {
             return;
         }
         let fee = self.cost.fee_taker;
-        let wallet = self.wallet_beside(i, fee);
+        let wallet = self.wallet_beside(i, fee, fill.price.get());
         if let Some(bound) = self.account.bankruptcy_price(i, fee, wallet) {
             let price = fill.price.get();
             fill.price = Price(if long {
@@ -846,11 +847,11 @@ mod tests {
     }
 
     #[test]
-    fn a_reducing_fill_beside_another_perp_is_bounded_and_no_close_leaves_its_bar() {
-        // 10 of margin behind 0.1 of A from 50 and 1.3 of B from 100: B's stop at 85
-        // would overdraw the wallet A still stands in, so it is lifted, and when A
-        // is closed out on that bar it is at a price the bar printed, to the rounding
-        // of the solve
+    fn a_reducing_fill_beside_another_perp_is_bounded_where_that_perp_sits() {
+        // 10 of margin behind 0.1 of A from 50 and 1.3 of B from 100. B's stop at 85
+        // sits at the end of its adverse move, where A sits at its low of 80, and the
+        // wallet with A there holds 13, so the stop is lifted to 90; A is then closed
+        // out at 80, where that wallet runs out, a price its bar printed
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let rows = vec![
             vec![flat(50.0), flat(100.0)],
@@ -869,17 +870,8 @@ mod tests {
         };
         let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
         let place = |e: &mut Engine, i, side, size, kind, trigger, reduce_only| {
-            e.order_on(
-                i,
-                side,
-                size,
-                kind,
-                None,
-                trigger,
-                reduce_only,
-                false,
-                TimeInForce::Gtc,
-            )
+            let gtc = TimeInForce::Gtc;
+            e.order_on(i, side, size, kind, None, trigger, reduce_only, false, gtc)
         };
         e.reset();
         place(&mut e, 0, Side::Buy, 0.1, OrderType::Market, None, false);
@@ -897,22 +889,19 @@ mod tests {
         );
         let last = e.step();
         let fills = e.reporter().expect("reporting is on").fills();
-        let stop = fills
-            .iter()
-            .find(|fill| fill.reason == FillReason::Stop)
-            .expect("the stop filled");
-        assert!(stop.price > 85.0, "the stop filled at {}", stop.price);
-        let closes: Vec<f64> = fills
-            .iter()
-            .filter(|fill| fill.reason == FillReason::Liquidation)
-            .map(|fill| fill.price)
-            .collect();
-        assert!(!closes.is_empty());
-        let printed = (80.0 - 1e-9)..=(100.0 + 1e-9);
-        assert!(
-            closes.iter().all(|price| printed.contains(price)),
-            "{closes:?}"
-        );
+        let priced = |reason| -> Vec<(usize, f64)> {
+            fills
+                .iter()
+                .filter(|fill| fill.reason == reason)
+                .map(|fill| (fill.instrument, fill.price))
+                .collect()
+        };
+        let (stops, closes) = (priced(FillReason::Stop), priced(FillReason::Liquidation));
+        let ([(1, stop)], [(0, close)]) = (stops.as_slice(), closes.as_slice()) else {
+            panic!("one stop on B and one close of A");
+        };
+        assert!((stop - 90.0).abs() < 1e-9, "the stop filled at {stop}");
+        assert!((close - 80.0).abs() < 1e-9, "A closed at {close}");
         assert_eq!(last.margin_cash, 0.0);
     }
 }

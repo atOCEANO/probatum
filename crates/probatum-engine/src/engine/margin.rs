@@ -8,15 +8,17 @@
 use probatum_core::{Fill, Market, Price, Qty, Side, TierBasis};
 
 use super::{Engine, CLOSE_EPS};
+use crate::candles::printed;
 
 impl Engine {
     /// Clamp a fill on perp `i` so it does not grow the positions past the margin
     /// cap: summed over the perps, each notional over its leverage may not exceed
     /// the margin wallet's equity, the fill's own instrument at the fill's price and
-    /// every other at its last mark. Reductions are never capped, and a position
-    /// already over the cap (from an equity drop) is not force-reduced, only blocked
-    /// from growing. With no cap set only an insolvent account is held, to
-    /// reductions. No-op on spot.
+    /// every other at the same fraction of its own bar's adverse move as the fill
+    /// sits at on the path of the side it grows. Reductions are never capped, and a
+    /// position already over the cap (from an equity drop) is not force-reduced,
+    /// only blocked from growing. With no cap set only an insolvent account is held,
+    /// to reductions. No-op on spot.
     fn cap_leverage(&self, i: usize, fill: &mut Fill) {
         if self.account.markets[i] != Market::Perp {
             return;
@@ -25,7 +27,14 @@ impl Engine {
         if !mark.is_finite() || mark <= 0.0 {
             return;
         }
-        let equity = self.margin_equity_with(i, mark);
+        let own = usize::from(!self.account.positions[i].is_flat());
+        let beside = self.account.perps_held() > own;
+        let s = if beside {
+            self.fraction(i, fill.side == Side::Buy, mark)
+        } else {
+            0.0
+        };
+        let equity = self.margin_equity_with(i, mark, s);
         // No equity backs new notional, so an insolvent account may only shrink. It
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
@@ -36,11 +45,10 @@ impl Engine {
         let max_size = if equity <= 0.0 {
             0.0
         } else {
-            let own = usize::from(!self.account.positions[i].is_flat());
-            let others: f64 = if self.account.perps_held() > own {
+            let others: f64 = if beside {
                 (0..self.account.positions.len())
-                    .filter(|&j| j != i)
-                    .map(|j| self.requirement(j, self.marks[j]))
+                    .filter(|&j| j != i && !self.account.positions[j].is_flat())
+                    .map(|j| self.requirement(j, self.at_fraction(j, s)))
                     .sum()
             } else {
                 0.0
@@ -71,9 +79,34 @@ impl Engine {
         }
     }
 
-    /// The margin wallet's equity with instrument `i` at `price` and every other
-    /// perp at its last mark.
-    pub(super) fn margin_equity_with(&self, i: usize, price: f64) -> f64 {
+    /// Where `price` lies on instrument `i`'s adverse segment of the current bar,
+    /// from its open to its low on the `long` side and to its high on the short:
+    /// a price on the favourable side of the open, or a bar with no adverse move, is
+    /// at 0 (Specification, The path).
+    pub(super) fn fraction(&self, i: usize, long: bool, price: f64) -> f64 {
+        let bar = self.candles.bar(self.tick, i);
+        let moved = if long { bar.low } else { bar.high } - bar.open;
+        if !printed(&bar) || moved == 0.0 {
+            return 0.0;
+        }
+        ((price - bar.open) / moved).clamp(0.0, 1.0)
+    }
+
+    /// Perp `j` at fraction `s` of its own bar's adverse move, or at its last mark
+    /// where it printed no bar.
+    fn at_fraction(&self, j: usize, s: f64) -> f64 {
+        let bar = self.candles.bar(self.tick, j);
+        if !printed(&bar) {
+            return self.marks[j];
+        }
+        let long = self.account.positions[j].qty.get() > 0.0;
+        let adverse = if long { bar.low } else { bar.high };
+        bar.open + s * (adverse - bar.open)
+    }
+
+    /// The margin wallet's equity with perp `i` at `price` and every other perp
+    /// at fraction `s` of its own bar's adverse move.
+    fn margin_equity_with(&self, i: usize, price: f64, s: f64) -> f64 {
         let held = self.account.perps_held();
         let own = &self.account.positions[i];
         let alone = self.account.markets[i] == Market::Perp && !own.is_flat();
@@ -89,28 +122,35 @@ impl Engine {
             if self.account.markets[j] != Market::Perp || position.qty.get() == 0.0 {
                 continue;
             }
-            let at = if j == i { price } else { self.marks[j] };
+            let at = if j == i {
+                price
+            } else {
+                self.at_fraction(j, s)
+            };
             equity += position.unrealized(Price(at));
         }
         equity
     }
 
-    /// The wallet a close of perp `i` is solved against: the margin wallet's cash,
-    /// and every other perp's unrealized PnL at its last mark less the `fee` its own
-    /// close would pay, so the account stays at or above its close level.
-    pub(super) fn wallet_beside(&self, i: usize, fee: f64) -> f64 {
+    /// The wallet a close of perp `i` at `price` is solved against: the margin
+    /// wallet's cash, and every other perp's unrealized PnL less the `fee` its own
+    /// close would pay, each at the fraction of its own bar's adverse move that
+    /// `price` sits at on the path of `i`'s position, so the account stays at or
+    /// above its close level.
+    pub(super) fn wallet_beside(&self, i: usize, fee: f64, price: f64) -> f64 {
         let own = usize::from(!self.account.positions[i].is_flat());
         if self.account.perps_held() <= own {
             return self.account.margin_cash;
         }
+        let s = self.fraction(i, self.account.positions[i].qty.get() > 0.0, price);
         let mut wallet = self.account.margin_cash;
         for (j, position) in self.account.positions.iter().enumerate() {
             let qty = position.qty.get();
             if j == i || self.account.markets[j] != Market::Perp || qty == 0.0 {
                 continue;
             }
-            let mark = self.marks[j];
-            wallet += position.unrealized(Price(mark)) - qty.abs() * mark * fee;
+            let at = self.at_fraction(j, s);
+            wallet += position.unrealized(Price(at)) - qty.abs() * at * fee;
         }
         wallet
     }
@@ -916,20 +956,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_cap_sums_the_requirement_of_every_perp() {
-        // the Specification's example: 10,000 of margin, BTC at 20x and ETH at 10x. A
-        // long of 1 BTC at 60,000 uses 3,000, so a market sell of 30 ETH at 3,000
-        // has room for (10,000 - 3,000) * 10 = 70,000 of notional, 23.333 ETH
+    /// BTC at 20x and ETH at 10x, by tables of one tier, on 10,000 of margin: a long
+    /// of 1 BTC bought at the second row's open, and an ETH order decided at its
+    /// close, placed by `sell`, filling on the third row. Returns the ETH position.
+    fn eth_beside_btc(third: [Candle; 2], sell: impl Fn(&mut Engine)) -> f64 {
         let flat = |price| ohlc(price, price, price, price, 1e6);
-        let rows: Vec<Candle> = (0..3)
-            .flat_map(|_| [flat(60_000.0), flat(3_000.0)])
-            .collect();
+        let rows = [[flat(60_000.0), flat(3_000.0)]; 2].concat();
         let at = |leverage| Instrument {
             market: Some(Market::Perp),
             tiers: Tiers::new(TierBasis::Notional, vec![tier(1e12, leverage)]).expect("a table"),
         };
-        let bars = Candles::universe(rows, 2, None).with_instruments(vec![at(20.0), at(10.0)]);
+        let bars = Candles::universe([rows, third.to_vec()].concat(), 2, None)
+            .with_instruments(vec![at(20.0), at(10.0)]);
         let config = EngineConfig {
             quote: 10_000.0,
             report: true,
@@ -939,19 +977,41 @@ mod tests {
         e.reset();
         e.market_buy(1.0);
         e.step();
-        e.order_on(
-            1,
-            Side::Sell,
-            30.0,
-            OrderType::Market,
-            None,
-            None,
-            false,
-            false,
-            TimeInForce::Ioc,
-        );
+        sell(&mut e);
         e.step();
-        let held = e.reporter().expect("reporting is on").legs()[5].position;
+        e.reporter().expect("reporting is on").legs()[5].position
+    }
+
+    fn sell_eth(e: &mut Engine, kind: OrderType, price: Option<f64>, tif: TimeInForce) {
+        e.order_on(1, Side::Sell, 30.0, kind, price, None, false, false, tif);
+    }
+
+    #[test]
+    fn the_cap_sums_the_requirement_of_every_perp() {
+        // the Specification's example: 10,000 of margin, BTC at 20x and ETH at 10x. A
+        // long of 1 BTC at 60,000 uses 3,000, so a market sell of 30 ETH at 3,000
+        // has room for (10,000 - 3,000) * 10 = 70,000 of notional, 23.333 ETH
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let held = eth_beside_btc([flat(60_000.0), flat(3_000.0)], |e| {
+            sell_eth(e, OrderType::Market, None, TimeInForce::Ioc)
+        });
         assert!((held + 70_000.0 / 3_000.0).abs() < 1e-9, "sold {held}");
+    }
+
+    #[test]
+    fn the_cap_reads_the_other_perps_where_the_fill_sits_on_its_path() {
+        // the Specification's example: a sell limit on ETH that fills at its high of
+        // 3,300 sits at the end of its own adverse move, on a bar where BTC falls to
+        // 54,000, so BTC is marked there too. Equity is 4,000, BTC uses 2,700, and
+        // the room is 13,000 of notional, 3.94 ETH, where BTC at its last mark would
+        // have left room for 21.2
+        let bars = [
+            ohlc(60_000.0, 60_000.0, 54_000.0, 55_000.0, 1e6),
+            ohlc(3_000.0, 3_300.0, 3_000.0, 3_100.0, 1e6),
+        ];
+        let held = eth_beside_btc(bars, |e| {
+            sell_eth(e, OrderType::Limit, Some(3_300.0), TimeInForce::Gtc)
+        });
+        assert!((held + 13_000.0 / 3_300.0).abs() < 1e-9, "sold {held}");
     }
 }

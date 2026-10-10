@@ -21,10 +21,11 @@
 //!
 //! Several instruments share the clock. Each order fills on its own instrument's
 //! bar, an instrument that printed no bar on a row keeps its last mark and its
-//! orders wait, the fence and the check are the one perp's while one is held, and
-//! a reducing fill is bounded with every other perp at its last mark. With two or
-//! more held, the account is closed out wherever its margin equity reaches zero
-//! with every perp at its last mark, its open, its adverse extreme or its close.
+//! orders wait, and the fence and the check are the one perp's while one is held.
+//! The cap and the bound read every other perp at the fraction of its own bar the
+//! fill sits at on its path. With two or more held, the account is closed out
+//! wherever its margin equity reaches zero with every perp at its last mark, its
+//! open, its adverse extreme or its close.
 
 #[cfg(test)]
 mod fixtures;
