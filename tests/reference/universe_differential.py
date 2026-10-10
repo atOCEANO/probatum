@@ -8,8 +8,7 @@ wallet, so the cap, the margin bound and funding run across them. Every fourth
 universe is drawn around a shape random ones rarely reach, a stop beside another
 perp that moves against both or a limit filled on its gap. A case is compared up to
 the bar on which the reference first applied a rule the engine does not have yet,
-the rules `differential` cuts at and a liquidation or a clip that takes several
-perpetuals at once.
+as `differential` cuts its own.
 
   python -m reference.universe_differential [cases] [seed]     (from tests/)
 """
@@ -22,16 +21,12 @@ import sys
 import numpy as np
 
 import probatum
-from .differential import (KINDS, NOT_IN_THE_ENGINE, Script, before, clock,
-                           close_enough, closed_before, cut, limit_price, live,
-                           log_difference, resting, stamps, stop_price, tally,
-                           tier_table, walk, worded)
+from .differential import (KINDS, Script, before, clock, close_enough,
+                           closed_before, cut, limit_price, live, log_difference,
+                           resting, stamps, stop_price, tally, tier_table, walk,
+                           worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
-SET_ASIDE = NOT_IN_THE_ENGINE | {
-    "a liquidation of several perpetuals",
-    "a bar clipped across several perpetuals",
-}
 # the kinds a shaped universe places, which a narrower KINDS leaves out
 SHAPED = {"market", "stop", "limit"}
 
@@ -472,7 +467,7 @@ def compare(cases, seed):
             continue
 
         end   = None
-        found = cut(sim, SET_ASIDE)
+        found = cut(sim)
         if found is not None:
             rule, end = found
             aside[rule] += 1

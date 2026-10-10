@@ -1551,7 +1551,8 @@ class Simulator:
             self.pay_funding(i, charge)          # an event counted is an event paid
 
         closes = []
-        for leg in held:
+        # in instrument order, a fixed order, each instrument's legs in their own
+        for leg in sorted(held, key=lambda leg: leg.instrument):
             start, end = self.ends(leg, a, b)
             price = start + u * (end - start)
             if leg.frac > 0.0 and price == leg.start:
