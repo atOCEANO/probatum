@@ -2,9 +2,10 @@
 //! before a bar's orders are resolved and clips the bar there (ADR 0017); the
 //! forced close is priced at the bankruptcy price rather than at the bar's
 //! extreme, and no fill that reduces the position books past that price, so an
-//! account can end at zero but never owing (ADR 0018).
+//! account can end at zero but never owing (ADR 0018). The fence is the one perp's
+//! while the account holds one, and the bound counts every other perp held.
 
-use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Qty, Side, Wallet};
+use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Qty, Side};
 
 use super::ledger::Moment;
 use super::Engine;
@@ -12,34 +13,33 @@ use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord};
 
 impl Engine {
-    /// True when a perp position is dead at `mark` once `debits` of funding are
-    /// counted against the margin wallet: the check at a bar's adverse extreme, with
-    /// the debits stamped inside the bar (ADRs 0008, 0017, 0020).
-    pub(super) fn dead_at(&self, mark: f64, debits: f64) -> bool {
-        self.config.market == Market::Perp
-            && !self.account.position.is_flat()
-            && mark.is_finite()
-            && self.account.wallet_equity(Wallet::Margin, Price(mark)) - debits <= 0.0
+    /// True when perp `p`, the only perp the account holds, is dead at `price` once
+    /// `debits` of funding are counted against the margin wallet: the check at a
+    /// bar's adverse extreme, with the debits stamped inside the bar (ADRs 0008,
+    /// 0017, 0020).
+    pub(super) fn dead_at(&self, p: usize, price: f64, debits: f64) -> bool {
+        let unrealized = self.account.positions[p].unrealized(Price(price));
+        price.is_finite() && self.account.margin_cash + unrealized - debits <= 0.0
     }
 
-    /// The price this bar would take the position's margin to zero at, or `None`
-    /// when nothing on the bar can kill the account.
+    /// The price `bar` would take perp `p`'s margin to zero at, or `None` when
+    /// nothing on the bar can kill the account.
     ///
     /// The trigger is the bar's adverse extreme and the answer is the bankruptcy
     /// price, which are two different numbers on purpose (ADR 0018). Read before
     /// the bar's orders are resolved, because it is the point past which this
     /// account was no longer in the market.
-    pub(super) fn liquidation_fence(&self, bar: &Candle) -> Option<f64> {
-        let adverse = if self.account.position.qty.get() >= 0.0 {
+    pub(super) fn liquidation_fence(&self, p: usize, bar: &Candle) -> Option<f64> {
+        let adverse = if self.account.positions[p].qty.get() >= 0.0 {
             bar.low
         } else {
             bar.high
         };
-        if !self.account.is_bust_at(Price(adverse)) {
+        if !self.dead_at(p, adverse, 0.0) {
             return None;
         }
         self.account
-            .bankruptcy_price(self.cost.fee_taker)
+            .bankruptcy_price(p, self.cost.fee_taker, self.account.margin_cash)
             .map(|price| price.get())
     }
 
@@ -64,7 +64,8 @@ impl Engine {
         }
     }
 
-    /// Force-close the whole position at the price that leaves nothing.
+    /// Force-close perp `p`, the one the account holds, at the price that leaves
+    /// nothing.
     ///
     /// Not at the bar's adverse extreme, which is what the trigger was tested
     /// against. Closing there charged the account for however far the bar happened
@@ -73,87 +74,103 @@ impl Engine {
     /// owing 100. A position cannot lose more than the margin behind it, so the
     /// exit is priced where the margin runs out, and the liquidation fee is inside
     /// that price rather than charged past it (ADR 0018).
-    pub(super) fn liquidate(&mut self, moment: Moment) {
-        if let Some(price) = self.account.bankruptcy_price(self.cost.fee_taker) {
-            self.liquidate_at(price, moment);
+    pub(super) fn liquidate(&mut self, p: usize, moment: Moment) {
+        let fee = self.cost.fee_taker;
+        if let Some(price) = self
+            .account
+            .bankruptcy_price(p, fee, self.account.margin_cash)
+        {
+            self.close_out(p, price.get(), moment);
         }
     }
 
-    /// Force-close the whole position at `price`, paying the liquidation fee, and
-    /// leave the margin wallet at exactly zero: whatever it then holds, positive or
-    /// negative, is the liquidation charge. A funding debit that takes the account to
-    /// its trigger at a bar's close is closed here at that close (ADR 0020).
-    pub(super) fn liquidate_at(&mut self, price: Price, moment: Moment) {
-        let size = self.account.position.qty.get().abs();
-        let fill = Fill {
-            side: if self.account.position.qty.get() > 0.0 {
-                Side::Sell
-            } else {
-                Side::Buy
-            },
-            size: Qty(size),
-            price,
-            is_taker: true,
-        };
-        let fee = self.cost.fee(&fill);
-        let before = self.before_fill();
-        self.account.apply_fill(&fill, fee);
-        self.book_fill(
-            size,
-            price.get(),
-            fee,
-            before,
-            FillReason::Liquidation,
-            moment,
-        );
-        if let Some(reporter) = self.reporter.as_mut() {
-            // whatever the wallet still holds once the position is closed, taken by
-            // the venue or absorbed by it, is the liquidation charge (ADR 0018)
-            let bar = reporter.costs_mut();
-            bar.fees += fee;
-            bar.liquidation += self.account.margin_cash;
-            reporter.record_fill(FillRecord {
-                tick: self.tick,
-                order: None,
-                side: fill.side,
-                size,
-                price: price.get(),
-                costs: FillCosts {
-                    reference: price.get(),
-                    ..FillCosts::default()
-                },
+    /// Force-close every perp the account holds, each at its entry in `prices`,
+    /// paying the liquidation fee, and leave the margin wallet at exactly zero:
+    /// whatever it then holds, positive or negative, is the liquidation charge. A
+    /// funding debit that takes the account to its trigger at a bar's close is
+    /// closed here at the closes (ADR 0020).
+    pub(super) fn liquidate_at(&mut self, prices: &[f64], moment: Moment) {
+        for (i, &price) in prices.iter().enumerate() {
+            let qty = self.account.positions[i].qty.get();
+            if self.account.markets[i] != Market::Perp || qty == 0.0 {
+                continue;
+            }
+            let fill = Fill {
+                side: if qty > 0.0 { Side::Sell } else { Side::Buy },
+                size: Qty(qty.abs()),
+                price: Price(price),
+                is_taker: true,
+            };
+            let fee = self.cost.fee(&fill);
+            let before = self.before_fill(i);
+            self.account.apply_fill(i, &fill, fee);
+            self.book_fill(
+                i,
+                qty.abs(),
+                price,
                 fee,
-                taker: false,
-                reason: FillReason::Liquidation,
-            });
+                before,
+                FillReason::Liquidation,
+                moment,
+            );
+            if let Some(reporter) = self.reporter.as_mut() {
+                reporter.costs_mut().fees += fee;
+                reporter.record_fill(FillRecord {
+                    tick: self.tick,
+                    instrument: i,
+                    order: None,
+                    side: fill.side,
+                    size: qty.abs(),
+                    price,
+                    costs: FillCosts {
+                        reference: price,
+                        ..FillCosts::default()
+                    },
+                    fee,
+                    taker: false,
+                    reason: FillReason::Liquidation,
+                });
+            }
+        }
+        // whatever the wallet still holds once the positions are closed, taken by
+        // the venue or absorbed by it, is the liquidation charge (ADR 0018)
+        if let Some(reporter) = self.reporter.as_mut() {
+            reporter.costs_mut().liquidation += self.account.margin_cash;
         }
         // The bankruptcy price leaves nothing in exact arithmetic and a hair either
         // side of it in floating point, and a hair above zero is equity the cap
         // levers: with the cap off, an account closed out there opened a position
         // again on the next bar. So the wallet ends at exactly zero (ADRs 0015, 0018).
         self.account.margin_cash = 0.0;
-        // Every order the closed-out account left goes with it. The empty wallet
-        // refused them anyway until a transfer could fund it again, after which
-        // they filled for an account that had already left the market (ADR 0018).
+        // Every perp order the closed-out account left goes with it. The empty
+        // wallet refused them anyway until a transfer could fund it again, after
+        // which they filled for an account that had already left the market
+        // (ADR 0018). The spot wallet is untouched, and its orders stand.
+        let perp = |markets: &[Market], i: usize| markets[i] == Market::Perp;
         if self.reporter.is_some() {
-            let left: Vec<OrderId> = self
+            let left: Vec<(OrderId, usize)> = self
                 .pending
                 .iter()
                 .chain(self.book.iter())
-                .map(|order| order.id)
+                .filter(|order| perp(&self.account.markets, order.instrument))
+                .map(|order| (order.id, order.instrument))
                 .collect();
-            for id in left {
+            for (id, instrument) in left {
                 self.log_event(
                     EventKind::Cancelled,
                     Some(id),
+                    Some(instrument),
                     None,
                     None,
                     EventReason::Liquidation,
                 );
             }
         }
-        self.book.cancel_all();
-        self.pending.clear();
+        let markets = &self.account.markets;
+        self.pending
+            .retain(|order| !perp(markets, order.instrument));
+        self.book
+            .cancel_where(|order| perp(markets, order.instrument));
     }
 
     /// No fill closes a perp past the point the margin behind it ran out.
@@ -178,19 +195,24 @@ impl Engine {
     ///
     /// Closing at the bankruptcy price leaves equity exactly zero AT that price,
     /// so a partial close is bounded by the same number as a full one and no
-    /// ordering of fills within a bar can book past it.
-    pub(super) fn bound_by_margin(&self, fill: &mut Fill) {
-        if self.config.market != Market::Perp {
+    /// ordering of fills within a bar can book past it. With other perps held, the
+    /// price is solved against the wallet with what they hold beyond their own
+    /// closing fees, so no reducing fill on one leg overdraws the account its other
+    /// legs still stand in.
+    pub(super) fn bound_by_margin(&self, i: usize, fill: &mut Fill) {
+        if self.account.markets[i] != Market::Perp {
             return;
         }
-        let position = self.account.position.qty.get();
+        let position = self.account.positions[i].qty.get();
         let long = position > 0.0;
         let reduces =
             (long && fill.side == Side::Sell) || (position < 0.0 && fill.side == Side::Buy);
         if !reduces {
             return;
         }
-        if let Some(bound) = self.account.bankruptcy_price(self.cost.fee_taker) {
+        let fee = self.cost.fee_taker;
+        let wallet = self.wallet_beside(i, fee);
+        if let Some(bound) = self.account.bankruptcy_price(i, fee, wallet) {
             let price = fill.price.get();
             fill.price = Price(if long {
                 price.max(bound.get())
@@ -204,10 +226,10 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use crate::candles::Candles;
-    use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg};
+    use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, universe};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
-    use crate::reporter::FillReason;
-    use probatum_core::{Market, Side, Wallet};
+    use crate::reporter::{EventKind, EventReason, FillReason};
+    use probatum_core::{Market, OrderType, Side, TimeInForce, Wallet};
 
     #[test]
     fn leveraged_long_is_liquidated_on_a_crashing_bar() {
@@ -382,7 +404,8 @@ mod tests {
         assert!(e
             .reporter()
             .expect("reporting is on")
-            .open_trade()
+            .open_trades()
+            .next()
             .is_none());
     }
 
@@ -755,5 +778,141 @@ mod tests {
             "equity {}",
             state.equity
         );
+    }
+
+    #[test]
+    fn two_perps_are_closed_out_together_where_their_margin_runs_out() {
+        // 100 of margin behind a long of 1 from 100 and of 10 from 10: with both at
+        // their lows of 40 and 4 the wallet holds -20, so both close there, the -20
+        // is the liquidation charge, and the perp order goes while the spot one stays
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(10.0), flat(50.0)],
+            vec![flat(100.0), flat(10.0), flat(50.0)],
+            vec![
+                ohlc(100.0, 100.0, 40.0, 50.0, 1e6),
+                ohlc(10.0, 10.0, 4.0, 5.0, 1e6),
+                flat(50.0),
+            ],
+        ];
+        let config = EngineConfig {
+            idle_cash: 1_000.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let markets = [Market::Perp, Market::Perp, Market::Spot];
+        let mut e = Engine::new(universe(&markets, rows), config);
+        let place = |e: &mut Engine, i, side, size, kind, price| {
+            e.order_on(
+                i,
+                side,
+                size,
+                kind,
+                price,
+                None,
+                false,
+                false,
+                TimeInForce::Gtc,
+            )
+        };
+        e.reset();
+        place(&mut e, 0, Side::Buy, 1.0, OrderType::Market, None);
+        place(&mut e, 1, Side::Buy, 10.0, OrderType::Market, None);
+        e.step();
+        let perp_order = place(&mut e, 0, Side::Sell, 1.0, OrderType::Limit, Some(150.0));
+        place(&mut e, 2, Side::Buy, 1.0, OrderType::Limit, Some(40.0));
+        let state = e.step();
+        assert_eq!((state.margin_cash, state.spot_cash), (0.0, 1_000.0));
+        assert_eq!(state.open_orders.len(), 1);
+        assert_eq!(state.open_orders[0].instrument, 2);
+        let reporter = e.reporter().expect("reporting is on");
+        let closes: Vec<(usize, f64)> = reporter
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .map(|fill| (fill.instrument, fill.price))
+            .collect();
+        assert_eq!(closes, vec![(0, 40.0), (1, 4.0)]);
+        assert_eq!(reporter.ledger()[2].costs.liquidation, -20.0);
+        let cancelled = reporter
+            .events()
+            .iter()
+            .find(|event| event.kind == EventKind::Cancelled)
+            .expect("a cancel");
+        assert_eq!(
+            (cancelled.order, cancelled.reason),
+            (perp_order, EventReason::Liquidation)
+        );
+    }
+
+    #[test]
+    fn a_reducing_fill_beside_another_perp_is_bounded_and_no_close_leaves_its_bar() {
+        // 10 of margin behind 0.1 of A from 50 and 1.3 of B from 100: B's stop at 85
+        // would overdraw the wallet A still stands in, so it is lifted, and when A
+        // is closed out on that bar it is at a price the bar printed, to the rounding
+        // of the solve
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(50.0), flat(100.0)],
+            vec![flat(50.0), flat(100.0)],
+            vec![flat(100.0), flat(100.0)],
+            vec![
+                ohlc(100.0, 100.0, 80.0, 90.0, 1e6),
+                ohlc(100.0, 100.0, 85.0, 86.0, 1e6),
+            ],
+        ];
+        let config = EngineConfig {
+            quote: 10.0,
+            max_leverage: 10.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        let place = |e: &mut Engine, i, side, size, kind, trigger, reduce_only| {
+            e.order_on(
+                i,
+                side,
+                size,
+                kind,
+                None,
+                trigger,
+                reduce_only,
+                false,
+                TimeInForce::Gtc,
+            )
+        };
+        e.reset();
+        place(&mut e, 0, Side::Buy, 0.1, OrderType::Market, None, false);
+        e.step();
+        e.step();
+        place(&mut e, 1, Side::Buy, 1.3, OrderType::Market, None, false);
+        place(
+            &mut e,
+            1,
+            Side::Sell,
+            1.3,
+            OrderType::Stop,
+            Some(85.0),
+            true,
+        );
+        let last = e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        let stop = fills
+            .iter()
+            .find(|fill| fill.reason == FillReason::Stop)
+            .expect("the stop filled");
+        assert!(stop.price > 85.0, "the stop filled at {}", stop.price);
+        let closes: Vec<f64> = fills
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .map(|fill| fill.price)
+            .collect();
+        assert!(!closes.is_empty());
+        let printed = (80.0 - 1e-9)..=(100.0 + 1e-9);
+        assert!(
+            closes.iter().all(|price| printed.contains(price)),
+            "{closes:?}"
+        );
+        assert_eq!(last.margin_cash, 0.0);
     }
 }

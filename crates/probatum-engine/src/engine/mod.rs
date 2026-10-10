@@ -18,6 +18,13 @@
 //! a perp is bounded once more as it lands, because the fence was read from the
 //! position carried into the bar and one grown or opened during the bar has none
 //! of its own (ADRs 0008, 0017, 0018, 0020).
+//!
+//! Several instruments share the clock. Each order fills on its own instrument's
+//! bar, an instrument that printed no bar on a row keeps its last mark and its
+//! orders wait, the fence and the check are the one perp's while one is held, and
+//! a reducing fill is bounded with every other perp at its last mark. With two or
+//! more held, the account is closed out wherever its margin equity reaches zero
+//! with every perp at its last mark, its open, its adverse extreme or its close.
 
 #[cfg(test)]
 mod fixtures;
@@ -35,11 +42,19 @@ use probatum_core::{
     Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
 };
 
-use crate::candles::Candles;
+use crate::candles::{printed, Candles};
 use crate::clock::Clock;
 use crate::execution::FillModel;
-use crate::reporter::{BarCosts, LedgerRow, Reporter, RoundTrip};
+use crate::reporter::{BarCosts, LedgerRow, Leg, Reporter, RoundTrip};
 use crate::stats::Stats;
+
+/// The perps an account holds, as each phase of the step branches on them.
+#[derive(Clone, Copy)]
+enum Held {
+    None,
+    One(usize),
+    Several,
+}
 
 /// A position moved toward zero by less than this counts as no close, mirroring
 /// the position's own dust epsilon so a non-representable fractional close does
@@ -110,6 +125,9 @@ pub struct Engine {
     book: RestingOrderBook,
     reporter: Option<Reporter>,
     pending: Vec<Order>,
+    /// The queue's other buffer: the orders a bar resolves are drained from one
+    /// while those that wait go into the other, so a step allocates no queue.
+    spare: Vec<Order>,
     /// Transfers decided since the last step, in order, each an amount and the
     /// wallet it goes into.
     transfers: Vec<(f64, Wallet)>,
@@ -126,6 +144,12 @@ pub struct Engine {
     /// or below zero, where a perp liquidation leaves it unless the spot wallet
     /// holds cash (ADR 0008). A terminal event for the RL env. Cleared on reset.
     bust: bool,
+    /// Each instrument's last close, the mark it keeps on a row it printed no bar
+    /// on, NaN until its first bar.
+    marks: Vec<f64>,
+    /// A price for each instrument, refilled wherever the account is valued at
+    /// prices other than its marks, so a step allocates nothing.
+    prices: Vec<f64>,
 }
 
 impl Engine {
@@ -134,6 +158,11 @@ impl Engine {
     /// first state.
     pub fn new(candles: Candles, config: EngineConfig) -> Engine {
         assert!(!candles.is_empty(), "candles must have at least one row");
+        let width = candles.width();
+        let markets = (0..width)
+            .map(|i| candles.market(i).unwrap_or(config.market))
+            .collect();
+        let (spot, margin) = Engine::opening(&config);
         let mut engine = Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
@@ -144,28 +173,78 @@ impl Engine {
                 fee_taker: config.fee_taker,
                 fee_maker: config.fee_maker,
             },
-            account: Account::new(config.market, config.quote).with_idle(config.idle_cash),
-            book: RestingOrderBook::new(config.max_open_orders),
+            account: Account::universe(markets, spot, margin),
+            book: RestingOrderBook::new(width * config.max_open_orders),
             reporter: if config.report {
                 Some(Reporter::new())
             } else {
                 None
             },
             pending: Vec::new(),
+            spare: Vec::new(),
             transfers: Vec::new(),
             tick: 0,
             id_counter: 1,
             fills: 0,
             funding_paid: 0.0,
             bust: false,
+            marks: vec![f64::NAN; width],
+            prices: vec![f64::NAN; width],
             candles,
             config,
         };
-        let row = engine.ledger_row();
-        if let Some(reporter) = engine.reporter.as_mut() {
-            reporter.record_row(row);
+        engine.mark_from(0);
+        if engine.reporter.is_some() {
+            engine.record_ledger();
         }
         engine
+    }
+
+    /// Each wallet's opening cash: `quote` in the one the config's market settles
+    /// in and the idle cash in the other.
+    fn opening(config: &EngineConfig) -> (f64, f64) {
+        match config.market {
+            Market::Spot => (config.quote, config.idle_cash),
+            Market::Perp => (config.idle_cash, config.quote),
+        }
+    }
+
+    /// Mark each instrument at its last close on or before row `start`.
+    fn mark_from(&mut self, start: usize) {
+        for i in 0..self.marks.len() {
+            self.marks[i] = (0..=start)
+                .rev()
+                .map(|t| self.candles.bar(t, i))
+                .find(printed)
+                .map_or(f64::NAN, |bar| bar.close);
+        }
+    }
+
+    /// Append the ledger row of the current bar and each instrument's leg of it,
+    /// reporting being on.
+    fn record_ledger(&mut self) {
+        let row = self.ledger_row();
+        let equity = row.equity;
+        if let Some(reporter) = self.reporter.as_mut() {
+            reporter.record_row(row);
+            for (i, position) in self.account.positions.iter().enumerate() {
+                let qty = position.qty.get();
+                let mark = self.marks[i];
+                let signed = if qty == 0.0 { 0.0 } else { qty * mark };
+                reporter.record_leg(Leg {
+                    position: qty,
+                    entry: position.avg_entry.get(),
+                    mark,
+                    notional: signed.abs(),
+                    unrealized: if qty == 0.0 {
+                        0.0
+                    } else {
+                        position.unrealized(Price(mark))
+                    },
+                    weight: if equity > 0.0 { signed / equity } else { 0.0 },
+                });
+            }
+        }
     }
 
     /// Reset to the first bar and a fresh account, returning the initial state.
@@ -177,12 +256,13 @@ impl Engine {
     /// bar. The vectorized env uses this to give each env its own random start
     /// offset. `start_tick` is clamped to the last bar.
     pub fn reset_at(&mut self, start_tick: usize) -> State {
-        self.account =
-            Account::new(self.config.market, self.config.quote).with_idle(self.config.idle_cash);
+        let (spot, margin) = Engine::opening(&self.config);
+        self.account.reset(spot, margin);
         self.book.cancel_all();
         self.pending.clear();
         self.transfers.clear();
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));
+        self.mark_from(self.tick);
         // The id counter deliberately survives a reset. Restarting it made an id
         // handed out in one episode name a live order in the next, so a handle
         // carried across a reset cancelled somebody else's order (ADR 0010).
@@ -190,9 +270,8 @@ impl Engine {
         self.funding_paid = 0.0;
         self.bust = false;
         if self.reporter.is_some() {
-            let mut reporter = Reporter::new();
-            reporter.record_row(self.ledger_row());
-            self.reporter = Some(reporter);
+            self.reporter = Some(Reporter::new());
+            self.record_ledger();
         }
         self.state()
     }
@@ -228,6 +307,11 @@ impl Engine {
         self.candles.len()
     }
 
+    /// The number of instruments on each row.
+    pub fn width(&self) -> usize {
+        self.candles.width()
+    }
+
     /// Bars a year by the series' own clock, or `None` when its bars came without
     /// times (ADR 0004).
     pub fn periods_per_year(&self) -> Option<f64> {
@@ -240,22 +324,80 @@ impl Engine {
         self.candles.clock().and_then(|clock| clock.time(tick))
     }
 
-    /// The whole candle series as a slice, for a zero-copy full-series view. Like
-    /// `candle_window`, it borrows the immutable `Arc` buffer with no copy.
+    /// The whole candle series as a slice, row by row, for a zero-copy full-series
+    /// view of an engine on one instrument. Like `candle_window`, it borrows the
+    /// immutable `Arc` buffer with no copy.
     pub fn candles_all(&self) -> &[Candle] {
         self.candles.as_slice()
     }
 
     /// The `lookback` bars ending at (and including) the current tick, as a
-    /// zero-copy borrow into the shared series. Clamped to what exists, so early
-    /// in the series it returns the available bars. The Python layer turns this
-    /// into a read-only numpy view (ADR 0040).
+    /// zero-copy borrow into the shared series, for an engine on one instrument.
+    /// Clamped to what exists, so early in the series it returns the available
+    /// bars. The Python layer turns this into a read-only numpy view (ADR 0040).
     pub fn candle_window(&self, lookback: usize) -> &[Candle] {
         self.candles.window(self.tick + 1, lookback)
     }
 
+    /// The first instrument's last close, the price the one-instrument surface
+    /// sizes and checks its orders against.
     fn current_close(&self) -> f64 {
-        self.candles.get(self.tick).map_or(0.0, |c| c.close)
+        self.marks[0]
+    }
+
+    /// Instrument `i`'s bar on the current row, or the fence's clipped bar when it
+    /// is the instrument `clip` names.
+    fn bar_for(&self, i: usize, clip: Option<(usize, Candle)>) -> Candle {
+        match clip {
+            Some((p, bar)) if p == i => bar,
+            _ => self.candles.bar(self.tick, i),
+        }
+    }
+
+    /// The perps the account holds, as each phase of the step branches on them.
+    fn held(&self) -> Held {
+        match (self.account.perps_held(), self.account.sole_perp()) {
+            (0, _) => Held::None,
+            (_, Some(p)) => Held::One(p),
+            _ => Held::Several,
+        }
+    }
+
+    /// Fill the price buffer with each instrument's `pick` of its current bar, or
+    /// its mark where it printed none.
+    fn fill_prices(&mut self, pick: impl Fn(&Candle, f64) -> f64) {
+        for i in 0..self.prices.len() {
+            let bar = self.candles.bar(self.tick, i);
+            let qty = self.account.positions[i].qty.get();
+            self.prices[i] = if printed(&bar) {
+                pick(&bar, qty)
+            } else {
+                self.marks[i]
+            };
+        }
+    }
+
+    /// Close every perp out at the price buffer when margin equity there is at or
+    /// below zero once `debits` are counted, paying them.
+    fn close_out_at_prices(&mut self, debits: f64, moment: Moment) {
+        let equity = self.account.wallet_equity(Wallet::Margin, &self.prices) - debits;
+        if equity.is_nan() || equity > 0.0 {
+            return;
+        }
+        if debits > 0.0 {
+            self.pay_debits_inside();
+        }
+        let prices = std::mem::take(&mut self.prices);
+        self.liquidate_at(&prices, moment);
+        self.prices = prices;
+    }
+
+    /// Close perp `p`, the one the account holds, out at `price`.
+    fn close_out(&mut self, p: usize, price: f64, moment: Moment) {
+        let mut prices = std::mem::take(&mut self.prices);
+        prices[p] = price;
+        self.liquidate_at(&prices, moment);
+        self.prices = prices;
     }
 
     /// Advance one bar and resolve the bar, then mark and return the state. At the
@@ -263,23 +405,31 @@ impl Engine {
     pub fn step(&mut self) -> State {
         let advanced = self.tick + 1 < self.candles.len();
         if advanced {
-            let last = self.current_close();
             self.tick += 1;
-            let bar = self.candles.get(self.tick).expect("tick in range");
 
             // transfers decided at the last close land first, before funding and
             // before any fill, so cash moved into the margin wallet backs the orders
             // decided with it (ADR 0008)
-            self.apply_transfers(last);
+            self.apply_transfers();
 
             // funding stamped between the last row and this one, across a closure or
-            // a hole in the data, is charged next, at the last mark and before the
+            // a hole in the data, is charged next, at the last marks and before the
             // path, so a debit that takes the account to its trigger liquidates it
             // at the start of the gap, there if it is dead already and on the gap
             // below if the open lies past the fence (ADR 0020)
-            self.charge_between(last);
-            if self.account.is_bust_at(Price(last)) {
-                self.liquidate_at(Price(last), Moment::BeforeOpen);
+            self.charge_between();
+            match self.held() {
+                Held::None => {}
+                Held::One(p) => {
+                    let mark = self.marks[p];
+                    if self.dead_at(p, mark, 0.0) {
+                        self.close_out(p, mark, Moment::BeforeOpen);
+                    }
+                }
+                Held::Several => {
+                    self.prices.copy_from_slice(&self.marks);
+                    self.close_out_at_prices(0.0, Moment::BeforeOpen);
+                }
             }
 
             // 0. the price a position's margin runs out at is a point on this bar's
@@ -295,35 +445,62 @@ impl Engine {
             //    liquidation booked the whole gap and left the account owing money,
             //    and a partial close left a "liquidation" priced outside the bar
             //    that booked a profit (ADR 0017).
-            let long = self.account.position.qty.get() >= 0.0;
-            let fence = self.liquidation_fence(&bar);
-            let gapped = fence.is_some_and(|f| if long { bar.open <= f } else { bar.open >= f });
-            if gapped {
-                self.liquidate(Moment::BeforeOpen);
+            let mut clip = None;
+            match self.held() {
+                Held::None => {}
+                Held::One(p) => {
+                    let bar = self.candles.bar(self.tick, p);
+                    let long = self.account.positions[p].qty.get() >= 0.0;
+                    let fence = self.liquidation_fence(p, &bar);
+                    let gapped =
+                        fence.is_some_and(|f| if long { bar.open <= f } else { bar.open >= f });
+                    if gapped {
+                        self.liquidate(p, Moment::BeforeOpen);
+                    } else if let Some(f) = fence {
+                        clip = Some((p, Engine::fenced(&bar, f, long)));
+                    }
+                }
+                Held::Several => {
+                    self.fill_prices(|bar, _| bar.open);
+                    self.close_out_at_prices(0.0, Moment::BeforeOpen);
+                }
             }
-            let resolving = match fence {
-                Some(f) if !gapped => Engine::fenced(&bar, f, long),
-                _ => bar,
-            };
 
             // 1. pending market orders fill at the open
-            self.resolve_pending(&resolving);
+            self.resolve_pending(clip);
 
             // 2. resting limit and stop orders fill against the bar range
-            self.resolve_resting(&resolving);
+            self.resolve_resting(clip);
 
             // 3. liquidation at the bar's adverse extreme (long at the low, short
             //    at the high), with the debits stamped inside the bar counted toward
-            //    it; an account it liquidates pays what it counted and nothing more
-            let adverse = if self.account.position.qty.get() >= 0.0 {
-                bar.low
-            } else {
-                bar.high
-            };
-            let debits = self.debits_inside(bar.close);
-            if self.dead_at(adverse, debits) {
-                self.pay_debits_inside(bar.close);
-                self.liquidate(Moment::InBar);
+            //    it; an account it liquidates pays what it counted and nothing more.
+            //    A perp that printed no bar keeps its mark and closes there
+            match self.held() {
+                Held::None => {}
+                Held::One(p) => {
+                    let bar = self.candles.bar(self.tick, p);
+                    let debits = self.debits_inside();
+                    if !printed(&bar) {
+                        let mark = self.marks[p];
+                        if self.dead_at(p, mark, debits) {
+                            self.pay_debits_inside();
+                            self.close_out(p, mark, Moment::InBar);
+                        }
+                    } else {
+                        let long = self.account.positions[p].qty.get() >= 0.0;
+                        let adverse = if long { bar.low } else { bar.high };
+                        if self.dead_at(p, adverse, debits) {
+                            self.pay_debits_inside();
+                            self.liquidate(p, Moment::InBar);
+                        }
+                    }
+                }
+                Held::Several => {
+                    let debits = self.debits_inside();
+                    self.fill_prices(|bar, qty| if qty >= 0.0 { bar.low } else { bar.high });
+                    self.close_out_at_prices(debits, Moment::InBar);
+                }
             }
 
             // 4. the funding the row owns, at its close and after the check, because
@@ -332,26 +509,50 @@ impl Engine {
             //    nothing. emsl charged it before the check, at the clipped close,
             //    which liquidated accounts on payments not yet made. An account a
             //    debit takes to its trigger here is closed at the close (ADR 0020)
-            self.charge_funding(bar.close);
-            if self.account.is_bust_at(Price(bar.close)) {
-                self.liquidate_at(Price(bar.close), Moment::AtClose);
+            self.charge_funding();
+            match self.held() {
+                Held::None => {}
+                Held::One(p) => {
+                    let close = self.close_of(p);
+                    if self.dead_at(p, close, 0.0) {
+                        self.close_out(p, close, Moment::AtClose);
+                    }
+                }
+                Held::Several => {
+                    self.fill_prices(|bar, _| bar.close);
+                    self.close_out_at_prices(0.0, Moment::AtClose);
+                }
+            }
+            // a margin wallet that fees left below zero with no perp held, where no
+            // bound stood behind the fill that left it there, is set to zero and the
+            // deficit booked as a negative liquidation charge
+            if self.account.margin_cash < 0.0 && self.account.perps_held() == 0 {
+                if let Some(reporter) = self.reporter.as_mut() {
+                    reporter.costs_mut().liquidation += self.account.margin_cash;
+                }
+                self.account.margin_cash = 0.0;
             }
 
-            // the part of this bar a round trip still open lived through: from its
-            // fill to the close when it opened on this bar, the whole bar otherwise
-            if let Some(trip) = self.reporter.as_mut().and_then(Reporter::trip_mut) {
-                if trip.open_tick == self.tick {
-                    trip.see(bar.close);
-                } else {
-                    trip.see(bar.low);
-                    trip.see(bar.high);
+            for i in 0..self.marks.len() {
+                let bar = self.candles.bar(self.tick, i);
+                if !printed(&bar) {
+                    continue;
                 }
+                // the part of this bar a round trip still open lived through: from
+                // its fill to the close when it opened on this bar, the whole bar
+                // otherwise
+                if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
+                    if trip.open_tick == self.tick {
+                        trip.see(bar.close);
+                    } else {
+                        trip.see(bar.low);
+                        trip.see(bar.high);
+                    }
+                }
+                self.marks[i] = bar.close;
             }
             if self.reporter.is_some() {
-                let row = self.ledger_row();
-                if let Some(reporter) = self.reporter.as_mut() {
-                    reporter.record_row(row);
-                }
+                self.record_ledger();
             }
         }
 
@@ -368,7 +569,8 @@ impl Engine {
         // the last bar does not re-append the same equity point and distort stats.
         if advanced {
             if let Some(reporter) = &mut self.reporter {
-                reporter.record_equity(state.equity, state.position != 0.0);
+                let held = self.account.positions.iter().any(|p| p.qty.get() != 0.0);
+                reporter.record_equity(state.equity, held);
             }
         }
         state
@@ -394,17 +596,17 @@ impl Engine {
         })
     }
 
-    /// The round trips: every one closed so far, in the order they closed, then the
-    /// one still open, marked at the current close and known by having no close.
-    /// Empty when reporting is off (ADR 0023).
+    /// The round trips: every one closed so far, in the order they closed, then each
+    /// one still open, in instrument order, marked at its instrument's last close and
+    /// known by having no close. Empty when reporting is off (ADR 0023).
     pub fn round_trips(&self) -> Vec<RoundTrip> {
         let Some(reporter) = &self.reporter else {
             return Vec::new();
         };
         let mut trips = reporter.trades().to_vec();
-        if let Some(open) = reporter.open_trade() {
-            let mark = Price(self.current_close());
-            trips.push(open.marked(self.account.unrealized(mark)));
+        for open in reporter.open_trades() {
+            let i = open.instrument;
+            trips.push(open.marked(self.account.unrealized(i, Price(self.marks[i]))));
         }
         trips
     }
@@ -419,46 +621,49 @@ impl Engine {
     /// full `State`. The batched RL reward reads this per env, so it skips the
     /// open-orders vector a snapshot would allocate. Matches `state().equity`.
     pub fn equity(&self) -> f64 {
-        let mark = self.candles.get(self.tick).expect("tick in range").close;
-        self.account.equity(Price(mark))
+        self.account.equity(&self.marks)
     }
 
-    /// The ledger row of the current bar, marked at its close. `record_row` adds
-    /// what the bar cost.
+    /// The ledger row of the current bar, the account marked at the closes.
+    /// `record_row` adds what the bar cost.
     fn ledger_row(&self) -> LedgerRow {
-        let bar = self.candles.get(self.tick).expect("tick in range");
-        let mark = Price(bar.close);
-        let position = self.account.position.qty.get();
-        let equity = self.account.equity(mark);
-        let net = position * bar.close;
+        let equity = self.account.equity(&self.marks);
+        let (mut gross, mut net, mut used, mut kept) = (0.0, 0.0, 0.0, 0.0);
+        for (i, position) in self.account.positions.iter().enumerate() {
+            let qty = position.qty.get();
+            if qty == 0.0 {
+                continue;
+            }
+            let mark = self.marks[i];
+            gross += (qty * mark).abs();
+            net += qty * mark;
+            used += self.requirement(i, mark);
+            kept += self.maintenance(i, mark);
+        }
         let alive = equity > 0.0;
         LedgerRow {
             tick: self.tick,
             equity,
             spot_cash: self.account.spot_cash,
             margin_cash: self.account.margin_cash,
-            gross_exposure: net.abs(),
+            gross_exposure: gross,
             net_exposure: net,
-            leverage: if alive { net.abs() / equity } else { 0.0 },
-            margin_used: self.requirement(bar.close),
-            maintenance: self.maintenance(bar.close),
+            leverage: if alive { gross / equity } else { 0.0 },
+            margin_used: used,
+            maintenance: kept,
             costs: BarCosts::default(),
-            position,
-            entry: self.account.position.avg_entry.get(),
-            mark: bar.close,
-            notional: net.abs(),
-            unrealized: self.account.unrealized(mark),
-            weight: if alive { net / equity } else { 0.0 },
         }
     }
 
+    /// The state the one-instrument surface reads: the account, and the first
+    /// instrument's position and bar.
     fn state(&self) -> State {
-        let bar = self.candles.get(self.tick).expect("tick in range");
-        let mark = Price(bar.close);
-        let position = self.account.position.qty.get();
+        let bar = self.candles.bar(self.tick, 0);
+        let mark = Price(self.marks[0]);
+        let position = self.account.positions[0].qty.get();
         State {
             tick_index: self.tick,
-            base: if self.config.market == Market::Spot {
+            base: if self.account.markets[0] == Market::Spot {
                 position
             } else {
                 0.0
@@ -467,29 +672,38 @@ impl Engine {
             spot_cash: self.account.spot_cash,
             margin_cash: self.account.margin_cash,
             position,
-            avg_entry: self.account.position.avg_entry.get(),
-            equity: self.account.equity(mark),
-            mark_price: bar.close,
+            avg_entry: self.account.positions[0].avg_entry.get(),
+            equity: self.account.equity(&self.marks),
+            mark_price: mark.get(),
             bar_open: bar.open,
             bar_high: bar.high,
             bar_low: bar.low,
             bar_close: bar.close,
             bar_volume: bar.volume,
             realized_pnl: self.account.realized(),
-            unrealized_pnl: self.account.unrealized(mark),
+            unrealized_pnl: if position == 0.0 {
+                0.0
+            } else {
+                self.account.unrealized(0, mark)
+            },
             funding_paid: self.funding_paid,
-            open_orders: self.book.iter().copied().collect(),
+            open_orders: if self.book.is_empty() {
+                Vec::new()
+            } else {
+                self.book.iter().copied().collect()
+            },
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{cfg, ohlc, perp_cfg, report_cfg, series};
+    use super::fixtures::{cfg, ohlc, perp_cfg, report_cfg, series, universe, ABSENT};
     use super::{Engine, EngineConfig};
-    use crate::candles::Candles;
+    use crate::candles::{printed, Candles, Instrument};
     use crate::clock::Clock;
-    use probatum_core::{Candle, Market, Side, State};
+    use probatum_core::TimeInForce::Ioc;
+    use probatum_core::{Candle, Market, OrderType, Side, State, Tiers};
     use proptest::prelude::*;
 
     #[test]
@@ -694,6 +908,80 @@ mod tests {
     }
 
     #[test]
+    fn an_instrument_nobody_trades_leaves_the_run_of_the_one_traded_as_it_was() {
+        // a second instrument printing every row and never traded changes nothing
+        // the first records, on either market
+        let other = ohlc(10.0, 11.0, 9.0, 10.0, 1e6);
+        let rows: Vec<_> = series()
+            .as_slice()
+            .iter()
+            .map(|&bar| vec![bar, other])
+            .collect();
+        for market in [Market::Spot, Market::Perp] {
+            let config = EngineConfig {
+                market,
+                report: true,
+                ..cfg()
+            };
+            let pair = universe(&[market, market], rows.clone());
+            let mut runs = [Engine::new(series(), config), Engine::new(pair, config)];
+            for e in &mut runs {
+                e.reset();
+                e.market_buy(2.0);
+                e.limit_sell(1.0, 255.0);
+                e.step();
+                e.close();
+                e.step();
+            }
+            let [alone, pair] = &runs;
+            let (a, b) = (alone.reporter().unwrap(), pair.reporter().unwrap());
+            assert_eq!(a.fills(), b.fills(), "{market:?}");
+            assert_eq!(a.events(), b.events(), "{market:?}");
+            assert_eq!(alone.round_trips(), pair.round_trips(), "{market:?}");
+            assert_eq!(a.ledger(), b.ledger(), "{market:?}");
+            let firsts: Vec<_> = b.legs().iter().step_by(2).copied().collect();
+            assert_eq!(a.legs(), firsts.as_slice(), "{market:?}");
+        }
+    }
+
+    #[test]
+    fn an_instrument_keeps_its_last_mark_through_a_row_it_printed_no_bar_on() {
+        // the second instrument prints no bar on the third row: the long it bought at
+        // 11 keeps that mark through the row, and a buy decided before it waits for
+        // the fourth row's open of 12
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), flat(11.0)],
+            vec![flat(100.0), ABSENT],
+            vec![flat(100.0), flat(12.0)],
+        ];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        let buy = |e: &mut Engine, size| {
+            e.order_on(
+                1,
+                Side::Buy,
+                size,
+                OrderType::Market,
+                None,
+                None,
+                false,
+                false,
+                Ioc,
+            )
+        };
+        e.reset();
+        buy(&mut e, 10.0);
+        e.step();
+        buy(&mut e, 5.0);
+        assert_eq!(e.step().equity, 10_000.0);
+        let legs = e.reporter().expect("reporting is on").legs();
+        assert_eq!((legs[5].position, legs[5].mark), (10.0, 11.0));
+        let last = e.step();
+        assert_eq!((last.spot_cash, last.equity), (9_830.0, 10_010.0));
+    }
+
+    #[test]
     fn a_perp_marks_equity_at_the_close_on_an_open_position() {
         // the only numeric equity assertions were on spot, so a perp marked with the
         // spot formula would have gone unnoticed
@@ -740,6 +1028,37 @@ mod tests {
         acts: usize,
     ) -> impl Strategy<Value = (Vec<Candle>, Vec<f64>)> {
         (walk(bars), prop::collection::vec(-3.0f64..3.0, acts))
+    }
+
+    /// A universe of up to fifty instruments, each spot or a perp on its own walk and
+    /// printing no bar on about one row in seven, and actions that each name an
+    /// instrument and a signed weight.
+    fn universe_and_actions(
+        rows: usize,
+        acts: usize,
+    ) -> impl Strategy<Value = (Vec<Market>, Vec<Candle>, Vec<(usize, f64)>)> {
+        (1usize..=50)
+            .prop_flat_map(move |n| {
+                (
+                    prop::collection::vec(any::<bool>(), n),
+                    prop::collection::vec(walk(rows), n),
+                    prop::collection::vec(prop::collection::vec(0.0f64..1.0, rows), n),
+                    prop::collection::vec((0..n, -3.0f64..3.0), acts),
+                )
+            })
+            .prop_map(move |(perps, walks, holes, actions)| {
+                let markets = perps
+                    .iter()
+                    .map(|&perp| if perp { Market::Perp } else { Market::Spot })
+                    .collect();
+                let mut bars = Vec::with_capacity(rows * walks.len());
+                for t in 0..rows {
+                    for (walk, holes) in walks.iter().zip(&holes) {
+                        bars.push(if holes[t] < 0.15 { ABSENT } else { walk[t] });
+                    }
+                }
+                (markets, bars, actions)
+            })
     }
 
     /// A perp with every cost switched on and reporting, so nothing is left out of
@@ -933,6 +1252,87 @@ mod tests {
                 );
             }
             prop_assert!(s.max_drawdown_pct <= 100.0 + 1e-9);
+        }
+
+        #[test]
+        fn no_wallet_owes_money_and_every_row_balances_across_a_universe(
+            (markets, bars, actions) in universe_and_actions(20, 20),
+        ) {
+            // the account across many instruments, every cost on and holes in the
+            // bars: no wallet ends a bar owing money, and each bar's change in equity
+            // is its price PnL less what it cost, from the fills' references and
+            // each instrument's marks
+            let width = markets.len();
+            let specs = markets
+                .iter()
+                .map(|&market| Instrument { market: Some(market), tiers: Tiers::default() })
+                .collect();
+            let config = EngineConfig {
+                quote: 5_000.0,
+                idle_cash: 5_000.0,
+                ..every_cost()
+            };
+            let universe = Candles::universe(bars.clone(), width, None).with_instruments(specs);
+            let mut e = Engine::new(universe, config);
+            e.reset();
+            let mut last = vec![f64::NAN; width];
+            for &(i, action) in &actions {
+                for (j, bar) in bars[e.tick() * width..][..width].iter().enumerate() {
+                    if printed(bar) {
+                        last[j] = bar.close;
+                    }
+                }
+                if last[i].is_finite() {
+                    let size = action.abs() * 1_000.0 / last[i];
+                    let side = if action > 0.0 { Side::Buy } else { Side::Sell };
+                    e.order_on(i, side, size, OrderType::Market, None, None, false, false, Ioc);
+                    if action.abs() > 1.0 {
+                        let trigger = last[i] * if action > 0.0 { 0.9 } else { 1.1 };
+                        let exit = side.opposite();
+                        let stop = OrderType::Stop;
+                        e.order_on(i, exit, size, stop, None, Some(trigger), true, false, Ioc);
+                    }
+                }
+                e.step();
+                if e.done() {
+                    break;
+                }
+            }
+            let reporter = e.reporter().expect("reporting is on");
+            let (rows, legs) = (reporter.ledger(), reporter.legs());
+            for t in 0..rows.len() {
+                let (row, leg) = (rows[t], &legs[t * width..][..width]);
+                let held = |j: usize| leg[j].position != 0.0;
+                let margin = row.margin_cash
+                    + (0..width)
+                        .filter(|&j| markets[j] == Market::Perp && held(j))
+                        .map(|j| leg[j].unrealized)
+                        .sum::<f64>();
+                let scale = row.equity.abs().max(row.gross_exposure).max(1.0);
+                prop_assert!(margin >= -1e-9 * scale, "row {t}: margin equity {margin}");
+                prop_assert!(row.spot_cash >= -1e-9 * scale, "row {t}: spot {}", row.spot_cash);
+                if t == 0 {
+                    continue;
+                }
+                let (was, before) = (rows[t - 1], &legs[(t - 1) * width..][..width]);
+                let mut pnl = 0.0;
+                for j in (0..width).filter(|&j| before[j].position != 0.0) {
+                    pnl += before[j].position * (leg[j].mark - before[j].mark);
+                }
+                for fill in reporter.fills().iter().filter(|fill| fill.tick == t) {
+                    let mark = leg[fill.instrument].mark;
+                    pnl += fill.side.sign() * fill.size * (mark - fill.costs.reference);
+                }
+                let c = row.costs;
+                let costs = c.fees + c.funding + c.spread + c.slippage + c.impact;
+                let costs = costs + c.liquidation + c.dust;
+                let change = row.equity - was.equity;
+                let scale = scale.max(was.equity.abs()).max(was.gross_exposure);
+                prop_assert!(
+                    (change - (pnl - costs)).abs() <= 1e-9 * scale,
+                    "row {}: equity moved {}, price PnL {} less costs {}", t, change, pnl, costs
+                );
+            }
         }
     }
 }

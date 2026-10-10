@@ -1,11 +1,14 @@
-//! Resolving orders against a bar: the queued market orders at its open, then
-//! the resting book in slot order, with the exits a wide bar reaches ordered
-//! worst first (ADR 0012). An all-or-nothing order is judged against every
-//! clamp, and IOC and FOK limits expire after their one bar (ADR 0010).
+//! Resolving orders against a bar: the queued market orders at their instruments'
+//! opens, then the resting book in slot order, with the exits a wide bar reaches
+//! ordered worst first among one instrument's (ADR 0012). An all-or-nothing order
+//! is judged against every clamp, and IOC and FOK limits expire after their one
+//! bar (ADR 0010). An order on an instrument that printed no bar waits for its
+//! next.
 
 use probatum_core::{Candle, Fill, OrderId, OrderType, Qty, Side, TimeInForce};
 
 use super::{Engine, CLOSE_EPS};
+use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason};
 
@@ -21,18 +24,43 @@ fn adversity(position: f64, entry: f64, fill: &Fill) -> f64 {
     (fill.price.get() - entry) * position.signum()
 }
 
+/// A resting order a bar reaches: its id and instrument, the fill the model offers
+/// and its costs, its type, `reduce_only` and time in force, and what it still asks.
+type Offer = (
+    OrderId,
+    usize,
+    Fill,
+    OrderType,
+    bool,
+    TimeInForce,
+    f64,
+    FillCosts,
+);
+
 impl Engine {
-    /// Fill the market orders queued since the last step at `bar`'s open, in the
-    /// order they were placed. One that cannot fill on this bar is dropped rather
-    /// than carried to the next.
-    pub(super) fn resolve_pending(&mut self, bar: &Candle) {
-        let pending = std::mem::take(&mut self.pending);
-        for order in pending {
+    /// Fill the market orders queued since the last step at their instruments'
+    /// opens, the fence's instrument at its clipped bar, in the order they were
+    /// placed. One that cannot fill on this bar is dropped rather than carried to
+    /// the next, and one whose instrument printed no bar waits for its next.
+    pub(super) fn resolve_pending(&mut self, clip: Option<(usize, Candle)>) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let spare = std::mem::take(&mut self.spare);
+        let mut pending = std::mem::replace(&mut self.pending, spare);
+        for order in pending.drain(..) {
+            let i = order.instrument;
+            let bar = self.bar_for(i, clip);
+            if !printed(&bar) {
+                self.pending.push(order);
+                continue;
+            }
             let requested = order.remaining().get();
-            let Some((fill, costs)) = self.fill_model.fill_market(&order, bar) else {
+            let Some((fill, costs)) = self.fill_model.fill_market(&order, &bar) else {
                 self.log_event(
                     EventKind::NotFilled,
                     Some(order.id),
+                    Some(i),
                     None,
                     None,
                     EventReason::NothingFilled,
@@ -44,11 +72,12 @@ impl Engine {
             // are applied to a copy first, so an order that could only fill in
             // part books nothing at all (ADR 0010).
             if order.tif == TimeInForce::Fok
-                && self.clamp_fill(order.reduce_only, &fill).size.get() + CLOSE_EPS < requested
+                && self.clamp_fill(i, order.reduce_only, &fill).size.get() + CLOSE_EPS < requested
             {
                 self.log_event(
                     EventKind::NotFilled,
                     Some(order.id),
+                    Some(i),
                     None,
                     None,
                     EventReason::Fok,
@@ -56,6 +85,7 @@ impl Engine {
                 continue;
             }
             let applied = self.apply_fill_clamped(
+                i,
                 order.id,
                 FillReason::Market,
                 order.reduce_only,
@@ -68,6 +98,7 @@ impl Engine {
                 self.log_event(
                     EventKind::NotFilled,
                     Some(order.id),
+                    Some(i),
                     None,
                     None,
                     EventReason::NothingFilled,
@@ -76,32 +107,42 @@ impl Engine {
                 self.log_event(
                     EventKind::Expired,
                     Some(order.id),
+                    Some(i),
                     None,
                     None,
                     EventReason::MarketBar,
                 );
             }
         }
+        self.spare = pending;
     }
 
-    /// Resolve the resting book against `bar`, in slot order.
+    /// Resolve the resting book against each order's instrument's bar, the fence's
+    /// instrument at its clipped bar, in slot order.
     ///
     /// A stop is consumed only when it produces a fill. On a bar that trades no
     /// volume the trigger may be crossed and nothing can fill, and treating that as
     /// a trigger would delete a stop-loss precisely on the illiquid data where it
     /// matters; it stays armed for the next bar that can trade instead (ADR 0010).
-    pub(super) fn resolve_resting(&mut self, bar: &Candle) {
-        let mut fills: Vec<(OrderId, Fill, OrderType, bool, TimeInForce, f64, FillCosts)> =
-            Vec::new();
+    pub(super) fn resolve_resting(&mut self, clip: Option<(usize, Candle)>) {
+        if self.book.is_empty() {
+            return;
+        }
+        let mut fills: Vec<Offer> = Vec::new();
         for order in self.book.iter() {
+            let bar = self.bar_for(order.instrument, clip);
+            if !printed(&bar) {
+                continue;
+            }
             let fill = match order.kind {
-                OrderType::Limit => self.fill_model.fill_limit(order, bar),
-                OrderType::Stop => self.fill_model.fill_stop(order, bar),
+                OrderType::Limit => self.fill_model.fill_limit(order, &bar),
+                OrderType::Stop => self.fill_model.fill_stop(order, &bar),
                 OrderType::Market => None,
             };
             if let Some((fill, costs)) = fill {
                 fills.push((
                     order.id,
+                    order.instrument,
                     fill,
                     order.kind,
                     order.reduce_only,
@@ -120,10 +161,18 @@ impl Engine {
         // instead, worst first, which does not depend on how the strategy was
         // typed and is the same pessimism the rest of the engine already applies
         // (ADR 0012). The sort is stable, so anything that is not an exit keeps
-        // its slot order.
-        let position = self.account.position.qty.get();
-        if fills.len() > 1 && position != 0.0 {
-            let entry = self.account.position.avg_entry.get();
+        // its slot order, and the exits of different instruments, which close
+        // different positions, are never ordered against each other.
+        for first in 0..fills.len() {
+            let i = fills[first].1;
+            if fills.len() < 2 || fills[..first].iter().any(|fill| fill.1 == i) {
+                continue;
+            }
+            let position = self.account.positions[i].qty.get();
+            if position == 0.0 {
+                continue;
+            }
+            let entry = self.account.positions[i].avg_entry.get();
             // The exits are reordered among the slots the exits already hold, and
             // everything else stays exactly where it was. Sorting the whole list
             // instead moved every non-exit behind every exit, which is a different
@@ -132,29 +181,29 @@ impl Engine {
             // come after it, so the account ended a wide bar richer than slot order
             // (ADR 0011) would have left it, which is the optimism ADR 0012 exists
             // to remove rather than relocate (ADR 0012)
-            let slots: Vec<usize> = (0..fills.len())
-                .filter(|&i| adversity(position, entry, &fills[i].1).is_finite())
+            let slots: Vec<usize> = (first..fills.len())
+                .filter(|&k| fills[k].1 == i && adversity(position, entry, &fills[k].2).is_finite())
                 .collect();
             let mut ordered: Vec<usize> = slots.clone();
             ordered.sort_by(|&a, &b| {
-                adversity(position, entry, &fills[a].1)
-                    .partial_cmp(&adversity(position, entry, &fills[b].1))
+                adversity(position, entry, &fills[a].2)
+                    .partial_cmp(&adversity(position, entry, &fills[b].2))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            let exits: Vec<_> = ordered.iter().map(|&i| fills[i]).collect();
+            let exits: Vec<_> = ordered.iter().map(|&k| fills[k]).collect();
             for (slot, exit) in slots.iter().zip(exits) {
                 fills[*slot] = exit;
             }
         }
 
-        for (id, fill, kind, reduce_only, tif, requested, costs) in fills {
+        for (id, i, fill, kind, reduce_only, tif, requested, costs) in fills {
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the snapshot the loop above saw. The
             // sweep below then cancels it unfilled (ADR 0010).
             if kind == OrderType::Limit
                 && tif == TimeInForce::Fok
-                && self.clamp_fill(reduce_only, &fill).size.get() + CLOSE_EPS < requested
+                && self.clamp_fill(i, reduce_only, &fill).size.get() + CLOSE_EPS < requested
             {
                 continue;
             }
@@ -163,7 +212,8 @@ impl Engine {
             } else {
                 FillReason::Limit
             };
-            let applied = self.apply_fill_clamped(id, reason, reduce_only, requested, fill, costs);
+            let applied =
+                self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs);
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
                 // ADR 0010 says and what it used to say only for a bar with no
@@ -202,20 +252,24 @@ impl Engine {
             }
         }
 
-        // IOC and FOK limits get one bar of exposure, then expire whether or not
-        // they filled: they never rest for a later bar (ADR 0010).
-        let expiring: Vec<(OrderId, TimeInForce)> = self
+        // IOC and FOK limits get one bar of exposure, the first their instrument
+        // prints, then expire whether or not they filled: they never rest for a
+        // later bar (ADR 0010).
+        let expiring: Vec<(OrderId, usize, TimeInForce)> = self
             .book
             .iter()
             .filter(|o| {
-                o.kind == OrderType::Limit && matches!(o.tif, TimeInForce::Ioc | TimeInForce::Fok)
+                o.kind == OrderType::Limit
+                    && matches!(o.tif, TimeInForce::Ioc | TimeInForce::Fok)
+                    && printed(&self.candles.bar(self.tick, o.instrument))
             })
-            .map(|o| (o.id, o.tif))
+            .map(|o| (o.id, o.instrument, o.tif))
             .collect();
-        for (id, tif) in expiring {
+        for (id, instrument, tif) in expiring {
             self.log_event(
                 EventKind::Expired,
                 Some(id),
+                Some(instrument),
                 None,
                 None,
                 EventReason::OneBar(tif),
@@ -230,7 +284,7 @@ mod tests {
     use super::adversity;
     use crate::candles::Candles;
     use crate::engine::fixtures::{
-        cfg, crash_series, dip_series, ohlc, perp_cfg, report_cfg, series,
+        cfg, crash_series, dip_series, ohlc, perp_cfg, report_cfg, series, universe, ABSENT,
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::EventKind;
@@ -541,7 +595,7 @@ mod tests {
         ]);
         let mut e = Engine::new(candles, config);
         e.reset();
-        e.place_limit(Side::Buy, 500.0, 50.0, false, false, TimeInForce::Ioc);
+        e.place_limit(0, Side::Buy, 500.0, 50.0, false, false, TimeInForce::Ioc);
         let s = e.step(); // reaches 50, fills 100 (10% of 1000), cancels the other 400
         assert_eq!(s.position, 100.0);
         assert!(s.open_orders.is_empty()); // IOC: nothing rests
@@ -628,8 +682,8 @@ mod tests {
                 ]);
                 let mut e = Engine::new(candles, config);
                 e.reset();
-                e.place_limit(Side::Buy, 1.0, 100.0, false, false, TimeInForce::Gtc);
-                e.place_limit(Side::Sell, 1.0, 100.0, false, false, TimeInForce::Gtc);
+                e.place_limit(0, Side::Buy, 1.0, 100.0, false, false, TimeInForce::Gtc);
+                e.place_limit(0, Side::Sell, 1.0, 100.0, false, false, TimeInForce::Gtc);
                 let s = e.step();
                 assert!(s.position.abs() <= CLOSE_EPS, "{market:?} left a position");
                 assert!(
@@ -854,5 +908,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_ioc_limit_takes_the_first_bar_its_instrument_prints() {
+        // the second instrument prints nothing on the second row, so the ioc bid on
+        // it is still resting after that row and expires after the third
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), ABSENT],
+            vec![flat(100.0), flat(10.0)],
+        ];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        e.reset();
+        e.order_on(
+            1,
+            Side::Buy,
+            1.0,
+            OrderType::Limit,
+            Some(9.0),
+            None,
+            false,
+            false,
+            TimeInForce::Ioc,
+        );
+        assert_eq!(e.step().open_orders.len(), 1);
+        assert!(e.step().open_orders.is_empty());
+    }
+
+    #[test]
+    fn the_exits_of_two_instruments_are_never_ordered_against_each_other() {
+        // a wide bar reaches the second instrument's take-profit, in the first slot,
+        // and the first instrument's stop, in the second: they close different
+        // positions, so they fill in slot order however badly each ends
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), flat(10.0)],
+            vec![
+                ohlc(100.0, 120.0, 80.0, 100.0, 1e6),
+                ohlc(10.0, 12.0, 8.0, 10.0, 1e6),
+            ],
+        ];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        let place = |e: &mut Engine, i, side, size, kind, price, trigger| {
+            e.order_on(
+                i,
+                side,
+                size,
+                kind,
+                price,
+                trigger,
+                false,
+                false,
+                TimeInForce::Gtc,
+            )
+        };
+        e.reset();
+        place(&mut e, 0, Side::Buy, 1.0, OrderType::Market, None, None);
+        place(&mut e, 1, Side::Buy, 10.0, OrderType::Market, None, None);
+        e.step();
+        place(
+            &mut e,
+            1,
+            Side::Sell,
+            10.0,
+            OrderType::Limit,
+            Some(11.0),
+            None,
+        );
+        place(
+            &mut e,
+            0,
+            Side::Sell,
+            1.0,
+            OrderType::Stop,
+            None,
+            Some(90.0),
+        );
+        e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        let order: Vec<(usize, f64)> = fills.iter().map(|f| (f.instrument, f.price)).collect();
+        assert_eq!(order, vec![(0, 100.0), (1, 10.0), (1, 11.0), (0, 90.0)]);
     }
 }

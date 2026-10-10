@@ -35,6 +35,8 @@ impl FillReason {
 pub struct FillRecord {
     /// The bar the fill landed on.
     pub tick: usize,
+    /// The instrument it traded.
+    pub instrument: usize,
     /// The order that filled, or `None` for a forced close.
     pub order: Option<OrderId>,
     pub side: Side,
@@ -92,6 +94,8 @@ pub enum Refusal {
     Trigger(f64),
     /// A post_only limit that would take liquidity at the last close.
     PostOnly,
+    /// An order on an instrument that has not printed its first bar.
+    Unlisted,
 }
 
 /// Why an event happened, with the numbers its text quotes (ADR 0022).
@@ -134,6 +138,8 @@ pub struct OrderEvent {
     pub kind: EventKind,
     /// The order, or `None` for a transfer's clamp.
     pub order: Option<OrderId>,
+    /// Its order's instrument, or `None` for a transfer's clamp.
+    pub instrument: Option<usize>,
     /// The size a fill or a clamp came to.
     pub size: Option<f64>,
     /// The price a fill was booked at.
@@ -147,6 +153,8 @@ pub struct OrderEvent {
 /// count of them counts decisions rather than fills (ADR 0023).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoundTrip {
+    /// The instrument it traded.
+    pub instrument: usize,
     /// `Buy` for a long, `Sell` for a short.
     pub side: Side,
     /// The largest position it reached.
@@ -189,9 +197,18 @@ pub struct RoundTrip {
 }
 
 impl RoundTrip {
-    /// A round trip opened on bar `tick` by `size` at `price`, paying `fee`.
-    pub fn open(side: Side, tick: usize, size: f64, price: f64, fee: f64) -> RoundTrip {
+    /// A round trip on `instrument` opened on bar `tick` by `size` at `price`,
+    /// paying `fee`.
+    pub fn open(
+        instrument: usize,
+        side: Side,
+        tick: usize,
+        size: f64,
+        price: f64,
+        fee: f64,
+    ) -> RoundTrip {
         let mut trip = RoundTrip {
+            instrument,
             side,
             size,
             entry: price,
@@ -295,24 +312,30 @@ pub struct BarCosts {
     pub dust: f64,
 }
 
-/// One row of the ledger: the account and its position marked at a bar's close,
-/// and what that bar cost (ADR 0022).
+/// One row of the ledger: the account marked at a bar's close, and what that bar
+/// cost (ADR 0022).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LedgerRow {
     pub tick: usize,
     pub equity: f64,
     pub spot_cash: f64,
     pub margin_cash: f64,
-    /// The position's notional at the close, unsigned and signed.
+    /// The positions' notional at the close, unsigned and signed.
     pub gross_exposure: f64,
     pub net_exposure: f64,
     /// Gross exposure over equity, zero once equity is gone.
     pub leverage: f64,
-    /// What the margin cap asks of the position at the close.
+    /// What the margin cap asks of the positions at the close.
     pub margin_used: f64,
-    /// The maintenance requirement its tier table sets, zero without one.
+    /// The maintenance requirement their tier tables set, zero without one.
     pub maintenance: f64,
     pub costs: BarCosts,
+}
+
+/// One instrument's line of a ledger row, marked at its close, or at its last mark
+/// on a row it printed no bar on.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Leg {
     pub position: f64,
     pub entry: f64,
     pub mark: f64,
@@ -328,10 +351,14 @@ pub struct LedgerRow {
 pub struct Reporter {
     equity_curve: Vec<f64>,
     trades: Vec<RoundTrip>,
-    open: Option<RoundTrip>,
+    /// Each instrument's round trip still open, grown to the highest instrument
+    /// that opened one.
+    open: Vec<Option<RoundTrip>>,
     fills: Vec<FillRecord>,
     events: Vec<OrderEvent>,
     ledger: Vec<LedgerRow>,
+    /// Each row's legs, one per instrument, row by row.
+    legs: Vec<Leg>,
     /// What the bar being stepped has cost so far.
     costs: BarCosts,
     /// Steps recorded while holding a nonzero position, for the exposure stat.
@@ -365,19 +392,28 @@ impl Reporter {
         self.ledger.push(row);
     }
 
-    /// The round trip still open, to grow, shrink or charge.
-    pub fn trip_mut(&mut self) -> Option<&mut RoundTrip> {
-        self.open.as_mut()
+    /// Append one instrument's leg of the row just recorded.
+    pub fn record_leg(&mut self, leg: Leg) {
+        self.legs.push(leg);
     }
 
-    /// Begin `trip`, the position having left zero.
+    /// Instrument `i`'s round trip still open, to grow, shrink or charge.
+    pub fn trip_mut(&mut self, i: usize) -> Option<&mut RoundTrip> {
+        self.open.get_mut(i).and_then(Option::as_mut)
+    }
+
+    /// Begin `trip`, its instrument's position having left zero.
     pub fn open_trip(&mut self, trip: RoundTrip) {
-        self.open = Some(trip);
+        let i = trip.instrument;
+        if self.open.len() <= i {
+            self.open.resize(i + 1, None);
+        }
+        self.open[i] = Some(trip);
     }
 
-    /// End the open round trip on bar `tick`, for `reason`.
-    pub fn close_trip(&mut self, tick: usize, reason: FillReason) {
-        if let Some(mut trip) = self.open.take() {
+    /// End instrument `i`'s open round trip on bar `tick`, for `reason`.
+    pub fn close_trip(&mut self, i: usize, tick: usize, reason: FillReason) {
+        if let Some(mut trip) = self.open.get_mut(i).and_then(Option::take) {
             trip.finish(tick, reason);
             self.trades.push(trip);
         }
@@ -406,15 +442,20 @@ impl Reporter {
         &self.trades
     }
 
-    /// The round trip still open, unmarked.
-    pub fn open_trade(&self) -> Option<&RoundTrip> {
-        self.open.as_ref()
+    /// The round trips still open, unmarked, in instrument order.
+    pub fn open_trades(&self) -> impl Iterator<Item = &RoundTrip> {
+        self.open.iter().flatten()
     }
 
     /// One row per bar from the opening balance on, so no curve is one shorter than
     /// the data (ADR 0022).
     pub fn ledger(&self) -> &[LedgerRow] {
         &self.ledger
+    }
+
+    /// Every row's legs, one per instrument, row by row.
+    pub fn legs(&self) -> &[Leg] {
+        &self.legs
     }
 
     /// Every fill in the order it landed, forced closes included (ADR 0022).
@@ -439,7 +480,7 @@ impl Reporter {
     pub fn is_empty(&self) -> bool {
         self.equity_curve.is_empty()
             && self.trades.is_empty()
-            && self.open.is_none()
+            && self.open.iter().all(Option::is_none)
             && self.fills.is_empty()
             && self.events.is_empty()
     }
@@ -485,25 +526,25 @@ mod tests {
     #[test]
     fn a_round_trip_is_a_trade_only_once_it_closes() {
         let mut r = Reporter::new();
-        r.open_trip(RoundTrip::open(Side::Buy, 1, 2.0, 100.0, 0.1));
+        r.open_trip(RoundTrip::open(0, Side::Buy, 1, 2.0, 100.0, 0.1));
         assert!(r.trades().is_empty());
-        assert_eq!(r.open_trade().map(|t| t.size), Some(2.0));
-        if let Some(trip) = r.trip_mut() {
+        assert_eq!(r.open_trades().next().map(|t| t.size), Some(2.0));
+        if let Some(trip) = r.trip_mut(0) {
             trip.shrink(2.0, 110.0, 0.1, 20.0);
         }
-        r.close_trip(5, FillReason::Market);
+        r.close_trip(0, 5, FillReason::Market);
         let [trip] = r.trades() else {
             panic!("one round trip");
         };
         assert!((trip.pnl - 19.8).abs() < 1e-12);
         assert!((trip.ret - 19.8 / 200.0).abs() < 1e-12);
         assert_eq!(trip.close_tick, Some(5));
-        assert!(r.open_trade().is_none());
+        assert!(r.open_trades().next().is_none());
     }
 
     #[test]
     fn its_entry_and_exit_are_the_averages_of_its_fills() {
-        let mut trip = RoundTrip::open(Side::Sell, 0, 1.0, 100.0, 0.0);
+        let mut trip = RoundTrip::open(0, Side::Sell, 0, 1.0, 100.0, 0.0);
         trip.grow(3.0, 120.0, 0.0);
         trip.shrink(2.0, 90.0, 0.0, 0.0);
         trip.shrink(2.0, 80.0, 0.0, 0.0);
@@ -554,7 +595,7 @@ mod tests {
     #[test]
     fn its_entry_and_exit_weigh_each_fill_by_its_size() {
         // 2 at 100 and 3 at 200 enter at 160; 1 at 150 and 4 at 200 leave at 190
-        let mut trip = RoundTrip::open(Side::Buy, 0, 2.0, 100.0, 0.0);
+        let mut trip = RoundTrip::open(0, Side::Buy, 0, 2.0, 100.0, 0.0);
         trip.grow(3.0, 200.0, 0.0);
         trip.shrink(1.0, 150.0, 0.0, 0.0);
         trip.shrink(4.0, 200.0, 0.0, 0.0);
@@ -577,7 +618,7 @@ mod tests {
         marked.record_equity(1000.0, false);
         assert!(!marked.is_empty());
         let mut tripped = Reporter::new();
-        tripped.open_trip(RoundTrip::open(Side::Buy, 1, 1.0, 100.0, 0.0));
+        tripped.open_trip(RoundTrip::open(0, Side::Buy, 1, 1.0, 100.0, 0.0));
         assert_eq!(tripped.len(), 0);
         assert!(!tripped.is_empty());
     }

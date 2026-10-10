@@ -1,9 +1,9 @@
 //! The bars and configurations the engine's tests share.
 
-use probatum_core::{Candle, Market};
+use probatum_core::{Candle, Market, Tiers};
 
 use super::EngineConfig;
-use crate::candles::Candles;
+use crate::candles::{Candles, Instrument};
 
 pub(super) fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
     Candle {
@@ -90,4 +90,27 @@ pub(super) fn flat_series() -> Candles {
             .map(|_| ohlc(100.0, 100.0, 100.0, 100.0, 1e6))
             .collect::<Vec<_>>(),
     )
+}
+
+/// What a row holds for an instrument that printed no bar on it.
+pub(super) const ABSENT: Candle = Candle {
+    open: f64::NAN,
+    high: f64::NAN,
+    low: f64::NAN,
+    close: f64::NAN,
+    volume: f64::NAN,
+};
+
+/// A universe of instruments trading on `markets`, each row of `rows` a bar per
+/// instrument, with no tier tables.
+pub(super) fn universe(markets: &[Market], rows: Vec<Vec<Candle>>) -> Candles {
+    let bars: Vec<Candle> = rows.into_iter().flatten().collect();
+    let specs = markets
+        .iter()
+        .map(|&market| Instrument {
+            market: Some(market),
+            tiers: Tiers::default(),
+        })
+        .collect();
+    Candles::universe(bars, markets.len(), None).with_instruments(specs)
 }

@@ -1,8 +1,9 @@
-//! Placing, moving and cancelling orders. A market order is queued for the next
-//! bar's open and a limit or a stop rests in the book until a bar reaches it,
-//! and `resolution` fills both. A size, price or trigger that could never fill is
-//! refused here rather than given a slot, and the order log says why (ADRs 0007,
-//! 0010, 0022).
+//! Placing, moving and cancelling orders. A market order is queued for its
+//! instrument's next open and a limit or a stop rests in the book until a bar
+//! reaches it, and `resolution` fills both. A size, price or trigger that could
+//! never fill is refused here rather than given a slot, and so is an order on an
+//! instrument that has not printed its first bar, and the order log says why (ADRs
+//! 0007, 0010, 0022).
 
 use probatum_core::{Order, OrderId, OrderType, Price, Qty, Side, TimeInForce};
 
@@ -21,6 +22,7 @@ impl Engine {
         &mut self,
         kind: EventKind,
         order: Option<OrderId>,
+        instrument: Option<usize>,
         size: Option<f64>,
         price: Option<f64>,
         reason: EventReason,
@@ -30,6 +32,7 @@ impl Engine {
                 tick: self.tick,
                 kind,
                 order,
+                instrument,
                 size,
                 price,
                 reason,
@@ -37,11 +40,13 @@ impl Engine {
         }
     }
 
-    /// Log `id` refused for `why`, and answer the placement with nothing.
-    fn refuse(&mut self, id: OrderId, why: Refusal) -> Option<OrderId> {
+    /// Log `id` on `instrument` refused for `why`, and answer the placement with
+    /// nothing.
+    fn refuse(&mut self, id: OrderId, instrument: usize, why: Refusal) -> Option<OrderId> {
         self.log_event(
             EventKind::Refused,
             Some(id),
+            Some(instrument),
             None,
             None,
             EventReason::Refused(why),
@@ -51,6 +56,7 @@ impl Engine {
 
     pub(super) fn place_market(
         &mut self,
+        instrument: usize,
         side: Side,
         size: f64,
         reduce_only: bool,
@@ -59,35 +65,61 @@ impl Engine {
         // Every placement takes an id, a refused one included, so the order log can
         // name what it refused (ADR 0010).
         let id = self.next_id();
+        // an instrument enters at its first bar, and before it there is no price to
+        // fill or check an order against
+        if self.marks[instrument].is_nan() {
+            return self.refuse(id, instrument, Refusal::Unlisted);
+        }
         // The same guard the resting book has carried since ADR 0007, extended to
         // the queue on the day ADR 0010 made the queue a bounded resource too. A
         // size that can never fill used to take a slot anyway, so two of them ahead
         // of a real order refused it: `qty_from_weight` returns exactly zero on a
         // flat mark, which is how a strategy places one without meaning to.
         if !size.is_finite() || size <= 0.0 {
-            return self.refuse(id, Refusal::Size(size));
+            return self.refuse(id, instrument, Refusal::Size(size));
         }
-        // The queue holds the same number of orders the resting book does. It was
-        // unbounded, and since the volume cap is per order (ADR 0013), one order
-        // split into a hundred took a hundred times the cap against a single bar,
-        // every slice priced as though it were the only participant. Bounding it
-        // does not make the cap honest, it makes the evasion finite; a liquidity
-        // budget shared across a bar is the real answer (ADR 0010)
-        if self.pending.len() >= self.config.max_open_orders {
-            return self.refuse(id, Refusal::Waiting(self.config.max_open_orders));
+        // The queue holds the same number of orders the resting book does, for each
+        // instrument. It was unbounded, and since the volume cap is per order (ADR
+        // 0013), one order split into a hundred took a hundred times the cap against
+        // a single bar, every slice priced as though it were the only participant.
+        // Bounding it does not make the cap honest, it makes the evasion finite; a
+        // liquidity budget shared across a bar is the real answer (ADR 0010)
+        let waiting = self
+            .pending
+            .iter()
+            .filter(|order| order.instrument == instrument)
+            .count();
+        if waiting >= self.config.max_open_orders {
+            return self.refuse(
+                id,
+                instrument,
+                Refusal::Waiting(self.config.max_open_orders),
+            );
         }
-        let mut order = Order::market(id, side, Qty(size), reduce_only);
+        let mut order = Order::market(id, side, Qty(size), reduce_only).on(instrument);
         order.tif = tif;
         self.pending.push(order);
-        self.log_event(EventKind::Placed, Some(id), None, None, EventReason::Market);
+        self.log_event(
+            EventKind::Placed,
+            Some(id),
+            Some(instrument),
+            None,
+            None,
+            EventReason::Market,
+        );
         Some(id)
     }
 
-    /// Why a limit or a stop could not rest as `order`, or `None`: a size, price or
-    /// trigger that can never fill, a full book, or a post_only limit that would
-    /// cross. `replacing` is the order a replace moves, whose slot has just been given
-    /// up (ADRs 0007, 0010).
+    /// Why a limit or a stop could not rest as `order`, or `None`: an instrument
+    /// that has not printed its first bar, a size, price or trigger that can never
+    /// fill, a full share of the book, or a post_only limit that would cross.
+    /// `replacing` is the order a replace moves, whose slot has just been given up
+    /// (ADRs 0007, 0010).
     fn resting_refusal(&self, order: &Order, replacing: Option<&Order>) -> Option<Refusal> {
+        let last = self.marks[order.instrument];
+        if last.is_nan() {
+            return Some(Refusal::Unlisted);
+        }
         // A size that is not a positive finite number can never fill (ADR 0014), so
         // it is refused a slot rather than resting inert forever. A non-finite price
         // is refused for the same reason: every touch test against it compares with
@@ -107,16 +139,21 @@ impl Engine {
                 return Some(Refusal::Trigger(trigger));
             }
         }
-        if replacing.is_none() && self.book.is_full() {
+        let resting = self
+            .book
+            .iter()
+            .filter(|other| other.instrument == order.instrument)
+            .count();
+        if replacing.is_none() && resting >= self.config.max_open_orders {
             return Some(Refusal::Resting(self.config.max_open_orders));
         }
-        // Crossing is judged against the CURRENT close, the last price the strategy
-        // actually saw. The next bar's open is what this order would really cross,
-        // and reading it here would be the lookahead the engine refuses everywhere
-        // else
+        // Crossing is judged against the instrument's last close, the last price the
+        // strategy actually saw. The next bar's open is what this order would really
+        // cross, and reading it here would be the lookahead the engine refuses
+        // everywhere else
         let crosses = order.price.is_some_and(|price| {
             self.fill_model
-                .limit_crosses(order.side, price, Price(self.current_close()))
+                .limit_crosses(order.side, price, Price(last))
         });
         // post_only is a rule about how an order enters the book, so a replace that
         // leaves the price where it was is not checked again
@@ -130,15 +167,24 @@ impl Engine {
     /// Rest `order` in the first free slot, or log why it cannot rest.
     fn rest(&mut self, order: Order, reason: EventReason) -> Option<OrderId> {
         if let Some(why) = self.resting_refusal(&order, None) {
-            return self.refuse(order.id, why);
+            return self.refuse(order.id, order.instrument, why);
         }
         let id = self.book.place(order).ok()?;
-        self.log_event(EventKind::Placed, Some(id), None, None, reason);
+        self.log_event(
+            EventKind::Placed,
+            Some(id),
+            Some(order.instrument),
+            None,
+            None,
+            reason,
+        );
         Some(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn place_limit(
         &mut self,
+        instrument: usize,
         side: Side,
         size: f64,
         price: f64,
@@ -156,11 +202,12 @@ impl Engine {
             post_only,
             reduce_only,
         );
-        self.rest(order, EventReason::Limit)
+        self.rest(order.on(instrument), EventReason::Limit)
     }
 
     fn place_stop(
         &mut self,
+        instrument: usize,
         side: Side,
         size: f64,
         trigger: f64,
@@ -168,15 +215,15 @@ impl Engine {
     ) -> Option<OrderId> {
         let id = self.next_id();
         let order = Order::stop(id, side, Qty(size), Price(trigger), reduce_only);
-        self.rest(order, EventReason::Stop)
+        self.rest(order.on(instrument), EventReason::Stop)
     }
 
-    /// The one order primitive the typed shortcuts wrap. Dispatches on `kind`: a
-    /// market ignores `price` and `trigger`, a limit needs a `price`, a stop needs
-    /// a `trigger`. `tif` applies to market and limit orders; a stop rests until it
-    /// triggers (ADR 0010). `None` if the book is full, the size is not a positive
-    /// finite number, a post_only limit would cross, or a limit has no price or a
-    /// stop no trigger.
+    /// The one order primitive the typed shortcuts wrap, on the first instrument.
+    /// Dispatches on `kind`: a market ignores `price` and `trigger`, a limit needs a
+    /// `price`, a stop needs a `trigger`. `tif` applies to market and limit orders;
+    /// a stop rests until it triggers (ADR 0010). `None` if the book is full, the
+    /// size is not a positive finite number, a post_only limit would cross, or a
+    /// limit has no price or a stop no trigger.
     #[allow(clippy::too_many_arguments)]
     pub fn order(
         &mut self,
@@ -189,10 +236,40 @@ impl Engine {
         post_only: bool,
         tif: TimeInForce,
     ) -> Option<OrderId> {
+        self.order_on(
+            0,
+            side,
+            size,
+            kind,
+            price,
+            trigger,
+            reduce_only,
+            post_only,
+            tif,
+        )
+    }
+
+    /// `order` on `instrument`, which also refuses an instrument that has not
+    /// printed its first bar.
+    #[allow(clippy::too_many_arguments)]
+    pub fn order_on(
+        &mut self,
+        instrument: usize,
+        side: Side,
+        size: f64,
+        kind: OrderType,
+        price: Option<f64>,
+        trigger: Option<f64>,
+        reduce_only: bool,
+        post_only: bool,
+        tif: TimeInForce,
+    ) -> Option<OrderId> {
         match kind {
-            OrderType::Market => self.place_market(side, size, reduce_only, tif),
-            OrderType::Limit => self.place_limit(side, size, price?, reduce_only, post_only, tif),
-            OrderType::Stop => self.place_stop(side, size, trigger?, reduce_only),
+            OrderType::Market => self.place_market(instrument, side, size, reduce_only, tif),
+            OrderType::Limit => {
+                self.place_limit(instrument, side, size, price?, reduce_only, post_only, tif)
+            }
+            OrderType::Stop => self.place_stop(instrument, side, size, trigger?, reduce_only),
         }
     }
 
@@ -200,28 +277,28 @@ impl Engine {
     /// already holding `max_open_orders` for this bar, or the size is not a
     /// positive finite number.
     pub fn market_buy(&mut self, size: f64) -> Option<OrderId> {
-        self.place_market(Side::Buy, size, false, TimeInForce::Ioc)
+        self.place_market(0, Side::Buy, size, false, TimeInForce::Ioc)
     }
 
     /// Queue a market sell; it fills on the next bar's open. `None` if the queue is
     /// already holding `max_open_orders` for this bar, or the size is not a
     /// positive finite number.
     pub fn market_sell(&mut self, size: f64) -> Option<OrderId> {
-        self.place_market(Side::Sell, size, false, TimeInForce::Ioc)
+        self.place_market(0, Side::Sell, size, false, TimeInForce::Ioc)
     }
 
     /// Rest a buy limit; it fills when a later bar trades down to `price`. `None`
     /// if the book is full, the size is not a positive finite number, or `price`
     /// is not finite.
     pub fn limit_buy(&mut self, size: f64, price: f64) -> Option<OrderId> {
-        self.place_limit(Side::Buy, size, price, false, false, TimeInForce::Gtc)
+        self.place_limit(0, Side::Buy, size, price, false, false, TimeInForce::Gtc)
     }
 
     /// Rest a sell limit; it fills when a later bar trades up to `price`. `None`
     /// if the book is full, the size is not a positive finite number, or `price`
     /// is not finite.
     pub fn limit_sell(&mut self, size: f64, price: f64) -> Option<OrderId> {
-        self.place_limit(Side::Sell, size, price, false, false, TimeInForce::Gtc)
+        self.place_limit(0, Side::Sell, size, price, false, false, TimeInForce::Gtc)
     }
 
     /// Rest a stop that becomes a market order once `trigger` is crossed. `None`
@@ -236,17 +313,19 @@ impl Engine {
         trigger: f64,
         reduce_only: bool,
     ) -> Option<OrderId> {
-        self.place_stop(side, size, trigger, reduce_only)
+        self.place_stop(0, side, size, trigger, reduce_only)
     }
 
-    /// Base size for a fraction of current equity, marked at the current close.
+    /// Base size for a fraction of current equity, marked at the first instrument's
+    /// current close.
     pub fn qty_from_weight(&self, fraction: f64) -> f64 {
         self.account
-            .qty_from_weight(fraction, Price(self.current_close()))
+            .qty_from_weight(fraction, Price(self.current_close()), &self.marks)
             .get()
     }
 
-    /// Base size for a cash amount in quote, at the current close.
+    /// Base size for a cash amount in quote, at the first instrument's current
+    /// close.
     pub fn qty_from_quote(&self, cash: f64) -> f64 {
         self.account
             .qty_from_quote(cash, Price(self.current_close()))
@@ -255,17 +334,18 @@ impl Engine {
 
     /// Cancel a resting order by id. True if it was found and removed.
     pub fn cancel(&mut self, id: OrderId) -> bool {
-        let found = self.book.cancel(id).is_some();
-        if found {
-            self.log_event(
-                EventKind::Cancelled,
-                Some(id),
-                None,
-                None,
-                EventReason::CancelledByAccount,
-            );
-        }
-        found
+        let Some(order) = self.book.cancel(id) else {
+            return false;
+        };
+        self.log_event(
+            EventKind::Cancelled,
+            Some(id),
+            Some(order.instrument),
+            None,
+            None,
+            EventReason::CancelledByAccount,
+        );
+        true
     }
 
     /// Move a resting order: the same order, under the same id, with whichever of
@@ -315,6 +395,7 @@ impl Engine {
             self.log_event(
                 EventKind::Refused,
                 Some(id),
+                Some(old.instrument),
                 None,
                 None,
                 EventReason::Replacing(why),
@@ -325,6 +406,7 @@ impl Engine {
         self.log_event(
             EventKind::Placed,
             Some(id),
+            Some(old.instrument),
             None,
             None,
             EventReason::Replace,
@@ -342,15 +424,36 @@ impl Engine {
         ids.len()
     }
 
+    /// Cancel every order resting on `instrument`, returning how many were dropped.
+    pub fn cancel_all_on(&mut self, instrument: usize) -> usize {
+        let ids: Vec<OrderId> = self
+            .book
+            .iter()
+            .filter(|order| order.instrument == instrument)
+            .map(|order| order.id)
+            .collect();
+        for &id in &ids {
+            self.cancel(id);
+        }
+        ids.len()
+    }
+
     /// The resting order placed first, or `None` with nothing resting. A replace
     /// keeps an order's id, and so its age.
     pub fn oldest_resting(&self) -> Option<OrderId> {
         self.book.iter().map(|order| order.id).min_by_key(|id| id.0)
     }
 
-    /// Flatten the position with a reduce-only market order. `None` when flat.
+    /// Flatten the first instrument's position with a reduce-only market order.
+    /// `None` when flat.
     pub fn close(&mut self) -> Option<OrderId> {
-        let pos = self.account.position.qty.get();
+        self.close_on(0)
+    }
+
+    /// Flatten `instrument`'s position with a reduce-only market order. `None` when
+    /// flat.
+    pub fn close_on(&mut self, instrument: usize) -> Option<OrderId> {
+        let pos = self.account.positions[instrument].qty.get();
         if pos == 0.0 {
             return None;
         }
@@ -359,7 +462,7 @@ impl Engine {
         } else {
             (Side::Buy, -pos)
         };
-        self.place_market(side, size, true, TimeInForce::Ioc)
+        self.place_market(instrument, side, size, true, TimeInForce::Ioc)
     }
 }
 
@@ -367,11 +470,12 @@ impl Engine {
 mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{
-        cfg, crash_series, dip_series, levered, ohlc, perp_cfg, report_cfg, series,
+        cfg, crash_series, dip_series, levered, ohlc, perp_cfg, report_cfg, series, universe,
+        ABSENT,
     };
     use crate::engine::{Engine, EngineConfig};
     use crate::reporter::{EventKind, EventReason, OrderEvent, Refusal};
-    use probatum_core::{OrderId, OrderType, Side, TimeInForce};
+    use probatum_core::{Market, OrderId, OrderType, Side, TimeInForce};
 
     fn events(e: &Engine) -> Vec<(u64, EventKind)> {
         log(e)
@@ -587,10 +691,10 @@ mod tests {
         let mut e = Engine::new(dip_series(), cfg());
         e.reset(); // bar 0 close 100
         assert!(e
-            .place_limit(Side::Buy, 1.0, 105.0, false, true, TimeInForce::Gtc)
+            .place_limit(0, Side::Buy, 1.0, 105.0, false, true, TimeInForce::Gtc)
             .is_none()); // post_only that would cross
         assert!(e
-            .place_limit(Side::Buy, 1.0, 95.0, false, true, TimeInForce::Gtc)
+            .place_limit(0, Side::Buy, 1.0, 95.0, false, true, TimeInForce::Gtc)
             .is_some()); // maker, accepted
     }
 
@@ -953,5 +1057,60 @@ mod tests {
             log(&e).last().map(|event| event.reason),
             Some(EventReason::Replacing(Refusal::PostOnly))
         );
+    }
+
+    /// Two spot instruments, the second printing its first bar on the second row.
+    fn listing_late() -> Engine {
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), ABSENT],
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), flat(10.0)],
+        ];
+        let config = EngineConfig {
+            max_open_orders: 1,
+            ..report_cfg()
+        };
+        Engine::new(universe(&[Market::Spot, Market::Spot], rows), config)
+    }
+
+    fn bid(e: &mut Engine, instrument: usize, price: f64) -> Option<OrderId> {
+        e.order_on(
+            instrument,
+            Side::Buy,
+            1.0,
+            OrderType::Limit,
+            Some(price),
+            None,
+            false,
+            false,
+            TimeInForce::Gtc,
+        )
+    }
+
+    #[test]
+    fn an_order_on_an_instrument_before_its_first_bar_is_refused() {
+        let mut e = listing_late();
+        e.reset();
+        assert_eq!(bid(&mut e, 1, 9.0), None);
+        let refused = log(&e)[0];
+        assert_eq!(refused.instrument, Some(1));
+        assert_eq!(refused.reason, EventReason::Refused(Refusal::Unlisted));
+        e.step();
+        assert!(bid(&mut e, 1, 9.0).is_some());
+    }
+
+    #[test]
+    fn max_open_orders_bounds_each_instrument_on_its_own() {
+        // one order each: the first instrument's second bid is refused while the
+        // second instrument still rests one of its own
+        let mut e = listing_late();
+        e.reset();
+        e.step();
+        assert!(bid(&mut e, 0, 90.0).is_some());
+        assert!(bid(&mut e, 1, 9.0).is_some());
+        assert_eq!(bid(&mut e, 0, 80.0), None);
+        let refused = log(&e).last().copied().expect("an event");
+        assert_eq!(refused.reason, EventReason::Refused(Refusal::Resting(1)));
     }
 }

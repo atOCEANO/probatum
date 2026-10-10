@@ -16,7 +16,7 @@ pub mod strategy;
 pub mod sweep;
 
 pub use batch::{BatchSnapshot, EnvBatch};
-pub use candles::Candles;
+pub use candles::{Candles, Instrument};
 pub use clock::Clock;
 pub use engine::{Engine, EngineConfig};
 pub use execution::{FillCosts, FillModel};

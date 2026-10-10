@@ -1,22 +1,25 @@
-//! Perp funding. A row charges the events it owns at its close, after the bar's
-//! liquidation check and on the position still held, and the events stamped between
-//! it and the row before at its start, at the last mark. A positive rate is paid by
-//! a long and received by a short, and what was paid is kept for the result
-//! (ADR 0020).
+//! Perp funding. A row charges the events it owns at its closes, after the bar's
+//! liquidation check and on the positions still held, and the events stamped
+//! between it and the row before at its start, at the last marks. An event charges
+//! the instrument it names, or every perp held where it names none. A positive rate
+//! is paid by a long and received by a short, and what was paid is kept for the
+//! result (ADR 0020).
 
 use probatum_core::{Market, Price};
 
 use super::Engine;
+use crate::candles::printed;
 use crate::reporter::Reporter;
 
-/// Keep a funding payment for the result and charge it to its bar and to the round
-/// trip it was paid on (ADRs 0020, 0022, 0023). It takes the two fields it writes, so a schedule borrowed
-/// from the candles can stay borrowed while it runs.
-fn pay(funding_paid: &mut f64, reporter: &mut Option<Reporter>, payment: f64) {
+/// Keep a funding payment on instrument `i` for the result and charge it to its bar
+/// and to the round trip it was paid on (ADRs 0020, 0022, 0023). It takes the two
+/// fields it writes, so a schedule borrowed from the candles can stay borrowed while
+/// it runs.
+fn pay(funding_paid: &mut f64, reporter: &mut Option<Reporter>, i: usize, payment: f64) {
     *funding_paid += payment;
     if let Some(reporter) = reporter.as_mut() {
         reporter.costs_mut().funding += payment;
-        if let Some(trip) = reporter.trip_mut() {
+        if let Some(trip) = reporter.trip_mut(i) {
             trip.funding += payment;
         }
     }
@@ -31,67 +34,107 @@ impl Engine {
         self.config.funding_interval > 0 && self.tick % self.config.funding_interval == 0
     }
 
+    /// True when an event naming `instrument`, or none, charges instrument `i`: a
+    /// perp holding a position.
+    fn charges(&self, instrument: Option<usize>, i: usize) -> bool {
+        instrument.is_none_or(|named| named == i)
+            && self.account.markets[i] == Market::Perp
+            && self.account.positions[i].qty.get() != 0.0
+    }
+
+    /// Instrument `i`'s close on the current row, or its last mark where it printed
+    /// no bar.
+    pub(super) fn close_of(&self, i: usize) -> f64 {
+        let bar = self.candles.bar(self.tick, i);
+        if printed(&bar) {
+            bar.close
+        } else {
+            self.marks[i]
+        }
+    }
+
     /// Charge the events stamped between the row before and this one, across a
-    /// closure or a hole in the data, at `mark`, the last close, on the position
-    /// carried through them. This comes before the bar's path is solved, so a debit
-    /// that takes the account to its trigger liquidates it at the start of the gap.
-    pub(super) fn charge_between(&mut self, mark: f64) {
+    /// closure or a hole in the data, at the last marks, on the positions carried
+    /// through them. This comes before the bar's path is solved, so a debit that
+    /// takes the account to its trigger liquidates it at the start of the gap.
+    pub(super) fn charge_between(&mut self) {
         if let Some(schedule) = self.candles.funding() {
-            for &rate in schedule.between(self.tick) {
-                let paid = self.account.apply_funding(rate, Price(mark));
-                pay(&mut self.funding_paid, &mut self.reporter, paid);
-            }
-        }
-    }
-
-    /// What the debits stamped inside this row come to on the position as it now
-    /// stands, at `close`. A bar cannot show whether such an event came before its
-    /// worst price, so a debit counts toward the bar's liquidation check and a credit
-    /// does not, the pessimistic reading.
-    pub(super) fn debits_inside(&self, close: f64) -> f64 {
-        if self.config.market != Market::Perp {
-            return 0.0;
-        }
-        let held = self.account.position.qty.get();
-        self.candles.funding().map_or(0.0, |schedule| {
-            schedule
-                .owned(self.tick)
-                .iter()
-                .filter(|&&(_, inside)| inside)
-                .map(|&(rate, _)| held * close * rate)
-                .filter(|&charge| charge > 0.0)
-                .sum()
-        })
-    }
-
-    /// Pay the debits stamped inside this row, at `close`, which the check counted
-    /// against an account it then liquidated: counted is paid, and the credits it did
-    /// not count are not.
-    pub(super) fn pay_debits_inside(&mut self, close: f64) {
-        if let Some(schedule) = self.candles.funding() {
-            let held = self.account.position.qty.get();
-            for &(rate, inside) in schedule.owned(self.tick) {
-                if inside && held * close * rate > 0.0 {
-                    let paid = self.account.apply_funding(rate, Price(close));
-                    pay(&mut self.funding_paid, &mut self.reporter, paid);
+            for &(rate, instrument) in schedule.between(self.tick) {
+                for i in 0..self.marks.len() {
+                    if self.charges(instrument, i) {
+                        let paid = self.account.apply_funding(i, rate, Price(self.marks[i]));
+                        pay(&mut self.funding_paid, &mut self.reporter, i, paid);
+                    }
                 }
             }
         }
     }
 
-    /// Charge the events this row owns at its `close`, on the position still held,
-    /// so an account the check liquidated holds nothing at the stamp and pays nothing.
-    pub(super) fn charge_funding(&mut self, close: f64) {
+    /// What the debits stamped inside this row come to on the positions as they now
+    /// stand, at their closes. A bar cannot show whether such an event came before
+    /// its worst price, so a debit counts toward the bar's liquidation check and a
+    /// credit does not, the pessimistic reading.
+    #[inline]
+    pub(super) fn debits_inside(&self) -> f64 {
+        let Some(schedule) = self.candles.funding() else {
+            return 0.0;
+        };
+        let mut debits = 0.0;
+        for &(rate, inside, instrument) in schedule.owned(self.tick) {
+            for i in 0..self.marks.len() {
+                if !inside || !self.charges(instrument, i) {
+                    continue;
+                }
+                let charge = self.account.positions[i].qty.get() * self.close_of(i) * rate;
+                if charge > 0.0 {
+                    debits += charge;
+                }
+            }
+        }
+        debits
+    }
+
+    /// Pay the debits stamped inside this row, at the closes, which the check
+    /// counted against an account it then liquidated: counted is paid, and the
+    /// credits it did not count are not.
+    pub(super) fn pay_debits_inside(&mut self) {
+        if let Some(schedule) = self.candles.funding() {
+            for &(rate, inside, instrument) in schedule.owned(self.tick) {
+                for i in 0..self.marks.len() {
+                    if !inside || !self.charges(instrument, i) {
+                        continue;
+                    }
+                    let close = self.close_of(i);
+                    if self.account.positions[i].qty.get() * close * rate > 0.0 {
+                        let paid = self.account.apply_funding(i, rate, Price(close));
+                        pay(&mut self.funding_paid, &mut self.reporter, i, paid);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Charge the events this row owns at the closes, on the positions still held,
+    /// so an account the check liquidated holds nothing at the stamp and pays
+    /// nothing.
+    pub(super) fn charge_funding(&mut self) {
         if self.owns_every_bars() {
-            let paid = self
-                .account
-                .apply_funding(self.config.funding_rate, Price(close));
-            pay(&mut self.funding_paid, &mut self.reporter, paid);
+            for i in 0..self.marks.len() {
+                if self.charges(None, i) {
+                    let rate = self.config.funding_rate;
+                    let paid = self.account.apply_funding(i, rate, Price(self.close_of(i)));
+                    pay(&mut self.funding_paid, &mut self.reporter, i, paid);
+                }
+            }
         }
         if let Some(schedule) = self.candles.funding() {
-            for &(rate, _) in schedule.owned(self.tick) {
-                let paid = self.account.apply_funding(rate, Price(close));
-                pay(&mut self.funding_paid, &mut self.reporter, paid);
+            for &(rate, _, instrument) in schedule.owned(self.tick) {
+                for i in 0..self.marks.len() {
+                    if self.charges(instrument, i) {
+                        let paid = self.account.apply_funding(i, rate, Price(self.close_of(i)));
+                        pay(&mut self.funding_paid, &mut self.reporter, i, paid);
+                    }
+                }
             }
         }
     }
@@ -99,13 +142,13 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use crate::candles::Candles;
+    use crate::candles::{Candles, Instrument};
     use crate::clock::Clock;
     use crate::engine::fixtures::{cfg, flat_series, levered, ohlc, perp_cfg, series};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::FillReason;
     use crate::schedule::every;
-    use probatum_core::{Candle, Market, Side};
+    use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
 
     #[test]
     fn perp_funding_charges_a_held_long_each_interval() {
@@ -531,5 +574,42 @@ mod tests {
             "exit {}",
             trades[0].exit
         );
+    }
+
+    #[test]
+    fn an_event_charges_the_instrument_it_names_or_every_perp_held() {
+        // a long of 1 at 100 and of 10 at 10: an event at 1% naming the second
+        // charges it 1.00, and one naming none charges both, 2.00
+        let hour = 3_600 * 1_000_000_000;
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows: Vec<Candle> = (0..3).flat_map(|_| [flat(100.0), flat(10.0)]).collect();
+        let perp = Instrument {
+            market: Some(Market::Perp),
+            ..Instrument::default()
+        };
+        let bars = Candles::universe(rows, 2, Some(Clock::new(vec![0, hour, 2 * hour])))
+            .with_instruments(vec![perp.clone(), perp])
+            .with_tagged_funding(&[(2 * hour, Some(1), 0.01), (3 * hour, None, 0.01)]);
+        let config = EngineConfig {
+            quote: 10_000.0,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        e.order_on(
+            1,
+            Side::Buy,
+            10.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            TimeInForce::Ioc,
+        );
+        assert_eq!(e.step().margin_cash, 9_999.0);
+        let last = e.step();
+        assert_eq!((last.margin_cash, last.funding_paid), (9_997.0, 3.0));
     }
 }

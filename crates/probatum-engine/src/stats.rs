@@ -293,7 +293,7 @@ mod tests {
     use probatum_core::Side;
 
     fn trade_with_fee(pnl: f64, fees: f64) -> RoundTrip {
-        let mut trip = RoundTrip::open(Side::Buy, 0, 1.0, 100.0, fees);
+        let mut trip = RoundTrip::open(0, Side::Buy, 0, 1.0, 100.0, fees);
         trip.shrink(1.0, 100.0 + pnl, 0.0, pnl);
         trip.finish(1, FillReason::Market);
         trip

@@ -13,6 +13,9 @@ use crate::order::{Order, OrderId};
 #[derive(Clone, Debug)]
 pub struct RestingOrderBook {
     slots: Vec<Option<Order>>,
+    // the slots taken, kept as orders come and go so a step with nothing resting
+    // learns it without a pass over the slots
+    taken: usize,
 }
 
 impl RestingOrderBook {
@@ -20,23 +23,23 @@ impl RestingOrderBook {
     pub fn new(capacity: usize) -> RestingOrderBook {
         RestingOrderBook {
             slots: vec![None; capacity],
+            taken: 0,
         }
     }
 
-    /// Number of resting orders, counted by scanning every slot rather than
-    /// tracked, so it costs the capacity and not the occupancy.
+    /// Number of resting orders.
     pub fn len(&self) -> usize {
-        self.slots.iter().filter(|s| s.is_some()).count()
+        self.taken
     }
 
     /// True when no order rests.
     pub fn is_empty(&self) -> bool {
-        self.slots.iter().all(Option::is_none)
+        self.taken == 0
     }
 
     /// True when every slot is taken, so the next `place` hands its order back.
     pub fn is_full(&self) -> bool {
-        self.slots.iter().all(Option::is_some)
+        self.taken == self.slots.len()
     }
 
     /// Rest `order` in a free slot, keeping its id. Returns the id, or hands the
@@ -46,6 +49,7 @@ impl RestingOrderBook {
             Some(slot) => {
                 let id = order.id;
                 *slot = Some(order);
+                self.taken += 1;
                 Ok(id)
             }
             None => Err(order),
@@ -65,12 +69,7 @@ impl RestingOrderBook {
 
     /// Remove and return a resting order by id, freeing its slot.
     pub fn cancel(&mut self, id: OrderId) -> Option<Order> {
-        for slot in &mut self.slots {
-            if slot.as_ref().is_some_and(|o| o.id == id) {
-                return slot.take();
-            }
-        }
-        None
+        self.cancel_at(id).map(|(_, order)| order)
     }
 
     /// Remove and return a resting order by id together with the slot it held, so
@@ -78,6 +77,7 @@ impl RestingOrderBook {
     pub fn cancel_at(&mut self, id: OrderId) -> Option<(usize, Order)> {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.as_ref().is_some_and(|o| o.id == id) {
+                self.taken -= 1;
                 return slot.take().map(|order| (index, order));
             }
         }
@@ -90,7 +90,9 @@ impl RestingOrderBook {
     /// a priority it did not have (ADR 0010).
     pub fn restore(&mut self, index: usize, order: Order) {
         if let Some(slot) = self.slots.get_mut(index) {
-            *slot = Some(order);
+            if slot.replace(order).is_none() {
+                self.taken += 1;
+            }
         }
     }
 
@@ -99,6 +101,17 @@ impl RestingOrderBook {
     pub fn cancel_all(&mut self) {
         for slot in &mut self.slots {
             *slot = None;
+        }
+        self.taken = 0;
+    }
+
+    /// Remove every resting order `picked` chooses, freeing its slot.
+    pub fn cancel_where(&mut self, mut picked: impl FnMut(&Order) -> bool) {
+        for slot in &mut self.slots {
+            if slot.as_ref().is_some_and(&mut picked) {
+                *slot = None;
+                self.taken -= 1;
+            }
         }
     }
 

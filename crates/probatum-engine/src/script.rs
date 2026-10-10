@@ -23,6 +23,7 @@ pub enum OrderRef {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Order {
+        instrument: usize,
         side: Side,
         size: f64,
         kind: OrderType,
@@ -32,9 +33,11 @@ pub enum Action {
         post_only: bool,
         tif: TimeInForce,
     },
-    Close,
+    /// Flatten an instrument's position.
+    Close(usize),
     Cancel(OrderRef),
-    CancelAll,
+    /// Cancel every resting order, or only an instrument's.
+    CancelAll(Option<usize>),
     Replace {
         order: OrderRef,
         size: Option<f64>,
@@ -82,6 +85,7 @@ impl Strategy for Script {
         for action in actions {
             match *action {
                 Action::Order {
+                    instrument,
                     side,
                     size,
                     kind,
@@ -91,7 +95,8 @@ impl Strategy for Script {
                     post_only,
                     tif,
                 } => {
-                    let id = engine.order(
+                    let id = engine.order_on(
+                        instrument,
                         side,
                         size,
                         kind,
@@ -103,14 +108,17 @@ impl Strategy for Script {
                     );
                     self.placed.push(id);
                 }
-                Action::Close => self.placed.push(engine.close()),
+                Action::Close(instrument) => self.placed.push(engine.close_on(instrument)),
                 Action::Cancel(order) => {
                     if let Some(id) = self.resolve(order, engine) {
                         engine.cancel(id);
                     }
                 }
-                Action::CancelAll => {
+                Action::CancelAll(None) => {
                     engine.cancel_all();
+                }
+                Action::CancelAll(Some(instrument)) => {
+                    engine.cancel_all_on(instrument);
                 }
                 Action::Replace {
                     order,
@@ -166,6 +174,7 @@ mod tests {
 
     fn bid(price: f64) -> Action {
         Action::Order {
+            instrument: 0,
             side: Side::Buy,
             size: 1.0,
             kind: OrderType::Limit,
@@ -251,6 +260,7 @@ mod tests {
     fn an_action_is_taken_at_its_bar_and_fills_on_the_next() {
         let mut e = engine(8);
         let buy = Action::Order {
+            instrument: 0,
             side: Side::Buy,
             size: 1.0,
             kind: OrderType::Market,

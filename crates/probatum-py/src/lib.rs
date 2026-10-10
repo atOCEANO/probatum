@@ -10,10 +10,11 @@
 //! The conversion is the macro's, not ours.
 #![allow(clippy::useless_conversion)]
 
-use numpy::ndarray::{Array3, ArrayView2};
+use numpy::ndarray::{Array2, Array3, ArrayView2};
 use numpy::npyffi::flags::NPY_ARRAY_WRITEABLE;
 use numpy::{
-    PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+    PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+    PyUntypedArray, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
@@ -24,11 +25,11 @@ use probatum_core::{
     Candle, Market, Order, OrderId, OrderType, Side, State, Tier, TierBasis, TierError, Tiers,
     TimeInForce, Wallet,
 };
-use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, OrderEvent, Refusal};
+use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{
-    Action, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, OrderRef, RoundTrip,
-    Script, Stats,
+    Action, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Instrument, OrderRef,
+    RoundTrip, Script, Stats,
 };
 
 /// Parse a market string into the core enum, case-insensitively.
@@ -119,39 +120,8 @@ fn candles_from_array(
     if bars.is_empty() {
         return Err(PyValueError::new_err("candles must have at least one row"));
     }
-    // Reject NaN and infinity: the spec's input contract says NaN rows are rejected,
-    // and a non-finite candle would silently poison every mark and equity downstream.
     for (i, bar) in bars.iter().enumerate() {
-        if !(bar.open.is_finite()
-            && bar.high.is_finite()
-            && bar.low.is_finite()
-            && bar.close.is_finite()
-            && bar.volume.is_finite())
-        {
-            return Err(PyValueError::new_err(format!(
-                "candles contain a non-finite value at row {i}; clean NaN and inf rows first"
-            )));
-        }
-        // and that the four prices are a bar. The taker clamp bounds a fill to
-        // what the bar traded by taking price.min(high) on a buy and
-        // price.max(low) on a sell, so on a row whose prices are out of order
-        // that min and max move the fill TOWARD the account instead of away, and
-        // a dead flat market pays out. The reachable cause is not a typo: a feed
-        // that ships low/high/open/close, sliced positionally, satisfies
-        // high >= low on every row and still mints money, so the whole ordering
-        // is what has to be checked rather than the one pair (ADR 0007)
-        if !(bar.low <= bar.open
-            && bar.open <= bar.high
-            && bar.low <= bar.close
-            && bar.close <= bar.high)
-        {
-            return Err(PyValueError::new_err(format!(
-                "candles are not a bar at row {i}: open {}, high {}, low {}, close {}; \
-                 need low <= open <= high and low <= close <= high, so check the \
-                 column order, which is open, high, low, close, volume",
-                bar.open, bar.high, bar.low, bar.close
-            )));
-        }
+        check_bar(bar, &format!("row {i}"))?;
     }
     match times {
         None => Ok(Candles::new(bars)),
@@ -162,10 +132,115 @@ fn candles_from_array(
     }
 }
 
+/// Refuse a bar with a value that is not finite, or whose four prices are not a
+/// bar, naming `at`, where it sits.
+fn check_bar(bar: &Candle, at: &str) -> PyResult<()> {
+    // A bar's values are finite: a non-finite candle would silently poison every mark
+    // and equity downstream, and a series of one instrument has no row without a bar.
+    if !(bar.open.is_finite()
+        && bar.high.is_finite()
+        && bar.low.is_finite()
+        && bar.close.is_finite()
+        && bar.volume.is_finite())
+    {
+        return Err(PyValueError::new_err(format!(
+            "candles contain a non-finite value at {at}; clean NaN and inf rows first"
+        )));
+    }
+    // and that the four prices are a bar. The taker clamp bounds a fill to what
+    // the bar traded by taking price.min(high) on a buy and price.max(low) on a
+    // sell, so on a row whose prices are out of order that min and max move the
+    // fill TOWARD the account instead of away, and a dead flat market pays out.
+    // The reachable cause is not a typo: a feed that ships low/high/open/close,
+    // sliced positionally, satisfies high >= low on every row and still mints
+    // money, so the whole ordering is what has to be checked rather than the one
+    // pair (ADR 0007)
+    if !(bar.low <= bar.open
+        && bar.open <= bar.high
+        && bar.low <= bar.close
+        && bar.close <= bar.high)
+    {
+        return Err(PyValueError::new_err(format!(
+            "candles are not a bar at {at}: open {}, high {}, low {}, close {}; need low \
+             <= open <= high and low <= close <= high, so check the column order, which \
+             is open, high, low, close, volume",
+            bar.open, bar.high, bar.low, bar.close
+        )));
+    }
+    Ok(())
+}
+
+/// Copy a `(T, N, 5)` array of N instruments' OHLCV into a universe, on the clock
+/// `times` when given. An instrument that printed no bar on a row holds NaN in all
+/// five of its values there, and every row holds some instrument's bar, since the
+/// clock is the times some instrument printed at.
+fn candles_from_universe(
+    array: PyReadonlyArray3<'_, f64>,
+    times: Option<PyReadonlyArray1<'_, i64>>,
+) -> PyResult<Candles> {
+    let view = array.as_array();
+    let (rows, width, cols) = view.dim();
+    if cols != 5 {
+        return Err(PyValueError::new_err(format!(
+            "candles must have 5 columns (open, high, low, close, volume), got {cols}"
+        )));
+    }
+    if rows == 0 || width == 0 {
+        return Err(PyValueError::new_err(
+            "candles must have at least one row and one instrument",
+        ));
+    }
+    let mut bars = Vec::with_capacity(rows * width);
+    for t in 0..rows {
+        let mut printed = false;
+        for i in 0..width {
+            let values = [0, 1, 2, 3, 4].map(|k| view[[t, i, k]]);
+            let [open, high, low, close, volume] = values;
+            let bar = Candle {
+                open,
+                high,
+                low,
+                close,
+                volume,
+            };
+            bars.push(bar);
+            if values.iter().all(|value| value.is_nan()) {
+                continue;
+            }
+            if values.iter().any(|value| value.is_nan()) {
+                return Err(PyValueError::new_err(format!(
+                    "candles: row {t} gives instrument {i} NaN in some of its five values; \
+                     give NaN in all five where it printed no bar"
+                )));
+            }
+            if let Some(value) = values.iter().find(|value| value.is_infinite()) {
+                return Err(PyValueError::new_err(format!(
+                    "candles: row {t} gives instrument {i} a value of {value}; give finite \
+                     values, or NaN in all five where it printed no bar"
+                )));
+            }
+            check_bar(&bar, &format!("row {t}, instrument {i}"))?;
+            printed = true;
+        }
+        if !printed {
+            return Err(PyValueError::new_err(format!(
+                "candles: row {t} holds no instrument's bar; keep only the rows some \
+                 instrument printed"
+            )));
+        }
+    }
+    let clock = times
+        .map(|times| clock_from(times, Some(rows)))
+        .transpose()?;
+    Ok(Candles::universe(bars, width, clock))
+}
+
 /// `series` with a time-stamped funding source placed on its clock: every
 /// `funding_hours` from 00:00 UTC at `funding_rate`, or the events `funding_times`
-/// and `funding_rates`. Refused unless at most one source is given, counting
-/// `funding_interval`, and a stamped one comes with the clock it needs (ADR 0020).
+/// and `funding_rates`, each charging the instrument `funding_instruments` names for
+/// it or, where it names none, every perp held. Refused unless at most one source
+/// is given, counting `funding_interval`, and a stamped one comes with the clock it
+/// needs (ADR 0020).
 fn place_funding(
     series: Candles,
     funding_rate: f64,
@@ -173,11 +248,18 @@ fn place_funding(
     funding_hours: f64,
     funding_times: Option<PyReadonlyArray1<'_, i64>>,
     funding_rates: Option<PyReadonlyArray1<'_, f64>>,
+    funding_instruments: Option<Vec<Option<usize>>>,
 ) -> PyResult<Candles> {
     if !(funding_hours.is_finite() && funding_hours >= 0.0) {
         return Err(PyValueError::new_err(format!(
             "funding_hours: {funding_hours}; pass the hours between events, or 0.0 for none"
         )));
+    }
+    if funding_instruments.is_some() && funding_times.is_none() {
+        return Err(PyValueError::new_err(
+            "funding_instruments: given without funding_times; pass the times and rates \
+             they go with",
+        ));
     }
     let stamped = match (funding_times, funding_rates) {
         (None, None) => None,
@@ -196,11 +278,29 @@ fn place_funding(
                     rates[row]
                 )));
             }
+            let named = funding_instruments.unwrap_or_else(|| vec![None; times.len()]);
+            if named.len() != times.len() {
+                return Err(PyValueError::new_err(format!(
+                    "funding_instruments: {} for {} funding_times; pass one per time, None \
+                     for every perp held",
+                    named.len(),
+                    times.len()
+                )));
+            }
+            let width = series.width();
+            if let Some(row) = named.iter().position(|i| i.is_some_and(|i| i >= width)) {
+                return Err(PyValueError::new_err(format!(
+                    "funding_instruments: row {row} names instrument {}, of {width}; name one \
+                     counted from 0, or None for every perp held",
+                    named[row].unwrap_or(0)
+                )));
+            }
             Some(
                 times
                     .iter()
-                    .copied()
-                    .zip(rates.iter().copied())
+                    .zip(&named)
+                    .zip(rates.iter())
+                    .map(|((&time, &instrument), &rate)| (time, instrument, rate))
                     .collect::<Vec<_>>(),
             )
         }
@@ -228,9 +328,14 @@ fn place_funding(
                  clock; pass times=",
             ))
         }
-        Some(clock) => stamped.unwrap_or_else(|| every(clock, funding_hours, funding_rate)),
+        Some(clock) => stamped.unwrap_or_else(|| {
+            every(clock, funding_hours, funding_rate)
+                .into_iter()
+                .map(|(time, rate)| (time, None, rate))
+                .collect()
+        }),
     };
-    Ok(series.with_funding(&events))
+    Ok(series.with_tagged_funding(&events))
 }
 
 /// The clock `times` describes, each bar's open in UTC nanoseconds. Refused unless
@@ -262,6 +367,10 @@ fn clock_from(times: PyReadonlyArray1<'_, i64>, rows: Option<usize>) -> PyResult
 /// front, once per env, so an unbounded request aborts the process on allocation
 /// failure instead of raising; far above any real strategy (ADR 0007).
 const MAX_OPEN_ORDERS_LIMIT: usize = 4096;
+
+/// The most slots a universe's book may hold, `max_open_orders` for each of its
+/// instruments, bounded for the same reason.
+const MAX_BOOK_SLOTS: usize = 1 << 20;
 
 /// Reject a zero observation window. The batched gathers chunk their output buffer
 /// by the window, and rayon asserts a chunk size is nonzero, so a zero window used
@@ -352,19 +461,22 @@ fn transfer_to(at: &str, amount: f64, to: &str) -> PyResult<Wallet> {
     }
 }
 
+/// What a tier table's bounds measure, as `tiers_by` names it.
+fn tier_basis(by: &str) -> PyResult<TierBasis> {
+    match by.to_ascii_lowercase().as_str() {
+        "notional" => Ok(TierBasis::Notional),
+        "quantity" => Ok(TierBasis::Quantity),
+        _ => Err(PyValueError::new_err(format!(
+            "tiers_by: {by:?} is not a basis; use notional or quantity"
+        ))),
+    }
+}
+
 /// A venue's tier table, rows of (up_to, leverage, rate, amount) whose bounds
 /// measure notional or size as `by` says, refused as the loader refuses it and
 /// wherever a number cannot be one (ADR 0007).
 fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
-    let basis = match by.to_ascii_lowercase().as_str() {
-        "notional" => TierBasis::Notional,
-        "quantity" => TierBasis::Quantity,
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "tiers_by: {by:?} is not a basis; use notional or quantity"
-            )))
-        }
-    };
+    let basis = tier_basis(by)?;
     let mut table = Vec::with_capacity(rows.len());
     for (row, numbers) in rows.into_iter().enumerate() {
         let [up_to, leverage, rate, amount] = numbers[..] else {
@@ -432,6 +544,81 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
             ),
         })
     })
+}
+
+/// Each instrument of a universe of `width` as `instruments` gives it, a dict per
+/// instrument with its `market` and its `tiers` and `tiers_by`, the venue's `market`
+/// and `tiers_by` where it names none.
+fn instruments_from(
+    given: Vec<Bound<'_, PyDict>>,
+    width: usize,
+    market: Market,
+    tiers_by: &str,
+) -> PyResult<Vec<Instrument>> {
+    if given.len() != width {
+        return Err(PyValueError::new_err(format!(
+            "instruments: {} for the {width} in candles; give one per instrument",
+            given.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(width);
+    for (i, spec) in given.iter().enumerate() {
+        for key in spec.keys() {
+            let Ok(name) = key.extract::<String>() else {
+                return Err(PyValueError::new_err(format!(
+                    "instruments[{i}]: {} is not a setting's name; name each setting with a \
+                     string",
+                    shown(&key)
+                )));
+            };
+            if !["market", "tiers", "tiers_by"].contains(&name.as_str()) {
+                return Err(PyValueError::new_err(format!(
+                    "instruments[{i}]: {name:?} is not a setting; give market, tiers and \
+                     tiers_by"
+                )));
+            }
+        }
+        let text = |name: &str, choices: &str| -> PyResult<Option<String>> {
+            match spec.get_item(name)?.filter(|value| !value.is_none()) {
+                Some(value) => value.extract().map(Some).map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "instruments[{i}]: {name} {} is not a string; use {choices}",
+                        shown(&value)
+                    ))
+                }),
+                None => Ok(None),
+            }
+        };
+        let market = match text("market", "spot or perp")? {
+            Some(name) => parse_market(&name).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "instruments[{i}]: market {name:?} is not a market; use spot or perp"
+                ))
+            })?,
+            None => market,
+        };
+        let by = text("tiers_by", "notional or quantity")?;
+        let tiers = match spec.get_item("tiers")?.filter(|rows| !rows.is_none()) {
+            Some(rows) => {
+                let rows = rows.extract().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "instruments[{i}]: tiers {} is not a list of rows; give rows of \
+                         (up_to, leverage, rate, amount)",
+                        shown(&rows)
+                    ))
+                })?;
+                tiers_from(rows, by.as_deref().unwrap_or(tiers_by)).map_err(|err| {
+                    PyValueError::new_err(format!("instruments[{i}]: {}", err.value(spec.py())))
+                })?
+            }
+            None => Tiers::default(),
+        };
+        out.push(Instrument {
+            market: Some(market),
+            tiers,
+        });
+    }
+    Ok(out)
 }
 
 /// Reject a fee rate at or below -1. A rebate larger than the notional turns the
@@ -711,7 +898,7 @@ fn trade_to_dict<'py>(
     engine: &BarEngine,
 ) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
-    d.set_item("instrument", 0)?;
+    d.set_item("instrument", trade.instrument)?;
     d.set_item(
         "side",
         if trade.side == Side::Buy {
@@ -750,7 +937,7 @@ fn fill_to_dict<'py>(
     let d = PyDict::new(py);
     d.set_item("bar", fill.tick)?;
     d.set_item("time", time)?;
-    d.set_item("instrument", 0)?;
+    d.set_item("instrument", fill.instrument)?;
     d.set_item("order", fill.order.map(|id| id.0))?;
     d.set_item("side", side_str(fill.side))?;
     d.set_item("size", fill.size)?;
@@ -769,6 +956,9 @@ fn fill_to_dict<'py>(
 /// How one ledger column is read off a row.
 type Column = fn(&LedgerRow) -> f64;
 
+/// How one instrument's ledger column is read off its leg of a row.
+type LegColumn = fn(&Leg) -> f64;
+
 fn refusal_text(why: Refusal) -> String {
     match why {
         Refusal::Waiting(n) => format!("max_open_orders: {n} already waiting"),
@@ -777,6 +967,7 @@ fn refusal_text(why: Refusal) -> String {
         Refusal::Price(price) => format!("limit: {price} is not a price"),
         Refusal::Trigger(trigger) => format!("stop: {trigger} is not a price"),
         Refusal::PostOnly => "post_only: it would take liquidity at the last close".to_string(),
+        Refusal::Unlisted => "the instrument has not printed its first bar".to_string(),
     }
 }
 
@@ -812,7 +1003,7 @@ fn event_to_dict<'py>(
     d.set_item("time", time)?;
     d.set_item("kind", event.kind.name())?;
     d.set_item("order", event.order.map(|id| id.0))?;
-    d.set_item("instrument", event.order.map(|_| 0))?;
+    d.set_item("instrument", event.instrument)?;
     d.set_item("size", event.size)?;
     d.set_item("price", event.price)?;
     d.set_item("reason", reason_text(event))?;
@@ -844,7 +1035,14 @@ fn fills_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'
     Ok(Some(list))
 }
 
-fn ledger_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'py, PyDict>>> {
+/// The ledger as columns, an instrument's six as a value a bar, or for a `universe` as
+/// a row of one per instrument a bar, so code that reads an instrument's column of a
+/// universe reads one of a single instrument the same way.
+fn ledger_of<'py>(
+    py: Python<'py>,
+    engine: &BarEngine,
+    universe: bool,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
     let Some(reporter) = engine.reporter() else {
         return Ok(None);
     };
@@ -855,7 +1053,7 @@ fn ledger_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<
     d.set_item("bar", PyArray1::from_vec(py, bars))?;
     let times: Option<Vec<i64>> = rows.iter().map(|row| engine.open_time(row.tick)).collect();
     d.set_item("time", times.map(|times| PyArray1::from_vec(py, times)))?;
-    let columns: [(&str, Column); 21] = [
+    let columns: [(&str, Column); 15] = [
         ("equity", |row| row.equity),
         ("spot_cash", |row| row.spot_cash),
         ("margin_cash", |row| row.margin_cash),
@@ -871,15 +1069,29 @@ fn ledger_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<
         ("impact", |row| row.costs.impact),
         ("liquidation", |row| row.costs.liquidation),
         ("dust", |row| row.costs.dust),
-        ("position", |row| row.position),
-        ("entry", |row| row.entry),
-        ("mark", |row| row.mark),
-        ("notional", |row| row.notional),
-        ("unrealized", |row| row.unrealized),
-        ("weight", |row| row.weight),
     ];
     for (name, get) in columns {
         d.set_item(name, PyArray1::from_vec(py, column(get)))?;
+    }
+    let width = engine.width();
+    let legs = reporter.legs();
+    let leg_columns: [(&str, LegColumn); 6] = [
+        ("position", |leg| leg.position),
+        ("entry", |leg| leg.entry),
+        ("mark", |leg| leg.mark),
+        ("notional", |leg| leg.notional),
+        ("unrealized", |leg| leg.unrealized),
+        ("weight", |leg| leg.weight),
+    ];
+    for (name, get) in leg_columns {
+        let values: Vec<f64> = legs.iter().map(get).collect();
+        if !universe {
+            d.set_item(name, PyArray1::from_vec(py, values))?;
+        } else {
+            let values = Array2::from_shape_vec((rows.len(), width), values)
+                .expect("a leg per instrument on every row");
+            d.set_item(name, PyArray2::from_owned_array(py, values))?;
+        }
     }
     Ok(Some(d))
 }
@@ -1019,6 +1231,7 @@ impl Engine {
             funding_hours,
             funding_times,
             funding_rates,
+            None,
         )?;
         let series = match tiers {
             Some(rows) => series.with_tiers(tiers_from(rows, tiers_by)?),
@@ -1373,7 +1586,7 @@ impl Engine {
     /// impact, the liquidation charge and dust, and the position, its entry, mark,
     /// notional, unrealized PnL and weight (ADR 0022).
     fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        ledger_of(py, &self.inner)
+        ledger_of(py, &self.inner, false)
     }
 
     /// The order log as a list of dicts, one per event in the order they happened,
@@ -1529,6 +1742,7 @@ impl Batch {
             funding_hours,
             funding_times,
             funding_rates,
+            None,
         )?;
 
         // Per-env cost randomization (ADR 0038): each override, if given, replaces
@@ -1935,28 +2149,51 @@ impl<'py> Arguments<'_, 'py> {
         }
     }
 
-    /// At one instrument there is only instrument 0 to name.
-    fn instrument(&self) -> PyResult<()> {
-        match self.value("instrument")? {
-            Some(value) if value.extract::<usize>().ok() != Some(0) => {
-                Err(PyValueError::new_err(format!(
-                    "{}: instrument {} is not one the engine holds; name 0, the one it \
-                     holds, or leave it out",
-                    self.at,
-                    shown(&value)
-                )))
-            }
-            _ => Ok(()),
+    /// The instrument an action names, one of the `width` the engine holds, or
+    /// `None` where it names none.
+    fn instrument(&self, width: usize) -> PyResult<Option<usize>> {
+        let Some(value) = self.value("instrument")? else {
+            return Ok(None);
+        };
+        match value.extract::<usize>() {
+            Ok(i) if i < width => Ok(Some(i)),
+            _ if width == 1 => Err(PyValueError::new_err(format!(
+                "{}: instrument {} is not one the engine holds; name 0, the one it holds, \
+                 or leave it out",
+                self.at,
+                shown(&value)
+            ))),
+            _ => Err(PyValueError::new_err(format!(
+                "{}: instrument {} is not one the engine holds; name one counted from 0, of \
+                 the {width}",
+                self.at,
+                shown(&value)
+            ))),
+        }
+    }
+
+    /// The instrument an order or a close names, which a universe of several needs
+    /// it to.
+    fn traded(&self, width: usize) -> PyResult<usize> {
+        match self.instrument(width)? {
+            Some(i) => Ok(i),
+            None if width == 1 => Ok(0),
+            None => Err(PyValueError::new_err(format!(
+                "{}: {} names no instrument; name one counted from 0, of the {width}",
+                self.at, self.verb
+            ))),
         }
     }
 }
 
-/// Read one script action, `placements` being how many the script made before it.
+/// Read one script action, `placements` being how many the script made before it
+/// and `width` the instruments the engine holds.
 fn read_action(
     at: &str,
     verb: &str,
     given: &Bound<'_, PyDict>,
     placements: usize,
+    width: usize,
 ) -> PyResult<Action> {
     let takes: &[&str] = match verb {
         "buy" | "sell" => &[
@@ -1995,7 +2232,7 @@ fn read_action(
     let args = Arguments { at, verb, given };
     let action = match verb {
         "buy" | "sell" => {
-            args.instrument()?;
+            let instrument = args.traded(width)?;
             let Some(size) = args.number("size")? else {
                 return Err(PyValueError::new_err(format!(
                     "{at}: {verb} has no size; give it one, in base units"
@@ -2015,6 +2252,7 @@ fn read_action(
             };
             let tif = args.text("tif", "gtc", "gtc, ioc or fok")?;
             Action::Order {
+                instrument,
                 side: if verb == "buy" { Side::Buy } else { Side::Sell },
                 size,
                 kind,
@@ -2029,14 +2267,8 @@ fn read_action(
                 })?,
             }
         }
-        "close" => {
-            args.instrument()?;
-            Action::Close
-        }
-        "cancel_all" => {
-            args.instrument()?;
-            Action::CancelAll
-        }
+        "close" => Action::Close(args.traded(width)?),
+        "cancel_all" => Action::CancelAll(args.instrument(width)?),
         "cancel" => Action::Cancel(args.order(placements)?),
         "replace" => Action::Replace {
             order: args.order(placements)?,
@@ -2061,9 +2293,14 @@ fn read_action(
 }
 
 /// Read a script: a dict from a bar to the actions taken at its close, each a verb
-/// and a dict of its arguments, into the actions of each of the `bars`. A decision
-/// on the last bar or after it could never fill, so it is refused.
-fn read_script<'py>(script: &Bound<'py, PyDict>, bars: usize) -> PyResult<Vec<Vec<Action>>> {
+/// and a dict of its arguments, into the actions of each of the `bars`, on `width`
+/// instruments. A decision on the last bar or after it could never fill, so it is
+/// refused.
+fn read_script<'py>(
+    script: &Bound<'py, PyDict>,
+    bars: usize,
+    width: usize,
+) -> PyResult<Vec<Vec<Action>>> {
     let mut entries = Vec::with_capacity(script.len());
     for (bar, actions) in script.iter() {
         let Ok(t) = bar.extract::<usize>() else {
@@ -2104,8 +2341,8 @@ fn read_script<'py>(script: &Bound<'py, PyDict>, bars: usize) -> PyResult<Vec<Ve
                     shown(&action)
                 )));
             };
-            let action = read_action(&at, &verb, &given, placements)?;
-            if matches!(action, Action::Order { .. } | Action::Close) {
+            let action = read_action(&at, &verb, &given, placements, width)?;
+            if matches!(action, Action::Order { .. } | Action::Close(_)) {
                 placements += 1;
             }
             out[t].push(action);
@@ -2114,20 +2351,174 @@ fn read_script<'py>(script: &Bound<'py, PyDict>, bars: usize) -> PyResult<Vec<Ve
     Ok(out)
 }
 
+/// The engine `run` plays a universe through: `Engine`'s settings over the candles of
+/// N instruments, `(T, N, 5)`, with each instrument's market and tier table in
+/// `instruments`, or `market` and `tiers` for every one, and the instrument each of
+/// `funding_times` charges in `funding_instruments`. A number for `quote` funds the
+/// one wallet a universe of one kind uses, and a universe holding both kinds names
+/// each wallet's cash.
+#[pyfunction]
+#[pyo3(name = "run", signature = (
+    candles,
+    market = "spot",
+    quote = Opening::Cash(10_000.0),
+    fee_taker = 0.0006,
+    fee_maker = 0.0002,
+    slippage_bps = 0.0,
+    max_fill_fraction = 1.0,
+    max_open_orders = 8,
+    report = false,
+    leverage = 10.0,
+    impact = 0.0,
+    funding_rate = 0.0,
+    funding_interval = 0,
+    times = None,
+    funding_hours = 0.0,
+    funding_times = None,
+    funding_rates = None,
+    funding_instruments = None,
+    tiers = None,
+    tiers_by = "notional",
+    instruments = None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn universe_engine(
+    candles: PyReadonlyArray3<'_, f64>,
+    market: &str,
+    quote: Opening,
+    fee_taker: f64,
+    fee_maker: f64,
+    slippage_bps: f64,
+    max_fill_fraction: f64,
+    max_open_orders: usize,
+    report: bool,
+    leverage: f64,
+    impact: f64,
+    funding_rate: f64,
+    funding_interval: usize,
+    times: Option<PyReadonlyArray1<'_, i64>>,
+    funding_hours: f64,
+    funding_times: Option<PyReadonlyArray1<'_, i64>>,
+    funding_rates: Option<PyReadonlyArray1<'_, f64>>,
+    funding_instruments: Option<Vec<Option<i64>>>,
+    tiers: Option<Vec<Vec<f64>>>,
+    tiers_by: &str,
+    instruments: Option<Vec<Bound<'_, PyDict>>>,
+) -> PyResult<Engine> {
+    let series = candles_from_universe(candles, times)?;
+    let width = series.width();
+    let named = parse_market(market)?;
+    tier_basis(tiers_by)?;
+    if width.saturating_mul(max_open_orders) > MAX_BOOK_SLOTS {
+        return Err(PyValueError::new_err(format!(
+            "max_open_orders: {max_open_orders} for each of {width} instruments is {} slots, \
+             past {MAX_BOOK_SLOTS}; lower it",
+            width.saturating_mul(max_open_orders)
+        )));
+    }
+    let funding_instruments = match funding_instruments {
+        Some(given) => {
+            let mut out = Vec::with_capacity(given.len());
+            for (row, instrument) in given.into_iter().enumerate() {
+                match instrument.map(usize::try_from) {
+                    Some(Ok(i)) if i < width => out.push(Some(i)),
+                    None => out.push(None),
+                    _ => {
+                        return Err(PyValueError::new_err(format!(
+                            "funding_instruments: row {row} names instrument {}, of {width}; \
+                             name one counted from 0, or None for every perp held",
+                            instrument.unwrap_or(0)
+                        )))
+                    }
+                }
+            }
+            Some(out)
+        }
+        None => None,
+    };
+    let specs = match instruments {
+        Some(_) if tiers.is_some() => {
+            return Err(PyValueError::new_err(
+                "tiers: given beside instruments; give each instrument its own there",
+            ))
+        }
+        Some(given) => instruments_from(given, width, named, tiers_by)?,
+        None => {
+            let tiers = match tiers {
+                Some(rows) => tiers_from(rows, tiers_by)?,
+                None => Tiers::default(),
+            };
+            vec![
+                Instrument {
+                    market: Some(named),
+                    tiers,
+                };
+                width
+            ]
+        }
+    };
+    let spot = specs.iter().any(|spec| spec.market == Some(Market::Spot));
+    let perp = specs.iter().any(|spec| spec.market == Some(Market::Perp));
+    let market = match (spot, perp, &quote) {
+        (true, true, Opening::Cash(cash)) => {
+            return Err(PyValueError::new_err(format!(
+                "quote: {cash} funds one wallet and this universe uses both; pass \
+                 {{\"spot\": s, \"margin\": m}}"
+            )))
+        }
+        (true, false, _) => "spot",
+        (false, true, _) => "perp",
+        _ => market,
+    };
+    let config = build_config(
+        market,
+        quote,
+        fee_taker,
+        fee_maker,
+        slippage_bps,
+        max_fill_fraction,
+        max_open_orders,
+        report,
+        leverage,
+        impact,
+        funding_rate,
+        funding_interval,
+    )?;
+    let series = place_funding(
+        series.with_instruments(specs),
+        funding_rate,
+        funding_interval,
+        funding_hours,
+        funding_times,
+        funding_rates,
+        funding_instruments,
+    )?;
+    Ok(Engine {
+        inner: BarEngine::new(series, config),
+    })
+}
+
 /// Play `script` over `candles` at `venue` in one call and return what the run
 /// recorded: its ledger, fill log, order log and round trips, as `Engine` hands
-/// them out. `venue` takes `Engine`'s settings by name. `script` maps a bar to the
-/// actions taken at its close, each a verb and a dict of its arguments: `buy` and
-/// `sell` with a `size`, and a `limit` or a `stop`, `tif`, `post_only` and
-/// `reduce_only`; `close` and `cancel_all`; `cancel` and `replace` naming an
-/// `order`, the second with the `price`, `trigger` or `size` it moves to; and
-/// `transfer` with an `amount` and the wallet it goes `to`, the margin wallet
-/// unless named. `buy`, `sell`, `close` and `cancel_all` take `instrument` too,
-/// which at one instrument can only be 0. An order is named by an earlier placement
-/// in the script, counting its buys, sells and closes from 0, which names nothing
-/// once the engine refused that placement or a close found nothing to close, or as
-/// `"oldest"`, the oldest order still resting. The comparison with the reference
-/// simulator and the tests drive the engine through this.
+/// them out. `candles` is `(T, 5)` for one instrument, or `(T, N, 5)` for a universe
+/// of N, an instrument that printed no bar on a row holding NaN in all five values
+/// there. `venue` takes `Engine`'s settings by name, and for a universe
+/// `instruments`, a dict per instrument with its `market`, `tiers` and `tiers_by`,
+/// and `funding_instruments`, the instrument each of `funding_times` charges or None
+/// for every perp held. `script` maps a bar to the actions taken at its close, each a
+/// verb and a dict of its arguments: `buy` and `sell` with a `size`, and a `limit` or
+/// a `stop`, `tif`, `post_only` and `reduce_only`; `close` and `cancel_all`;
+/// `cancel` and `replace` naming an `order`, the second with the `price`, `trigger`
+/// or `size` it moves to; and `transfer` with an `amount` and the wallet it goes
+/// `to`, the margin wallet unless named. `buy`, `sell` and `close` name the
+/// `instrument` they trade, counted from 0, which one instrument leaves out, and
+/// `cancel_all` cancels one instrument's orders when it names one and every order
+/// when it does not. An order is named by an earlier placement in the script,
+/// counting its buys, sells and closes from 0, which names nothing once the engine
+/// refused that placement or a close found nothing to close, or as `"oldest"`, the
+/// oldest order still resting. The ledger gives each instrument's columns a value a
+/// bar at one instrument and a row of N a bar for a universe. The comparison with
+/// the reference simulator and the tests drive the engine through this.
 #[pyfunction]
 #[pyo3(name = "run", signature = (candles, venue, script, times = None))]
 fn run_script<'py>(
@@ -2145,18 +2536,24 @@ fn run_script<'py>(
         settings.set_item("times", times)?;
     }
     settings.set_item("report", true)?;
-    let engine = py
-        .get_type::<Engine>()
-        .call((candles,), Some(&settings))?
-        .cast_into::<Engine>()?;
+    let universe = candles
+        .cast::<PyUntypedArray>()
+        .is_ok_and(|array| array.ndim() == 3);
+    let engine = if universe {
+        wrap_pyfunction!(universe_engine, py)?.call((candles,), Some(&settings))?
+    } else {
+        py.get_type::<Engine>().call((candles,), Some(&settings))?
+    };
+    let engine = engine.cast_into::<Engine>()?;
     let mut engine = engine.borrow_mut();
-    let mut script = Script::new(read_script(&script, engine.inner.num_bars())?);
+    let bars = engine.inner.num_bars();
+    let mut script = Script::new(read_script(&script, bars, engine.inner.width())?);
     let inner = &mut engine.inner;
     py.detach(|| {
         probatum_engine::run(inner, &mut script);
     });
     let out = PyDict::new(py);
-    out.set_item("ledger", ledger_of(py, &engine.inner)?)?;
+    out.set_item("ledger", ledger_of(py, &engine.inner, universe)?)?;
     out.set_item("fills", fills_of(py, &engine.inner)?)?;
     out.set_item("order_log", order_log_of(py, &engine.inner)?)?;
     out.set_item("trades", round_trips_of(py, &engine.inner)?)?;

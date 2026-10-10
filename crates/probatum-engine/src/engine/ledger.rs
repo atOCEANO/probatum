@@ -5,6 +5,7 @@
 use probatum_core::{CostModel, Fill, OrderId, Side};
 
 use super::{Engine, CLOSE_EPS};
+use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord, RoundTrip};
 
@@ -21,20 +22,24 @@ pub(super) enum Moment {
 }
 
 impl Engine {
-    /// The position fields a fill has to be compared against once it has landed.
-    pub(super) fn before_fill(&self) -> (f64, f64, f64) {
+    /// Instrument `i`'s position fields a fill has to be compared against once it
+    /// has landed.
+    pub(super) fn before_fill(&self, i: usize) -> (f64, f64, f64) {
+        let position = &self.account.positions[i];
         (
-            self.account.position.qty.get(),
-            self.account.position.avg_entry.get(),
-            self.account.realized(),
+            position.qty.get(),
+            position.avg_entry.get(),
+            position.realized,
         )
     }
 
-    /// Clamp `fill`, bound it by the margin, book it and log it as `order`'s, with
-    /// `costs` the fill model measured and `requested` what the order still asked
-    /// for. Returns the size that landed.
+    /// Clamp `fill` on instrument `i`, bound it by the margin, book it and log it as
+    /// `order`'s, with `costs` the fill model measured and `requested` what the order
+    /// still asked for. Returns the size that landed.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_fill_clamped(
         &mut self,
+        i: usize,
         order: OrderId,
         reason: FillReason,
         reduce_only: bool,
@@ -42,17 +47,18 @@ impl Engine {
         fill: Fill,
         costs: FillCosts,
     ) -> f64 {
-        let mut fill = self.clamp_fill(reduce_only, &fill);
+        let mut fill = self.clamp_fill(i, reduce_only, &fill);
         if fill.size.get() <= 0.0 {
             return 0.0;
         }
         let priced = fill.price.get();
-        self.bound_by_margin(&mut fill);
+        self.bound_by_margin(i, &mut fill);
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
-        let before = self.before_fill();
-        self.account.apply_fill(&fill, fee);
+        let before = self.before_fill(i);
+        self.account.apply_fill(i, &fill, fee);
         self.book_fill(
+            i,
             applied,
             fill.price.get(),
             fee,
@@ -76,6 +82,7 @@ impl Engine {
             bar.liquidation -= applied * (fill.price.get() - priced).abs();
             reporter.record_fill(FillRecord {
                 tick: self.tick,
+                instrument: i,
                 order: Some(order),
                 side: fill.side,
                 size: applied,
@@ -93,6 +100,7 @@ impl Engine {
             self.log_event(
                 EventKind::Clamped,
                 Some(order),
+                Some(i),
                 Some(applied),
                 None,
                 EventReason::Fits { asked: requested },
@@ -107,6 +115,7 @@ impl Engine {
         self.log_event(
             EventKind::Filled,
             Some(order),
+            Some(i),
             Some(applied),
             Some(fill.price.get()),
             why,
@@ -114,7 +123,7 @@ impl Engine {
         applied
     }
 
-    /// Book what a fill just did to the account: count it, and with reporting on,
+    /// Book what a fill on instrument `i` just did to the account: count it, and with reporting on,
     /// carry it into the round trips. Whatever it closed shrinks or ends the round
     /// trip standing, and whatever it opened grows it or begins the next, each part
     /// with its share of the fee, so a flip's fee is split by size between the round
@@ -124,8 +133,10 @@ impl Engine {
     /// close the position on the account directly and reach none of it, so the
     /// forced close appeared in no trade, counted toward no fill, and left the dead
     /// position's entry fee standing to be charged against the NEXT trade.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn book_fill(
         &mut self,
+        i: usize,
         applied: f64,
         price: f64,
         fee: f64,
@@ -135,13 +146,13 @@ impl Engine {
     ) {
         let (pos_before, _, realized_before) = before;
         self.fills += 1;
-        let pos_after = self.account.position.qty.get();
-        let realized = self.account.realized() - realized_before;
+        let pos_after = self.account.positions[i].qty.get();
+        let realized = self.account.positions[i].realized - realized_before;
         let tick = self.tick;
         let Some(reporter) = self.reporter.as_mut() else {
             return;
         };
-        let bar = self.candles.get(tick).expect("tick in range");
+        let bar = self.candles.bar(tick, i);
 
         // The base amount the fill moved the position toward zero: a reduce keeps
         // the same-side remainder, a close or flip keeps none of the old side.
@@ -157,11 +168,12 @@ impl Engine {
         let opened = applied - closed;
 
         if closed > CLOSE_EPS {
-            if let Some(trip) = reporter.trip_mut() {
+            if let Some(trip) = reporter.trip_mut(i) {
                 // the part of this bar a round trip carried into it lived through: up
                 // to the fill from the open, the whole bar when it closed at the
-                // close, and none of it when it closed before the bar opened
-                if trip.open_tick != tick {
+                // close, and none of it when it closed before the bar opened or on a
+                // row its instrument printed no bar on
+                if trip.open_tick != tick && printed(&bar) {
                     match moment {
                         Moment::BeforeOpen => {}
                         Moment::InBar => trip.see(bar.open),
@@ -174,12 +186,12 @@ impl Engine {
                 trip.shrink(closed, price, fee * closed / applied, realized);
             }
             if pos_after.abs() <= CLOSE_EPS || (pos_before > 0.0) != (pos_after > 0.0) {
-                reporter.close_trip(tick, reason);
+                reporter.close_trip(i, tick, reason);
             }
         }
         if opened > CLOSE_EPS && pos_after.abs() > CLOSE_EPS {
             let share = fee * opened / applied;
-            match reporter.trip_mut() {
+            match reporter.trip_mut(i) {
                 Some(trip) => trip.grow(opened, price, share),
                 None => {
                     let side = if pos_after > 0.0 {
@@ -187,11 +199,11 @@ impl Engine {
                     } else {
                         Side::Sell
                     };
-                    reporter.open_trip(RoundTrip::open(side, tick, opened, price, share));
+                    reporter.open_trip(RoundTrip::open(i, side, tick, opened, price, share));
                 }
             }
         }
-        if let Some(trip) = reporter.trip_mut() {
+        if let Some(trip) = reporter.trip_mut(i) {
             trip.size = trip.size.max(pos_after.abs());
         }
     }
@@ -521,8 +533,9 @@ mod tests {
             price: Price(100.0),
             is_taker: true,
         };
-        assert_eq!(e.clamp_fill(false, &dust).size.get(), 0.0);
+        assert_eq!(e.clamp_fill(0, false, &dust).size.get(), 0.0);
         let applied = e.apply_fill_clamped(
+            0,
             OrderId(1),
             FillReason::Market,
             false,
@@ -864,15 +877,16 @@ mod tests {
         e.market_buy(2.0);
         e.step(); // 2 at the open of 200, a fee of 0.4
         e.step();
-        let ledger = e.reporter().expect("reporting is on").ledger();
+        let reporter = e.reporter().expect("reporting is on");
+        let ledger = reporter.ledger();
         assert_eq!(ledger.len(), 3, "one row per bar, the opening one included");
         assert_eq!((ledger[0].tick, ledger[0].equity), (0, 10_000.0));
         assert_eq!(ledger[0].costs, BarCosts::default());
-        let row = ledger[1];
+        let (row, leg) = (ledger[1], reporter.legs()[1]);
         assert!((row.costs.fees - 0.4).abs() < 1e-12);
-        assert_eq!((row.position, row.entry, row.mark), (2.0, 200.0, 250.0));
-        assert_eq!((row.notional, row.unrealized), (500.0, 100.0));
-        assert!((row.weight - 500.0 / row.equity).abs() < 1e-12);
+        assert_eq!((leg.position, leg.entry, leg.mark), (2.0, 200.0, 250.0));
+        assert_eq!((leg.notional, leg.unrealized), (500.0, 100.0));
+        assert!((leg.weight - 500.0 / row.equity).abs() < 1e-12);
         assert_eq!(ledger[2].costs, BarCosts::default());
     }
 
@@ -923,9 +937,10 @@ mod tests {
         assert!(ledger.iter().any(|row| row.costs.liquidation != 0.0));
         for t in 1..ledger.len() {
             let (was, row) = (ledger[t - 1], ledger[t]);
-            let mut pnl = was.position * (row.mark - was.mark);
+            let (held, leg) = (reporter.legs()[t - 1], reporter.legs()[t]);
+            let mut pnl = held.position * (leg.mark - held.mark);
             for fill in reporter.fills().iter().filter(|fill| fill.tick == t) {
-                pnl += fill.side.sign() * fill.size * (row.mark - fill.costs.reference);
+                pnl += fill.side.sign() * fill.size * (leg.mark - fill.costs.reference);
             }
             let c = row.costs;
             let costs = c.spread + c.slippage + c.impact + c.fees + c.funding;
@@ -1048,8 +1063,9 @@ mod tests {
         dead.reset();
         dead.market_buy(10.0);
         dead.step();
-        let row = dead.reporter().expect("reporting is on").ledger()[1];
-        assert_eq!((row.equity, row.position), (0.0, 0.0));
-        assert_eq!((row.leverage, row.weight), (0.0, 0.0));
+        let reporter = dead.reporter().expect("reporting is on");
+        let (row, leg) = (reporter.ledger()[1], reporter.legs()[1]);
+        assert_eq!((row.equity, leg.position), (0.0, 0.0));
+        assert_eq!((row.leverage, leg.weight), (0.0, 0.0));
     }
 }

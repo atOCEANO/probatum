@@ -22,25 +22,33 @@ impl Engine {
         }
     }
 
-    /// Apply the transfers decided at the last close, `mark`, each held to what the
-    /// wallet it leaves may give.
-    pub(super) fn apply_transfers(&mut self, mark: f64) {
-        for i in 0..self.transfers.len() {
-            let (amount, to) = self.transfers[i];
+    /// Apply the transfers decided at the last closes, each held to what the wallet
+    /// it leaves may give.
+    pub(super) fn apply_transfers(&mut self) {
+        for k in 0..self.transfers.len() {
+            let (amount, to) = self.transfers[k];
             // the cash the margin wallet keeps: what still covers the requirement once
             // its unrealized PnL is counted, floored at zero so a profit cannot move
-            let keep = match (to, self.config.market) {
-                (Wallet::Spot, Market::Perp) => {
-                    let unrealized = self.account.unrealized(Price(mark));
-                    (self.requirement(mark) - unrealized).max(0.0)
+            let keep = match to {
+                Wallet::Spot => {
+                    let unrealized: f64 = (0..self.marks.len())
+                        .filter(|&i| self.account.markets[i] == Market::Perp)
+                        .filter(|&i| self.account.positions[i].qty.get() != 0.0)
+                        .map(|i| self.account.unrealized(i, Price(self.marks[i])))
+                        .sum();
+                    let required: f64 = (0..self.marks.len())
+                        .map(|i| self.requirement(i, self.marks[i]))
+                        .sum();
+                    (required - unrealized).max(0.0)
                 }
-                _ => 0.0,
+                Wallet::Margin => 0.0,
             };
             let allowed = (self.account.cash(to.other()) - keep).max(0.0);
             let moved = amount.min(allowed);
             if moved < amount {
                 self.log_event(
                     EventKind::Clamped,
+                    None,
                     None,
                     Some(moved),
                     None,

@@ -1,28 +1,31 @@
-//! What a fill may do to the position, given what stands behind it. On a perp the
-//! position may not grow past `max_leverage` times equity (ADR 0015), on spot a
-//! sell may not open a short and a buy may not spend more cash than there is, and
-//! a reduce-only order may only shrink the position. Every clamp works on a copy,
-//! so an all-or-nothing order is judged against what would really be booked.
+//! What a fill may do to a position, given what stands behind it. On a perp the
+//! positions may not grow past what margin equity carries, each at the leverage of
+//! its tier or of the venue (ADR 0015), on spot a sell may not open a short and a
+//! buy may not spend more cash than there is, and a reduce-only order may only
+//! shrink the position. Every clamp works on a copy, so an all-or-nothing order is
+//! judged against what would really be booked.
 
-use probatum_core::{Fill, Market, Price, Qty, Side, TierBasis, Wallet};
+use probatum_core::{Fill, Market, Price, Qty, Side, TierBasis};
 
 use super::{Engine, CLOSE_EPS};
 
 impl Engine {
-    /// Clamp a fill so it does not grow the position past the perp margin cap
-    /// (`max_leverage` times the margin wallet's equity, in notional). Reductions
-    /// are never capped, and a position already over the cap (from an equity drop)
-    /// is not force-reduced, only blocked from growing. With no cap set only an
-    /// insolvent account is held, to reductions. No-op on spot.
-    fn cap_leverage(&self, fill: &mut Fill) {
-        if self.config.market != Market::Perp {
+    /// Clamp a fill on perp `i` so it does not grow the positions past the margin
+    /// cap: summed over the perps, each notional over its leverage may not exceed
+    /// the margin wallet's equity, the fill's own instrument at the fill's price and
+    /// every other at its last mark. Reductions are never capped, and a position
+    /// already over the cap (from an equity drop) is not force-reduced, only blocked
+    /// from growing. With no cap set only an insolvent account is held, to
+    /// reductions. No-op on spot.
+    fn cap_leverage(&self, i: usize, fill: &mut Fill) {
+        if self.account.markets[i] != Market::Perp {
             return;
         }
         let mark = fill.price.get();
         if !mark.is_finite() || mark <= 0.0 {
             return;
         }
-        let equity = self.account.wallet_equity(Wallet::Margin, Price(mark));
+        let equity = self.margin_equity_with(i, mark);
         // No equity backs new notional, so an insolvent account may only shrink. It
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
@@ -33,9 +36,18 @@ impl Engine {
         let max_size = if equity <= 0.0 {
             0.0
         } else {
-            self.max_size(mark, equity)
+            let own = usize::from(!self.account.positions[i].is_flat());
+            let others: f64 = if self.account.perps_held() > own {
+                (0..self.account.positions.len())
+                    .filter(|&j| j != i)
+                    .map(|j| self.requirement(j, self.marks[j]))
+                    .sum()
+            } else {
+                0.0
+            };
+            self.max_size(i, mark, (equity - others).max(0.0))
         };
-        let pos = self.account.position.qty.get();
+        let pos = self.account.positions[i].qty.get();
         let new_pos = pos + fill.side.sign() * fill.size.get();
         // A same-side grow may keep an existing over-cap position (from an equity
         // drop) but not extend it, so the allowance is the larger of the cap and
@@ -59,23 +71,64 @@ impl Engine {
         }
     }
 
-    /// The largest position `room` of margin equity carries at `price`. Through a
-    /// tier table the requirement is the notional over its tier's leverage, which
-    /// rises with the size and jumps up at each bound, so the answer lies in the
-    /// first tier that cannot carry its own bound, and never past the table's last
-    /// bound, where a fill is held (ADR 0015).
-    fn max_size(&self, price: f64, room: f64) -> f64 {
-        let Some(tiers) = self
-            .candles
-            .tiers()
-            .filter(|tiers| !tiers.rows().is_empty())
-        else {
+    /// The margin wallet's equity with instrument `i` at `price` and every other
+    /// perp at its last mark.
+    pub(super) fn margin_equity_with(&self, i: usize, price: f64) -> f64 {
+        let held = self.account.perps_held();
+        let own = &self.account.positions[i];
+        let alone = self.account.markets[i] == Market::Perp && !own.is_flat();
+        if held == 0 || (held == 1 && alone) {
+            return if alone {
+                self.account.margin_cash + own.unrealized(Price(price))
+            } else {
+                self.account.margin_cash
+            };
+        }
+        let mut equity = self.account.margin_cash;
+        for (j, position) in self.account.positions.iter().enumerate() {
+            if self.account.markets[j] != Market::Perp || position.qty.get() == 0.0 {
+                continue;
+            }
+            let at = if j == i { price } else { self.marks[j] };
+            equity += position.unrealized(Price(at));
+        }
+        equity
+    }
+
+    /// The wallet a close of perp `i` is solved against: the margin wallet's cash,
+    /// and every other perp's unrealized PnL at its last mark less the `fee` its own
+    /// close would pay, so the account stays at or above its close level.
+    pub(super) fn wallet_beside(&self, i: usize, fee: f64) -> f64 {
+        let own = usize::from(!self.account.positions[i].is_flat());
+        if self.account.perps_held() <= own {
+            return self.account.margin_cash;
+        }
+        let mut wallet = self.account.margin_cash;
+        for (j, position) in self.account.positions.iter().enumerate() {
+            let qty = position.qty.get();
+            if j == i || self.account.markets[j] != Market::Perp || qty == 0.0 {
+                continue;
+            }
+            let mark = self.marks[j];
+            wallet += position.unrealized(Price(mark)) - qty.abs() * mark * fee;
+        }
+        wallet
+    }
+
+    /// The largest position on perp `i` that `room` of margin equity carries at
+    /// `price`. Through a tier table the requirement is the notional over its tier's
+    /// leverage, which rises with the size and jumps up at each bound, so the answer
+    /// lies in the first tier that cannot carry its own bound, and never past the
+    /// table's last bound, where a fill is held (ADR 0015).
+    fn max_size(&self, i: usize, price: f64, room: f64) -> f64 {
+        let tiers = self.candles.tiers(i);
+        if tiers.rows().is_empty() {
             return if self.config.max_leverage > 0.0 {
                 self.config.max_leverage * room / price
             } else {
                 f64::INFINITY
             };
-        };
+        }
         let mut low = 0.0;
         for tier in tiers.rows() {
             let high = match tiers.basis() {
@@ -101,19 +154,17 @@ impl Engine {
         low
     }
 
-    /// The maintenance the position keeps at `mark`: its notional times its tier's
-    /// rate, less the tier's amount on a notional table, and nothing without a table
-    /// or on spot. The trigger stays at zero equity until the liquidation path reads
-    /// this.
-    pub(super) fn maintenance(&self, mark: f64) -> f64 {
-        if self.config.market != Market::Perp {
+    /// The maintenance instrument `i`'s position keeps at `mark`: its notional
+    /// times its tier's rate, less the tier's amount on a notional table, and
+    /// nothing without a table or on spot. The trigger stays at zero equity until
+    /// the liquidation path reads this.
+    pub(super) fn maintenance(&self, i: usize, mark: f64) -> f64 {
+        if self.account.markets[i] != Market::Perp {
             return 0.0;
         }
-        let size = self.account.position.qty.get().abs();
+        let size = self.account.positions[i].qty.get().abs();
         let notional = size * mark;
-        let Some(tiers) = self.candles.tiers() else {
-            return 0.0;
-        };
+        let tiers = self.candles.tiers(i);
         match tiers.tier(size, notional) {
             Some(tier) if tier.rate > 0.0 && notional > 0.0 => match tiers.basis() {
                 TierBasis::Notional => notional * tier.rate - tier.amount,
@@ -123,21 +174,17 @@ impl Engine {
         }
     }
 
-    /// The margin the cap asks of the position at `mark`: its notional over the
-    /// leverage of its tier, or of the venue without a table, and nothing on spot or
-    /// with the cap off. A transfer out of the margin wallet has to leave it covered
-    /// (ADR 0008).
-    pub(super) fn requirement(&self, mark: f64) -> f64 {
-        if self.config.market != Market::Perp {
+    /// The margin the cap asks of instrument `i`'s position at `mark`: its notional
+    /// over the leverage of its tier, or of the venue without a table, and nothing
+    /// on spot, flat or with the cap off. A transfer out of the margin wallet has to
+    /// leave it covered (ADR 0008).
+    pub(super) fn requirement(&self, i: usize, mark: f64) -> f64 {
+        let size = self.account.positions[i].qty.get().abs();
+        if self.account.markets[i] != Market::Perp || size == 0.0 {
             return 0.0;
         }
-        let size = self.account.position.qty.get().abs();
         let notional = size * mark;
-        let leverage = match self
-            .candles
-            .tiers()
-            .and_then(|tiers| tiers.tier(size, notional))
-        {
+        let leverage = match self.candles.tiers(i).tier(size, notional) {
             Some(tier) => tier.leverage,
             None => self.config.max_leverage,
         };
@@ -152,11 +199,11 @@ impl Engine {
     /// current long, so it can flatten but never open or extend a short (ADR 0008).
     /// A sell from flat is clamped to nothing. No-op on perp, where a short is a
     /// normal signed position, and on a buy.
-    fn cap_spot_short(&self, fill: &mut Fill) {
-        if self.config.market != Market::Spot || fill.side != Side::Sell {
+    fn cap_spot_short(&self, i: usize, fill: &mut Fill) {
+        if self.account.markets[i] != Market::Spot || fill.side != Side::Sell {
             return;
         }
-        let pos = self.account.position.qty.get();
+        let pos = self.account.positions[i].qty.get();
         let sellable = pos.max(0.0);
         if fill.size.get() > sellable {
             fill.size = Qty(sellable);
@@ -168,8 +215,8 @@ impl Engine {
     /// is the buy-side mirror of `cap_spot_short`; spot has no borrow and no margin,
     /// so credit is refused rather than pretended (ADR 0008). No-op on perp, where
     /// the margin cap governs, and on a sell.
-    fn cap_spot_buy(&self, fill: &mut Fill) {
-        if self.config.market != Market::Spot || fill.side != Side::Buy {
+    fn cap_spot_buy(&self, i: usize, fill: &mut Fill) {
+        if self.account.markets[i] != Market::Spot || fill.side != Side::Buy {
             return;
         }
         let price = fill.price.get();
@@ -191,12 +238,13 @@ impl Engine {
         }
     }
 
-    /// Every risk clamp applied to a copy of `fill` without booking anything: the
-    /// perp margin cap, the spot short and cash clamps, then reduce_only. Returns
-    /// the fill that would actually be booked, so an all-or-nothing order can be
-    /// judged against the real fillable size rather than the raw liquidity the
-    /// fill model offered (ADR 0010). A refused fill comes back sized zero.
-    pub(super) fn clamp_fill(&self, reduce_only: bool, fill: &Fill) -> Fill {
+    /// Every risk clamp applied to a copy of `fill` on instrument `i` without
+    /// booking anything: the perp margin cap, the spot short and cash clamps, then
+    /// reduce_only. Returns the fill that would actually be booked, so an
+    /// all-or-nothing order can be judged against the real fillable size rather than
+    /// the raw liquidity the fill model offered (ADR 0010). A refused fill comes
+    /// back sized zero.
+    pub(super) fn clamp_fill(&self, i: usize, reduce_only: bool, fill: &Fill) -> Fill {
         let mut fill = *fill;
         // size is a positive magnitude; a non-positive or non-finite fill is not a
         // real trade, so it moves nothing and pays no fee. Neither is a price at or
@@ -212,11 +260,11 @@ impl Engine {
             fill.size = Qty(0.0);
             return fill;
         }
-        self.cap_leverage(&mut fill);
-        self.cap_spot_short(&mut fill);
-        self.cap_spot_buy(&mut fill);
+        self.cap_leverage(i, &mut fill);
+        self.cap_spot_short(i, &mut fill);
+        self.cap_spot_buy(i, &mut fill);
         if reduce_only {
-            let pos = self.account.position.qty.get();
+            let pos = self.account.positions[i].qty.get();
             let reduces =
                 (pos > 0.0 && fill.side == Side::Sell) || (pos < 0.0 && fill.side == Side::Buy);
             if !reduces {
@@ -241,14 +289,14 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use crate::candles::Candles;
+    use crate::candles::{Candles, Instrument};
     use crate::engine::fixtures::{
         cfg, crash_series, flat_series, ohlc, perp_cfg, report_cfg, series,
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::{EventKind, FillReason};
     use probatum_core::{
-        Candle, Fill, OrderType, Price, Qty, Side, Tier, TierBasis, Tiers, TimeInForce,
+        Candle, Fill, Market, OrderType, Price, Qty, Side, Tier, TierBasis, Tiers, TimeInForce,
     };
 
     #[test]
@@ -456,7 +504,7 @@ mod tests {
         e.reset();
         e.market_buy(2.0);
         e.step(); // long 2 @ 200
-        e.place_market(Side::Sell, 5.0, true, TimeInForce::Ioc); // reduce_only sell of 5
+        e.place_market(0, Side::Sell, 5.0, true, TimeInForce::Ioc); // reduce_only sell of 5
         let s = e.step(); // clamped to 2, so it closes rather than flipping to short 3
         assert_eq!(s.position, 0.0);
     }
@@ -467,7 +515,7 @@ mod tests {
         e.reset();
         e.market_buy(2.0);
         e.step(); // long 2
-        e.place_market(Side::Buy, 1.0, true, TimeInForce::Ioc); // reduce_only buy cannot increase
+        e.place_market(0, Side::Buy, 1.0, true, TimeInForce::Ioc); // reduce_only buy cannot increase
         let s = e.step();
         assert_eq!(s.position, 2.0);
     }
@@ -549,7 +597,7 @@ mod tests {
         e.reset();
         e.market_sell(2.0);
         e.step(); // short 2
-        e.place_market(Side::Buy, 5.0, true, TimeInForce::Ioc);
+        e.place_market(0, Side::Buy, 5.0, true, TimeInForce::Ioc);
         let s = e.step(); // clamped to 2, so it closes rather than flipping long
         assert_eq!(s.position, 0.0);
     }
@@ -734,7 +782,7 @@ mod tests {
                 is_taker: true,
             };
             assert_eq!(
-                e.clamp_fill(false, &fill).size.get(),
+                e.clamp_fill(0, false, &fill).size.get(),
                 0.0,
                 "{size} at {price}"
             );
@@ -866,5 +914,44 @@ mod tests {
                 row.maintenance
             );
         }
+    }
+
+    #[test]
+    fn the_cap_sums_the_requirement_of_every_perp() {
+        // the Specification's example: 10,000 of margin, BTC at 20x and ETH at 10x. A
+        // long of 1 BTC at 60,000 uses 3,000, so a market sell of 30 ETH at 3,000
+        // has room for (10,000 - 3,000) * 10 = 70,000 of notional, 23.333 ETH
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows: Vec<Candle> = (0..3)
+            .flat_map(|_| [flat(60_000.0), flat(3_000.0)])
+            .collect();
+        let at = |leverage| Instrument {
+            market: Some(Market::Perp),
+            tiers: Tiers::new(TierBasis::Notional, vec![tier(1e12, leverage)]).expect("a table"),
+        };
+        let bars = Candles::universe(rows, 2, None).with_instruments(vec![at(20.0), at(10.0)]);
+        let config = EngineConfig {
+            quote: 10_000.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        e.order_on(
+            1,
+            Side::Sell,
+            30.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            TimeInForce::Ioc,
+        );
+        e.step();
+        let held = e.reporter().expect("reporting is on").legs()[5].position;
+        assert!((held + 70_000.0 / 3_000.0).abs() < 1e-9, "sold {held}");
     }
 }

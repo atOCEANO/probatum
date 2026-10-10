@@ -308,6 +308,104 @@ def test_a_script_names_an_order_by_its_placement_or_as_the_oldest_resting():
     assert [event["kind"] for event in played["order_log"]] == ["placed", "refused"]
 
 
+def test_a_universe_with_an_instrument_nobody_trades_records_what_the_other_alone_does():
+    # a second instrument printing every row and never traded changes nothing the
+    # first records, and the ledger gives each instrument a column of its own
+    venue  = dict(market="perp", quote=10_000.0, fee_taker=0.0006, leverage=5.0)
+    script = {0: [("buy", {"size": 2.0, "instrument": 0}),
+                  ("sell", {"size": 1.0, "limit": 255.0, "instrument": 0})],
+              1: [("close", {"instrument": 0})]}
+    pair   = np.stack([series(), series() / 10.0], axis=1)
+    alone  = probatum._probatum.run(series(), venue, script)
+    played = probatum._probatum.run(pair, venue, script)
+
+    for record in ("fills", "order_log", "trades"):
+        assert played[record] == alone[record]
+
+    for name, column in alone["ledger"].items():
+        mine = played["ledger"][name]
+        if name in ("position", "entry", "mark", "notional", "unrealized", "weight"):
+            assert mine.shape == (3, 2)
+            mine = mine[:, 0]
+        np.testing.assert_array_equal(mine, column)
+
+
+def test_an_instrument_with_no_bar_on_a_row_waits_for_its_next():
+    # the second instrument prints nothing on the second row, so a buy decided at
+    # the first close fills at its third row's open, on instrument 1
+    pair = np.stack([series(), series() / 10.0], axis=1)
+    pair[1, 1] = np.nan
+
+    played = probatum._probatum.run(pair, dict(market="spot"),
+                                    {0: [("buy", {"size": 1.0, "instrument": 1})]})
+
+    [fill] = played["fills"]
+    assert (fill["bar"], fill["instrument"], fill["price"]) == (2, 1, 30.0)
+    assert played["ledger"]["mark"][1, 1] == 15.0
+
+
+def test_a_universe_s_instruments_take_the_venue_s_tiers_by_where_they_name_none():
+    # by quantity the 20x tier carries its bound of 10 and the 5x tier only 2.5
+    # at 200 on 100 of margin, so a buy of 15 is held at 10; by notional it would
+    # be held at 2.5
+    tiers = [(10.0, 20.0, 0.0, 0.0), (1e9, 5.0, 0.0, 0.0)]
+    pair  = np.stack([series(), series() / 10.0], axis=1)
+    venue = dict(market="perp", quote=100.0, fee_taker=0.0, tiers_by="quantity",
+                 instruments=[{"tiers": tiers}, {}])
+
+    played = probatum._probatum.run(
+        pair, venue, {0: [("buy", {"size": 15.0, "instrument": 0})]})
+
+    assert played["fills"][0]["size"] == 10.0
+
+
+def test_a_universe_of_one_keeps_an_instrument_column_per_instrument():
+    played = probatum._probatum.run(series()[:, None, :], None, {})
+
+    assert played["ledger"]["position"].shape == (3, 1)
+    assert played["ledger"]["equity"].shape   == (3,)
+
+
+@pytest.mark.parametrize("change, venue, script, says", [
+    (lambda c: c.__setitem__((1, 0, 2), np.nan), {}, {},
+     "row 1 gives instrument 0 NaN in some of its five values"),
+    (lambda c: c.__setitem__((1, 0, 1), np.inf), {}, {},
+     "row 1 gives instrument 0 a value of inf"),
+    (lambda c: c.__setitem__((1, slice(None)), np.nan), {}, {},
+     "row 1 holds no instrument's bar"),
+    (None, {}, {0: [("buy", {"size": 1.0})]}, "buy names no instrument"),
+    (None, {}, {0: [("buy", {"size": 1.0, "instrument": 2})]},
+     "instrument 2 is not one the engine holds"),
+    (None, {"instruments": [{"market": "perp"}]}, {}, "instruments: 1 for the 2"),
+    (None, {"instruments": [{"market": "spot"}, {"market": "perp"}]}, {},
+     "quote: 10000 funds one wallet and this universe uses both"),
+    (None, {"instruments": [{"kind": "spot"}, {}]}, {}, '"kind" is not a setting'),
+    (None, {"instruments": [{1: "spot"}, {}]}, {}, "1 is not a setting's name"),
+    (None, {"instruments": [{"market": 1}, {}]}, {},
+     "instruments[0]: market 1 is not a string"),
+    (None, {"instruments": [{}, {"tiers": 3.0}]}, {},
+     "instruments[1]: tiers 3.0 is not a list of rows"),
+    (None, {"funding_instruments": [None]}, {}, "given without funding_times"),
+    (None, {"funding_instruments": [-1]}, {}, "row 0 names instrument -1, of 2"),
+    (None, {"fee": 0.001}, {}, "run() got an unexpected keyword argument 'fee'"),
+])
+def test_a_universe_the_engine_cannot_play_is_refused(change, venue, script, says):
+    pair = np.stack([series(), series() / 10.0], axis=1)
+    if change is not None:
+        change(pair)
+
+    error = TypeError if "keyword" in says else ValueError
+    with pytest.raises(error, match=re.escape(says)):
+        probatum._probatum.run(pair, venue, script)
+
+
+def test_a_universe_s_book_is_bounded_in_all():
+    # each instrument may ask 4,096 slots, and 257 of them would allocate past the
+    # bound up front
+    with pytest.raises(ValueError, match="is 1052672 slots, past 1048576; lower it"):
+        probatum._probatum.run(np.ones((3, 257, 5)), {"max_open_orders": 4096}, {})
+
+
 @pytest.mark.parametrize("script, says", [
     ({0: [("hold", {})]}, '"hold" is not a verb'),
     ({0: [("buy", {"size": 1.0, "price": 99.0})]}, "buy takes no price"),

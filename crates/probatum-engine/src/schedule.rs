@@ -12,18 +12,30 @@ const SNAP: i64 = 1_000_000_000;
 /// Each row's funding events, placed once and shared by every env on the series.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schedule {
-    // per row, the rate of each event it owns and whether its stamp falls inside the
-    // row rather than at its end
-    owned: Vec<Vec<(f64, bool)>>,
-    // per row, the rate of each event stamped between the row before and this one
-    between: Vec<Vec<f64>>,
+    // per row, the rate of each event it owns, whether its stamp falls inside the row
+    // rather than at its end, and the instrument it charges, `None` for every perp
+    owned: Vec<Vec<(f64, bool, Option<usize>)>>,
+    // per row, the rate and the instrument of each event stamped between the row
+    // before and this one
+    between: Vec<Vec<(f64, Option<usize>)>>,
 }
 
 impl Schedule {
-    /// Place `events`, each a stamp in UTC nanoseconds and a rate, on `clock`, in
-    /// the order given. An event at or before the first open, or after the last
-    /// row's end, falls outside the run and charges nothing.
+    /// Place `events`, each a stamp in UTC nanoseconds and a rate charged on every
+    /// perp held, on `clock`.
     pub fn new(clock: &Clock, events: &[(i64, f64)]) -> Schedule {
+        let events: Vec<_> = events
+            .iter()
+            .map(|&(stamp, rate)| (stamp, None, rate))
+            .collect();
+        Schedule::tagged(clock, &events)
+    }
+
+    /// Place `events`, each a stamp in UTC nanoseconds, the instrument it charges or
+    /// `None` for every perp held, and a rate, on `clock`, in the order given. An
+    /// event at or before the first open, or after the last row's end, falls outside
+    /// the run and charges nothing.
+    pub fn tagged(clock: &Clock, events: &[(i64, Option<usize>, f64)]) -> Schedule {
         let times = clock.times();
         let interval = clock.interval();
         let mut owned = vec![Vec::new(); times.len()];
@@ -31,7 +43,7 @@ impl Schedule {
         let mut boundaries: Vec<i64> = times.iter().flat_map(|&t| [t, t + interval]).collect();
         boundaries.sort_unstable();
         boundaries.dedup();
-        for &(stamp, rate) in events {
+        for &(stamp, instrument, rate) in events {
             let stamp = snapped(&boundaries, stamp);
             // the rows that open before the stamp, and of those the first that runs
             // to it: on a clock with a gap shorter than the interval two rows can
@@ -42,22 +54,23 @@ impl Schedule {
             }
             let first = times.partition_point(|&t| t < stamp - interval);
             if first < opened {
-                owned[first].push((rate, stamp < times[first] + interval));
+                owned[first].push((rate, stamp < times[first] + interval, instrument));
             } else if opened < times.len() {
-                between[opened].push(rate);
+                between[opened].push((rate, instrument));
             }
         }
         Schedule { owned, between }
     }
 
-    /// The rate of each event row `row` owns, and whether it was stamped inside the
-    /// row rather than at its end.
-    pub fn owned(&self, row: usize) -> &[(f64, bool)] {
+    /// The rate of each event row `row` owns, whether it was stamped inside the row
+    /// rather than at its end, and the instrument it charges.
+    pub fn owned(&self, row: usize) -> &[(f64, bool, Option<usize>)] {
         self.owned.get(row).map_or(&[], Vec::as_slice)
     }
 
-    /// The rate of each event stamped between the row before `row` and `row`.
-    pub fn between(&self, row: usize) -> &[f64] {
+    /// The rate and the instrument of each event stamped between the row before
+    /// `row` and `row`.
+    pub fn between(&self, row: usize) -> &[(f64, Option<usize>)] {
         self.between.get(row).map_or(&[], Vec::as_slice)
     }
 }
@@ -127,7 +140,7 @@ mod tests {
         );
         let schedule = Schedule::new(&clock, &events);
         for row in [7, 15, 23] {
-            assert_eq!(schedule.owned(row), &[(0.0001, false)], "row {row}");
+            assert_eq!(schedule.owned(row), &[(0.0001, false, None)], "row {row}");
         }
         assert_eq!(
             (0..25).map(|row| schedule.owned(row).len()).sum::<usize>(),
@@ -140,7 +153,7 @@ mod tests {
         // the Specification's example: 08:00:00.003 is taken as 08:00, and so
         // belongs to the bar that opened at 07:00 rather than the one at 08:00
         let schedule = Schedule::new(&hourly(10), &[(8 * HOUR + 3_000_000, 0.0001)]);
-        assert_eq!(schedule.owned(7), &[(0.0001, false)]);
+        assert_eq!(schedule.owned(7), &[(0.0001, false, None)]);
         assert!(schedule.owned(8).is_empty());
     }
 
@@ -148,7 +161,7 @@ mod tests {
     fn a_stamp_a_hair_before_a_boundary_is_on_it_too() {
         // 07:59:59.997 is taken as 08:00, as 08:00:00.003 is
         let schedule = Schedule::new(&hourly(10), &[(8 * HOUR - 3_000_000, 0.0001)]);
-        assert_eq!(schedule.owned(7), &[(0.0001, false)]);
+        assert_eq!(schedule.owned(7), &[(0.0001, false, None)]);
     }
 
     #[test]
@@ -183,7 +196,11 @@ mod tests {
         let schedule = Schedule::new(&clock, &every(&clock, 8.0, 0.0001));
         assert_eq!(
             schedule.owned(0),
-            &[(0.0001, true), (0.0001, true), (0.0001, false)]
+            &[
+                (0.0001, true, None),
+                (0.0001, true, None),
+                (0.0001, false, None)
+            ]
         );
     }
 
@@ -194,7 +211,7 @@ mod tests {
         let day = 24 * HOUR;
         let clock = Clock::new(vec![0, day, 2 * day, 3 * day, 4 * day, 7 * day]);
         let schedule = Schedule::new(&clock, &[(5 * day + 8 * HOUR, 0.0005)]);
-        assert_eq!(schedule.between(5), &[0.0005]);
+        assert_eq!(schedule.between(5), &[(0.0005, None)]);
         assert!((0..6).all(|row| schedule.owned(row).is_empty()));
     }
 
@@ -212,7 +229,7 @@ mod tests {
         let clock = Clock::new(vec![0, HOUR, 3 * HOUR / 2, 3 * HOUR, 4 * HOUR]);
         assert_eq!(clock.interval(), HOUR);
         let schedule = Schedule::new(&clock, &[(7 * HOUR / 4, 0.1)]);
-        assert_eq!(schedule.owned(1), &[(0.1, true)]);
+        assert_eq!(schedule.owned(1), &[(0.1, true, None)]);
         assert!(schedule.owned(2).is_empty());
     }
 }

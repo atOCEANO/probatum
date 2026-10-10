@@ -12,6 +12,8 @@ pub struct OrderId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Order {
     pub id: OrderId,
+    /// The instrument it trades, by its place in the universe.
+    pub instrument: usize,
     pub side: Side,
     pub kind: OrderType,
     /// Limit price; set for a limit order, `None` otherwise.
@@ -34,6 +36,7 @@ impl Order {
     pub fn market(id: OrderId, side: Side, size: Qty, reduce_only: bool) -> Order {
         Order {
             id,
+            instrument: 0,
             side,
             kind: OrderType::Market,
             price: None,
@@ -58,6 +61,7 @@ impl Order {
     ) -> Order {
         Order {
             id,
+            instrument: 0,
             side,
             kind: OrderType::Limit,
             price: Some(price),
@@ -74,6 +78,7 @@ impl Order {
     pub fn stop(id: OrderId, side: Side, size: Qty, trigger: Price, reduce_only: bool) -> Order {
         Order {
             id,
+            instrument: 0,
             side,
             kind: OrderType::Stop,
             price: None,
@@ -91,6 +96,12 @@ impl Order {
     #[inline]
     pub fn remaining(&self) -> Qty {
         self.size - self.filled
+    }
+
+    /// The same order on `instrument`, which every constructor leaves at 0.
+    pub fn on(mut self, instrument: usize) -> Order {
+        self.instrument = instrument;
+        self
     }
 }
 
