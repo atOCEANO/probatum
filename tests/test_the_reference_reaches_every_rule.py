@@ -68,6 +68,7 @@ RULES = [
     "a takeover",
     "a taker's price held inside the bar",
     "a target",
+    "a target replaced in its decision",
     "a target's spot shortfall moved across",
     "a tier above the first",
     "a transfer",

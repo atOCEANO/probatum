@@ -409,29 +409,34 @@ class Simulator:
         self.entry    = [0.0] * n
 
         # where each position started on this bar's path (Liquidation, The rule, 4)
-        self.start        = [None] * n
-        self.mark         = [None] * n
-        self.history      = [[] for _ in range(n)]     # each instrument's own bars
-        self.listed       = [False] * n
-        self.delisted     = [False] * n
-        self.trip         = [None] * n
-        self.trips        = []
-        self.pending      = []              # market orders, filling at each one's next bar
-        self.slots        = []                # Orders, Maker, taker and the book: one table
-        self.transfers    = []
-        self.orders       = {}
-        self.next_id      = 1
-        self.fills        = []
-        self.events       = []
-        self.decided      = -1              # the row whose close the last `target` came from
-        self.target_legs  = []
+        self.start       = [None] * n
+        self.mark        = [None] * n
+        self.history     = [[] for _ in range(n)]  # each instrument's own bars
+        self.listed      = [False] * n
+        self.delisted    = [False] * n
+        self.trip        = [None] * n
+        self.trips       = []
+        self.pending     = []                      # market orders, filling at each one's next bar
+        self.slots       = []                      # Orders, Maker, taker and the book: one table
+        self.transfers   = []
+        self.orders      = {}
+        self.next_id     = 1
+        self.fills       = []
+        self.events      = []
+        self.decided     = -1                      # the row whose close the last `target` came from
+        self.target_legs = []
+
+        # Orders, Target: the weight the latest target asked of each instrument, and
+        # what they were before the decision's first target, which a second replaces
+        self.asked        = [None] * n
+        self.asked_before = list(self.asked)
         self.budget_left  = {}
         self.costs        = self.no_costs()
         self.clipped      = {}
         self.legs         = {}
         self.liquidations = 0
-        self.reached      = collections.Counter()    # how often each rule applied
-        self.first        = {}                         # and the bar it first applied on
+        self.reached      = collections.Counter()  # how often each rule applied
+        self.first        = {}                     # and the bar it first applied on
 
         self.see_row(0)
         self.ledger = [self.row(0)]
@@ -649,10 +654,14 @@ class Simulator:
                 if leverage > 0.0:
                     out["margin_used"] += abs(exposure) / leverage
                 out["maintenance"] += self.maintenance_of(i, abs(q), abs(exposure))
+
+            weight = exposure / equity if held and equity > 0.0 else 0.0
+            # Orders, Target: the weight the latest target asked less the one held
+            asked = self.asked[i]
             out["instruments"].append(dict(
                 position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
                 upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
-                weight=exposure / equity if held and equity > 0.0 else 0.0,
+                weight=weight, drift=math.nan if asked is None else asked - weight,
             ))
 
         return out
@@ -1023,22 +1032,33 @@ class Simulator:
                 weights = [weights]
             weights = dict(enumerate(weights))
 
-        # a second target in one decision replaces the first's legs
-        if self.decided == self.t:
-            for order in self.target_legs:
-                if order["status"] == "pending":
-                    self.cancel(order["id"], "replaced by a later target")
-
-        self.hit("a target")
-        self.decided, self.target_legs = self.t, []
-        equity = self.equity()
-        reducing, growing = [], []
-
         for i, weight in sorted(weights.items()):
             inst = self.instruments[i]
             if inst.kind == "spot" and weight < 0.0:
                 raise ValueError(f"weights: {weight} for {inst.name}, which cannot be "
                                  f"short; trade a perpetual instead")
+
+        # a second target in one decision replaces the first, its legs and the
+        # weights it asked for
+        if self.decided == self.t:
+            self.hit("a target replaced in its decision")
+            for order in self.target_legs:
+                if order["status"] == "pending":
+                    self.cancel(order["id"], "replaced by a later target")
+            self.asked = list(self.asked_before)
+        else:
+            self.asked_before = list(self.asked)
+
+        self.hit("a target")
+        self.decided, self.target_legs = self.t, []
+        for i, weight in weights.items():
+            self.asked[i] = weight
+
+        equity = self.equity()
+        reducing, growing = [], []
+
+        for i, weight in sorted(weights.items()):
+            inst = self.instruments[i]
 
             # the wanted position is the one whose notional at the close is the
             # weight's share of equity: base units, or contracts on an inverse

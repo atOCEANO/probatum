@@ -112,6 +112,19 @@ def test_a_target_of_half_on_ten_thousand_buys_0_083_of_bitcoin():
     assert sim.position[0] == pytest.approx(0.083, abs=1e-12)
 
 
+def test_a_target_of_half_held_through_a_close_of_66_000_drifts_by_minus_0_0238():
+    bars = [[flat(60_000.0)], [Bar(60_000.0, 66_000.0, 60_000.0, 66_000.0, 1_000.0)]]
+    sim  = run(hourly(2), bars, [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0),
+               script={0: [("target", dict(weights=0.5))]})
+
+    assert math.isnan(sim.ledger[0]["instruments"][0]["drift"])
+    assert sim.ledger[1]["equity"] == pytest.approx(10_500.0)
+
+    leg = sim.ledger[1]["instruments"][0]
+    assert leg["weight"] == pytest.approx(5_500.0 / 10_500.0)
+    assert leg["drift"]  == pytest.approx(-0.0238, abs=5e-5)
+
+
 def test_one_coin_targeting_minus_one_of_an_inverse_perpetual_wants_600_contracts():
     sim = btcusd([], {0: [("target", dict(weights=-1.0))]}, balance=1.0)
 
