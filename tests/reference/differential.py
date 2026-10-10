@@ -6,10 +6,11 @@ binding's `run`, which names an order by the placement that made it. The referen
 is written from the Specification and never from the engine, so a case the two part
 company on is a question about a rule, and somebody has to decide which reading is
 wrong. The engine still carries emsl's rules where the Specification has
-moved on, so a case is compared only where the reference applied none of the rules
-the engine has yet to take up. The reference counts every rule it applies, which is
-what decides it, and a stage that brings a rule into the engine takes it off
-`NOT_IN_THE_ENGINE`, so the set of cases compared grows with the engine.
+moved on, so a case is compared up to the bar on which the reference first applied
+a rule the engine has yet to take up. The reference records the bar each rule first
+applies on, which is what decides it, and a stage that brings a rule into the engine
+takes it off `NOT_IN_THE_ENGINE`, so the part of each case compared grows with the
+engine.
 
   python -m reference.differential [cases] [seed]     (from tests/)
 """
@@ -431,7 +432,8 @@ def run(bars, times, cfg, actions, reached=None):
     funded = 0.0
 
     for t, action in enumerate(actions):
-        place(sim, action, t, bars[t].close, theirs, script, reached)
+        place(sim, action, t, bars[t].close, theirs, script,
+              None if reached is None else reached[t])
         sim.step()
         funded += sim.ledger[-1]["funding"]
         rows.append((sim.position[0], sim.equity(), sim.spot_cash, sim.margin_cash,
@@ -453,6 +455,47 @@ def set_aside(sim):
             return rule
 
     return None
+
+
+def cut(sim, rules=NOT_IN_THE_ENGINE):
+    """The first of `rules` the reference applied and the bar it first applied on,
+    which the case is compared up to, or None to compare it whole."""
+    found = [(sim.first[rule], rule) for rule in rules if rule in sim.first]
+    if not found:
+        return None
+
+    bar, rule = min(found)
+    return rule, bar
+
+
+def tally(reached, rules, counted, sim, end):
+    """Count what the part of a case compared reached: the actions placed in time to
+    act on a bar before `end`, and once a case each rule first applied before it."""
+    for t, kinds in counted.items():
+        if end is None or t + 1 < end:
+            reached.update(kinds)
+
+    rules.update(rule for rule, bar in sim.first.items() if end is None or bar < end)
+
+
+def before(log, end):
+    """The records of `log` written before bar `end`, or all of them with no `end`."""
+    return log if end is None else [record for record in log if record["bar"] < end]
+
+
+def closed_before(trips, end):
+    """The round trips closed before bar `end`, or all of them with no `end`; one
+    still open there has yet to take its exit, its best and its worst."""
+    if end is None:
+        return trips
+    return [trip for trip in trips if not trip["open"] and trip["close_bar"] < end]
+
+
+def worded(log):
+    """The order log with a clamp's reason left out, which quotes its sizes as each
+    simulator prints a float."""
+    return [dict(event, reason=None) if event["kind"] == "clamped" else event
+            for event in log]
 
 
 FIELDS = ("position", "equity", "spot_cash", "margin_cash", "funding_paid")
@@ -478,7 +521,7 @@ def first_difference(rows, cfg):
 
 FILL_FIELDS = ("bar", "order", "side", "size", "price", "reference", "spread",
                "slippage", "impact", "fee", "adjustment", "taker", "reason")
-EVENT_FIELDS = ("bar", "kind", "order", "size", "price")
+EVENT_FIELDS = ("bar", "kind", "order", "size", "price", "reason")
 TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees",
                 "funding", "pnl", "ret", "best", "worst", "reason", "open")
 
@@ -489,10 +532,10 @@ LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "sprea
                  "maintenance")
 
 
-def ledger_difference(mine, theirs):
-    """The first row the two ledgers part company on, as its bar and what about, or
-    None."""
-    for t, row in enumerate(theirs):
+def ledger_difference(mine, theirs, end=None):
+    """The first row the two ledgers part company on before bar `end`, or on any row
+    with no `end`, as its bar and what about, or None."""
+    for t, row in enumerate(theirs[:end]):
         held = row["instruments"][0]
         want = dict(row, position=held["position"], entry=held["entry"],
                     mark=held["mark"], notional=held["notional"],
@@ -502,7 +545,7 @@ def ledger_difference(mine, theirs):
             if not close_enough(x, want[name]):
                 return t, f"ledger row {t}: {name} {x!r} against {want[name]!r}"
 
-    if len(mine["equity"]) != len(theirs):
+    if end is None and len(mine["equity"]) != len(theirs):
         rows = min(len(mine["equity"]), len(theirs))
         return rows, f"{len(mine['equity'])} ledger rows against {len(theirs)}"
 
@@ -531,19 +574,23 @@ def log_difference(what, fields, mine, theirs):
     return None
 
 
-def disagreement(rows, records, sim, cfg):
-    """Where the two first part company on any record, as the bar and what about, or
-    None: the account bar by bar, then the fill log, the order log, the round trips
-    and the ledger."""
-    found = first_difference(rows, cfg)
+def disagreement(rows, records, sim, cfg, end=None):
+    """Where the two first part company on any record written before bar `end`, or
+    on any record with no `end`, as the bar and what about, or None: the account bar
+    by bar, then the fill log, the order log, the round trips and the ledger."""
+    found = first_difference(rows if end is None else rows[:max(end - 1, 0)], cfg)
     if found is not None:
         return found[0] + 1, found[1]
 
-    return (log_difference("fill", FILL_FIELDS, records["fills"], sim.fills)
-            or log_difference("event", EVENT_FIELDS, records["order_log"], sim.events)
-            or log_difference("round trip", TRIP_FIELDS, records["trades"],
-                              sim.round_trips())
-            or ledger_difference(records["ledger"], sim.ledger))
+    return (log_difference("fill", FILL_FIELDS, before(records["fills"], end),
+                           before(sim.fills, end))
+            or log_difference("event", EVENT_FIELDS,
+                              worded(before(records["order_log"], end)),
+                              worded(before(sim.events, end)))
+            or log_difference("round trip", TRIP_FIELDS,
+                              closed_before(records["trades"], end),
+                              closed_before(sim.round_trips(), end))
+            or ledger_difference(records["ledger"], sim.ledger, end))
 
 
 Outcome = collections.namedtuple(
@@ -551,19 +598,21 @@ Outcome = collections.namedtuple(
 
 
 def compare(cases, seed):
+    """`cases` random cases from `seed` through both: how many were compared whole
+    and agreed, the disagreements, the rules each case was cut at, and the rules and
+    actions the parts compared reached."""
     rng     = random.Random(seed)
     reached = collections.Counter()
     rules   = collections.Counter()
     aside   = collections.Counter()
-    agreed, disagreed = 0, []
+    whole, agreed, disagreed = 0, 0, []
 
     for case in range(cases):
         bars    = walk(rng, rng.randint(8, 40))
         times   = clock(rng, len(bars))
         cfg     = config(rng, times)
         actions = plan(rng, bars, cfg)
-        counted = collections.Counter()
-
+        counted = collections.defaultdict(collections.Counter)
         try:
             rows, records, sim = run(bars, times, cfg, actions, counted)
         except Exception as exc:
@@ -571,27 +620,30 @@ def compare(cases, seed):
                               f"raised: {type(exc).__name__}: {exc}"))
             continue
 
-        why = set_aside(sim)
-        if why is not None:
-            aside[why] += 1
-            continue
+        end   = None
+        found = cut(sim)
+        if found is not None:
+            rule, end = found
+            aside[rule] += 1
 
-        reached.update(counted)
-        rules.update(sim.reached)
-        found = disagreement(rows, records, sim, cfg)
-        if found is None:
-            agreed += 1
-        else:
+        tally(reached, rules, counted, sim, end)
+        whole += end is None
+
+        found = disagreement(rows, records, sim, cfg, end)
+        if found is not None:
             disagreed.append((case, cfg, bars, actions, found[1]))
+        elif end is None:
+            agreed += 1
 
-    return Outcome(agreed + len(disagreed), agreed, disagreed, aside, rules, reached)
+    return Outcome(whole, agreed, disagreed, aside, rules, reached)
 
 
 def render(out, cases):
-    lines = [f"\n{out.compared} of {cases} compared, {out.agreed} agreed, "
+    lines = [f"\n{out.compared} of {cases} compared whole, {out.agreed} agreed, "
              f"{len(out.disagreed)} disagreed",
-             "set aside: " + (", ".join(f"{why} {n}" for why, n in
-                                        sorted(out.set_aside.items())) or "none"),
+             "compared up to a rule the engine does not have yet: "
+             + (", ".join(f"{why} {n}" for why, n in
+                          sorted(out.set_aside.items())) or "none"),
              "actions placed with something to act on: "
              + ", ".join(f"{k} {v}" for k, v in sorted(out.reached.items())) + "\n"]
 

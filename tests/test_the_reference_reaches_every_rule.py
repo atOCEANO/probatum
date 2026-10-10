@@ -33,10 +33,12 @@ RULES = [
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
     "a flip",
+    "a flip filled on the gap",
     "a flip's old side on the check",
     "a fok order filling nothing",
     "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
+    "a held perp read at its last mark",
     "a leg joining the check after the open",
     "a limit filled as a maker",
     "a limit filled as a taker",
@@ -92,13 +94,15 @@ RULES = [
     "spread paid",
     "the cap with the other legs at the fill's fraction",
     "the liquidity budget",
+    "the margin bound beside another perp",
     "the margin bound lifting a fill inside its bar",
     "the margin bound paying what the bar cannot hold",
     "tiers by quantity",
 ]
 # a delisting, a hole in an instrument's bars and the order that waits through it, the
-# cap or the corners with other legs, and a clip or a liquidation of several
-# perpetuals need a second instrument, and an inverse contract settles alone
+# cap, the margin bound or the corners with other legs, a leg read at its last mark,
+# and a clip or a liquidation of several perpetuals need a second instrument, and an
+# inverse contract settles alone
 SEVERAL_ONLY = {
     "a bar clipped across several perpetuals",
     "a liquidation of several perpetuals",
@@ -109,6 +113,8 @@ SEVERAL_ONLY = {
     "the cap with the other legs at the fill's fraction",
     "a path inside the bars that never reaches the trigger",
     "a corner or the closes reaching the trigger",
+    "a held perp read at its last mark",
+    "the margin bound beside another perp",
 }
 ONE_ONLY = {"an inverse contract filled"}
 # with sizes on every fill is a whole number of lots, so no position the reference

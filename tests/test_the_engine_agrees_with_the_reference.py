@@ -2,7 +2,8 @@
 
 The reference is written from the Specification and never from the engine, so a case
 the two part company on is a question about a rule, and the run prints it. A case is
-compared only where the reference applied no rule the engine has yet to take up.
+compared up to the first bar on which the reference applied a rule the engine has
+yet to take up.
 Every gate stage runs a short comparison; the slow stage runs it at length, where
 every rule the two share has to be reached as well.
 """
@@ -24,6 +25,7 @@ SHARED = [
     "a leg joining the check after the open",
     "a limit filled as a maker",
     "a limit filled as a taker",
+    "a liquidation at the closes",
     "a liquidation before the bar opens",
     "a liquidation by the check",
     "a market order",

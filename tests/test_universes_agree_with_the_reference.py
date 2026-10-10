@@ -8,7 +8,7 @@ length, where every rule the two share across instruments has to be reached as w
 
 import pytest
 
-from reference import universe_differential
+from reference import differential, universe_differential
 
 # the rules both simulators apply across several instruments, each of which a
 # comparison at length must reach
@@ -21,6 +21,7 @@ SHARED = [
     "a flip's old side on the check",
     "a fok order filling nothing",
     "a growing fill refused at no equity",
+    "a held perp read at its last mark",
     "a leg joining the check after the open",
     "a limit filled as a maker",
     "a limit filled as a taker",
@@ -61,12 +62,16 @@ def check(cases, seed):
     assert not out.disagreed, report
     assert out.compared >= cases // 3, report
 
+    idle = [kind for kind in differential.TRACKED if not out.reached[kind]]
+
+    assert not idle, f"never met a live position or order: {idle}\n{report}"
+
     return out
 
 
 @pytest.mark.parametrize("seed", [1, 7, 42])
 def test_random_universes_agree_on_every_record(seed):
-    check(40, seed)
+    check(60, seed)
 
 
 @pytest.mark.slow

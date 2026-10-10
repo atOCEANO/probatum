@@ -347,7 +347,7 @@ class Trip:
 # the account's state a bar can be resolved twice from (The rule, 4)
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
-           "legs", "next_id", "target_legs", "liquidations", "reached")
+           "legs", "next_id", "target_legs", "liquidations", "reached", "first")
 
 
 class Simulator:
@@ -412,6 +412,7 @@ class Simulator:
         self.legs         = {}
         self.liquidations = 0
         self.reached      = collections.Counter()    # how often each rule applied
+        self.first        = {}                         # and the bar it first applied on
 
         self.see_row(0)
         self.ledger = [self.row(0)]
@@ -425,6 +426,7 @@ class Simulator:
 
     def hit(self, rule):
         self.reached[rule] += 1
+        self.first.setdefault(rule, self.t)
 
 
     def see_row(self, t):
@@ -572,6 +574,7 @@ class Simulator:
 
             bar = self.bars[t][j]
             if bar is None:
+                self.hit("a held perp read at its last mark")
                 prices[j] = self.mark[j]
             elif self.venue.intrabar == "optimistic":
                 prices[j] = bar.high if q > 0.0 else bar.low
@@ -1431,6 +1434,10 @@ class Simulator:
         flipped = before * after < 0.0
 
         if flipped:
+            bar = self.bars[self.t][i]
+            if bar is not None and (price < bar.low if before > 0.0
+                                    else price > bar.high):
+                self.hit("a flip filled on the gap")
             floor = self.fraction(i, before > 0.0, price, self.t)
             left += [leg._replace(entry=price, leave=floor) for leg in held]
             held = []
@@ -1798,13 +1805,14 @@ class Simulator:
                                                order["reduce_only"], self.venue.taker))
             whole         = size >= self.lot_down(i, wanted) - DUST
             refused_whole = order["tif"] == "fok" and not whole
-
             if bar.volume <= 0.0 or size <= DUST or refused_whole:
-                self.hit("a fok order filling nothing" if refused_whole
+                # a bar that trades nothing fills no order, whatever its tif
+                fok = refused_whole and bar.volume > 0.0
+                self.hit("a fok order filling nothing" if fok
                          else "a market order filling nothing")
                 order["status"] = "expired"
-                self.log("not_filled", order, "nothing could fill on its bar"
-                         if order["tif"] != "fok" else "fok: the whole size could not")
+                self.log("not_filled", order, "fok: the whole size could not" if fok
+                         else "nothing could fill on its bar")
                 continue
 
             self.hit("a value order" if order["value"] is not None
@@ -2173,6 +2181,8 @@ class Simulator:
             self.hit("the margin bound lifting a fill inside its bar")
         if credit > 0.0:
             self.hit("the margin bound paying what the bar cannot hold")
+        if others and (lifted != price or credit > 0.0):
+            self.hit("the margin bound beside another perp")
 
         self.margin_cash += credit
         self.costs["liquidation"] -= abs(inst.profit(size, price, lifted)) + credit
