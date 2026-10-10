@@ -46,6 +46,18 @@ pub enum TierError {
     },
     /// A maintenance rate below the one before it.
     Falling { row: usize, rate: f64, below: f64 },
+    /// A value that is not a finite number.
+    NotFinite {
+        row: usize,
+        field: &'static str,
+        value: f64,
+    },
+    /// A leverage or a rate below zero.
+    Negative {
+        row: usize,
+        field: &'static str,
+        value: f64,
+    },
 }
 
 /// A tier table, checked as the Specification's loader checks it. An empty table
@@ -62,8 +74,11 @@ impl Tiers {
     /// continuity, `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)` from a first amount
     /// of zero, and when the bounds do not rise, the leverage rises or the
     /// maintenance rate falls with them, since both requirements have to grow with
-    /// the position.
-    pub fn new(basis: TierBasis, rows: Vec<Tier>) -> Result<Tiers, TierError> {
+    /// the position, and wherever a number is not finite or a leverage or a rate is
+    /// negative. A notional table keeps each amount at the value continuity sets,
+    /// once the one given is within rounding of it, so the requirement meets itself
+    /// at every bound.
+    pub fn new(basis: TierBasis, mut rows: Vec<Tier>) -> Result<Tiers, TierError> {
         let cap = |leverage: f64| {
             if leverage > 0.0 {
                 leverage
@@ -72,7 +87,23 @@ impl Tiers {
             }
         };
         let mut previous: Option<Tier> = None;
-        for (row, tier) in rows.iter().copied().enumerate() {
+        for (row, tier) in rows.iter_mut().enumerate() {
+            let named = [
+                ("up_to", tier.up_to),
+                ("leverage", tier.leverage),
+                ("rate", tier.rate),
+                ("amount", tier.amount),
+            ];
+            for (field, value) in named {
+                if !value.is_finite() {
+                    return Err(TierError::NotFinite { row, field, value });
+                }
+            }
+            for (field, value) in [("leverage", tier.leverage), ("rate", tier.rate)] {
+                if value < 0.0 {
+                    return Err(TierError::Negative { row, field, value });
+                }
+            }
             let below = previous.map_or(0.0, |previous| previous.up_to);
             if tier.up_to <= below {
                 return Err(TierError::Bound {
@@ -121,8 +152,9 @@ impl Tiers {
                         wanted,
                     });
                 }
+                tier.amount = wanted;
             }
-            previous = Some(tier);
+            previous = Some(*tier);
         }
         Ok(Tiers { basis, rows })
     }
@@ -210,6 +242,24 @@ mod tests {
                 wanted: 0.0
             })
         );
+        let nan = Tiers::new(TierBasis::Quantity, vec![tier(10.0, 20.0, f64::NAN, 0.0)]);
+        assert!(matches!(
+            nan,
+            Err(TierError::NotFinite {
+                row: 0,
+                field: "rate",
+                ..
+            })
+        ));
+        let negative = Tiers::new(TierBasis::Quantity, vec![tier(10.0, 20.0, -0.01, 0.0)]);
+        assert_eq!(
+            negative,
+            Err(TierError::Negative {
+                row: 0,
+                field: "rate",
+                value: -0.01
+            })
+        );
         let one = Tiers::new(TierBasis::Quantity, vec![tier(10.0, 0.0, 1.0, 0.0)]);
         assert_eq!(one, Err(TierError::Rate { row: 0, rate: 1.0 }));
         let initial = Tiers::new(TierBasis::Quantity, vec![tier(10.0, 20.0, 0.05, 0.0)]);
@@ -221,6 +271,19 @@ mod tests {
                 initial: 0.05
             })
         );
+    }
+
+    #[test]
+    fn a_notional_table_keeps_each_amount_at_the_value_continuity_sets() {
+        let tiers = Tiers::new(
+            TierBasis::Notional,
+            vec![
+                tier(300_000.0, 125.0, 0.004, 0.0),
+                tier(800_000.0, 100.0, 0.005, 300.000_000_1),
+            ],
+        )
+        .expect("within rounding of continuity");
+        assert_eq!(tiers.rows()[1].amount, (0.005 - 0.004) * 300_000.0);
     }
 
     #[test]

@@ -485,26 +485,6 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
                 numbers.len()
             )));
         };
-        let named = [
-            ("up_to", up_to),
-            ("leverage", leverage),
-            ("rate", rate),
-            ("amount", amount),
-        ];
-        for (name, value) in named {
-            if !value.is_finite() {
-                return Err(PyValueError::new_err(format!(
-                    "tiers[{row}]: {name} {value} is not a finite number; give a number"
-                )));
-            }
-        }
-        for (name, value) in [("leverage", leverage), ("rate", rate)] {
-            if value < 0.0 {
-                return Err(PyValueError::new_err(format!(
-                    "tiers[{row}]: {name} {value} is negative; give zero or more"
-                )));
-            }
-        }
         table.push(Tier {
             up_to,
             leverage,
@@ -550,6 +530,12 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
                 "tiers[{row}]: a maintenance rate of {rate} is below the tier before it, \
                  {below}; let the rate rise with the bounds"
             ),
+            TierError::NotFinite { row, field, value } => {
+                format!("tiers[{row}]: {field} {value} is not a finite number; give a number")
+            }
+            TierError::Negative { row, field, value } => {
+                format!("tiers[{row}]: {field} {value} is negative; give zero or more")
+            }
         })
     })
 }

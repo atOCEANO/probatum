@@ -253,6 +253,8 @@ def test_a_tier_table_holds_a_perp_where_its_margin_stops_carrying_it():
     ([(10.0, 20.0, 0.02, 0.0), (50.0, 10.0, 0.01, 0.0)], "quantity",
      "a maintenance rate of 0.01 is below the tier before it"),
     ([(300_000.0, 125.0, 0.004, 30.0)], "notional", "in the first tier"),
+    ([(10.0, 20.0, float("nan"), 0.0)], "quantity", "rate NaN is not a finite number"),
+    ([(10.0, 20.0, -0.01, 0.0)], "quantity", "rate -0.01 is negative"),
     ([(10.0, 20.0, 0.0)], "notional", "3 numbers"),
     ([(10.0, 20.0, 0.0, 0.0)], "contracts", "is not a basis"),
 ])

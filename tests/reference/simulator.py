@@ -125,12 +125,19 @@ class Instrument:
         continuity or whose first amount is not zero, any rate not below one, a
         maintenance rate that reaches the tier's initial rate, and a table whose bounds
         do not rise, whose leverage rises or whose maintenance rate falls from one tier
-        to the next, a leverage of 0.0 standing for no cap."""
+        to the next, a leverage of 0.0 standing for no cap, and any value that is not
+        finite or a leverage or rate below zero. A notional table keeps each amount at
+        the value continuity sets, once the one given is within rounding of it."""
         def cap(leverage):
             return leverage if leverage > 0.0 else math.inf
 
-        previous = None
+        previous, kept = None, []
         for tier in self.tiers:
+            if not all(math.isfinite(value) for value in tier):
+                raise ValueError(f"tiers: {tier} holds a value that is not finite")
+            if tier.leverage < 0.0 or tier.rate < 0.0:
+                raise ValueError(f"tiers: {tier} holds a leverage or rate below zero")
+
             below = 0.0 if previous is None else previous.up_to
             if tier.up_to <= below:
                 raise ValueError(f"tiers: a bound of {tier.up_to} not above {below}")
@@ -152,8 +159,12 @@ class Instrument:
                 if abs(tier.amount - wanted) > 1e-9 * max(1.0, abs(wanted)):
                     raise ValueError(f"tiers: an amount of {tier.amount} where "
                                      f"continuity needs {wanted}")
+                tier = tier._replace(amount=wanted)
 
+            kept.append(tier)
             previous = tier
+
+        self.tiers = kept
 
 
     # Inverse contracts: every quantity the account counts, for either kind, in the
