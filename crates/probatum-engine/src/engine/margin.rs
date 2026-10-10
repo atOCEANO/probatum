@@ -82,14 +82,20 @@ impl Engine {
     /// Where `price` lies on instrument `i`'s adverse segment of the current bar,
     /// from its open to its low on the `long` side and to its high on the short:
     /// a price on the favourable side of the open, or a bar with no adverse move, is
-    /// at 0 (Specification, The path).
+    /// at 0, and so is a price past the adverse extreme, which traded on the gap
+    /// before the bar opened (Specification, The path).
     pub(super) fn fraction(&self, i: usize, long: bool, price: f64) -> f64 {
         let bar = self.candles.bar(self.tick, i);
         let moved = if long { bar.low } else { bar.high } - bar.open;
         if !printed(&bar) || moved == 0.0 {
             return 0.0;
         }
-        ((price - bar.open) / moved).clamp(0.0, 1.0)
+        let s = (price - bar.open) / moved;
+        if s > 1.0 {
+            0.0
+        } else {
+            s.max(0.0)
+        }
     }
 
     /// Perp `j` at fraction `s` of its own bar's adverse move, or at its last mark

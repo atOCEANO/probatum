@@ -443,7 +443,7 @@ For a short, `(1 - m)` becomes `(1 + m)` and `(1 - f)` becomes `(1 + f)`, with `
 
 ### The margin bound
 
-1. A reducing fill is placed on its instrument's path at its fraction, clamped to `[0, 1]`; a fill on the favourable side of its open, or on a bar with no adverse move, is at fraction 0.
+1. A reducing fill is placed on its position's path at its fraction. A fill on the favourable side of its open, or on a bar with no adverse move, is at fraction 0, and so is a fill past the adverse extreme, which traded on the gap before the bar opened.
 2. The account's close-level equity is evaluated with every other leg at the same fraction, or at its favourable extreme under `intrabar="optimistic"`, and with the fill's own fee in place of the closing fee on the size it closes, so the wallet the fill leaves is never below zero.
 3. If that equity is below zero, the fill is lifted toward the close point, never outside its instrument's clipped bar nor past its position's average entry. The lift the bar holds moves the fill's price and is recorded as its adjustment; the part it cannot hold, times the size closed, is paid into the margin wallet, net of the fee it would have added to a sale or with the fee it would have saved a purchase. Both are booked as a negative liquidation charge, so the price PnL stays measured from the fill's reference.
 

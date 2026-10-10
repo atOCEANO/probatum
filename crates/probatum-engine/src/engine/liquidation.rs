@@ -990,4 +990,74 @@ mod tests {
         assert!((charge + 120.0).abs() < 1e-9, "the charge was {charge}");
         assert!((close - 1_300.0 / 30.0).abs() < 1e-9, "B closed at {close}");
     }
+
+    #[test]
+    fn a_reducing_fill_on_the_gap_reads_the_other_perps_at_their_opens() {
+        // 270 of margin and fees of 0.1% behind a long of 10 A from 100, marked 90,
+        // and 10 B from 50. A's resting sell at 92 fills on the gap up to an open of
+        // 100, so it traded before the bar opened, with B at 50: nothing is lifted,
+        // the wallet keeps 189.08, and B is closed where that reaches its close
+        // level, 310.92 / 9.99. B at its low of 30 would have lifted the sale to
+        // 93.12 and left B at its close level there
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(50.0)],
+            vec![flat(100.0), flat(50.0)],
+            vec![flat(90.0), flat(50.0)],
+            vec![
+                ohlc(100.0, 101.0, 95.0, 100.0, 1e6),
+                ohlc(50.0, 50.0, 30.0, 40.0, 1e6),
+            ],
+        ];
+        let config = EngineConfig {
+            quote: 271.5,
+            fee_taker: 0.001,
+            fee_maker: 0.001,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        let (ioc, gtc) = (TimeInForce::Ioc, TimeInForce::Gtc);
+        e.reset();
+        e.market_buy(10.0);
+        e.order_on(
+            1,
+            Side::Buy,
+            10.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        e.step();
+        e.order_on(
+            0,
+            Side::Sell,
+            10.0,
+            OrderType::Limit,
+            Some(92.0),
+            None,
+            true,
+            false,
+            gtc,
+        );
+        e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        let priced = |reason| -> Vec<(usize, f64)> {
+            fills
+                .iter()
+                .filter(|fill| fill.reason == reason)
+                .map(|fill| (fill.instrument, fill.price))
+                .collect()
+        };
+        let (sales, closes) = (priced(FillReason::Limit), priced(FillReason::Liquidation));
+        let ([(0, sale)], [(1, close)]) = (sales.as_slice(), closes.as_slice()) else {
+            panic!("one sale of A and one close of B");
+        };
+        assert_eq!(*sale, 92.0);
+        assert!((close - 310.92 / 9.99).abs() < 1e-9, "B closed at {close}");
+    }
 }

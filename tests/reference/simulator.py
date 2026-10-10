@@ -535,7 +535,9 @@ class Simulator:
     def fraction(self, i, long, price, t):
         """The path: where `price` lies on instrument `i`'s adverse segment of bar
         `t`, from its open to its low for a long and to its high for a short; a price
-        on the favourable side of the open, or a bar with no adverse move, is at 0."""
+        on the favourable side of the open, or a bar with no adverse move, is at 0,
+        and so is a price past the adverse extreme, which traded on the gap before
+        the bar opened."""
         bar = self.bars[t][i]
         if bar is None:
             return 0.0
@@ -544,7 +546,8 @@ class Simulator:
         if move == 0.0:
             return 0.0
 
-        return min(max((price - bar.open) / move, 0.0), 1.0)
+        s = (price - bar.open) / move
+        return 0.0 if s > 1.0 else max(s, 0.0)
 
 
     def others_at(self, s, t, skip):
@@ -1418,12 +1421,7 @@ class Simulator:
         flipped = before * after < 0.0
 
         if flipped:
-            # a flip filled past the old side's adverse extreme traded on the gap,
-            # before the bar opened, so the old side leaves at the open (The path)
-            bar    = self.bars[self.t][i]
-            gapped = bar is not None and (price < bar.low if before > 0.0
-                                          else price > bar.high)
-            floor = 0.0 if gapped else self.fraction(i, before > 0.0, price, self.t)
+            floor = self.fraction(i, before > 0.0, price, self.t)
             left += [leg._replace(entry=price, leave=floor) for leg in held]
             held = []
         elif after == 0.0:
