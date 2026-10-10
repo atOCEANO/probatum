@@ -2107,24 +2107,28 @@ class Simulator:
             sizes[i] = base + extra
             return self.cap_requirement(prices, sizes)
 
-        if need(0.0) >= equity:
-            # no fill may raise the sum, which a fill on an instrument with no cap
-            # never does
-            if need(growing) <= need(0.0):
-                return size
-            self.hit("an account over the cap kept from growing")
-            held_back()
-            return reducing + last_within(lambda x: need(0.0) - need(x), 0.0, growing)
-
         limit = growing
         inst  = self.instruments[i]
         if inst.tiers:
             last = inst.tiers[-1].up_to
             if inst.tiers_by == "notional":
                 last /= abs(inst.notional(1.0, price))
-            if last - base < limit:
-                self.hit("a fill held at the last tier's bound")
             limit = min(limit, max(last - base, 0.0))
+
+        if need(0.0) >= equity:
+            # no fill may raise the sum, which a fill on an instrument with no cap
+            # never does, up to the last tier's bound
+            if need(limit) <= need(0.0):
+                if limit < growing:
+                    self.hit("a fill held at the last tier's bound")
+                return booked(q, signed, reducing + limit, base + limit)
+            self.hit("an account over the cap kept from growing")
+            held_back()
+            extra = last_within(lambda x: need(0.0) - need(x), 0.0, limit)
+            return booked(q, signed, reducing + extra, base + extra)
+
+        if limit < growing:
+            self.hit("a fill held at the last tier's bound")
 
         if need(limit) <= equity:
             return booked(q, signed, reducing + limit, base + limit)
