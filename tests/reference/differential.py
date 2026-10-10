@@ -404,11 +404,13 @@ def place(sim, action, t, close, theirs, script, reached=None):
         script.take(t, "transfer", amount=size * close, to=to)
         sim.transfer(size * close, to=to)
     elif kind in ("target", "retarget"):
-        # a retarget is a first target the second replaces in the same decision
+        # a retarget is a first target, moving any spot shortfall across, that the
+        # second replaces in the same decision
         weights = weight(sim.instruments[0].kind, u)
         if kind == "retarget":
-            script.take(t, "target", weights=weights / 2.0, **settings(side, u))
-            sim.target(weights / 2.0, **settings(side, u))
+            first = dict(settings(side, u), transfer=True)
+            script.take(t, "target", weights=weights / 2.0, **first)
+            sim.target(weights / 2.0, **first)
 
         script.take(t, "target", weights=weights, **settings(side, u))
         sim.target(weights, **settings(side, u))

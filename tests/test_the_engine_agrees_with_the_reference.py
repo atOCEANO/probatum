@@ -22,6 +22,7 @@ SHARED = [
     "a fill held to the margin cap",
     "a flip",
     "a flip's old side on the check",
+    "a flip split by a target",
     "a fok order filling nothing",
     "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
@@ -44,7 +45,9 @@ SHARED = [
     "a takeover",
     "a taker's price held inside the bar",
     "a target",
+    "a target leg skipped below the tolerance",
     "a target replaced in its decision",
+    "a target's shortfall taken back",
     "a target's spot shortfall moved across",
     "a transfer",
     "a transfer clamped",
@@ -85,10 +88,11 @@ OPENED = "an exit held back from a position the bar's orders opened"
 
 
 def debited_at_the_close():
-    """A long of 9 from 100 on 100 of margin, through a flat bar whose close pays a
-    funding debit of 20% on its 900 of notional, 180, which takes equity to -80."""
+    """A long of 9 from 100 on 100 of margin, through a bar down to 99 its path stays
+    clear of, whose close pays a funding debit of 20% on its 900 of notional, 180,
+    which takes equity to -80."""
     bars, times, cfg, actions = built(("market", "buy", 9.0, 0.0), None, None,
-                                      shaped=(100.0, 100.0, 100.0, 100.0))
+                                      shaped=(100.0, 101.0, 99.0, 100.0))
     cfg.update(funding=("every_bars", 3, 0.2))
     return bars, times, cfg, actions
 
@@ -142,7 +146,7 @@ BUILT = {
         "a liquidation at the closes", debited_at_the_close()),
     # a sale the bound pays into, which leaves the account flat at zero
     "a sale the bound pays into that leaves the account flat": (
-        "a wallet the bound closed out set to zero", bounded_flat()),
+        "a wallet a fill left within rounding of zero set to zero", bounded_flat()),
 }
 
 

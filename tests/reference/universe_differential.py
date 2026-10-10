@@ -397,18 +397,26 @@ def place(sim, action, t, theirs, script, reached):
         to = "margin" if side == "buy" else "spot"
         script.take(t, "transfer", amount=size * close, to=to)
         sim.transfer(size * close, to=to)
+    elif kind == "weights":
+        # a built case's own target, its weights given whole
+        script.take(t, "target", weights=size, **settings(side, u))
+        sim.target(size, **settings(side, u))
     elif kind in ("target", "retarget"):
-        # every instrument that has printed a bar, and now and then one that has
-        # not, whose leg is refused; a retarget's first target is replaced by the
-        # second in the same decision
-        named = [k for k in range(len(sim.instruments))
-                 if sim.mark[k] is not None or u < 0.2]
+        # some of the instruments that have printed a bar, and now and then one that
+        # has not, whose leg is refused; a retarget's first target names every one
+        # and moves any spot shortfall across, and the second replaces it in the
+        # same decision
+        candidates = [k for k in range(len(sim.instruments))
+                      if sim.mark[k] is not None or u < 0.2]
+        named   = [k for k in candidates if (u + 0.53 * k) % 1.0 < 0.75]
         weights = {k: weight(sim.instruments[k].kind, u, k, len(named))
                    for k in named}
         if kind == "retarget":
-            halves = {k: w / 2.0 for k, w in weights.items()}
-            script.take(t, "target", weights=halves, **settings(side, u))
-            sim.target(halves, **settings(side, u))
+            first = {k: weight(sim.instruments[k].kind, u, k, len(candidates)) / 2.0
+                     for k in candidates}
+            moving = dict(settings(side, u), transfer=True)
+            script.take(t, "target", weights=first, **moving)
+            sim.target(first, **moving)
 
         script.take(t, "target", weights=weights, **settings(side, u))
         sim.target(weights, **settings(side, u))

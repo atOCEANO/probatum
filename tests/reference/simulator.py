@@ -428,16 +428,17 @@ class Simulator:
 
         # Orders, Target: the weight the latest target asked of each instrument, and
         # what they were before the decision's first target, which a second replaces
-        self.asked        = [None] * n
-        self.asked_before = list(self.asked)
-        self.moved        = False                  # whether the last fill bounded was moved
-        self.budget_left  = {}
-        self.costs        = self.no_costs()
-        self.clipped      = {}
-        self.legs         = {}
-        self.liquidations = 0
-        self.reached      = collections.Counter()  # how often each rule applied
-        self.first        = {}                     # and the bar it first applied on
+        self.asked           = [None] * n
+        self.asked_before    = list(self.asked)
+        self.target_transfer = None                   # where this decision's shortfall was queued
+        self.paid_in         = 0.0                    # what the last bound paid into the wallet
+        self.budget_left     = {}
+        self.costs           = self.no_costs()
+        self.clipped         = {}
+        self.legs            = {}
+        self.liquidations    = 0
+        self.reached         = collections.Counter()  # how often each rule applied
+        self.first           = {}                     # and the bar it first applied on
 
         self.see_row(0)
         self.ledger = [self.row(0)]
@@ -1039,16 +1040,29 @@ class Simulator:
                 raise ValueError(f"weights: {weight} for {inst.name}, which cannot be "
                                  f"short; trade a perpetual instead")
 
-        # a second target in one decision replaces the first, its legs and the
-        # weights it asked for
+        # a second target in one decision replaces the first: its legs, the
+        # shortfall it moved across and the weights it asked for
         if self.decided == self.t:
             self.hit("a target replaced in its decision")
             for order in self.target_legs:
                 if order["status"] == "pending":
                     self.cancel(order["id"], "replaced by a later target")
+            if self.target_transfer is not None:
+                self.hit("a target's shortfall taken back")
+                del self.transfers[self.target_transfer]
             self.asked = list(self.asked_before)
         else:
             self.asked_before = list(self.asked)
+
+        self.target_transfer = None
+
+        # a leg an earlier decision's target left waiting for its instrument's next
+        # bar would fill beside this one's, sized from the same position
+        for order in list(self.pending):
+            if (order["reason"] == "rebalance" and order["placed"] < self.t
+                    and order["instrument"] in weights):
+                self.hit("a waiting target leg replaced")
+                self.cancel(order["id"], "replaced by a later target")
 
         self.hit("a target")
         self.decided, self.target_legs = self.t, []
@@ -1067,51 +1081,68 @@ class Simulator:
             # and its leg is refused as any order there is
             close = self.mark[i]
             if close is None:
+                self.hit("a target leg on an instrument yet to print")
                 growing.append((i, math.nan))
                 continue
 
             unit = inst.notional(1.0, close)
             leg  = weight * equity / unit - self.position[i]
-            if inst.lot > 0.0:
+            if self.venue.sizes and inst.lot > 0.0:
                 leg = math.trunc(round(leg / inst.lot, 9)) * inst.lot
-            if abs(leg) * unit < tolerance * equity or abs(leg) <= DUST:
+            if abs(leg) <= DUST:
+                continue
+            # the tolerance reads the whole leg, before a flip splits it
+            if abs(leg) * unit < tolerance * equity:
+                self.hit("a target leg skipped below the tolerance")
                 continue
 
             q = self.position[i]
             if q != 0.0 and (q + leg) * q < 0.0:
-                reducing.append((i, -q))
-                grow = q + leg
+                self.hit("a flip split by a target")
+                reduce, grow = -q, q + leg
             elif q != 0.0 and abs(q + leg) < abs(q):
-                reducing.append((i, leg))
-                grow = 0.0
+                reduce, grow = leg, 0.0
             else:
-                grow = leg
+                reduce, grow = 0.0, leg
 
-            # a growing leg below the minimum notional is skipped
-            small = self.venue.sizes and abs(grow) * unit < inst.min_notional
-            if grow != 0.0 and not small:
+            def small(size, reduce_only):
+                """A part below the minimum notional, which a reducing part escapes
+                where the venue exempts reduce-only orders."""
+                exempt = reduce_only and inst.reduce_only_exempt
+                return (self.venue.sizes and abs(size) * unit < inst.min_notional
+                        and not exempt)
+
+            if reduce != 0.0 and not small(reduce, True):
+                reducing.append((i, reduce))
+            if abs(grow) > DUST and not small(grow, False):
                 growing.append((i, grow))
 
+        placed = []
         for legs, reduce_only in ((reducing, True), (growing, False)):
             for i, leg in legs:
                 order_id = self.order(i, "buy" if leg > 0.0 else "sell", abs(leg),
                                       reduce_only=reduce_only, reason="rebalance")
-                self.target_legs.append(self.orders[order_id])
+                order = self.orders[order_id]
+                self.target_legs.append(order)
+                if order["status"] != "refused":
+                    placed.append((i, leg))
 
         if transfer:
-            # what the spot legs cost at the close, fees in, less what their sales
-            # raise and the cash the spot wallet holds
+            # what the spot legs it queued cost at the close, fees in, less what
+            # their sales raise and the cash the spot wallet holds
             needed = -self.spot_cash
-            for i, leg in reducing + growing:
-                if self.instruments[i].kind == "spot" and not math.isnan(leg):
+            for i, leg in placed:
+                if self.instruments[i].kind == "spot":
                     cost = leg * self.mark[i]
                     needed += cost + abs(cost) * self.venue.taker
 
             if needed > 0.0:
                 self.hit("a target's spot shortfall moved across")
+                self.target_transfer = len(self.transfers)
                 self.transfer(needed, to="spot")
 
-        return [order["id"] for order in self.target_legs]
+        return [order["id"] for order in self.target_legs
+                if order["status"] != "refused"]
 
 
     def transfer(self, amount, to="margin"):
@@ -1919,11 +1950,12 @@ class Simulator:
             # what is left can round to a hair below zero, and a bar never owes volume
             self.budget_left[i] = max(budget - size, 0.0)
             self.book(i, size, price, costs)
+            cash = self.margin_cash
             price, costs = self.bound(i, side, size, price, bar, self.venue.taker,
                                       costs)
             self.apply(i, side, size, price, self.venue.taker, True, order,
                        order["reason"], reference=bar.open, costs=costs)
-            self.zero_moved()
+            self.zero_rounding(i, cash, size, price)
             order["filled"] += size
 
             # a market order lives one bar: what it did not fill is gone
@@ -2081,11 +2113,12 @@ class Simulator:
                 self.hit("a bracket leg filled")
 
             self.book(i, size, price, costs)
+            cash = self.margin_cash
             price, costs = self.bound(i, side, size, price, bar, rate, costs)
             reason = order["leg"] or order["reason"]
             self.apply(i, side, size, price, rate, taker, order, reason,
                        reference=reference, costs=costs)
-            self.zero_moved()
+            self.zero_rounding(i, cash, size, price)
             order["filled"] += size
 
             if order["pair"] is not None:
@@ -2274,10 +2307,10 @@ class Simulator:
         The lift the bar holds is in the price and the part it cannot hold, net of the
         fee it moves, is paid into the wallet; both are a negative liquidation charge,
         and the fill log records the lift."""
-        self.moved = False
-        q          = self.position[i]
-        inst       = self.instruments[i]
-        reduces    = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
+        self.paid_in = 0.0
+        q            = self.position[i]
+        inst         = self.instruments[i]
+        reduces      = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
         if inst.kind == "spot" or not reduces:
             return price, costs
 
@@ -2341,18 +2374,24 @@ class Simulator:
         if others and (lifted != price or credit > 0.0):
             self.hit("the margin bound beside another perp")
 
-        self.moved = lifted != price or credit > 0.0
+        self.paid_in = credit
         self.margin_cash += credit
         self.costs["liquidation"] -= abs(inst.profit(size, price, lifted)) + credit
         return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price)
 
 
-    def zero_moved(self):
-        """The margin bound: a fill it moved that leaves no perpetual held leaves the
-        margin wallet at zero, as a takeover does, what it held the liquidation
-        charge."""
-        if self.moved and all(self.position[j] == 0.0 for j in self.perps()):
-            self.hit("a wallet the bound closed out set to zero")
+    def zero_rounding(self, i, cash, size, price):
+        """Numbers that are the same everywhere: a perpetual fill that leaves no
+        perpetual held and the margin wallet within the rounding of what it moved,
+        from `cash` before the fill, sets the wallet to zero, as a takeover does, the
+        hair the liquidation charge."""
+        if self.instruments[i].kind == "spot" or any(self.position[j] != 0.0
+                                                      for j in self.perps()):
+            return
+
+        rounding = 1e-12 * (abs(cash) + self.paid_in + size * price)
+        if abs(self.margin_cash) <= rounding:
+            self.hit("a wallet a fill left within rounding of zero set to zero")
             self.costs["liquidation"] += self.margin_cash
             self.margin_cash = 0.0
 

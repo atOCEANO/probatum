@@ -30,6 +30,9 @@ pub(super) struct Targets {
     /// Each leg a target queued that may still be waiting, with the bar it was
     /// decided at.
     legs: Vec<(OrderId, usize)>,
+    /// Where among the transfers this decision's target queued the shortfall it
+    /// moves across, which a second target in the decision takes back.
+    moved: Option<usize>,
 }
 
 impl Targets {
@@ -39,6 +42,7 @@ impl Targets {
             before: vec![f64::NAN; width],
             decided: None,
             legs: Vec::new(),
+            moved: None,
         }
     }
 
@@ -47,6 +51,7 @@ impl Targets {
         self.asked.fill(f64::NAN);
         self.decided = None;
         self.legs.clear();
+        self.moved = None;
     }
 
     /// Whether `id` is a leg a target queued, whose fills the logs name rebalances.
@@ -68,12 +73,14 @@ impl Engine {
     /// account equity at the last closes: the leg that takes its position to the
     /// one whose notional there is the weight's share of equity, queued as a market
     /// order for the next open, every reducing leg before every growing one. A leg
-    /// whose notional is below `tolerance` of equity is skipped. With `transfer`,
-    /// what the spot legs cost at the closes, fees included, beyond what their sales
-    /// raise and the spot wallet holds, moves across from the margin wallet at the
-    /// start of the next bar. A second target in one decision replaces the first,
-    /// its legs and the weights it asked for. Returns the legs queued, or refuses a
-    /// negative weight on a spot instrument before placing anything.
+    /// whose notional is below `tolerance` of equity is skipped before it is split.
+    /// With `transfer`, what the spot legs it queued cost at the closes, fees
+    /// included, beyond what their sales raise and the spot wallet holds, moves
+    /// across from the margin wallet at the start of the next bar. A second target
+    /// in one decision replaces the first, its legs, its transfer and the weights it
+    /// asked for, and a target in a later decision replaces the legs earlier targets
+    /// left waiting on the instruments it names. Returns the legs queued, or refuses
+    /// a negative weight on a spot instrument before placing anything.
     pub fn target(
         &mut self,
         weights: &[(usize, f64)],
@@ -88,14 +95,23 @@ impl Engine {
                 });
             }
         }
-        if self.targets.decided == Some(self.tick) {
-            self.retarget();
+        let tick = self.tick;
+        if self.targets.decided == Some(tick) {
+            self.cancel_legs(|decided, _| decided == tick);
+            if let Some(k) = self.targets.moved.take() {
+                self.transfers.remove(k);
+            }
+            self.targets.asked.clone_from(&self.targets.before);
         } else {
             self.targets.before.clone_from(&self.targets.asked);
+            self.targets.moved = None;
         }
-        self.targets.decided = Some(self.tick);
+        self.targets.decided = Some(tick);
         let mut named = weights.to_vec();
         named.sort_by_key(|&(i, _)| i);
+        // a leg an earlier decision left waiting for its instrument's next bar would
+        // fill beside this one's, sized from the same position
+        self.cancel_legs(|decided, at| decided != tick && named.iter().any(|&(i, _)| i == at));
         for &(i, weight) in &named {
             self.targets.asked[i] = weight;
         }
@@ -111,7 +127,7 @@ impl Engine {
             }
             let q = self.account.positions[i].qty.get();
             let leg = weight * equity / close - q;
-            if leg.abs() * close < tolerance * equity || leg.abs() <= DUST {
+            if leg.abs() <= DUST || leg.abs() * close < tolerance * equity {
                 continue;
             }
             let grow = if q != 0.0 && (q + leg) * q < 0.0 {
@@ -123,58 +139,58 @@ impl Engine {
             } else {
                 leg
             };
-            if grow != 0.0 {
+            if grow.abs() > DUST {
                 growing.push((i, grow));
             }
         }
         let mut queued = Vec::with_capacity(reducing.len() + growing.len());
+        let mut needed = -self.account.spot_cash;
         for (legs, reduce_only) in [(&reducing, true), (&growing, false)] {
             for &(i, leg) in legs {
                 let side = if leg > 0.0 { Side::Buy } else { Side::Sell };
                 let tif = TimeInForce::Ioc;
                 let reason = EventReason::Rebalance;
-                if let Some(id) = self.queue(i, side, leg.abs(), reduce_only, tif, reason) {
-                    self.targets.legs.push((id, self.tick));
-                    queued.push(id);
-                }
-            }
-        }
-        if transfer {
-            let mut needed = -self.account.spot_cash;
-            for &(i, leg) in reducing.iter().chain(&growing) {
-                if self.account.markets[i] == Market::Spot && !leg.is_nan() {
+                let Some(id) = self.queue(i, side, leg.abs(), reduce_only, tif, reason) else {
+                    continue;
+                };
+                self.targets.legs.push((id, tick));
+                queued.push(id);
+                if self.account.markets[i] == Market::Spot {
                     let cost = leg * self.marks[i];
                     needed += cost + cost.abs() * self.cost.fee_taker;
                 }
             }
+        }
+        if transfer && needed > 0.0 {
+            self.targets.moved = Some(self.transfers.len());
             self.transfer(needed, Wallet::Spot);
         }
         Ok(queued)
     }
 
-    /// Cancel the legs this decision's earlier target queued that still wait, and
-    /// restore the weights asked before it.
-    fn retarget(&mut self) {
-        let tick = self.tick;
+    /// Cancel the waiting legs `which` picks, by the bar each was decided at and the
+    /// instrument it trades, each logged as replaced by a later target, and forget
+    /// those no longer waiting.
+    fn cancel_legs(&mut self, which: impl Fn(usize, usize) -> bool) {
         let legs = std::mem::take(&mut self.targets.legs);
-        for &(id, decided) in &legs {
-            if decided != tick {
+        for (id, decided) in legs {
+            let Some(at) = self.pending.iter().position(|order| order.id == id) else {
+                continue;
+            };
+            if !which(decided, self.pending[at].instrument) {
                 self.targets.legs.push((id, decided));
                 continue;
             }
-            if let Some(at) = self.pending.iter().position(|order| order.id == id) {
-                let order = self.pending.remove(at);
-                self.log_event(
-                    EventKind::Cancelled,
-                    Some(id),
-                    Some(order.instrument),
-                    None,
-                    None,
-                    EventReason::Retargeted,
-                );
-            }
+            let order = self.pending.remove(at);
+            self.log_event(
+                EventKind::Cancelled,
+                Some(id),
+                Some(order.instrument),
+                None,
+                None,
+                EventReason::Retargeted,
+            );
         }
-        self.targets.asked.clone_from(&self.targets.before);
     }
 }
 
@@ -182,7 +198,7 @@ impl Engine {
 mod tests {
     use super::TargetError;
     use crate::candles::Candles;
-    use crate::engine::fixtures::{cfg, ohlc, perp_cfg, universe};
+    use crate::engine::fixtures::{cfg, ohlc, perp_cfg, universe, ABSENT};
     use crate::engine::{Engine, EngineConfig};
     use crate::reporter::{EventKind, EventReason, FillReason};
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
@@ -349,5 +365,99 @@ mod tests {
             })
         );
         assert!(e.pending.is_empty());
+    }
+
+    /// The Specification's spot account: 1,000 in the spot wallet, 9,000 in the
+    /// margin wallet and a taker fee of 0.1%, on two rows of bitcoin at 60,000, with
+    /// `max_open_orders` an instrument may queue.
+    fn spot_and_margin(max_open_orders: usize) -> Engine {
+        let flat = ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            idle_cash: 9_000.0,
+            fee_taker: 0.001,
+            max_open_orders,
+            report: true,
+            ..cfg()
+        };
+        let mut e = Engine::new(Candles::new(vec![flat, flat]), config);
+        e.reset();
+        e
+    }
+
+    #[test]
+    fn a_second_target_in_a_decision_takes_back_the_first_ones_transfer() {
+        // the same target twice moves its 4,005 once, and a second target that moves
+        // nothing leaves the first one's in the margin wallet
+        for (second, moved) in [(Some(true), 4_005.0), (Some(false), 0.0), (None, 4_005.0)] {
+            let mut e = spot_and_margin(8);
+            e.target(&[(0, 0.5)], 0.0, true).expect("a long on spot");
+            if let Some(transfer) = second {
+                let weight = if transfer { 0.5 } else { 0.0 };
+                e.target(&[(0, weight)], 0.0, transfer)
+                    .expect("a long on spot");
+            }
+            let s = e.step();
+            assert!(
+                (s.margin_cash - (9_000.0 - moved)).abs() < 1e-6,
+                "{second:?} left {}",
+                s.margin_cash
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_leg_moves_no_shortfall_across() {
+        // a buy already waits in the one place the queue has, so the target's leg is
+        // refused and nothing it would have cost moves
+        let mut e = spot_and_margin(1);
+        e.market_buy(0.001);
+        let legs = e.target(&[(0, 0.5)], 0.0, true).expect("a long on spot");
+        assert!(legs.is_empty());
+        assert_eq!(e.step().margin_cash, 9_000.0);
+    }
+
+    #[test]
+    fn a_target_replaces_the_legs_an_earlier_one_left_waiting() {
+        // the second perp prints no bar on the third and fourth rows, so the buy of
+        // 500 a target decides on the second row waits; the same target on the third
+        // row replaces it with its own, and one buy of 500 fills on the fifth row
+        let at = |price: f64| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![at(100.0), at(10.0)],
+            vec![at(100.0), at(10.0)],
+            vec![at(100.0), ABSENT],
+            vec![at(100.0), ABSENT],
+            vec![at(100.0), at(10.0)],
+        ];
+        let config = EngineConfig {
+            quote: 10_000.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        e.reset();
+        e.step();
+        let first = e.target(&[(1, 0.5)], 0.0, false).expect("a perp");
+        e.step();
+        let second = e.target(&[(1, 0.5)], 0.0, false).expect("a perp");
+        e.step();
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let fills: Vec<_> = reporter
+            .fills()
+            .iter()
+            .map(|fill| (fill.order, fill.size))
+            .collect();
+        assert_eq!(fills, vec![(Some(second[0]), 500.0)]);
+        let cancelled = reporter
+            .events()
+            .iter()
+            .find(|event| event.kind == EventKind::Cancelled)
+            .expect("the first leg cancelled");
+        assert_eq!(
+            (cancelled.order, cancelled.reason),
+            (Some(first[0]), EventReason::Retargeted)
+        );
     }
 }

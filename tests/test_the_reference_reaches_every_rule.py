@@ -35,6 +35,7 @@ RULES = [
     "a flip",
     "a flip filled on the gap",
     "a flip's old side on the check",
+    "a flip split by a target",
     "a fok order filling nothing",
     "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
@@ -68,14 +69,18 @@ RULES = [
     "a takeover",
     "a taker's price held inside the bar",
     "a target",
+    "a target leg on an instrument yet to print",
+    "a target leg skipped below the tolerance",
     "a target replaced in its decision",
+    "a target's shortfall taken back",
     "a target's spot shortfall moved across",
     "a tier above the first",
     "a transfer",
     "a transfer clamped",
     "a value order",
     "a waiting market order cancelled",
-    "a wallet the bound closed out set to zero",
+    "a waiting target leg replaced",
+    "a wallet a fill left within rounding of zero set to zero",
     "a wallet that fees left below zero set to zero",
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
@@ -112,7 +117,7 @@ SEVERAL_ONLY = {
     "a bar clipped across several perpetuals",
     "a liquidation of several perpetuals",
     "a waiting market order cancelled",
-    "a wallet the bound closed out set to zero",
+    "a waiting target leg replaced",
     "a delisting",
     "a position held through a row without its bar",
     "an order waiting for its instrument's next bar",
@@ -124,11 +129,14 @@ SEVERAL_ONLY = {
 }
 ONE_ONLY = {"an inverse contract filled"}
 # with sizes on every fill is a whole number of lots, so no position the reference
-# books is left between the dust threshold and half a lot
-UNREACHABLE = {"dust swept at the close"}
+# books is left between the dust threshold and half a lot; and every instrument here
+# prints its first bar on the first row, so no target names one yet to print, which
+# the comparison over universes reaches
+UNREACHABLE = {"dust swept at the close", "a target leg on an instrument yet to print"}
 # random accounts seldom reach these, so a case built for each reaches it in the
 # comparison with the engine
 BUILT = {
+    "a wallet a fill left within rounding of zero set to zero",
     "an exit held back from a position the bar's orders opened",
     "the exits of a position the bar's orders opened reordered",
 }
@@ -332,10 +340,14 @@ def decisions(rng, row, instruments, wallets, rough):
         elif verb < 0.86:
             out.append(("close", dict(instrument=i)))
         elif verb < 0.95:
+            # now and then an instrument with no bar on the row, which may be yet to
+            # print its first, and now and then a tolerance that skips a small leg
             weights = {k: (rng.uniform(0.0, 1.0) if instruments[k].kind == "spot"
                            else rng.uniform(-10.0, 10.0))
-                       for k in range(len(instruments)) if row[k] is not None}
+                       for k in range(len(instruments))
+                       if row[k] is not None or rng.random() < 0.3}
             out.append(("target", dict(weights=weights,
+                                       tolerance=rng.choice([0.0, 0.0, 0.3]),
                                        transfer=wallets and rng.random() < 0.5)))
         elif wallets:
             out.append(("transfer", dict(amount=rng.choice([20.0, 200.0, 5_000.0]),

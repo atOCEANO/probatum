@@ -60,18 +60,22 @@ impl Engine {
         let before = self.before_fill(i);
         // what the bar could not hold of the bound's lift is paid into the margin
         // wallet, and the close then realizes against it
+        let cash = self.account.margin_cash;
         self.account.margin_cash += credit;
         self.account.apply_fill(i, &fill, fee);
-        // a fill the bound moved that leaves no perp held leaves the wallet at zero,
-        // which floating point misses by a hair either side, and a hair above zero is
-        // equity the cap levers, so the wallet is set to zero as a takeover sets it
-        // and what it held is the liquidation charge (ADRs 0015, 0018)
-        let moved = fill.price.get() != priced || credit > 0.0;
-        if moved && self.account.perps_held() == 0 {
-            if let Some(reporter) = self.reporter.as_mut() {
-                reporter.costs_mut().liquidation += self.account.margin_cash;
+        // a close that leaves no perp held where the margin ran out leaves the wallet
+        // at the zero exact arithmetic gives, which floating point misses by a hair
+        // either side, and a hair above zero is equity the cap levers; a wallet
+        // within the rounding of what the fill moved is set to zero, as a takeover
+        // sets it, and the hair is the liquidation charge (ADRs 0015, 0018)
+        if self.account.markets[i] == Market::Perp && self.account.perps_held() == 0 {
+            let rounding = 1e-12 * (cash.abs() + credit + applied * fill.price.get());
+            if self.account.margin_cash.abs() <= rounding {
+                if let Some(reporter) = self.reporter.as_mut() {
+                    reporter.costs_mut().liquidation += self.account.margin_cash;
+                }
+                self.account.margin_cash = 0.0;
             }
-            self.account.margin_cash = 0.0;
         }
         if self.account.markets[i] == Market::Perp {
             let (held, entry, _) = before;

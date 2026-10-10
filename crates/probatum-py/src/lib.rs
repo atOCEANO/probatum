@@ -1051,7 +1051,7 @@ fn fills_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'
     Ok(Some(list))
 }
 
-/// The ledger as columns, an instrument's six as a value a bar, or for a `universe` as
+/// The ledger as columns, an instrument's seven as a value a bar, or for a `universe` as
 /// a row of one per instrument a bar, so code that reads an instrument's column of a
 /// universe reads one of a single instrument the same way.
 fn ledger_of<'py>(
@@ -1477,7 +1477,8 @@ impl Engine {
     /// below `tolerance` of equity is skipped, and `transfer=True` moves what the
     /// spot legs need beyond the spot wallet's cash across from the margin wallet at
     /// the start of the next bar. A second target in one decision replaces the
-    /// first. Returns the ids of the legs queued (ADR 0009).
+    /// first, and a later target the legs earlier ones left waiting on what it
+    /// names. Returns the ids of the legs queued (ADR 0009).
     #[pyo3(signature = (weights, tolerance = 0.0, transfer = false))]
     fn target(
         &mut self,
@@ -2150,8 +2151,8 @@ fn read_weights(
     } else if let Ok(weight) = value.extract::<f64>() {
         if width != 1 {
             return Err(PyValueError::new_err(format!(
-                "{at}weights: one number for {width} instruments; give one per \
-                 instrument, or a dict from instrument to weight"
+                "{at}weights: {weight}, one number, for {width} instruments; give one \
+                 per instrument, or a dict from instrument to weight"
             )));
         }
         weights.push((0, weight));

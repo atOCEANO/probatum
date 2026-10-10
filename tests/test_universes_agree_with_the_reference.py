@@ -27,6 +27,7 @@ SHARED = [
     "a flip",
     "a flip filled on the gap",
     "a flip's old side on the check",
+    "a flip split by a target",
     "a fok order filling nothing",
     "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
@@ -53,7 +54,9 @@ SHARED = [
     "a takeover",
     "a taker's price held inside the bar",
     "a target",
+    "a target leg skipped below the tolerance",
     "a target replaced in its decision",
+    "a target's shortfall taken back",
     "a target's spot shortfall moved across",
     "a tier above the first",
     "a transfer",
@@ -98,12 +101,71 @@ def bitcoin_and_ether(closes, intrabar):
     return times, ["linear", "linear"], columns, cfg, actions
 
 
+def closed_out_on_two():
+    """Longs of 10 on two perpetuals from 100 on 102 of margin and a taker fee of
+    0.2%, closed by one target on a bar where the first opens at 90, which the bound
+    lifts to 90.18 to leave the second's closing fee, and the second at 100, which
+    that fee takes to the zero exact arithmetic gives; the buy decided at that
+    close then has nothing to back it."""
+    def flat(price):
+        return Bar(price, price, price, price, 1e6)
+
+    columns = [
+        [flat(100.0)] * 3 + [Bar(90.0, 95.0, 90.0, 92.0, 1e6), flat(92.0)],
+        [flat(100.0)] * 3 + [Bar(100.0, 105.0, 100.0, 103.0, 1e6), flat(103.0)],
+    ]
+
+    times = [k * differential.HOUR for k in range(5)]
+    cfg   = dict(kinds=["linear", "linear"], quote=106.0, balance=106.0,
+                 fee_taker=0.002, fee_maker=0.0, slippage_bps=0.0, max_open_orders=8,
+                 leverage=0.0, funding=("none",), tiers=[(None, "notional")] * 2,
+                 intrabar="pessimistic")
+    actions = [(0, "market", "buy", 10.0, 0.0), (1, "market", "buy", 10.0, 0.0),
+               (0, "weights", "buy", {0: 0.0, 1: 0.0}, 0.0),
+               (0, "market", "buy", 5.0, 0.0), None]
+
+    return times, ["linear", "linear"], columns, cfg, actions
+
+
+def waiting_and_unlisted():
+    """Two perpetuals, the second printing its first bar on the third row and none on
+    the fourth and fifth: a target on the first row names it before it prints, and
+    its leg is refused, and a target on the fourth row replaces the leg the third
+    row's left waiting for its next bar."""
+    def flat(price):
+        return Bar(price, price, price, price, 1e6)
+
+    columns = [
+        [flat(100.0)] * 7,
+        [None, None, flat(10.0), None, None, flat(10.0), flat(10.0)],
+    ]
+
+    times = [k * differential.HOUR for k in range(7)]
+    cfg   = dict(kinds=["linear", "linear"], quote=10_000.0, balance=10_000.0,
+                 fee_taker=0.0, fee_maker=0.0, slippage_bps=0.0, max_open_orders=8,
+                 leverage=0.0, funding=("none",), tiers=[(None, "notional")] * 2,
+                 intrabar="pessimistic")
+
+    actions = [(0, "weights", "buy", {0: 0.2, 1: 0.2}, 0.0), None,
+               (0, "weights", "buy", {1: 0.5}, 0.0),
+               (0, "weights", "buy", {1: 0.5}, 0.0), None, None]
+
+    return times, ["linear", "linear"], columns, cfg, actions
+
+
 # universes built where random ones seldom reach a rule, each with the rule it reaches
 BUILT = {
-    "every corner and the closes clear of the trigger": (
+    "a target naming an instrument before its first bar":     (
+        "a target leg on an instrument yet to print", waiting_and_unlisted()),
+    "a target replacing the leg an earlier one left waiting": (
+        "a waiting target leg replaced", waiting_and_unlisted()),
+    "two perps closed out where the margin ran out":          (
+        "a wallet a fill left within rounding of zero set to zero",
+        closed_out_on_two()),
+    "every corner and the closes clear of the trigger":       (
         "a path inside the bars that never reaches the trigger",
         bitcoin_and_ether((57_000.0, 3_150.0), "optimistic")),
-    "the closes at the trigger":                        (
+    "the closes at the trigger":                              (
         "a corner or the closes reaching the trigger",
         bitcoin_and_ether((55_000.0, 3_250.0), "optimistic")),
 }

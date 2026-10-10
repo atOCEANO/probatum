@@ -333,6 +333,21 @@ def test_a_target_the_engine_cannot_take_is_refused(weights, tolerance, says):
         engine().target(weights, tolerance=tolerance)
 
 
+def test_a_universe_reads_an_array_of_weights_one_per_instrument():
+    # a quarter of 10,000 on each of two perps, at closes of 150 and 15, the second
+    # trading the first's volume so no fill is held to a bar's
+    pair = np.stack([series(), series() / 10.0], axis=1)
+    pair[:, 1, 4] = 1_000.0
+
+    venue  = dict(market="perp", fee_taker=0.0, leverage=0.0)
+    played = probatum._probatum.run(pair, venue, {
+        0: [("target", {"weights": np.array([0.25, 0.25])})],
+    })
+
+    sizes = sorted((fill["instrument"], fill["size"]) for fill in played["fills"])
+    assert sizes == [(0, pytest.approx(2_500.0 / 150.0)), (1, pytest.approx(2_500.0 / 15.0))]
+
+
 def test_a_target_in_a_script_books_rebalances_and_the_drift_they_leave():
     played = probatum._probatum.run(series(), dict(fee_taker=0.0), {
         0: [("target", {"weights": 0.5})],

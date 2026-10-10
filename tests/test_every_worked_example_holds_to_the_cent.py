@@ -103,7 +103,7 @@ def test_a_delisting_closes_the_position_at_the_last_close_with_no_fee():
 
 def test_a_target_of_half_on_ten_thousand_buys_0_083_of_bitcoin():
     sim = run(hourly(2), [[flat(60_000.0)], [flat(60_000.0)]],
-              [Instrument("BTCUSDT", lot=0.001)],
+              [Instrument("BTCUSDT", lot=0.001)], Venue(sizes=True),
               script={0: [("target", dict(weights=0.5))]})
     [order] = sim.orders.values()
 
