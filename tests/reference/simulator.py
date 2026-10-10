@@ -574,7 +574,6 @@ class Simulator:
 
             bar = self.bars[t][j]
             if bar is None:
-                self.hit("a held perp read at its last mark")
                 prices[j] = self.mark[j]
             elif self.venue.intrabar == "optimistic":
                 prices[j] = bar.high if q > 0.0 else bar.low
@@ -1785,6 +1784,14 @@ class Simulator:
                 waiting.append(order)       # Time, The clock: it waits for its bar
                 continue
 
+            if bar.volume <= 0.0:
+                # a bar that trades nothing fills no order, whatever its tif, so
+                # nothing is weighed against it
+                self.hit("a market order filling nothing")
+                order["status"] = "expired"
+                self.log("not_filled", order, "nothing could fill on its bar")
+                continue
+
             side   = order["side"]
             inst   = self.instruments[i]
             budget = self.budget_left.get(i, 0.0)
@@ -1805,14 +1812,12 @@ class Simulator:
                                                order["reduce_only"], self.venue.taker))
             whole         = size >= self.lot_down(i, wanted) - DUST
             refused_whole = order["tif"] == "fok" and not whole
-            if bar.volume <= 0.0 or size <= DUST or refused_whole:
-                # a bar that trades nothing fills no order, whatever its tif
-                fok = refused_whole and bar.volume > 0.0
-                self.hit("a fok order filling nothing" if fok
+            if size <= DUST or refused_whole:
+                self.hit("a fok order filling nothing" if refused_whole
                          else "a market order filling nothing")
                 order["status"] = "expired"
-                self.log("not_filled", order, "fok: the whole size could not" if fok
-                         else "nothing could fill on its bar")
+                self.log("not_filled", order, "fok: the whole size could not"
+                         if refused_whole else "nothing could fill on its bar")
                 continue
 
             self.hit("a value order" if order["value"] is not None
@@ -2075,14 +2080,20 @@ class Simulator:
         # the other legs sit where the fill sits on the path of the position it
         # flips or adds to, or from flat of the side it opens
         s      = self.fraction(i, q > 0.0 if q != 0.0 else side == "buy", price, self.t)
-        prices = self.others_at(s, self.t, skip=i)
-        if prices and s > 0.0:
-            self.hit("the cap with the other legs at the fill's fraction")
+        others = self.others_at(s, self.t, skip=i)
+        prices = {**others, i: price}
 
-        prices[i] = price
+        def held_back():
+            # the other legs count where the cap holds the fill back with them
+            if others and s > 0.0:
+                self.hit("the cap with the other legs at the fill's fraction")
+            if any(self.bars[self.t][j] is None for j in others):
+                self.hit("a held perp read at its last mark")
+
         equity = self.margin_equity(prices)
         if equity <= 0.0:
             self.hit("a growing fill refused at no equity")
+            held_back()
             return reducing
 
         base  = 0.0 if q * signed <= 0.0 else abs(q)
@@ -2098,6 +2109,7 @@ class Simulator:
             if need(growing) <= need(0.0):
                 return size
             self.hit("an account over the cap kept from growing")
+            held_back()
             return reducing + last_within(lambda x: need(0.0) - need(x), 0.0, growing)
 
         limit = growing
@@ -2114,6 +2126,7 @@ class Simulator:
             return booked(q, signed, reducing + limit, base + limit)
 
         self.hit("a fill held to the margin cap")
+        held_back()
         # the requirement only rises with the fill's size, through every tier, and
         # jumps at a tier's bound, where the last size that fits is the bound itself
         extra = last_within(lambda x: equity - need(x), 0.0, limit)
@@ -2163,6 +2176,9 @@ class Simulator:
             self.hit("a reducing fill bounded at a fee of its own")
         if level(price) >= 0.0:
             return price, costs
+
+        if any(self.bars[self.t][j] is None for j in others):
+            self.hit("a held perp read at its last mark")
 
         up   = 1.0 if q > 0.0 else -1.0
         span = price                 # a purchase is lowered toward zero, never past it

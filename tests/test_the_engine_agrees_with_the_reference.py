@@ -66,7 +66,7 @@ def check(cases, seed):
 
 @pytest.mark.parametrize("seed", [1, 7, 42])
 def test_random_cases_agree_on_position_equity_cash_and_funding(seed):
-    check(60, seed)
+    check(120, seed)
 
 
 @pytest.mark.slow

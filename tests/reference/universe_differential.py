@@ -23,7 +23,7 @@ import numpy as np
 
 import probatum
 from .differential import (KINDS, NOT_IN_THE_ENGINE, Script, before, clock,
-                           close_enough, closed_before, cut, limit_price,
+                           close_enough, closed_before, cut, limit_price, live,
                            log_difference, resting, stamps, stop_price, tally,
                            tier_table, walk, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
@@ -210,19 +210,23 @@ def plan(rng, columns, cfg):
 def place(sim, action, t, theirs, script, reached):
     """One action, decided by the reference on its own account and taken there, and
     written into `script` for the engine, as `differential.place` does, on the
-    instrument the action names."""
+    instrument the action names. An order first acts on the next row its instrument
+    prints a bar on, and is counted there."""
     if action is None:
         return
 
     i, kind, side, size, u = action
     close = sim.mark[i]
+    on    = next((r for r in range(t + 1, len(sim.bars)) if sim.bars[r][i] is not None),
+                 None)
 
     if kind in ("close", "reduce", "exits") and sim.position[i] != 0.0:
-        reached[kind] += 1
+        if on is not None:
+            reached[on][kind] += 1
     elif kind in ("cancel", "replace") and theirs and resting(sim, theirs[0][0]):
-        reached[kind] += 1
+        reached[t][kind] += 1
     elif kind == "cancel_all" and sim.resting(i):
-        reached[kind] += 1
+        reached[t][kind] += 1
 
     got = None
     if kind in ("market", "fok", "reduce"):
@@ -298,8 +302,8 @@ def place(sim, action, t, theirs, script, reached):
 
     if got is not None and resting(sim, got[0]):
         theirs.append(got)
-        if kind in ("ioc_limit", "fok_limit", "reduce_limit", "stop_entry"):
-            reached[kind] += 1
+        if on is not None and live(kind, sim.position[i], side):
+            reached[on][kind] += 1
 
 
 def make_reference(times, kinds, columns, cfg):
@@ -378,7 +382,7 @@ def run(case, reached):
     sim = make_reference(times, kinds, columns, cfg)
     script, theirs = Script(), []
     for t, action in enumerate(actions):
-        place(sim, action, t, theirs, script, reached[t])
+        place(sim, action, t, theirs, script, reached)
         sim.step()
 
     return play(times, columns, cfg, script), sim

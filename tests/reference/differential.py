@@ -327,7 +327,8 @@ def place(sim, action, t, close, theirs, script, reached=None):
     """One action, decided by the reference on its own account and taken there, and
     written into `script` for the engine. `theirs` holds the reference's resting
     orders, each its id and the placement that made it, oldest first, so a cancel
-    or a replace names the same order on both sides."""
+    or a replace names the same order on both sides. `reached` counts each action
+    that met something live under the bar it first acts on."""
     if action is None:
         return
 
@@ -338,11 +339,11 @@ def place(sim, action, t, close, theirs, script, reached=None):
         # live position or order agrees with anything, and after the fact there is
         # no telling that from a real agreement
         if kind in ("close", "reduce", "exits") and sim.position[0] != 0.0:
-            reached[kind] += 1
+            reached[t + 1][kind] += 1
         elif kind in ("cancel", "replace") and theirs and resting(sim, theirs[0][0]):
-            reached[kind] += 1
+            reached[t][kind] += 1
         elif kind == "cancel_all" and sim.resting():
-            reached[kind] += 1
+            reached[t][kind] += 1
 
     got = None
     if kind in ("market", "fok", "reduce"):
@@ -418,9 +419,16 @@ def place(sim, action, t, close, theirs, script, reached=None):
 
     if got is not None and resting(sim, got[0]):
         theirs.append(got)
-        if reached is not None and kind in ("ioc_limit", "fok_limit", "reduce_limit",
-                                            "stop_entry"):
-            reached[kind] += 1
+        if reached is not None and live(kind, sim.position[0], side):
+            reached[t + 1][kind] += 1
+
+
+def live(kind, held, side):
+    """Whether an order of `kind` left resting on a position of `held` acts on
+    anything: a reduce_only limit only beside a position it reduces."""
+    if kind == "reduce_limit":
+        return (held > 0.0 and side == "sell") or (held < 0.0 and side == "buy")
+    return kind in ("ioc_limit", "fok_limit", "stop_entry")
 
 
 def run(bars, times, cfg, actions, reached=None):
@@ -432,8 +440,7 @@ def run(bars, times, cfg, actions, reached=None):
     funded = 0.0
 
     for t, action in enumerate(actions):
-        place(sim, action, t, bars[t].close, theirs, script,
-              None if reached is None else reached[t])
+        place(sim, action, t, bars[t].close, theirs, script, reached)
         sim.step()
         funded += sim.ledger[-1]["funding"]
         rows.append((sim.position[0], sim.equity(), sim.spot_cash, sim.margin_cash,
@@ -469,10 +476,10 @@ def cut(sim, rules=NOT_IN_THE_ENGINE):
 
 
 def tally(reached, rules, counted, sim, end):
-    """Count what the part of a case compared reached: the actions placed in time to
-    act on a bar before `end`, and once a case each rule first applied before it."""
-    for t, kinds in counted.items():
-        if end is None or t + 1 < end:
+    """Count what the part of a case compared reached: the actions that first act on
+    a bar before `end`, and once a case each rule first applied before it."""
+    for bar, kinds in counted.items():
+        if end is None or bar < end:
             reached.update(kinds)
 
     rules.update(rule for rule, bar in sim.first.items() if end is None or bar < end)
