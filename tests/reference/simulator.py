@@ -1412,7 +1412,12 @@ class Simulator:
         flipped = before * after < 0.0
 
         if flipped:
-            floor = self.fraction(i, before > 0.0, price, self.t)
+            # a flip filled past the old side's adverse extreme traded on the gap,
+            # before the bar opened, so the old side leaves at the open (The path)
+            bar    = self.bars[self.t][i]
+            gapped = bar is not None and (price < bar.low if before > 0.0
+                                          else price > bar.high)
+            floor = 0.0 if gapped else self.fraction(i, before > 0.0, price, self.t)
             left += [leg._replace(entry=price, leave=floor) for leg in held]
             held = []
         elif after == 0.0:

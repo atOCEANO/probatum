@@ -405,7 +405,7 @@ bar segment   p_i(s) = o_i + s * (x_i - o_i)    from the open to the adverse ext
 
 Legs that change during the bar join the path:
 - a leg opened or grown during the bar enters at the fraction where its fill price lies on its adverse segment; a fill on the favourable side of the open enters at fraction 0, on its own segment from the fill price to the adverse extreme;
-- a leg that flips is tested on both segments, the old side up to the flip's fraction on its own segment, measured from the flip's price since the wallet already holds what it realized, and the new side from there to its own adverse extreme;
+- a leg that flips is tested on both segments, the old side up to the flip's fraction on its own segment, measured from the flip's price since the wallet already holds what it realized, and the new side from there to its own adverse extreme; a flip filled past the old side's adverse extreme traded on the gap, before the bar opened, so the old side leaves at the open;
 - an instrument flat at the bar's start takes the segment of the side its first fill opens;
 - an instrument unavailable on the bar keeps its last mark and does not move.
 
