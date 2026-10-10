@@ -60,6 +60,14 @@ impl Engine {
         {
             return;
         }
+        self.clip_carried(wallet, inside);
+    }
+
+    /// The path carried in, solved for an account the corners could not clear, the
+    /// wallet `wallet` on the gap and `inside` on the bar. Kept out of line, so the
+    /// look that clears most bars stays small where every step makes it.
+    #[inline(never)]
+    fn clip_carried(&mut self, wallet: f64, inside: f64) {
         let mut path = std::mem::take(&mut self.path);
         self.carried_path(&mut path);
         // the gap is one move for every path; inside the bars the optimistic way

@@ -92,8 +92,10 @@ impl Engine {
 
     /// What the charges stamped inside this row the bar counts toward its path come
     /// to, on the positions as they now stand, at their closes: those carried in for
-    /// the path solved before the fills, those the fills left for the check.
-    #[inline]
+    /// the path solved before the fills, those the fills left for the check. Asked on
+    /// every bar a perp is held, most often of a row that owns no funding, so a call
+    /// would cost more than the answer.
+    #[inline(always)]
     pub(super) fn counted_inside(&self) -> f64 {
         let Some(schedule) = self.candles.funding() else {
             return 0.0;
