@@ -1553,7 +1553,11 @@ class Simulator:
         closes = []
         for leg in held:
             start, end = self.ends(leg, a, b)
-            closes.append((leg.instrument, leg.q, start + u * (end - start)))
+            price = start + u * (end - start)
+            if leg.frac > 0.0 and price == leg.start:
+                # closed where it joined, at its fill price
+                self.hit("a forced close of a leg that joined during the bar")
+            closes.append((leg.instrument, leg.q, price))
 
         self.liquidate(closes, t, path, wallet, trigger)
         return True
