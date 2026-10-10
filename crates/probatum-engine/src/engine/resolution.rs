@@ -13,16 +13,17 @@ use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason};
 
-/// How badly a fill ends for the position currently held: the price PnL per unit
-/// it would realize, so the most adverse sorts first. A fill that does not reduce
-/// the position is not part of the question a wide bar asks, and sorts last.
-fn adversity(position: f64, entry: f64, fill: &Fill) -> f64 {
-    let reduces =
-        (position > 0.0 && fill.side == Side::Sell) || (position < 0.0 && fill.side == Side::Buy);
+/// How badly a fill on `side` at `reference` ends for the position currently held:
+/// the price PnL per unit it would realize, measured from its reference as the
+/// ledger measures it, before the slippage it then pays, so the most adverse sorts
+/// first. A fill that does not reduce the position is not part of the question a
+/// wide bar asks, and sorts last.
+fn adversity(position: f64, entry: f64, side: Side, reference: f64) -> f64 {
+    let reduces = (position > 0.0 && side == Side::Sell) || (position < 0.0 && side == Side::Buy);
     if !reduces {
         return f64::INFINITY;
     }
-    (fill.price.get() - entry) * position.signum()
+    (reference - entry) * position.signum()
 }
 
 /// A resting order a bar reaches: its id and instrument, the fill the model offers
@@ -266,6 +267,7 @@ impl Engine {
                 continue;
             }
             let entry = self.account.positions[i].avg_entry.get();
+            let rank = |offer: &Offer| adversity(position, entry, offer.2.side, offer.7.reference);
             // The exits are reordered among the slots the exits already hold, and
             // everything else stays exactly where it was. Sorting the whole list
             // instead moved every non-exit behind every exit, which is a different
@@ -275,12 +277,12 @@ impl Engine {
             // (ADR 0011) would have left it, which is the optimism ADR 0012 exists
             // to remove rather than relocate (ADR 0012)
             let slots: Vec<usize> = (first..fills.len())
-                .filter(|&k| fills[k].1 == i && adversity(position, entry, &fills[k].2).is_finite())
+                .filter(|&k| fills[k].1 == i && rank(&fills[k]).is_finite())
                 .collect();
             let mut ordered: Vec<usize> = slots.clone();
             ordered.sort_by(|&a, &b| {
-                adversity(position, entry, &fills[a].2)
-                    .partial_cmp(&adversity(position, entry, &fills[b].2))
+                rank(&fills[a])
+                    .partial_cmp(&rank(&fills[b]))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             let exits: Vec<_> = ordered.iter().map(|&k| fills[k]).collect();
@@ -296,8 +298,8 @@ impl Engine {
         for &(id, i, fill, kind, reduce_only, tif, requested, costs) in fills {
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
-            // order is reached rather than the snapshot the loop above saw. The
-            // sweep below then cancels it unfilled (ADR 0010).
+            // order is reached rather than the one its offer was made on, and left
+            // for the expiry sweep that follows to cancel unfilled (ADR 0010).
             if kind == OrderType::Limit
                 && tif == TimeInForce::Fok
                 && self.clamp_fill(i, reduce_only, &fill).size.get() + CLOSE_EPS < requested
@@ -361,7 +363,8 @@ mod tests {
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::EventKind;
-    use probatum_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, TimeInForce};
+    use crate::reporter::FillReason;
+    use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
 
     #[test]
     fn a_gtc_limit_fills_across_bars_under_the_volume_cap() {
@@ -896,29 +899,20 @@ mod tests {
         );
     }
 
-    fn exit_at(side: Side, price: f64) -> Fill {
-        Fill {
-            side,
-            size: Qty(1.0),
-            price: Price(price),
-            is_taker: true,
-        }
-    }
-
     #[test]
     fn adversity_ranks_an_exit_by_what_it_realizes_and_sorts_everything_else_last() {
         // the whole of ADR 0012 rests on this eight-line function, and the suite
         // reached it only through the engine, where one wide bar exercises one
         // branch. Every comparison and every term is pinned here instead
-        let long_loss = adversity(2.0, 100.0, &exit_at(Side::Sell, 90.0));
-        let long_win = adversity(2.0, 100.0, &exit_at(Side::Sell, 110.0));
+        let long_loss = adversity(2.0, 100.0, Side::Sell, 90.0);
+        let long_win = adversity(2.0, 100.0, Side::Sell, 110.0);
         assert_eq!(long_loss, -10.0);
         assert_eq!(long_win, 10.0);
         assert!(long_loss < long_win, "a long's worse exit must sort first");
 
         // a short is the mirror: the HIGHER price is the worse exit
-        let short_loss = adversity(-2.0, 100.0, &exit_at(Side::Buy, 110.0));
-        let short_win = adversity(-2.0, 100.0, &exit_at(Side::Buy, 90.0));
+        let short_loss = adversity(-2.0, 100.0, Side::Buy, 110.0);
+        let short_win = adversity(-2.0, 100.0, Side::Buy, 90.0);
         assert_eq!(short_loss, -10.0);
         assert_eq!(short_win, 10.0);
         assert!(
@@ -934,12 +928,53 @@ mod tests {
             (0.0, Side::Sell),
         ] {
             assert_eq!(
-                adversity(position, 100.0, &exit_at(side, 90.0)),
+                adversity(position, 100.0, side, 90.0),
                 f64::INFINITY,
                 "position {position} with a {side:?} is not an exit"
             );
         }
         assert!(long_loss < f64::INFINITY);
+    }
+
+    #[test]
+    fn a_stop_and_a_limit_on_one_side_are_ranked_at_their_references() {
+        // a long of 1 with a stop at 95 and a marketable limit at 94.80, on a bar
+        // that opens at 96 and falls to 90 with 50 bps of slippage. The stop's
+        // slipped price, 94.525, is worse than the limit's, but its price PnL is
+        // measured from 95, so the limit is the worse exit and fills first
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(96.0, 97.0, 90.0, 92.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            slippage_bps: 50.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        let stop = e.stop(Side::Sell, 1.0, 95.0, true);
+        e.order(
+            Side::Sell,
+            1.0,
+            OrderType::Limit,
+            Some(94.8),
+            None,
+            true,
+            false,
+            TimeInForce::Gtc,
+        );
+        let s = e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        let last = fills.last().expect("the exit");
+        assert_eq!((last.reason, last.price), (FillReason::Limit, 94.8));
+        assert_eq!(s.position, 0.0);
+        let resting: Vec<_> = s.open_orders.iter().map(|order| order.id).collect();
+        assert_eq!(resting, vec![stop.expect("the stop rests")]);
     }
 
     #[test]
