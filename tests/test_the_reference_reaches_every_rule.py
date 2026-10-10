@@ -77,6 +77,7 @@ RULES = [
     "a wallet that fees left below zero set to zero",
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
+    "an exit held back from a position the bar's orders opened",
     "an inverse contract filled",
     "an ioc or fok limit expiring after one bar",
     "an order below the minimum notional refused",
@@ -93,6 +94,7 @@ RULES = [
     "slippage paid",
     "spread paid",
     "the cap with the other legs at the fill's fraction",
+    "the exits of a position the bar's orders opened reordered",
     "the liquidity budget",
     "the margin bound beside another perp",
     "the margin bound lifting a fill inside its bar",
@@ -120,6 +122,12 @@ ONE_ONLY = {"an inverse contract filled"}
 # with sizes on every fill is a whole number of lots, so no position the reference
 # books is left between the dust threshold and half a lot
 UNREACHABLE = {"dust swept at the close"}
+# random accounts seldom reach these, so a case built for each reaches it in the
+# comparison with the engine
+BUILT = {
+    "an exit held back from a position the bar's orders opened",
+    "the exits of a position the bar's orders opened reordered",
+}
 
 
 def series(rng, rows, start, holes, flat):
@@ -420,7 +428,8 @@ def test_random_accounts_keep_the_reference_invariants(short):
     assert named <= set(RULES), sorted(named - set(RULES))
 
 
-@pytest.mark.parametrize("rule", [rule for rule in RULES if rule not in UNREACHABLE])
+@pytest.mark.parametrize("rule", [rule for rule in RULES
+                                  if rule not in UNREACHABLE | BUILT])
 def test_random_accounts_reach_every_rule(rule, short):
     counts = {several: short[several][0][rule] for several in (False, True)}
 

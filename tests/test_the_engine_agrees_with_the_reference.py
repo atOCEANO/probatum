@@ -5,12 +5,14 @@ the two part company on is a question about a rule, and the run prints it. A cas
 compared up to the first bar on which the reference applied a rule the engine has
 yet to take up.
 Every gate stage runs a short comparison; the slow stage runs it at length, where
-every rule the two share has to be reached as well.
+every rule the two share has to be reached as well. A rule random cases reach too
+rarely to rely on has a case built for it.
 """
 
 import pytest
 
 from reference import differential
+from reference.simulator import Bar
 
 # the rules both simulators apply, each of which a comparison at length must reach
 SHARED = [
@@ -51,6 +53,53 @@ SHARED = [
     "funding inside a bar counted toward the check",
     "slippage paid",
 ]
+
+
+def built(*actions, shaped):
+    """A case built by hand: three quiet bars at 100 and then `shaped`, an (open,
+    high, low, close), on a perpetual with 100 of margin at 10x and no fees,
+    slippage or funding, with an action decided at each quiet bar's close."""
+    bars  = [Bar(100.0, 100.0, 100.0, 100.0, 1e6)] * 3 + [Bar(*shaped, 1e6)]
+    times = [k * differential.HOUR for k in range(len(bars))]
+    cfg   = dict(market="perp", quote=100.0, idle=0.0, fee_taker=0.0, fee_maker=0.0,
+                 slippage_bps=0.0, max_open_orders=8, leverage=10.0, funding=("none",),
+                 tiers=None, tiers_by="notional")
+
+    return bars, times, cfg, list(actions)
+
+
+def at(kind, side, size, price):
+    """An action at a close of 100 whose price comes out at `price`."""
+    if kind == "stop":
+        base, step = 0.8, 0.4
+    else:
+        base, step = (0.8 if side == "buy" else 0.99), 0.21
+
+    return kind, side, size, (price / 100.0 - base) / step
+
+
+# a case for each rule, built where random cases seldom reach it
+BUILT = {
+    # a buy opens a long a take-profit and a stop both close, and the stop, the
+    # worse, fills first though typed last
+    "the exits of a position the bar's orders opened reordered": built(
+        at("limit", "buy", 1.0, 95.0), at("reduce_limit", "sell", 1.0, 110.0),
+        at("stop", "sell", 1.0, 90.0), shaped=(100.0, 112.0, 85.0, 100.0)),
+    # a sale above the open would close the long the bar's buy opened, which the
+    # path without it takes to its trigger
+    "an exit held back from a position the bar's orders opened": built(
+        None, at("limit", "buy", 10.0, 95.0), at("limit", "sell", 10.0, 105.0),
+        shaped=(100.0, 106.0, 80.0, 95.0)),
+}
+
+
+@pytest.mark.parametrize("rule", sorted(BUILT))
+def test_a_case_built_for_a_rule_agrees_and_reaches_it(rule):
+    bars, times, cfg, actions = BUILT[rule]
+    rows, records, sim = differential.run(bars, times, cfg, actions)
+
+    assert differential.disagreement(rows, records, sim, cfg) is None
+    assert sim.reached[rule]
 
 
 def check(cases, seed):

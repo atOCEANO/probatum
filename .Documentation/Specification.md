@@ -95,7 +95,7 @@ From bar `t` to bar `t + 1`, in this order:
 2. Funding stamped after bar `t`'s end and up to bar `t + 1`'s open is charged at the last marks ([Funding](#funding)).
 3. The liquidation path is solved for the positions carried in ([Liquidation](#liquidation)): the account is liquidated before the bar opens, or every held perpetual's bar is clipped at the clip point, or nothing happens.
 4. Pending market orders fill at the open of the clipped bars, in the order they were placed.
-5. Resting limits and stops resolve against the clipped bars in slot order. The exits of one position are reordered by the PnL per unit each would realize at its fill price, a stop's slippage included, worst first under the pessimistic setting, among the slots those exits hold; exits on different instruments are never reordered. Every reducing fill passes the margin bound.
+5. Resting limits and stops resolve against the clipped bars in slot order. The exits of the position each fill meets, as the fills before it left that position, are reordered by the PnL per unit each would realize at its fill price, a stop's slippage included, worst first under the pessimistic setting, among the slots those exits hold, so a position the bar's own fills open has its exits ordered as a carried one's are; exits on different instruments are never reordered. Every reducing fill passes the margin bound.
 6. Under the pessimistic setting, the perpetual fills that would reduce the position they meet, priced on the favourable side of their open, are held back when the path without them still reaches the trigger.
 7. The liquidation check runs along the path for the account as it now stands.
 8. Funding owned by the bar is charged at the closes on the positions still held.

@@ -1937,14 +1937,14 @@ class Simulator:
 
 
     def fill_resting_orders(self, t, hold_favourable=False):
-        """The step, 5: resting orders in slot order, a position's exits reordered by
-        the PnL per unit each would realize, worst first unless optimistic. With
-        `hold_favourable`, a fill that would reduce the position it meets on the
-        favourable side of its open is held back when its turn comes. Returns how
-        many were."""
+        """The step, 5: resting orders in slot order, the exits of the position each
+        meets reordered by the PnL per unit each would realize, worst first unless
+        optimistic. With `hold_favourable`, a fill that would reduce the position it
+        meets on the favourable side of its open is held back when its turn comes.
+        Returns how many were."""
         offers = []
         held   = 0
-        start  = list(self.position)
+        before = list(self.position)
 
         for slot, order in enumerate(self.slots):
             if order is None:
@@ -1968,8 +1968,9 @@ class Simulator:
                 continue
             offers.append((slot, order, found[0], found[1]))
 
-        offers = self.worst_first(offers)
-        for slot, order, reference, taker in offers:
+        for k in range(len(offers)):
+            self.order_exits(offers, k, before)
+            slot, order, reference, taker = offers[k]
             if order["status"] != "resting":
                 continue                     # its OCO partner filled first
 
@@ -1981,13 +1982,13 @@ class Simulator:
 
             if hold_favourable and self.favourable(order, reference, t):
                 held += 1
-                if not ((start[i] > 0.0 and side == "sell")
-                        or (start[i] < 0.0 and side == "buy")):
+                if not ((before[i] > 0.0 and side == "sell")
+                        or (before[i] < 0.0 and side == "buy")):
                     self.hit("an exit held back from a position the bar's orders opened")
                 continue
 
             remaining = (abs(self.position[i]) if order["size"] is None
-                          else order["size"] - order["filled"])
+                         else order["size"] - order["filled"])
             budget  = self.budget_left.get(i, 0.0)
             allowed = min(remaining, budget)
             if budget < remaining:
@@ -2059,10 +2060,12 @@ class Simulator:
         return held
 
 
-    def worst_first(self, offers):
-        """The step, 5: only a position's exits reorder, among the slots they hold, by
-        the PnL per unit each would realize at its fill price, a stop's with the
-        costs it pays for the size it asks."""
+    def order_exits(self, offers, k, before):
+        """The step, 5: the exits of the position the offer at `k` meets, as the fills
+        before it left that position, reorder among the slots they hold from `k` on,
+        by the PnL per unit each would realize at its fill price, a stop's with the
+        costs it pays for the size it asks, worst first unless optimistic. `before`
+        holds the positions the bar's resting orders found."""
         def realize(item):
             _, order, price, _ = item
             i       = order["instrument"]
@@ -2081,19 +2084,22 @@ class Simulator:
             return self.instruments[i].profit(1.0 if q > 0.0 else -1.0, self.entry[i],
                                               price)
 
-        reverse = self.venue.intrabar == "optimistic"
-        out     = list(offers)
+        if realize(offers[k]) is None:
+            return
 
-        for i in range(len(self.instruments)):
-            places = [k for k, item in enumerate(offers)
-                      if item[1]["instrument"] == i and realize(item) is not None]
-            ordered = sorted(places, key=lambda k: realize(offers[k]), reverse=reverse)
-            if ordered != places:
-                self.hit("a position's exits reordered")
-            for place, take in zip(places, ordered):
-                out[place] = offers[take]
+        i      = offers[k][1]["instrument"]
+        places = [j for j in range(k, len(offers))
+                  if offers[j][1]["instrument"] == i and realize(offers[j]) is not None]
+        ordered = sorted(places, key=lambda j: realize(offers[j]),
+                         reverse=self.venue.intrabar == "optimistic")
 
-        return out
+        if ordered != places:
+            self.hit("a position's exits reordered")
+            if before[i] * self.position[i] <= 0.0:
+                self.hit("the exits of a position the bar's orders opened reordered")
+            moved = [offers[j] for j in ordered]
+            for place, item in zip(places, moved):
+                offers[place] = item
 
 
     def clamp(self, i, side, size, price, reduce_only, rate):

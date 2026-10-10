@@ -137,10 +137,9 @@ impl Engine {
         if self.book.is_empty() {
             return;
         }
-        let mut fills = self.offers();
-        self.worst_first(&mut fills);
+        let fills = self.offers();
         let hold = self.may_hold(&fills) && self.liquidates_without(&fills);
-        self.fill_offers(&fills, hold);
+        self.fill_offers(fills, hold);
 
         // IOC and FOK limits get one bar of exposure, the first their instrument
         // prints, then expire whether or not they filled: they never rest for a
@@ -220,17 +219,17 @@ impl Engine {
             }
     }
 
-    /// Whether any offer, in the order they fill, could meet a position it reduces on
-    /// the favourable side of its open: one that reduces the position as the bar's
-    /// resting orders find it, or one an earlier fill on its instrument, on the other
-    /// side, could open or flip that position for.
+    /// Whether any offer could meet a position it reduces on the favourable side of
+    /// its open: one that reduces the position as the bar's resting orders find it,
+    /// or one a fill on its instrument on the other side could open or flip that
+    /// position for, in whatever order the bar's exits come to be taken.
     fn may_hold(&self, fills: &[Offer]) -> bool {
-        fills.iter().enumerate().any(|(k, offer)| {
+        fills.iter().any(|offer| {
             self.beyond_open(offer)
                 && (self.favourable(offer)
-                    || fills[..k]
+                    || fills
                         .iter()
-                        .any(|earlier| earlier.1 == offer.1 && earlier.2.side != offer.2.side))
+                        .any(|other| other.1 == offer.1 && other.2.side != offer.2.side))
         })
     }
 
@@ -249,7 +248,7 @@ impl Engine {
         let (account, book) = (self.account.clone(), self.book.clone());
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
         let reporter = self.reporter.take();
-        let held = self.fill_offers(fills, true);
+        let held = self.fill_offers(fills.to_vec(), true);
         let liquidates = held && self.reaches_trigger();
         self.account = account;
         self.book = book;
@@ -260,8 +259,9 @@ impl Engine {
         liquidates
     }
 
-    /// Order the exits a wide bar reaches worst first among the slots they hold.
-    fn worst_first(&self, fills: &mut [Offer]) {
+    /// Order the exits of the position the offer at `k` meets worst first among the
+    /// slots they hold from `k` on, the position as the fills before it left it.
+    fn order_exits(&self, fills: &mut [Offer], k: usize) {
         // A bar that reaches both a stop and a target says nothing about which it
         // reached first, and the answer used to be slot order, which is the order
         // those two lines happen to appear in the strategy: place the stop first
@@ -271,54 +271,58 @@ impl Engine {
         // typed and is the same pessimism the rest of the engine already applies
         // (ADR 0012). The sort is stable, so anything that is not an exit keeps
         // its slot order, and the exits of different instruments, which close
-        // different positions, are never ordered against each other.
-        for first in 0..fills.len() {
-            let i = fills[first].1;
-            if fills.len() < 2 || fills[..first].iter().any(|fill| fill.1 == i) {
-                continue;
-            }
-            let position = self.account.positions[i].qty.get();
-            if position == 0.0 {
-                continue;
-            }
-            let entry = self.account.positions[i].avg_entry.get();
-            let rank =
-                |offer: &Offer| adversity(position, entry, offer.2.side, offer.2.price.get());
-            // The exits are reordered among the slots the exits already hold, and
-            // everything else stays exactly where it was. Sorting the whole list
-            // instead moved every non-exit behind every exit, which is a different
-            // rule than the one written down and not a harmless one: it let an
-            // entry be funded by the proceeds of a sale that may just as well have
-            // come after it, so the account ended a wide bar richer than slot order
-            // (ADR 0011) would have left it, which is the optimism ADR 0012 exists
-            // to remove rather than relocate (ADR 0012)
-            let slots: Vec<usize> = (first..fills.len())
-                .filter(|&k| fills[k].1 == i && rank(&fills[k]).is_finite())
-                .collect();
-            let mut ordered: Vec<usize> = slots.clone();
-            ordered.sort_by(|&a, &b| {
-                rank(&fills[a])
-                    .partial_cmp(&rank(&fills[b]))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let exits: Vec<_> = ordered.iter().map(|&k| fills[k]).collect();
-            for (slot, exit) in slots.iter().zip(exits) {
-                fills[*slot] = exit;
-            }
+        // different positions, are never ordered against each other. They are
+        // ordered as each comes up, against the position it meets, so the exits of
+        // a position the bar's own fills open or flip are ordered too, where a sort
+        // made once against the position the bar started with left them in the
+        // order they were typed
+        let i = fills[k].1;
+        let position = self.account.positions[i].qty.get();
+        let entry = self.account.positions[i].avg_entry.get();
+        let rank = |offer: &Offer| adversity(position, entry, offer.2.side, offer.2.price.get());
+        if position == 0.0 || !rank(&fills[k]).is_finite() {
+            return;
+        }
+        // The exits are reordered among the slots the exits already hold, and
+        // everything else stays exactly where it was. Sorting the whole list
+        // instead moved every non-exit behind every exit, which is a different
+        // rule than the one written down and not a harmless one: it let an
+        // entry be funded by the proceeds of a sale that may just as well have
+        // come after it, so the account ended a wide bar richer than slot order
+        // (ADR 0011) would have left it, which is the optimism ADR 0012 exists
+        // to remove rather than relocate (ADR 0012)
+        let slots: Vec<usize> = (k..fills.len())
+            .filter(|&j| fills[j].1 == i && rank(&fills[j]).is_finite())
+            .collect();
+        if slots.len() < 2 {
+            return;
+        }
+        let mut ordered: Vec<usize> = slots.clone();
+        ordered.sort_by(|&a, &b| {
+            rank(&fills[a])
+                .partial_cmp(&rank(&fills[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let exits: Vec<_> = ordered.iter().map(|&j| fills[j]).collect();
+        for (slot, exit) in slots.iter().zip(exits) {
+            fills[*slot] = exit;
         }
     }
 
     /// Fill the offers in turn, each clamped against the account the ones before it
-    /// left, with `hold` holding back each that would reduce the position it meets on
-    /// the favourable side of its open. Returns whether any was held back.
-    fn fill_offers(&mut self, fills: &[Offer], hold: bool) -> bool {
+    /// left and the exits among them ordered as each comes up, with `hold` holding
+    /// back each that would reduce the position it meets on the favourable side of
+    /// its open. Returns whether any was held back.
+    fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool) -> bool {
         let mut held = false;
-        for offer in fills {
-            if hold && self.favourable(offer) {
+        for k in 0..fills.len() {
+            self.order_exits(&mut fills, k);
+            let offer = fills[k];
+            if hold && self.favourable(&offer) {
                 held = true;
                 continue;
             }
-            let &(id, i, fill, kind, reduce_only, tif, requested, costs) = offer;
+            let (id, i, fill, kind, reduce_only, tif, requested, costs) = offer;
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the one its offer was made on, and left
@@ -1000,6 +1004,61 @@ mod tests {
         assert_eq!(s.position, 0.0);
         let resting: Vec<_> = s.open_orders.iter().map(|order| order.id).collect();
         assert_eq!(resting, vec![limit.expect("the limit rests")]);
+    }
+
+    #[test]
+    fn the_exits_of_a_position_its_own_bar_opened_are_ordered_worst_first() {
+        // a flat account rests a buy at 95 and, reduce-only, a take-profit at 110 and
+        // a stop at 90, and a bar from 100 reaches all three. The buy opens a long
+        // whose two exits the bar reached in an order it cannot show, so the worse,
+        // the stop, fills first whichever was typed first, and the account ends 5
+        // down
+        for stop_first in [false, true] {
+            let bars = Candles::new(vec![
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+                ohlc(100.0, 112.0, 85.0, 100.0, 1e6),
+            ]);
+            let config = EngineConfig {
+                report: true,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            e.limit_buy(1.0, 95.0);
+            let take = |e: &mut Engine| {
+                e.order(
+                    Side::Sell,
+                    1.0,
+                    OrderType::Limit,
+                    Some(110.0),
+                    None,
+                    true,
+                    false,
+                    TimeInForce::Gtc,
+                )
+            };
+            if stop_first {
+                e.stop(Side::Sell, 1.0, 90.0, true);
+                take(&mut e);
+            } else {
+                take(&mut e);
+                e.stop(Side::Sell, 1.0, 90.0, true);
+            }
+            let s = e.step();
+            let fills: Vec<(FillReason, f64)> = e
+                .reporter()
+                .expect("reporting is on")
+                .fills()
+                .iter()
+                .map(|fill| (fill.reason, fill.price))
+                .collect();
+            assert_eq!(
+                fills,
+                vec![(FillReason::Limit, 95.0), (FillReason::Stop, 90.0)],
+                "stop_first={stop_first}"
+            );
+            assert_eq!(s.margin_cash, 95.0, "stop_first={stop_first}");
+        }
     }
 
     #[test]
