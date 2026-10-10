@@ -60,6 +60,16 @@ def first_zero(f, lo=0.0, hi=1.0):
     return hi
 
 
+def booked(q, signed, size, held):
+    """`size`, less the ulps by which booking it on a position of `q` would round
+    the position past `held`, into a tier that asks more than the cap allowed;
+    `signed` carries the fill's side."""
+    while abs(q + math.copysign(size, signed)) > held:
+        size = math.nextafter(size, 0.0)
+
+    return size
+
+
 def last_within(f, lo, hi):
     """The last point in [lo, hi] where f stays at or above zero, by bisection, for
     an f at or above zero at lo and below it at hi that changes sign once there,
@@ -2075,8 +2085,12 @@ class Simulator:
             return self.cap_requirement(prices, sizes)
 
         if need(0.0) >= equity:
+            # no fill may raise the sum, which a fill on an instrument with no cap
+            # never does
+            if need(growing) <= need(0.0):
+                return size
             self.hit("an account over the cap kept from growing")
-            return reducing
+            return reducing + last_within(lambda x: need(0.0) - need(x), 0.0, growing)
 
         limit = growing
         inst  = self.instruments[i]
@@ -2089,7 +2103,7 @@ class Simulator:
             limit = min(limit, max(last - base, 0.0))
 
         if need(limit) <= equity:
-            return reducing + limit
+            return booked(q, signed, reducing + limit, base + limit)
 
         self.hit("a fill held to the margin cap")
         # the requirement only rises with the fill's size, through every tier, and
@@ -2100,7 +2114,7 @@ class Simulator:
                for tier in inst.tiers[:-1]):
             self.hit("a fill held at a tier's bound")
 
-        return reducing + extra
+        return booked(q, signed, reducing + extra, base + extra)
 
 
     def bound(self, i, side, size, price, bar, rate, costs):
