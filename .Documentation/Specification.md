@@ -409,7 +409,7 @@ Legs that change during the bar join the path:
 - an instrument flat at the bar's start takes the segment of the side its first fill opens;
 - an instrument unavailable on the bar keeps its last mark and does not move.
 
-Under `intrabar="optimistic"` the account is liquidated on a bar only if every path inside the bars reaches the trigger. The test is one corner per perpetual held, that instrument at its adverse extreme and every other at its favourable extreme, and the closes. If none of them reaches the trigger, a path exists that never does, from the opens to every favourable extreme, out to each adverse extreme and back in turn, and on to the closes. If one does, every path does, and the clip falls where the synchronous path meets the trigger.
+Under `intrabar="optimistic"` the account is liquidated on a bar only if every path inside the bars reaches the trigger. The test is one corner per perpetual held, that instrument at its adverse extreme and every other at its favourable extreme, and the closes. If none of them reaches the trigger, a path exists that never does, from the opens to every favourable extreme, out to each adverse extreme and back in turn, and on to the closes. If one does, every path does, and the clip falls where the synchronous path meets the trigger. A leg that a fill opens on the favourable side of its open still runs from its fill price to its adverse extreme, as under the default, though a path may have passed that extreme before the fill.
 
 ### The trigger, close and clip points
 
@@ -455,7 +455,8 @@ For linear contracts, margin equity less the requirement rises with a long leg's
 - an instrument unavailable on a bar is frozen at its last mark, so a liquidation on a hidden path is not seen (optimistic);
 - liquidation in slices is not modelled (pessimistic for large positions);
 - auto-deleveraging is not modelled (optimistic for winners);
-- a flip that rule 4 holds back is held whole, the side it would open with it, so an exit of that side, which the bar may have reached only after the trigger, can fill (optimistic).
+- a flip that rule 4 holds back is held whole, the side it would open with it, so an exit of that side, which the bar may have reached only after the trigger, can fill (optimistic);
+- under the optimistic setting, a leg that a fill opens on the favourable side of its open runs to its adverse extreme, which the bar may have reached before the fill, so an account some path spares can be liquidated (pessimistic).
 
 ### Worked for one instrument
 
