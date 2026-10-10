@@ -220,15 +220,19 @@ impl Engine {
         let fee = self.cost.fee_taker;
         let price = fill.price.get();
         let wallet = self.wallet_beside(i, fee, price);
-        let Some(star) = self.account.bankruptcy_price(i, fee, wallet) else {
-            return 0.0;
+        // no close point above zero: a sale leaves the wallet whole at any price,
+        // and a purchase overdraws it at every price, so it is lowered all the way
+        let star = match self.account.bankruptcy_price(i, fee, wallet) {
+            Some(star) => star.get(),
+            None if long => return 0.0,
+            None => 0.0,
         };
         let entry = self.account.positions[i].avg_entry.get();
         let (goal, lifted) = if long {
-            let goal = star.get().min(entry);
+            let goal = star.min(entry);
             (goal, price.max(goal.min(candle.high)))
         } else {
-            let goal = star.get().max(entry);
+            let goal = star.max(entry);
             (goal, price.min(goal.max(candle.low)))
         };
         fill.price = Price(lifted);
@@ -989,6 +993,81 @@ mod tests {
         assert!((stop - 105.0).abs() < 1e-9, "the stop filled at {stop}");
         assert!((charge + 120.0).abs() < 1e-9, "the charge was {charge}");
         assert!((close - 1_300.0 / 30.0).abs() < 1e-9, "B closed at {close}");
+    }
+
+    #[test]
+    fn a_purchase_with_no_close_point_above_zero_is_lowered_to_the_entry() {
+        // 100 of margin behind a short of 10 A from 100, with a buy stop at 110, and
+        // 100 B bought at its open of 50. The stop sits halfway up A's bar, where B
+        // has fallen to 35, so the wallet beside A holds -1,400 and no purchase of A
+        // above zero leaves it whole: the stop is lowered to the entry, and B is
+        // closed out where the 100 runs out, at 49
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(50.0)],
+            vec![flat(100.0), flat(50.0)],
+            vec![
+                ohlc(100.0, 120.0, 99.0, 110.0, 1e6),
+                ohlc(50.0, 50.0, 20.0, 30.0, 1e6),
+            ],
+        ];
+        let config = EngineConfig {
+            quote: 100.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        let (ioc, gtc) = (TimeInForce::Ioc, TimeInForce::Gtc);
+        e.reset();
+        e.order_on(
+            0,
+            Side::Sell,
+            10.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        e.order_on(
+            0,
+            Side::Buy,
+            10.0,
+            OrderType::Stop,
+            None,
+            Some(110.0),
+            true,
+            false,
+            gtc,
+        );
+        e.order_on(
+            1,
+            Side::Buy,
+            100.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        let priced = |reason| -> Vec<(usize, f64)> {
+            fills
+                .iter()
+                .filter(|fill| fill.reason == reason)
+                .map(|fill| (fill.instrument, fill.price))
+                .collect()
+        };
+        let (stops, closes) = (priced(FillReason::Stop), priced(FillReason::Liquidation));
+        let ([(0, stop)], [(1, close)]) = (stops.as_slice(), closes.as_slice()) else {
+            panic!("one stop on A and one close of B");
+        };
+        assert_eq!(*stop, 100.0);
+        assert!((close - 49.0).abs() < 1e-9, "B closed at {close}");
     }
 
     #[test]
