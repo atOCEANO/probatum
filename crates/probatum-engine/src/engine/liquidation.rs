@@ -1750,6 +1750,34 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_above_where_its_long_started_is_judged_at_its_trigger_not_its_fill() {
+        // the buy at 95 opens a long on a bar from 100, and a reduce-only stop at 95.3
+        // would close it above where it started, though a slippage of 50 bps fills it
+        // at 94.82: the bar reached 95.3 after 95 only on a move back up, so the stop
+        // is held back and the long closed at its trigger, 85
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 80.0, 85.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            max_leverage: 10.0,
+            slippage_bps: 50.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.limit_buy(10.0, 95.0);
+        e.stop(Side::Sell, 10.0, 95.3, true);
+        let last = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![(FillReason::Limit, 95.0), (FillReason::Liquidation, 85.0)]
+        );
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
     fn a_gap_through_the_clip_point_liquidates_the_account_before_the_bar_opens() {
         // the last mark is 40,500 and the next bar opens at 40,010, so the gap
         // crosses the close point, 40,020.01, before the bar opens: the account is

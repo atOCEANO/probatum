@@ -129,9 +129,9 @@ impl Engine {
     ///
     /// A bar that reaches both a take-profit and the liquidation trigger cannot show
     /// which came first either, and the liquidation is the worse exit. So each perp
-    /// fill that, when its turn comes, would reduce the position it meets at a price
-    /// on the favourable side of where that position started on the bar is held back
-    /// when the check would find the trigger without those fills, and the
+    /// fill that, when its turn comes, would reduce the position it meets with its
+    /// reference on the favourable side of where that position started on the bar is
+    /// held back when the check would find the trigger without those fills, and the
     /// liquidation then cancels them; otherwise they fill in turn with the rest
     /// (ADR 0012).
     pub(super) fn resolve_resting(&mut self) {
@@ -198,29 +198,30 @@ impl Engine {
         fills
     }
 
-    /// A perp fill that reduces the position as it now stands, priced on the side of
-    /// where that position started on the bar that it gains on: a long's sale above
-    /// its start, a short's purchase below it. The path takes a position away from
-    /// its start, so the bar reached such a price only on a move back, which it
-    /// cannot show came before the trigger.
-    fn favourable(&self, &(_, i, fill, ..): &Offer) -> bool {
+    /// A perp fill that reduces the position as it now stands, the price the bar
+    /// reached for it on the side of where that position started on the bar that it
+    /// gains on: a long's sale above its start, a short's purchase below it. The path
+    /// takes a position away from its start, so the bar reached such a price only on
+    /// a move back, which it cannot show came before the trigger. The fill's
+    /// reference is that price; what the fill pays beyond it was never on the bar.
+    fn favourable(&self, &(_, i, fill, .., costs): &Offer) -> bool {
         let (position, start) = (self.account.positions[i].qty.get(), self.starts[i]);
         self.account.markets[i] == Market::Perp
             && match fill.side {
-                Side::Sell => position > 0.0 && fill.price.get() > start,
-                Side::Buy => position < 0.0 && fill.price.get() < start,
+                Side::Sell => position > 0.0 && costs.reference > start,
+                Side::Buy => position < 0.0 && costs.reference < start,
             }
     }
 
     /// Whether any offer could meet a position it reduces on the favourable side of
     /// where that position started: one favourable as the bar's resting orders find
-    /// the account, or one priced beyond a fill on its instrument on the other side,
+    /// the account, or one reached beyond a fill on its instrument on the other side,
     /// which could open or flip that position there, in whatever order the bar's
     /// exits come to be taken.
     fn may_hold(&self, fills: &[Offer]) -> bool {
         let beyond = |offer: &Offer, at: f64| match offer.2.side {
-            Side::Sell => offer.2.price.get() > at,
-            Side::Buy => offer.2.price.get() < at,
+            Side::Sell => offer.7.reference > at,
+            Side::Buy => offer.7.reference < at,
         };
         fills.iter().any(|offer| {
             self.favourable(offer)

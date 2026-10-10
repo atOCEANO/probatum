@@ -1152,9 +1152,9 @@ class Simulator:
     def resolve_resting(self, t):
         """The step, 5 to 7: the resting orders, then the check. Under the pessimistic
         setting each perpetual fill that, when its turn comes, would reduce the
-        position it meets at a price on the favourable side of where that position
-        started on the bar is first held back, and if the check then liquidates, it
-        never happened (Liquidation, The rule, 4)."""
+        position it meets with its reference on the favourable side of where that
+        position started on the bar is first held back, and if the check then
+        liquidates, it never happened (Liquidation, The rule, 4)."""
         if self.venue.intrabar == "pessimistic" and self.may_hold(t):
             saved = self.snapshot()
             held  = self.fill_resting_orders(t, hold_favourable=True)
@@ -1950,8 +1950,8 @@ class Simulator:
         """The step, 5: resting orders in slot order, the exits of the position each
         meets reordered by the PnL per unit each would realize, worst first unless
         optimistic. With `hold_favourable`, a fill that would reduce the position it
-        meets on the favourable side of its open is held back when its turn comes.
-        Returns how many were."""
+        meets with its reference on the favourable side of where that position
+        started on the bar is held back when its turn comes. Returns how many were."""
         offers = []
         held   = 0
         before = list(self.position)
