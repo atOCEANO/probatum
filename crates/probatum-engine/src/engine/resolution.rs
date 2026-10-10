@@ -13,17 +13,16 @@ use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason};
 
-/// How badly a fill on `side` at `reference` ends for the position currently held:
-/// the price PnL per unit it would realize, measured from its reference as the
-/// ledger measures it, before the slippage it then pays, so the most adverse sorts
-/// first. A fill that does not reduce the position is not part of the question a
-/// wide bar asks, and sorts last.
-fn adversity(position: f64, entry: f64, side: Side, reference: f64) -> f64 {
+/// How badly a fill on `side` at `price` ends for the position currently held: the
+/// PnL per unit it would realize, at its fill price with the slippage it pays, as a
+/// position realizes it, so the most adverse sorts first. A fill that does not
+/// reduce the position is not part of the question a wide bar asks, and sorts last.
+fn adversity(position: f64, entry: f64, side: Side, price: f64) -> f64 {
     let reduces = (position > 0.0 && side == Side::Sell) || (position < 0.0 && side == Side::Buy);
     if !reduces {
         return f64::INFINITY;
     }
-    (reference - entry) * position.signum()
+    (price - entry) * position.signum()
 }
 
 /// A resting order a bar reaches: its id and instrument, the fill the model offers
@@ -283,7 +282,8 @@ impl Engine {
                 continue;
             }
             let entry = self.account.positions[i].avg_entry.get();
-            let rank = |offer: &Offer| adversity(position, entry, offer.2.side, offer.7.reference);
+            let rank =
+                |offer: &Offer| adversity(position, entry, offer.2.side, offer.2.price.get());
             // The exits are reordered among the slots the exits already hold, and
             // everything else stays exactly where it was. Sorting the whole list
             // instead moved every non-exit behind every exit, which is a different
@@ -961,11 +961,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_and_a_limit_on_one_side_are_ranked_at_their_references() {
+    fn a_stop_and_a_limit_on_one_side_are_ranked_at_their_fill_prices() {
         // a long of 1 with a stop at 95 and a marketable limit at 94.80, on a bar
-        // that opens at 96 and falls to 90 with 50 bps of slippage. The stop's
-        // slipped price, 94.525, is worse than the limit's, but its price PnL is
-        // measured from 95, so the limit is the worse exit and fills first
+        // that opens at 96 and falls to 90 with 50 bps of slippage. The stop would
+        // realize its fill price, 94.525, worse than the limit's, so it fills first
+        // whatever its trigger, and the limit, reduce-only, rests
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
@@ -981,8 +981,8 @@ mod tests {
         e.reset();
         e.market_buy(1.0);
         e.step();
-        let stop = e.stop(Side::Sell, 1.0, 95.0, true);
-        e.order(
+        e.stop(Side::Sell, 1.0, 95.0, true);
+        let limit = e.order(
             Side::Sell,
             1.0,
             OrderType::Limit,
@@ -995,10 +995,11 @@ mod tests {
         let s = e.step();
         let fills = e.reporter().expect("reporting is on").fills();
         let last = fills.last().expect("the exit");
-        assert_eq!((last.reason, last.price), (FillReason::Limit, 94.8));
+        assert_eq!(last.reason, FillReason::Stop);
+        assert!((last.price - 94.525).abs() < 1e-9, "sold at {}", last.price);
         assert_eq!(s.position, 0.0);
         let resting: Vec<_> = s.open_orders.iter().map(|order| order.id).collect();
-        assert_eq!(resting, vec![stop.expect("the stop rests")]);
+        assert_eq!(resting, vec![limit.expect("the limit rests")]);
     }
 
     #[test]

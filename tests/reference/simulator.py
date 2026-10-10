@@ -2060,7 +2060,9 @@ class Simulator:
 
 
     def worst_first(self, offers):
-        """The step, 5: only a position's exits reorder, among the slots they hold."""
+        """The step, 5: only a position's exits reorder, among the slots they hold, by
+        the PnL per unit each would realize at its fill price, a stop's with the
+        costs it pays for the size it asks."""
         def realize(item):
             _, order, price, _ = item
             i       = order["instrument"]
@@ -2069,6 +2071,12 @@ class Simulator:
             reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
             if not reduces:
                 return None
+
+            if order["kind"] == "stop":
+                size = (abs(q) if order["size"] is None
+                        else order["size"] - order["filled"])
+                price = self.taker_price(i, side, price, size,
+                                         self.bar_for(self.t, i))[0]
 
             return self.instruments[i].profit(1.0 if q > 0.0 else -1.0, self.entry[i],
                                               price)
