@@ -92,6 +92,7 @@ impl Engine {
                 requested,
                 fill,
                 costs,
+                &bar,
             );
             // a market order lives one bar, and what it did not fill is gone
             if applied <= 0.0 {
@@ -212,8 +213,9 @@ impl Engine {
             } else {
                 FillReason::Limit
             };
+            let bar = self.bar_for(i, clip);
             let applied =
-                self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs);
+                self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
                 // ADR 0010 says and what it used to say only for a bar with no

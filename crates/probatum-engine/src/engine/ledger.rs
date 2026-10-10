@@ -2,7 +2,7 @@
 //! and when reporting is on it is logged with what it paid and carried into the
 //! round trips, each of which holds every fee of its own fills (ADRs 0022, 0023).
 
-use probatum_core::{CostModel, Fill, OrderId, Side};
+use probatum_core::{Candle, CostModel, Fill, OrderId, Side};
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
@@ -33,9 +33,9 @@ impl Engine {
         )
     }
 
-    /// Clamp `fill` on instrument `i`, bound it by the margin, book it and log it as
-    /// `order`'s, with `costs` the fill model measured and `requested` what the order
-    /// still asked for. Returns the size that landed.
+    /// Clamp `fill` on instrument `i`, bound it by the margin inside `candle`, the bar it
+    /// filled on, book it and log it as `order`'s, with `costs` the fill model measured
+    /// and `requested` what the order still asked for. Returns the size that landed.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_fill_clamped(
         &mut self,
@@ -46,16 +46,20 @@ impl Engine {
         requested: f64,
         fill: Fill,
         costs: FillCosts,
+        candle: &Candle,
     ) -> f64 {
         let mut fill = self.clamp_fill(i, reduce_only, &fill);
         if fill.size.get() <= 0.0 {
             return 0.0;
         }
         let priced = fill.price.get();
-        self.bound_by_margin(i, &mut fill);
+        let credit = self.bound_by_margin(i, &mut fill, candle);
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
         let before = self.before_fill(i);
+        // what the bar could not hold of the bound's lift is paid into the margin
+        // wallet, and the close then realizes against it
+        self.account.margin_cash += credit;
         self.account.apply_fill(i, &fill, fee);
         self.book_fill(
             i,
@@ -69,7 +73,8 @@ impl Engine {
         if let Some(reporter) = self.reporter.as_mut() {
             // what the fill paid beyond its reference at the price its costs and the
             // bar set, each part in proportion when the bar held that price back, and
-            // what the margin bound then lifted it by, a negative liquidation charge
+            // what the margin bound then lifted it by and paid in for what the bar
+            // could not hold, a negative liquidation charge
             let paid = applied * (priced - costs.reference).abs();
             let asked = costs.spread + costs.slippage + costs.impact;
             let bar = reporter.costs_mut();
@@ -79,7 +84,7 @@ impl Engine {
                 bar.slippage += paid * costs.slippage / asked;
                 bar.impact += paid * costs.impact / asked;
             }
-            bar.liquidation -= applied * (fill.price.get() - priced).abs();
+            bar.liquidation -= applied * (fill.price.get() - priced).abs() + credit;
             reporter.record_fill(FillRecord {
                 tick: self.tick,
                 instrument: i,
@@ -542,6 +547,7 @@ mod tests {
             5e-13,
             dust,
             FillCosts::default(),
+            &ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
         );
         assert_eq!(applied, 0.0);
         assert_eq!(e.num_fills(), 0);

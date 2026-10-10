@@ -200,27 +200,47 @@ impl Engine {
     /// closing fees, each at the fraction of its own bar the fill sits at on its
     /// path, so no reducing fill on one leg overdraws the account its other legs
     /// still stand in.
-    pub(super) fn bound_by_margin(&self, i: usize, fill: &mut Fill) {
+    ///
+    /// The lift stops at the position's average entry, past which the close owes
+    /// nothing, and inside `candle`, the bar the fill was priced on: a price the bar
+    /// never printed is no trade. What the bar cannot hold, the part of the lift past
+    /// it on the size closed, net of the fee it would have moved, is returned to be
+    /// paid into the margin wallet (Specification, The margin bound).
+    pub(super) fn bound_by_margin(&self, i: usize, fill: &mut Fill, candle: &Candle) -> f64 {
         if self.account.markets[i] != Market::Perp {
-            return;
+            return 0.0;
         }
         let position = self.account.positions[i].qty.get();
         let long = position > 0.0;
         let reduces =
             (long && fill.side == Side::Sell) || (position < 0.0 && fill.side == Side::Buy);
         if !reduces {
-            return;
+            return 0.0;
         }
         let fee = self.cost.fee_taker;
-        let wallet = self.wallet_beside(i, fee, fill.price.get());
-        if let Some(bound) = self.account.bankruptcy_price(i, fee, wallet) {
-            let price = fill.price.get();
-            fill.price = Price(if long {
-                price.max(bound.get())
-            } else {
-                price.min(bound.get())
-            });
-        }
+        let price = fill.price.get();
+        let wallet = self.wallet_beside(i, fee, price);
+        let Some(star) = self.account.bankruptcy_price(i, fee, wallet) else {
+            return 0.0;
+        };
+        let entry = self.account.positions[i].avg_entry.get();
+        let (goal, lifted) = if long {
+            let goal = star.get().min(entry);
+            (goal, price.max(goal.min(candle.high)))
+        } else {
+            let goal = star.get().max(entry);
+            (goal, price.min(goal.max(candle.low)))
+        };
+        fill.price = Price(lifted);
+        let closed = fill.size.get().min(position.abs());
+        let rate = if fill.is_taker {
+            self.cost.fee_taker
+        } else {
+            self.cost.fee_maker
+        };
+        // what closing that part realizes at a price, net of the fill's own fee
+        let kept = |p: f64| position.signum() * closed * (p - entry) - closed * p * rate;
+        (kept(goal) - kept(lifted)).max(0.0)
     }
 }
 
@@ -903,5 +923,71 @@ mod tests {
         assert!((stop - 90.0).abs() < 1e-9, "the stop filled at {stop}");
         assert!((close - 80.0).abs() < 1e-9, "A closed at {close}");
         assert_eq!(last.margin_cash, 0.0);
+    }
+
+    /// A long of 10 on A from `entry` with a reduce-only sell stop at 98, and a buy
+    /// of `b` B at B's open of 50, on a bar where A trades from 100 down to 96 and B
+    /// falls to 36, on `margin` with no fees and no cap. Returns the stop's price,
+    /// that bar's liquidation charge and the price B is closed out at.
+    fn stop_beside(entry: f64, margin: f64, b: f64) -> (f64, f64, f64) {
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(entry), flat(50.0)],
+            vec![flat(entry), flat(50.0)],
+            vec![
+                ohlc(100.0, 105.0, 96.0, 100.0, 1e6),
+                ohlc(50.0, 50.0, 36.0, 40.0, 1e6),
+            ],
+        ];
+        let config = EngineConfig {
+            quote: margin,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.stop(Side::Sell, 10.0, 98.0, true);
+        let ioc = TimeInForce::Ioc;
+        e.order_on(
+            1,
+            Side::Buy,
+            b,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let price = |reason| {
+            let fill = reporter.fills().iter().find(|fill| fill.reason == reason);
+            fill.expect("the fill").price
+        };
+        let charge = reporter.ledger()[2].costs.liquidation;
+        (
+            price(FillReason::Stop),
+            charge,
+            price(FillReason::Liquidation),
+        )
+    }
+
+    #[test]
+    fn the_bound_lifts_a_fill_no_further_than_its_entry_or_its_bar() {
+        // B sits at 43 where A's stop at 98 sits on its path, so the stop's close
+        // point is 104, and the lift stops at A's entry of 100. From an entry of 110
+        // beside 30 B the close point is 111 and the entry 110, but the bar printed
+        // no more than 105: the stop fills there, and the 50 the bar could not hold is
+        // paid into the wallet, a negative liquidation charge with the lift's 70
+        let (stop, _, close) = stop_beside(100.0, 100.0, 20.0);
+        assert!((stop - 100.0).abs() < 1e-9, "the stop filled at {stop}");
+        assert!((close - 45.0).abs() < 1e-9, "B closed at {close}");
+        let (stop, charge, close) = stop_beside(110.0, 200.0, 30.0);
+        assert!((stop - 105.0).abs() < 1e-9, "the stop filled at {stop}");
+        assert!((charge + 120.0).abs() < 1e-9, "the charge was {charge}");
+        assert!((close - 1_300.0 / 30.0).abs() < 1e-9, "B closed at {close}");
     }
 }
