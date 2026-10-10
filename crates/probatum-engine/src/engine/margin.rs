@@ -16,10 +16,12 @@ impl Engine {
     /// the margin wallet's equity, the fill's own instrument at the fill's price and
     /// every other at the same fraction of its own bar's adverse move as the fill
     /// sits at on the path of the position it reduces, flips or adds to, or from
-    /// flat of the side it opens. Reductions are never capped, and a position
-    /// already over the cap (from an equity drop) is not force-reduced, only blocked
-    /// from growing. With no cap set only an insolvent account is held, to
-    /// reductions. No-op on spot.
+    /// flat of the side it opens. Equity is measured before the fill's own fee, but
+    /// for a flip after the fee on the side it closes, which is paid before the new
+    /// side is opened. Reductions are never capped, and a position already over the
+    /// cap (from an equity drop) is not force-reduced, only blocked from growing.
+    /// With no cap set only an insolvent account is held, to reductions. No-op on
+    /// spot.
     fn cap_leverage(&self, i: usize, fill: &mut Fill) {
         if self.account.markets[i] != Market::Perp {
             return;
@@ -42,7 +44,17 @@ impl Engine {
         } else {
             0.0
         };
-        let equity = self.margin_equity_with(i, mark, s);
+        let new_pos = pos + fill.side.sign() * fill.size.get();
+        let flipping = pos != 0.0 && new_pos != 0.0 && (new_pos > 0.0) != (pos > 0.0);
+        let mut equity = self.margin_equity_with(i, mark, s);
+        if flipping {
+            let rate = if fill.is_taker {
+                self.cost.fee_taker
+            } else {
+                self.cost.fee_maker
+            };
+            equity -= pos.abs() * mark * rate;
+        }
         // No equity backs new notional, so an insolvent account may only shrink. It
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
@@ -63,12 +75,10 @@ impl Engine {
             };
             self.max_size(i, mark, (equity - others).max(0.0))
         };
-        let new_pos = pos + fill.side.sign() * fill.size.get();
         // A same-side grow may keep an existing over-cap position (from an equity
         // drop) but not extend it, so the allowance is the larger of the cap and
         // the current size. A flip closes the old side and opens a fresh one, which
         // must fit the cap outright, so it gets no such allowance (ADR 0015).
-        let flipping = pos != 0.0 && new_pos != 0.0 && (new_pos > 0.0) != (pos > 0.0);
         let max_abs = if flipping {
             max_size
         } else {
@@ -1080,5 +1090,47 @@ mod tests {
         e.step();
         let held = e.reporter().expect("reporting is on").legs()[4].position;
         assert!((held + 1_700.0 / 94.0).abs() < 1e-9, "A holds {held}");
+    }
+
+    #[test]
+    fn a_flip_opens_only_what_its_close_leaves_after_its_fee() {
+        // 990 of margin at 10x behind a long of 100 from 100, fees of 0.1%. A sell
+        // stop for 200 fills at 90.18, where equity is 8 before the fee, but closing
+        // the long costs 9.018 of it: the close leaves nothing, so nothing is opened,
+        // and the sale is lifted to where the wallet runs out, 9,010 / 99.9
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let bars = Candles::new(vec![
+            flat(100.0),
+            flat(100.0),
+            ohlc(90.6, 90.6, 90.15, 90.3, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            fee_taker: 0.001,
+            fee_maker: 0.001,
+            max_leverage: 10.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(100.0);
+        e.step();
+        e.stop(Side::Sell, 200.0, 90.18, false);
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let stop = reporter.fills().last().expect("the stop filled");
+        assert_eq!(stop.size, 100.0);
+        assert!(
+            (stop.price - 9_010.0 / 99.9).abs() < 1e-9,
+            "sold at {}",
+            stop.price
+        );
+        assert_eq!(reporter.legs()[2].position, 0.0);
+        assert!(
+            last.margin_cash.abs() < 1e-9,
+            "the wallet holds {}",
+            last.margin_cash
+        );
     }
 }

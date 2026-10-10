@@ -2062,14 +2062,15 @@ class Simulator:
 
             return max(size, 0.0)
 
-        return self.cap(i, side, max(size, 0.0), price)
+        return self.cap(i, side, max(size, 0.0), price, rate)
 
 
-    def cap(self, i, side, size, price):
+    def cap(self, i, side, size, price, rate):
         """Margin, The cap: summed notional over leverage may not exceed margin equity,
-        measured before the fill's own fee; a growing fill is clamped to what it
-        allows, an account over the cap may not grow, and one at or below zero equity
-        may only shrink. A flip's new side fits the cap from zero."""
+        measured before the fill's own fee but, for a flip, after the fee at `rate` on
+        the side it closes; a growing fill is clamped to what it allows, an account
+        over the cap may not grow, and one at or below zero equity may only shrink. A
+        flip's new side fits the cap from zero."""
         q        = self.position[i]
         signed   = size if side == "buy" else -size
         reducing = min(size, abs(q)) if q * signed < 0.0 else 0.0
@@ -2091,6 +2092,9 @@ class Simulator:
                 self.hit("a held perp read at its last mark")
 
         equity = self.margin_equity(prices)
+        if reducing > 0.0:
+            equity -= abs(self.instruments[i].notional(reducing, price)) * rate
+
         if equity <= 0.0:
             self.hit("a growing fill refused at no equity")
             held_back()
