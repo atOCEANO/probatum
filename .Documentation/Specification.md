@@ -114,7 +114,7 @@ A bar gives four prices and no order between them. The venue's `intrabar` settin
 | a funding event stamped inside the bar | a debit counts toward the check and a credit does not | a credit counts toward it and a debit does not |
 | several instruments, each reaching its worst price | they reach them at the same moment | each reaches it while the others sit at their best |
 
-`"random"` draws one of the two for each event from the stream named `intrabar` in the run's seed, which in a batch is named with the environment's index as well. Every bar draws in one order whether or not each event arises: the instruments together, the exits held back, each instrument's exits, then each funding event stamped inside the bar. What a bar draws therefore never depends on what the account holds. The stream runs on across a reset, so each episode draws afresh. `backtest`, `search` and `validate` refuse it.
+`"random"` draws one of the two for each event from the stream named `intrabar` in the run's seed, which in a batch is named with the environment's index as well. Every bar draws in one order whether or not each event arises: the instruments together, the exits held back, each instrument's exits, then each funding event the row owns. What a bar draws therefore never depends on what the account holds. The stream runs on across a reset, so each episode draws afresh. `backtest`, `search` and `validate` refuse it.
 
 <br>
 <br>
