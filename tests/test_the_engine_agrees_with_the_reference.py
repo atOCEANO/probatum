@@ -28,7 +28,6 @@ SHARED = [
     "a leg joining the check after the open",
     "a limit filled as a maker",
     "a limit filled as a taker",
-    "a liquidation at the closes",
     "a liquidation at the maintenance trigger",
     "a liquidation before the bar opens",
     "a liquidation by the check",
@@ -44,6 +43,9 @@ SHARED = [
     "a stop triggered",
     "a takeover",
     "a taker's price held inside the bar",
+    "a target",
+    "a target replaced in its decision",
+    "a target's spot shortfall moved across",
     "a transfer",
     "a transfer clamped",
     "an account over the cap kept from growing",
@@ -82,6 +84,27 @@ def at(kind, side, size, price):
 OPENED = "an exit held back from a position the bar's orders opened"
 
 
+def debited_at_the_close():
+    """A long of 9 from 100 on 100 of margin, through a flat bar whose close pays a
+    funding debit of 20% on its 900 of notional, 180, which takes equity to -80."""
+    bars, times, cfg, actions = built(("market", "buy", 9.0, 0.0), None, None,
+                                      shaped=(100.0, 100.0, 100.0, 100.0))
+    cfg.update(funding=("every_bars", 3, 0.2))
+    return bars, times, cfg, actions
+
+
+def bounded_flat():
+    """The Specification's margin bound: 50.5 of margin behind a long of 10 at 100,
+    a taker fee of 0.1%, and a market sale on a bar that trades at 95 throughout,
+    which the bound pays 0.45 into, leaving the account flat and its wallet at
+    zero."""
+    bars, times, cfg, actions = built(("market", "buy", 10.0, 0.0), None,
+                                      ("market", "sell", 10.0, 0.0),
+                                      shaped=(95.0, 95.0, 95.0, 95.0))
+    cfg.update(quote=51.5, fee_taker=0.001, leverage=0.0)
+    return bars, times, cfg, actions
+
+
 def flipped_at_the_low():
     """A long of 10 from 100 on 480 of margin, at 5% maintenance and no cap, sold 20
     by a stop at its bar's low of 90, so the short joins the path where the long
@@ -114,6 +137,12 @@ BUILT = {
     # it, and stays clear of its trigger
     "a flip at the low of a maintained long": (
         "a flip's old side on the check", flipped_at_the_low()),
+    # a bar the path survives, closed at its closes by the debit charged there
+    "a debit at the close that takes the account to its trigger": (
+        "a liquidation at the closes", debited_at_the_close()),
+    # a sale the bound pays into, which leaves the account flat at zero
+    "a sale the bound pays into that leaves the account flat": (
+        "a wallet the bound closed out set to zero", bounded_flat()),
 }
 
 

@@ -85,10 +85,15 @@ impl Engine {
                 );
                 continue;
             }
+            let reason = if self.targets.placed(order.id) {
+                FillReason::Rebalance
+            } else {
+                FillReason::Market
+            };
             let applied = self.apply_fill_clamped(
                 i,
                 order.id,
-                FillReason::Market,
+                reason,
                 order.reduce_only,
                 requested,
                 fill,
@@ -117,6 +122,7 @@ impl Engine {
             }
         }
         self.spare = pending;
+        self.targets.keep_waiting(&self.pending);
     }
 
     /// Resolve the resting book against each order's instrument's bar, as the path

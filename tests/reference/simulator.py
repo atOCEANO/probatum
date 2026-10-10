@@ -430,6 +430,7 @@ class Simulator:
         # what they were before the decision's first target, which a second replaces
         self.asked        = [None] * n
         self.asked_before = list(self.asked)
+        self.moved        = False                  # whether the last fill bounded was moved
         self.budget_left  = {}
         self.costs        = self.no_costs()
         self.clipped      = {}
@@ -1061,10 +1062,16 @@ class Simulator:
             inst = self.instruments[i]
 
             # the wanted position is the one whose notional at the close is the
-            # weight's share of equity: base units, or contracts on an inverse
+            # weight's share of equity: base units, or contracts on an inverse. An
+            # instrument yet to print its first bar has no close to size a leg on,
+            # and its leg is refused as any order there is
             close = self.mark[i]
-            unit  = inst.notional(1.0, close)
-            leg   = weight * equity / unit - self.position[i]
+            if close is None:
+                growing.append((i, math.nan))
+                continue
+
+            unit = inst.notional(1.0, close)
+            leg  = weight * equity / unit - self.position[i]
             if inst.lot > 0.0:
                 leg = math.trunc(round(leg / inst.lot, 9)) * inst.lot
             if abs(leg) * unit < tolerance * equity or abs(leg) <= DUST:
@@ -1096,9 +1103,10 @@ class Simulator:
             # raise and the cash the spot wallet holds
             needed = -self.spot_cash
             for i, leg in reducing + growing:
-                if self.instruments[i].kind == "spot":
+                if self.instruments[i].kind == "spot" and not math.isnan(leg):
                     cost = leg * self.mark[i]
                     needed += cost + abs(cost) * self.venue.taker
+
             if needed > 0.0:
                 self.hit("a target's spot shortfall moved across")
                 self.transfer(needed, to="spot")
@@ -1915,6 +1923,7 @@ class Simulator:
                                       costs)
             self.apply(i, side, size, price, self.venue.taker, True, order,
                        order["reason"], reference=bar.open, costs=costs)
+            self.zero_moved()
             order["filled"] += size
 
             # a market order lives one bar: what it did not fill is gone
@@ -2076,6 +2085,7 @@ class Simulator:
             reason = order["leg"] or order["reason"]
             self.apply(i, side, size, price, rate, taker, order, reason,
                        reference=reference, costs=costs)
+            self.zero_moved()
             order["filled"] += size
 
             if order["pair"] is not None:
@@ -2264,9 +2274,10 @@ class Simulator:
         The lift the bar holds is in the price and the part it cannot hold, net of the
         fee it moves, is paid into the wallet; both are a negative liquidation charge,
         and the fill log records the lift."""
-        q       = self.position[i]
-        inst    = self.instruments[i]
-        reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
+        self.moved = False
+        q          = self.position[i]
+        inst       = self.instruments[i]
+        reduces    = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
         if inst.kind == "spot" or not reduces:
             return price, costs
 
@@ -2330,9 +2341,20 @@ class Simulator:
         if others and (lifted != price or credit > 0.0):
             self.hit("the margin bound beside another perp")
 
+        self.moved = lifted != price or credit > 0.0
         self.margin_cash += credit
         self.costs["liquidation"] -= abs(inst.profit(size, price, lifted)) + credit
         return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price)
+
+
+    def zero_moved(self):
+        """The margin bound: a fill it moved that leaves no perpetual held leaves the
+        margin wallet at zero, as a takeover does, what it held the liquidation
+        charge."""
+        if self.moved and all(self.position[j] == 0.0 for j in self.perps()):
+            self.hit("a wallet the bound closed out set to zero")
+            self.costs["liquidation"] += self.margin_cash
+            self.margin_cash = 0.0
 
 
     def sweep_dust(self):

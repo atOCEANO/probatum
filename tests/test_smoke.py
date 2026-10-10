@@ -308,6 +308,49 @@ def test_a_random_bar_draws_one_way_for_a_seed_and_both_ways_over_seeds():
     assert exit_at(2**128 - 1) in (90.0, 110.0)
 
 
+@pytest.mark.parametrize("weights", [0.5, [0.5], np.array([0.5]), {0: 0.5}])
+def test_a_target_takes_one_number_one_weight_each_or_a_dict(weights):
+    # half of 10,000 at the close of 150, bought at the next open
+    e = engine(report=True)
+    e.reset()
+    [leg] = e.target(weights)
+
+    assert e.step().position == pytest.approx(0.5 * 10_000.0 / 150.0)
+    assert [fill["order"] for fill in e.fills()] == [leg]
+
+
+@pytest.mark.parametrize("weights, tolerance, says", [
+    (-0.5, 0.0, "weights: -0.5 for instrument 0, which trades spot and cannot be short; "
+                "trade a perpetual instead"),
+    ([0.5, 0.5], 0.0, "weights: 2 for the 1 the engine holds; give one per instrument"),
+    ({3: 0.5}, 0.0, "weights: 3 is not an instrument the engine holds"),
+    (float("nan"), 0.0, "weights: NaN for instrument 0 is not a weight; give a finite number"),
+    ("half", 0.0, "weights: 'half' is not a weight; give a number, one per instrument"),
+    (0.5, -0.1, "tolerance: -0.1 is not a fraction of equity; give one from 0"),
+])
+def test_a_target_the_engine_cannot_take_is_refused(weights, tolerance, says):
+    with pytest.raises(ValueError, match=re.escape(says)):
+        engine().target(weights, tolerance=tolerance)
+
+
+def test_a_target_in_a_script_books_rebalances_and_the_drift_they_leave():
+    played = probatum._probatum.run(series(), dict(fee_taker=0.0), {
+        0: [("target", {"weights": 0.5})],
+    })
+
+    assert [fill["reason"] for fill in played["fills"]] == ["rebalance"]
+
+    placed = [event["reason"] for event in played["order_log"] if event["kind"] == "placed"]
+    assert placed == ["rebalance"]
+
+    drift, weight = played["ledger"]["drift"], played["ledger"]["weight"]
+    assert np.isnan(drift[0])
+    assert drift[1:] == pytest.approx(0.5 - weight[1:])
+
+    with pytest.raises(ValueError, match=re.escape("script[0][0]: target has no weights")):
+        probatum._probatum.run(series(), None, {0: [("target", {})]})
+
+
 def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():
     venue  = dict(market="perp", quote=10_000.0, fee_taker=0.0006, leverage=5.0)
     played = probatum._probatum.run(series(), venue, {
@@ -374,7 +417,7 @@ def test_a_universe_with_an_instrument_nobody_trades_records_what_the_other_alon
 
     for name, column in alone["ledger"].items():
         mine = played["ledger"][name]
-        if name in ("position", "entry", "mark", "notional", "unrealized", "weight"):
+        if name in ("position", "entry", "mark", "notional", "unrealized", "weight", "drift"):
             assert mine.shape == (3, 2)
             mine = mine[:, 0]
         np.testing.assert_array_equal(mine, column)

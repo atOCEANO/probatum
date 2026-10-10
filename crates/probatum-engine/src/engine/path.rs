@@ -11,7 +11,7 @@ use super::Engine;
 use crate::candles::printed;
 
 /// A fill or a remainder smaller than this opens no leg, as it opens no round trip.
-const DUST: f64 = 1e-9;
+pub(super) const DUST: f64 = 1e-9;
 
 /// One position, or a part of it, moving from `start` to `end` along a piece.
 #[derive(Clone, Copy, Debug)]

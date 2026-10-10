@@ -36,9 +36,12 @@ mod margin;
 mod orders;
 mod path;
 mod resolution;
+mod target;
 mod transfers;
 
 use path::{CheckLeg, FillNote, HeldLeg, Path};
+pub use target::TargetError;
+use target::Targets;
 
 use probatum_core::{
     Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
@@ -176,6 +179,7 @@ pub struct Engine {
     /// Transfers decided since the last step, in order, each an amount and the
     /// wallet it goes into.
     transfers: Vec<(f64, Wallet)>,
+    targets: Targets,
     tick: usize,
     id_counter: u64,
     /// Fills applied since the last reset. A run whose orders never filled, on a
@@ -264,6 +268,7 @@ impl Engine {
             pending: Vec::new(),
             spare: Vec::new(),
             transfers: Vec::new(),
+            targets: Targets::new(width),
             tick: 0,
             id_counter: 1,
             fills: 0,
@@ -351,6 +356,7 @@ impl Engine {
                 let qty = position.qty.get();
                 let mark = self.marks[i];
                 let signed = if qty == 0.0 { 0.0 } else { qty * mark };
+                let weight = if equity > 0.0 { signed / equity } else { 0.0 };
                 reporter.record_leg(Leg {
                     position: qty,
                     entry: position.avg_entry.get(),
@@ -361,7 +367,8 @@ impl Engine {
                     } else {
                         position.unrealized(Price(mark))
                     },
-                    weight: if equity > 0.0 { signed / equity } else { 0.0 },
+                    weight,
+                    drift: self.targets.asked[i] - weight,
                 });
             }
         }
@@ -381,6 +388,7 @@ impl Engine {
         self.book.cancel_all();
         self.pending.clear();
         self.transfers.clear();
+        self.targets.reset();
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));
         self.mark_from(self.tick);
         // The id counter deliberately survives a reset. Restarting it made an id
@@ -430,6 +438,11 @@ impl Engine {
     /// The number of instruments on each row.
     pub fn width(&self) -> usize {
         self.candles.width()
+    }
+
+    /// The market instrument `i` trades on.
+    pub fn market(&self, i: usize) -> Market {
+        self.account.markets[i]
     }
 
     /// Bars a year by the series' own clock, or `None` when its bars came without
@@ -959,7 +972,12 @@ mod tests {
             assert_eq!(alone.round_trips(), pair.round_trips(), "{market:?}");
             assert_eq!(a.ledger(), b.ledger(), "{market:?}");
             let firsts: Vec<_> = b.legs().iter().step_by(2).copied().collect();
-            assert_eq!(a.legs(), firsts.as_slice(), "{market:?}");
+            // compared as printed, where the drift no target asked, NaN, matches
+            assert_eq!(
+                format!("{:?}", a.legs()),
+                format!("{firsts:?}"),
+                "{market:?}"
+            );
         }
     }
 

@@ -62,6 +62,17 @@ impl Engine {
         // wallet, and the close then realizes against it
         self.account.margin_cash += credit;
         self.account.apply_fill(i, &fill, fee);
+        // a fill the bound moved that leaves no perp held leaves the wallet at zero,
+        // which floating point misses by a hair either side, and a hair above zero is
+        // equity the cap levers, so the wallet is set to zero as a takeover sets it
+        // and what it held is the liquidation charge (ADRs 0015, 0018)
+        let moved = fill.price.get() != priced || credit > 0.0;
+        if moved && self.account.perps_held() == 0 {
+            if let Some(reporter) = self.reporter.as_mut() {
+                reporter.costs_mut().liquidation += self.account.margin_cash;
+            }
+            self.account.margin_cash = 0.0;
+        }
         if self.account.markets[i] == Market::Perp {
             let (held, entry, _) = before;
             let signed = fill.side.sign() * applied;
@@ -139,6 +150,7 @@ impl Engine {
             FillReason::Market => EventReason::Market,
             FillReason::Limit => EventReason::Limit,
             FillReason::Stop => EventReason::Stop,
+            FillReason::Rebalance => EventReason::Rebalance,
             FillReason::Liquidation => EventReason::Liquidation,
         };
         self.log_event(

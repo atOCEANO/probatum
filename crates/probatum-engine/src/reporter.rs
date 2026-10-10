@@ -14,6 +14,8 @@ pub enum FillReason {
     Market,
     Limit,
     Stop,
+    /// A leg a `target` placed.
+    Rebalance,
     Liquidation,
 }
 
@@ -24,6 +26,7 @@ impl FillReason {
             FillReason::Market => "market",
             FillReason::Limit => "limit",
             FillReason::Stop => "stop",
+            FillReason::Rebalance => "rebalance",
             FillReason::Liquidation => "liquidation",
         }
     }
@@ -105,6 +108,8 @@ pub enum EventReason {
     Market,
     Limit,
     Stop,
+    /// Placed or filled as a leg of a `target`.
+    Rebalance,
     /// Placed again by a replace, keeping its id.
     Replace,
     Refused(Refusal),
@@ -127,6 +132,8 @@ pub enum EventReason {
     /// An ioc or fok limit, gone after its one bar.
     OneBar(TimeInForce),
     CancelledByAccount,
+    /// A target's leg cancelled by a later target in the same decision.
+    Retargeted,
     Liquidation,
 }
 
@@ -343,6 +350,9 @@ pub struct Leg {
     pub unrealized: f64,
     /// The signed notional over equity, zero once equity is gone.
     pub weight: f64,
+    /// The weight the latest target asked of the instrument less `weight`, NaN where
+    /// no target has named it.
+    pub drift: f64,
 }
 
 /// Side buffers for the equity curve, the ledger, the round trips and the logs.

@@ -20,7 +20,7 @@ pub enum OrderRef {
 }
 
 /// One decision taken at a bar's close.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Order {
         instrument: usize,
@@ -47,6 +47,13 @@ pub enum Action {
     Transfer {
         amount: f64,
         to: Wallet,
+    },
+    /// Bring each instrument named to its weight of equity, as `Engine::target`
+    /// does.
+    Target {
+        weights: Vec<(usize, f64)>,
+        tolerance: f64,
+        transfer: bool,
     },
 }
 
@@ -131,6 +138,14 @@ impl Strategy for Script {
                     }
                 }
                 Action::Transfer { amount, to } => engine.transfer(amount, to),
+                Action::Target {
+                    ref weights,
+                    tolerance,
+                    transfer,
+                } => {
+                    // a weight it would refuse was refused when the script was read
+                    let _ = engine.target(weights, tolerance, transfer);
+                }
             }
         }
     }

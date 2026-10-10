@@ -62,6 +62,27 @@ impl Engine {
         reduce_only: bool,
         tif: TimeInForce,
     ) -> Option<OrderId> {
+        self.queue(
+            instrument,
+            side,
+            size,
+            reduce_only,
+            tif,
+            EventReason::Market,
+        )
+    }
+
+    /// Queue a market order for its instrument's next open, its placement logged
+    /// for `reason`, or log why it cannot wait there.
+    pub(super) fn queue(
+        &mut self,
+        instrument: usize,
+        side: Side,
+        size: f64,
+        reduce_only: bool,
+        tif: TimeInForce,
+        reason: EventReason,
+    ) -> Option<OrderId> {
         // Every placement takes an id, a refused one included, so the order log can
         // name what it refused (ADR 0010).
         let id = self.next_id();
@@ -105,7 +126,7 @@ impl Engine {
             Some(instrument),
             None,
             None,
-            EventReason::Market,
+            reason,
         );
         Some(id)
     }

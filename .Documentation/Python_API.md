@@ -194,6 +194,7 @@ eng = Engine(
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
 | `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
 | `transfer(amount, to)` | `None` | Move cash into the `"spot"` or `"margin"` wallet from the other. It lands at the start of the next bar, before any fill, held to what the wallet it leaves can give ([ADR 0008](Decisions.md)). |
+| `target(weights, tolerance=0.0, transfer=False)` | list of ids | Queue the market orders that bring each instrument to a weight of equity at the last close, every reducing leg before every growing one. `weights` is a number with one instrument, one weight per instrument, or a dict from instrument to weight; a leg below `tolerance` of equity is skipped, and `transfer=True` moves the spot legs' shortfall across from the margin wallet ([ADR 0009](Decisions.md)). |
 | `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order under the same id, with the same side, type and flags, into the first free slot. `None`, and nothing changed, if it is no longer resting or the moved order cannot rest ([ADR 0010](Decisions.md)). |
 | `is_bust()` | bool | True when the account died: its equity, both wallets together, reached zero, which a perp liquidation does unless the spot wallet holds cash ([ADR 0008](Decisions.md)). The engine does not stop on it. |
 | `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
@@ -477,6 +478,7 @@ Each column of `ledger()` holds one value per bar, the first for the opening bal
 | `liquidation` | What a forced close left in the margin wallet, taken by the venue or absorbed by it, less what the margin bound lifted fills by ([ADR 0018](Decisions.md)). |
 | `dust` | The value of positions too small to trade, zeroed at the close, which nothing makes until sizes are modelled. |
 | `position`, `entry`, `mark`, `notional`, `unrealized`, `weight` | The position, its average entry, the close it is marked at, its notional, its unrealized PnL, and its signed notional over equity. |
+| `drift` | The weight the latest `target` asked of the instrument less `weight`, from the bar after that target was decided; NaN where no target has named it. |
 
 Each cost is computed on its own, so on every bar the change in equity is the price PnL, measured from each fill's reference and then from the bar's close, less every cost.
 
@@ -495,7 +497,7 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `fee` | The fee, in quote. |
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
 | `taker` | True when the fill took liquidity. A forced close is the venue's and is not. |
-| `reason` | `market`, `limit`, `stop` or `liquidation`. |
+| `reason` | `market`, `limit`, `stop`, `rebalance` for a leg of a `target`, or `liquidation`. |
 
 ### The order log
 

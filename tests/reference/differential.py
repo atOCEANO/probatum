@@ -170,7 +170,7 @@ def money(cfg):
 KINDS = os.environ.get(
     "KINDS",
     "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,"
-    "cancel_all,reduce_limit,stop_entry,exits,transfer",
+    "cancel_all,reduce_limit,stop_entry,exits,transfer,target,retarget",
 ).split(",")
 
 # the kinds that only mean something with a live position or order to act on; a run
@@ -210,6 +210,21 @@ def limit_price(side, close, u):
 
 def stop_price(close, u):
     return close * (0.8 + 0.4 * u)
+
+
+def weight(market, u, k=0, among=1):
+    """A target's weight for instrument `k` from the draw `u`, long only on spot and
+    either way on a perpetual, shared among the `among` instruments it names so the
+    account's exposure stays near one instrument's."""
+    v = (u + 0.37 * k) % 1.0
+    return (1.2 * v if market == "spot" else 6.0 * v - 3.0) / among
+
+
+def settings(side, u):
+    """A target's tolerance and transfer from the action's side and draw: a sell
+    skips a leg below a twentieth of equity, and a high draw moves a spot shortfall
+    across."""
+    return dict(tolerance=0.05 if side == "sell" else 0.0, transfer=u > 0.5)
 
 
 def engine_funding(source):
@@ -388,6 +403,15 @@ def place(sim, action, t, close, theirs, script, reached=None):
         to = "margin" if side == "buy" else "spot"
         script.take(t, "transfer", amount=size * close, to=to)
         sim.transfer(size * close, to=to)
+    elif kind in ("target", "retarget"):
+        # a retarget is a first target the second replaces in the same decision
+        weights = weight(sim.instruments[0].kind, u)
+        if kind == "retarget":
+            script.take(t, "target", weights=weights / 2.0, **settings(side, u))
+            sim.target(weights / 2.0, **settings(side, u))
+
+        script.take(t, "target", weights=weights, **settings(side, u))
+        sim.target(weights, **settings(side, u))
     elif kind == "cancel":
         if theirs:
             order, placed = theirs.pop(0)
@@ -532,7 +556,7 @@ TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees"
 
 LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
                  "slippage", "impact", "liquidation", "dust", "position", "entry",
-                 "mark", "notional", "unrealized", "weight", "margin_used",
+                 "mark", "notional", "unrealized", "weight", "drift", "margin_used",
                  "maintenance")
 
 
@@ -543,7 +567,7 @@ def ledger_difference(mine, theirs, end=None):
         held = row["instruments"][0]
         want = dict(row, position=held["position"], entry=held["entry"],
                     mark=held["mark"], notional=held["notional"],
-                    unrealized=held["upnl"], weight=held["weight"])
+                    unrealized=held["upnl"], weight=held["weight"], drift=held["drift"])
         for name in LEDGER_FIELDS:
             x = float(mine[name][t])
             if not close_enough(x, want[name]):

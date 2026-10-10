@@ -29,7 +29,7 @@ use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEv
 use probatum_engine::schedule::every;
 use probatum_engine::{
     Action, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Instrument, Intrabar,
-    OrderRef, RoundTrip, Script, Stats,
+    OrderRef, RoundTrip, Script, Stats, TargetError,
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
@@ -992,6 +992,8 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::Market => "market".to_string(),
         EventReason::Limit => "limit".to_string(),
         EventReason::Stop => "stop".to_string(),
+        EventReason::Rebalance => "rebalance".to_string(),
+        EventReason::Retargeted => "replaced by a later target".to_string(),
         EventReason::Replace => "replace".to_string(),
         EventReason::Refused(why) => refusal_text(why),
         EventReason::Replacing(why) => format!("replace: {}", refusal_text(why)),
@@ -1089,13 +1091,14 @@ fn ledger_of<'py>(
     }
     let width = engine.width();
     let legs = reporter.legs();
-    let leg_columns: [(&str, LegColumn); 6] = [
+    let leg_columns: [(&str, LegColumn); 7] = [
         ("position", |leg| leg.position),
         ("entry", |leg| leg.entry),
         ("mark", |leg| leg.mark),
         ("notional", |leg| leg.notional),
         ("unrealized", |leg| leg.unrealized),
         ("weight", |leg| leg.weight),
+        ("drift", |leg| leg.drift),
     ];
     for (name, get) in leg_columns {
         let values: Vec<f64> = legs.iter().map(get).collect();
@@ -1463,6 +1466,31 @@ impl Engine {
         let to = transfer_to("", amount, to)?;
         self.inner.transfer(amount, to);
         Ok(())
+    }
+
+    /// Bring each instrument to a weight of account equity at the last closes, each
+    /// leg queued as a market order for the next open and every reducing leg before
+    /// every growing one, so a rebalance is funded by its own sales. `weights` is one
+    /// number for an engine of one instrument, one weight for each instrument in
+    /// order, or a dict from an instrument, counted from 0, to its weight, which
+    /// leaves the instruments it does not name as they are. A leg whose notional is
+    /// below `tolerance` of equity is skipped, and `transfer=True` moves what the
+    /// spot legs need beyond the spot wallet's cash across from the margin wallet at
+    /// the start of the next bar. A second target in one decision replaces the
+    /// first. Returns the ids of the legs queued (ADR 0009).
+    #[pyo3(signature = (weights, tolerance = 0.0, transfer = false))]
+    fn target(
+        &mut self,
+        weights: Bound<'_, PyAny>,
+        tolerance: f64,
+        transfer: bool,
+    ) -> PyResult<Vec<u64>> {
+        let weights = read_weights("", &weights, &self.inner)?;
+        let tolerance = read_tolerance("", tolerance)?;
+        let legs = self.inner.target(&weights, tolerance, transfer).map_err(
+            |TargetError::Short { instrument, weight }| short_spot("", instrument, weight),
+        )?;
+        Ok(legs.into_iter().map(|id| id.0).collect())
     }
 
     /// True when the account died since the last reset: its equity, both wallets
@@ -2077,7 +2105,94 @@ impl Batch {
 }
 
 /// The verbs a script takes, as an error lists them.
-const VERBS: &str = "buy, sell, close, cancel, cancel_all, replace or transfer";
+const VERBS: &str = "buy, sell, close, cancel, cancel_all, replace, transfer or target";
+
+/// The weights a target takes, as each instrument and its weight: one number for an
+/// engine of one instrument, one weight for each instrument in order, or a dict from
+/// an instrument, counted from 0, to its weight. A weight that is not finite, or a
+/// negative one on a spot instrument, is refused. `at` names where they came from.
+fn read_weights(
+    at: &str,
+    value: &Bound<'_, PyAny>,
+    engine: &BarEngine,
+) -> PyResult<Vec<(usize, f64)>> {
+    let width = engine.width();
+    let mut weights = Vec::with_capacity(width);
+    if let Ok(dict) = value.cast::<PyDict>() {
+        for (key, weight) in dict.iter() {
+            let i = match key.extract::<usize>() {
+                Ok(i) if i < width => i,
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "{at}weights: {} is not an instrument the engine holds; key each \
+                         weight by one counted from 0, of the {width}",
+                        shown(&key)
+                    )))
+                }
+            };
+            let Ok(weight) = weight.extract::<f64>() else {
+                return Err(PyValueError::new_err(format!(
+                    "{at}weights: {} for instrument {i} is not a number; give a float",
+                    shown(&weight)
+                )));
+            };
+            weights.push((i, weight));
+        }
+    } else if let Ok(each) = value.extract::<Vec<f64>>() {
+        if each.len() != width {
+            return Err(PyValueError::new_err(format!(
+                "{at}weights: {} for the {width} the engine holds; give one per \
+                 instrument, or a dict from instrument to weight",
+                each.len()
+            )));
+        }
+        weights.extend(each.into_iter().enumerate());
+    } else if let Ok(weight) = value.extract::<f64>() {
+        if width != 1 {
+            return Err(PyValueError::new_err(format!(
+                "{at}weights: one number for {width} instruments; give one per \
+                 instrument, or a dict from instrument to weight"
+            )));
+        }
+        weights.push((0, weight));
+    } else {
+        return Err(PyValueError::new_err(format!(
+            "{at}weights: {} is not a weight; give a number, one per instrument, or a \
+             dict from instrument to weight",
+            shown(value)
+        )));
+    }
+    for &(i, weight) in &weights {
+        if !weight.is_finite() {
+            return Err(PyValueError::new_err(format!(
+                "{at}weights: {weight} for instrument {i} is not a weight; give a finite \
+                 number"
+            )));
+        }
+        if engine.market(i) == Market::Spot && weight < 0.0 {
+            return Err(short_spot(at, i, weight));
+        }
+    }
+    Ok(weights)
+}
+
+/// The refusal of a negative weight on a spot instrument, which cannot be short.
+fn short_spot(at: &str, instrument: usize, weight: f64) -> PyErr {
+    PyValueError::new_err(format!(
+        "{at}weights: {weight} for instrument {instrument}, which trades spot and cannot \
+         be short; trade a perpetual instead"
+    ))
+}
+
+/// A target's tolerance: a fraction of equity, from 0.
+fn read_tolerance(at: &str, tolerance: f64) -> PyResult<f64> {
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "{at}tolerance: {tolerance} is not a fraction of equity; give one from 0"
+        )));
+    }
+    Ok(tolerance)
+}
 
 /// A value as it arrived, for an error to name: its repr, so "1" and 1 read apart.
 fn shown(value: &Bound<'_, PyAny>) -> String {
@@ -2219,8 +2334,9 @@ fn read_action(
     verb: &str,
     given: &Bound<'_, PyDict>,
     placements: usize,
-    width: usize,
+    engine: &BarEngine,
 ) -> PyResult<Action> {
+    let width = engine.width();
     let takes: &[&str] = match verb {
         "buy" | "sell" => &[
             "size",
@@ -2235,6 +2351,7 @@ fn read_action(
         "cancel" => &["order"],
         "replace" => &["order", "price", "trigger", "size"],
         "transfer" => &["amount", "to"],
+        "target" => &["weights", "tolerance", "transfer"],
         _ => {
             return Err(PyValueError::new_err(format!(
                 "{at}: {verb:?} is not a verb; use {VERBS}"
@@ -2302,6 +2419,20 @@ fn read_action(
             price: args.price("price")?,
             trigger: args.price("trigger")?,
         },
+        "target" => {
+            let Some(weights) = args.value("weights")? else {
+                return Err(PyValueError::new_err(format!(
+                    "{at}: target has no weights; give a number, one per instrument, or a \
+                     dict from instrument to weight"
+                )));
+            };
+            let at = format!("{at}: ");
+            Action::Target {
+                weights: read_weights(&at, &weights, engine)?,
+                tolerance: read_tolerance(&at, args.number("tolerance")?.unwrap_or(0.0))?,
+                transfer: args.flag("transfer")?,
+            }
+        }
         _ => {
             let Some(amount) = args.number("amount")? else {
                 return Err(PyValueError::new_err(format!(
@@ -2325,7 +2456,7 @@ fn read_action(
 fn read_script<'py>(
     script: &Bound<'py, PyDict>,
     bars: usize,
-    width: usize,
+    engine: &BarEngine,
 ) -> PyResult<Vec<Vec<Action>>> {
     let mut entries = Vec::with_capacity(script.len());
     for (bar, actions) in script.iter() {
@@ -2367,7 +2498,7 @@ fn read_script<'py>(
                     shown(&action)
                 )));
             };
-            let action = read_action(&at, &verb, &given, placements, width)?;
+            let action = read_action(&at, &verb, &given, placements, engine)?;
             if matches!(action, Action::Order { .. } | Action::Close(_)) {
                 placements += 1;
             }
@@ -2541,8 +2672,9 @@ fn universe_engine(
 /// verb and a dict of its arguments: `buy` and `sell` with a `size`, and a `limit` or
 /// a `stop`, `tif`, `post_only` and `reduce_only`; `close` and `cancel_all`;
 /// `cancel` and `replace` naming an `order`, the second with the `price`, `trigger`
-/// or `size` it moves to; and `transfer` with an `amount` and the wallet it goes
-/// `to`, the margin wallet unless named. `buy`, `sell` and `close` name the
+/// or `size` it moves to; `transfer` with an `amount` and the wallet it goes `to`,
+/// the margin wallet unless named; and `target` with its `weights`, `tolerance` and
+/// `transfer`, as `Engine.target` takes them. `buy`, `sell` and `close` name the
 /// `instrument` they trade, counted from 0, which one instrument leaves out, and
 /// `cancel_all` cancels one instrument's orders when it names one and every order
 /// when it does not. An order is named by an earlier placement in the script,
@@ -2579,7 +2711,7 @@ fn run_script<'py>(
     let engine = engine.cast_into::<Engine>()?;
     let mut engine = engine.borrow_mut();
     let bars = engine.inner.num_bars();
-    let mut script = Script::new(read_script(&script, bars, engine.inner.width())?);
+    let mut script = Script::new(read_script(&script, bars, &engine.inner)?);
     let inner = &mut engine.inner;
     py.detach(|| {
         probatum_engine::run(inner, &mut script);

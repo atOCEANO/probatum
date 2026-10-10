@@ -24,8 +24,8 @@ import numpy as np
 import probatum
 from .differential import (KINDS, Script, before, clock, close_enough,
                            closed_before, cut, limit_price, live, log_difference,
-                           resting, setting, stamps, stop_price, tally,
-                           tier_table, walk, worded)
+                           resting, setting, settings, stamps, stop_price, tally,
+                           tier_table, walk, weight, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -397,6 +397,21 @@ def place(sim, action, t, theirs, script, reached):
         to = "margin" if side == "buy" else "spot"
         script.take(t, "transfer", amount=size * close, to=to)
         sim.transfer(size * close, to=to)
+    elif kind in ("target", "retarget"):
+        # every instrument that has printed a bar, and now and then one that has
+        # not, whose leg is refused; a retarget's first target is replaced by the
+        # second in the same decision
+        named = [k for k in range(len(sim.instruments))
+                 if sim.mark[k] is not None or u < 0.2]
+        weights = {k: weight(sim.instruments[k].kind, u, k, len(named))
+                   for k in named}
+        if kind == "retarget":
+            halves = {k: w / 2.0 for k, w in weights.items()}
+            script.take(t, "target", weights=halves, **settings(side, u))
+            sim.target(halves, **settings(side, u))
+
+        script.take(t, "target", weights=weights, **settings(side, u))
+        sim.target(weights, **settings(side, u))
     elif kind == "cancel":
         if theirs:
             order, placed = theirs.pop(0)
@@ -527,7 +542,8 @@ ACCOUNT_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spre
                   "slippage", "impact", "liquidation", "dust", "margin_used",
                   "maintenance")
 LEG_FIELDS = (("position", "position"), ("entry", "entry"), ("mark", "mark"),
-              ("notional", "notional"), ("unrealized", "upnl"), ("weight", "weight"))
+              ("notional", "notional"), ("unrealized", "upnl"), ("weight", "weight"),
+              ("drift", "drift"))
 
 
 def ledger_difference(mine, theirs, end=None):
