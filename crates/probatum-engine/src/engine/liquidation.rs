@@ -1623,6 +1623,42 @@ mod tests {
     }
 
     #[test]
+    fn a_take_profit_below_the_open_on_a_long_the_bar_opened_lower_is_held_back() {
+        // the buy at 95 opens a long on a bar from 100, and a reduce-only sale at 98,
+        // below the open, would close it above where it started: the bar reached 98
+        // after 95 only on a move back up, which it cannot show came before the
+        // trigger at 85, so the sale is held back and the long closed at 85
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 101.0, 80.0, 90.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            max_leverage: 10.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.limit_buy(10.0, 95.0);
+        e.order(
+            Side::Sell,
+            10.0,
+            OrderType::Limit,
+            Some(98.0),
+            None,
+            true,
+            false,
+            TimeInForce::Gtc,
+        );
+        let last = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![(FillReason::Limit, 95.0), (FillReason::Liquidation, 85.0)]
+        );
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
     fn a_gap_through_the_clip_point_liquidates_the_account_before_the_bar_opens() {
         // the last mark is 40,500 and the next bar opens at 40,010, so the gap
         // crosses the close point, 40,020.01, before the bar opens: the account is

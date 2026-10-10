@@ -78,24 +78,31 @@ def at(kind, side, size, price):
     return kind, side, size, (price / 100.0 - base) / step
 
 
-# a case for each rule, built where random cases seldom reach it
+OPENED = "an exit held back from a position the bar's orders opened"
+
+# cases built where random cases seldom reach a rule, each with the rule it reaches
 BUILT = {
     # a buy opens a long a take-profit and a stop both close, and the stop, the
     # worse, fills first though typed last
-    "the exits of a position the bar's orders opened reordered": built(
-        at("limit", "buy", 1.0, 95.0), at("reduce_limit", "sell", 1.0, 110.0),
-        at("stop", "sell", 1.0, 90.0), shaped=(100.0, 112.0, 85.0, 100.0)),
+    "a stop and a take-profit of a long the bar opened": (
+        "the exits of a position the bar's orders opened reordered",
+        built(at("limit", "buy", 1.0, 95.0), at("reduce_limit", "sell", 1.0, 110.0),
+              at("stop", "sell", 1.0, 90.0), shaped=(100.0, 112.0, 85.0, 100.0))),
     # a sale above the open would close the long the bar's buy opened, which the
     # path without it takes to its trigger
-    "an exit held back from a position the bar's orders opened": built(
+    "a sale above the open on a long the bar opened": (OPENED, built(
         None, at("limit", "buy", 10.0, 95.0), at("limit", "sell", 10.0, 105.0),
-        shaped=(100.0, 106.0, 80.0, 95.0)),
+        shaped=(100.0, 106.0, 80.0, 95.0))),
+    # the same with the sale below the open, above where the bar's buy opened it
+    "a sale below the open on a long the bar opened lower": (OPENED, built(
+        None, at("limit", "buy", 10.0, 95.0), at("reduce_limit", "sell", 10.0, 98.0),
+        shaped=(100.0, 101.0, 80.0, 90.0))),
 }
 
 
-@pytest.mark.parametrize("rule", sorted(BUILT))
-def test_a_case_built_for_a_rule_agrees_and_reaches_it(rule):
-    bars, times, cfg, actions = BUILT[rule]
+@pytest.mark.parametrize("case", sorted(BUILT))
+def test_a_case_built_for_a_rule_agrees_and_reaches_it(case):
+    rule, (bars, times, cfg, actions) = BUILT[case]
     rows, records, sim = differential.run(bars, times, cfg, actions)
 
     assert differential.disagreement(rows, records, sim, cfg) is None

@@ -130,9 +130,10 @@ impl Engine {
     /// A bar that reaches both a take-profit and the liquidation trigger cannot show
     /// which came first either, and the liquidation is the worse exit. So each perp
     /// fill that, when its turn comes, would reduce the position it meets at a price
-    /// on the favourable side of its open is held back when the check would find the
-    /// trigger without those fills, and the liquidation then cancels them; otherwise
-    /// they fill in turn with the rest (ADR 0012).
+    /// on the favourable side of where that position started on the bar is held back
+    /// when the check would find the trigger without those fills, and the
+    /// liquidation then cancels them; otherwise they fill in turn with the rest
+    /// (ADR 0012).
     pub(super) fn resolve_resting(&mut self) {
         if self.book.is_empty() {
             return;
@@ -197,39 +198,38 @@ impl Engine {
         fills
     }
 
-    /// A perp fill priced on the side of its bar's open a position it reduces gains
-    /// on: a sale above the open, or a purchase below it.
-    fn beyond_open(&self, &(_, i, fill, ..): &Offer) -> bool {
-        let open = self.candles.bar(self.tick, i).open;
+    /// A perp fill that reduces the position as it now stands, priced on the side of
+    /// where that position started on the bar that it gains on: a long's sale above
+    /// its start, a short's purchase below it. The path takes a position away from
+    /// its start, so the bar reached such a price only on a move back, which it
+    /// cannot show came before the trigger.
+    fn favourable(&self, &(_, i, fill, ..): &Offer) -> bool {
+        let (position, start) = (self.account.positions[i].qty.get(), self.starts[i]);
         self.account.markets[i] == Market::Perp
             && match fill.side {
-                Side::Sell => fill.price.get() > open,
-                Side::Buy => fill.price.get() < open,
-            }
-    }
-
-    /// A perp fill that reduces the position as it now stands, priced on the
-    /// favourable side of its bar's open.
-    fn favourable(&self, offer: &Offer) -> bool {
-        let position = self.account.positions[offer.1].qty.get();
-        self.beyond_open(offer)
-            && match offer.2.side {
-                Side::Sell => position > 0.0,
-                Side::Buy => position < 0.0,
+                Side::Sell => position > 0.0 && fill.price.get() > start,
+                Side::Buy => position < 0.0 && fill.price.get() < start,
             }
     }
 
     /// Whether any offer could meet a position it reduces on the favourable side of
-    /// its open: one that reduces the position as the bar's resting orders find it,
-    /// or one a fill on its instrument on the other side could open or flip that
-    /// position for, in whatever order the bar's exits come to be taken.
+    /// where that position started: one favourable as the bar's resting orders find
+    /// the account, or one priced beyond a fill on its instrument on the other side,
+    /// which could open or flip that position there, in whatever order the bar's
+    /// exits come to be taken.
     fn may_hold(&self, fills: &[Offer]) -> bool {
+        let beyond = |offer: &Offer, at: f64| match offer.2.side {
+            Side::Sell => offer.2.price.get() > at,
+            Side::Buy => offer.2.price.get() < at,
+        };
         fills.iter().any(|offer| {
-            self.beyond_open(offer)
-                && (self.favourable(offer)
-                    || fills
-                        .iter()
-                        .any(|other| other.1 == offer.1 && other.2.side != offer.2.side))
+            self.favourable(offer)
+                || (self.account.markets[offer.1] == Market::Perp
+                    && fills.iter().any(|other| {
+                        other.1 == offer.1
+                            && other.2.side != offer.2.side
+                            && beyond(offer, other.7.reference)
+                    }))
         })
     }
 
@@ -247,11 +247,13 @@ impl Engine {
         }
         let (account, book) = (self.account.clone(), self.book.clone());
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
+        let starts = self.starts.clone();
         let reporter = self.reporter.take();
         let held = self.fill_offers(fills.to_vec(), true);
         let liquidates = held && self.reaches_trigger();
         self.account = account;
         self.book = book;
+        self.starts = starts;
         self.notes.truncate(notes);
         self.flipped = flipped;
         self.fills = count;
@@ -312,7 +314,7 @@ impl Engine {
     /// Fill the offers in turn, each clamped against the account the ones before it
     /// left and the exits among them ordered as each comes up, with `hold` holding
     /// back each that would reduce the position it meets on the favourable side of
-    /// its open. Returns whether any was held back.
+    /// where that position started. Returns whether any was held back.
     fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool) -> bool {
         let mut held = false;
         for k in 0..fills.len() {

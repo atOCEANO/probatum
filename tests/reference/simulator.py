@@ -363,7 +363,8 @@ class Trip:
 # the account's state a bar can be resolved twice from (The rule, 4)
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
-           "legs", "next_id", "target_legs", "liquidations", "reached", "first")
+           "legs", "next_id", "target_legs", "liquidations", "reached", "first",
+           "start")
 
 
 class Simulator:
@@ -407,6 +408,8 @@ class Simulator:
         self.position = [0.0] * n
         self.entry    = [0.0] * n
 
+        # where each position started on this bar's path (Liquidation, The rule, 4)
+        self.start        = [None] * n
         self.mark         = [None] * n
         self.history      = [[] for _ in range(n)]     # each instrument's own bars
         self.listed       = [False] * n
@@ -1119,6 +1122,9 @@ class Simulator:
         self.legs = {i: [Held(abs(self.position[i]), self.entry[i], None, 0.0, None,
                               self.position[i] > 0.0)]
                      for i in self.perps() if self.position[i] != 0.0}
+        self.start = [bar.open if bar is not None and self.position[i] != 0.0 else None
+                      for i, bar in enumerate(self.bars[t])]
+
         self.delist(t)
         self.fill_market_orders(t)                                  # 4
 
@@ -1146,10 +1152,10 @@ class Simulator:
     def resolve_resting(self, t):
         """The step, 5 to 7: the resting orders, then the check. Under the pessimistic
         setting each perpetual fill that, when its turn comes, would reduce the
-        position it meets at a price on the favourable side of its open is first held
-        back, and if the check then liquidates, it never happened (Liquidation, The
-        rule, 4)."""
-        if self.venue.intrabar == "pessimistic" and self.beyond_open(t):
+        position it meets at a price on the favourable side of where that position
+        started on the bar is first held back, and if the check then liquidates, it
+        never happened (Liquidation, The rule, 4)."""
+        if self.venue.intrabar == "pessimistic" and self.may_hold(t):
             saved = self.snapshot()
             held  = self.fill_resting_orders(t, hold_favourable=True)
             if self.check(t):
@@ -1163,10 +1169,12 @@ class Simulator:
         self.check(t)
 
 
-    def beyond_open(self, t):
-        """Whether the bar reaches a resting perpetual order priced on the side of its
-        open that is favourable to a position it would reduce: a sale above the open
-        or a purchase below it, whatever the position when the bar starts."""
+    def may_hold(self, t):
+        """Whether the bar reaches a resting perpetual order that could be held back:
+        one favourable to the position the resting orders find, or one priced beyond
+        an order on the other side of its instrument, which could open the position
+        it would then reduce."""
+        offers = []
         for order in self.resting():
             i     = order["instrument"]
             bar   = self.bar_for(t, i)
@@ -1174,17 +1182,21 @@ class Simulator:
             side  = self.side_of(order)
             if found is None or side is None or self.instruments[i].kind == "spot":
                 continue
+            offers.append((order, i, side, found[0]))
 
-            opened = self.bars[t][i].open
-            if found[0] > opened if side == "sell" else found[0] < opened:
-                return True
+        def beyond(side, price, at):
+            return price > at if side == "sell" else price < at
 
-        return False
+        return any(self.favourable(order, price, t)
+                   or any(j == i and other != side and beyond(side, price, at)
+                          for _, j, other, at in offers)
+                   for order, i, side, price in offers)
 
 
     def favourable(self, order, price, t):
-        """A perpetual fill that reduces the position it meets, priced on the
-        favourable side of its open."""
+        """A perpetual fill that reduces the position it meets, priced on the side of
+        where that position started on the bar that it gains on: the bar reached
+        such a price only on a move back toward it."""
         i    = order["instrument"]
         q    = self.position[i]
         side = self.side_of(order)
@@ -1193,11 +1205,9 @@ class Simulator:
             return False
 
         reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
-        bar     = self.bars[t][i]
-        if not reduces or bar is None:
+        if not reduces or self.start[i] is None:
             return False
-
-        return price > bar.open if q > 0.0 else price < bar.open
+        return price > self.start[i] if q > 0.0 else price < self.start[i]
 
 
     def schedule_funding(self, events):
@@ -2392,6 +2402,10 @@ class Simulator:
             self.trip[i].size = max(self.trip[i].size, abs(after))
         if self.instruments[i].kind != "spot":
             self.track(i, before, after, price, opened)
+            if after == 0.0:
+                self.start[i] = None
+            elif before == 0.0 or before * after < 0.0:
+                self.start[i] = reference
 
         self.position[i] = after
         self.fills.append(dict(

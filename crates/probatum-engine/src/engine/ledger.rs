@@ -70,14 +70,20 @@ impl Engine {
             } else {
                 0.0
             };
+            let after = self.account.positions[i].qty.get();
             self.note(FillNote {
                 i,
                 before: held,
                 entry,
-                after: self.account.positions[i].qty.get(),
+                after,
                 price: fill.price.get(),
                 opened: applied - closed,
             });
+            if after == 0.0 {
+                self.starts[i] = f64::NAN;
+            } else if held == 0.0 || held * after < 0.0 {
+                self.starts[i] = costs.reference;
+            }
         }
         self.book_fill(
             i,

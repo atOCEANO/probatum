@@ -162,6 +162,11 @@ pub struct Engine {
     /// Whether each instrument's tier table keeps any maintenance, which it does
     /// for the engine's whole life.
     maintains: Vec<bool>,
+    /// Where each perp's position started on this bar's path, which decides the
+    /// exits a liquidating bar holds back: the open for one carried into the bar or
+    /// opened at it, the reference of the fill that opened or flipped it otherwise,
+    /// NaN while it is flat.
+    starts: Vec<f64>,
     // the path's buffers, refilled on every bar so a step allocates nothing
     path: Path,
     checked: Vec<CheckLeg>,
@@ -218,6 +223,7 @@ impl Engine {
             clear_through: false,
             notes: Vec::new(),
             maintains,
+            starts: vec![f64::NAN; width],
             path: Path::default(),
             checked: Vec::new(),
             cuts: Vec::new(),
@@ -412,6 +418,18 @@ impl Engine {
             self.notes.clear();
             self.flipped = false;
             self.clear_through = false;
+            // read only by the resting orders, which no step adds to
+            if !self.book.is_empty() {
+                for (i, start) in self.starts.iter_mut().enumerate() {
+                    let bar = self.candles.bar(self.tick, i);
+                    let held = self.account.positions[i].qty.get() != 0.0;
+                    *start = if held && printed(&bar) {
+                        bar.open
+                    } else {
+                        f64::NAN
+                    };
+                }
+            }
 
             // 1. pending market orders fill at the open
             self.resolve_pending();
