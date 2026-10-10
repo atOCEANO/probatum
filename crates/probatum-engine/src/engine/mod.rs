@@ -12,7 +12,8 @@
 //! forced close happens first and nothing on a perp fills; any other clip cuts
 //! every held perp's bar there, so an order that would have filled beyond it never
 //! triggers. Then, against the clipped bars: 1. pending market orders fill at the
-//! open, 2. resting limit and stop orders fill against the range, 3. the path is
+//! open, 2. resting limit and stop orders fill against the range, a take-profit
+//! held back where the bar liquidates the account without it, 3. the path is
 //! solved again for the account the fills left, a leg opened during the bar
 //! joining it at its fill price, counting any debit stamped inside the bar, 4. the
 //! funding the row owns is charged at the closes on the positions still held, and
@@ -415,7 +416,9 @@ impl Engine {
             // 1. pending market orders fill at the open
             self.resolve_pending();
 
-            // 2. resting limit and stop orders fill against the bar range
+            // 2. resting limit and stop orders fill against the bar range, and a
+            //    take-profit is held back where the check would find the trigger
+            //    without it, since the bar cannot show it came first (ADR 0012)
             self.resolve_resting();
 
             // 3. the check: the path solved again for the account the fills left,

@@ -12,7 +12,7 @@
 use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side};
 
 use super::ledger::Moment;
-use super::path::PathLeg;
+use super::path::{PathLeg, Point};
 use super::Engine;
 use crate::candles::printed;
 use crate::execution::FillCosts;
@@ -86,6 +86,36 @@ impl Engine {
             self.clear_through = true;
             return;
         }
+        let Some(clip) = self.check_clip(wallet) else {
+            return;
+        };
+        let (a, b) = self.spans[clip.piece];
+        let mut closes = std::mem::take(&mut self.closes);
+        closes.clear();
+        for leg in self.checked.iter().filter(|leg| leg.leave.is_none()) {
+            let (start, end) = leg.ends(a, b);
+            closes.push((leg.i, leg.q, start + clip.at * (end - start)));
+        }
+        self.pay_debits_inside();
+        self.take_over(&closes, Moment::InBar);
+        self.closes = closes;
+    }
+
+    /// Whether the check would find the trigger for the account as it stands, which
+    /// decides whether a bar holds its favourable exits back (The rule, 4).
+    pub(super) fn reaches_trigger(&mut self) -> bool {
+        if self.account.perps_held() == 0 {
+            return false;
+        }
+        let wallet = self.account.margin_cash - self.debits_inside();
+        (self.flipped || !self.clear_of_trigger(wallet, |i, q| self.adverse(i, q)))
+            && self.check_clip(wallet).is_some()
+    }
+
+    /// The check's path for the account as it stands, solved against `wallet`: the
+    /// point it leaves the market at with a leg still held, or none. The legs and the
+    /// spans it was solved on stay in their buffers.
+    fn check_clip(&mut self, wallet: f64) -> Option<Point> {
         let mut checked = std::mem::take(&mut self.checked);
         let mut cuts = std::mem::take(&mut self.cuts);
         let mut spans = std::mem::take(&mut self.spans);
@@ -94,22 +124,15 @@ impl Engine {
         self.check_legs(&mut checked);
         Engine::check_path(&checked, &mut cuts, &mut spans, &mut path);
         let held = checked.iter().any(|leg| leg.leave.is_none());
-        if let Some((_, clip)) = self.solve(&path, wallet).filter(|_| held) {
-            let (a, b) = spans[clip.piece];
-            let mut closes = std::mem::take(&mut self.closes);
-            closes.clear();
-            for leg in checked.iter().filter(|leg| leg.leave.is_none()) {
-                let (start, end) = leg.ends(a, b);
-                closes.push((leg.i, leg.q, start + clip.at * (end - start)));
-            }
-            self.pay_debits_inside();
-            self.take_over(&closes, Moment::InBar);
-            self.closes = closes;
-        }
+        let clip = self
+            .solve(&path, wallet)
+            .filter(|_| held)
+            .map(|(_, clip)| clip);
         self.checked = checked;
         self.cuts = cuts;
         self.spans = spans;
         self.path = path;
+        clip
     }
 
     /// The rule, 6: once the row's own funding is charged, an account a debit took
@@ -1390,6 +1413,119 @@ mod tests {
             "kept {}",
             last.margin_cash
         );
+    }
+
+    /// The fall with a high of 42,500, which reaches a sell limit at 42,000 above its
+    /// open.
+    const WIDE: Candle = Candle {
+        high: 42_500.0,
+        ..FALL
+    };
+
+    /// The fills of the run so far, each its reason and its price.
+    fn priced(e: &Engine) -> Vec<(FillReason, f64)> {
+        let fills = e.reporter().expect("reporting is on").fills();
+        fills.iter().map(|fill| (fill.reason, fill.price)).collect()
+    }
+
+    #[test]
+    fn a_limit_at_42_000_is_held_back_and_the_account_closes_at_40_020_01() {
+        // the bar reaches the limit above its open and the clip point below it, and
+        // cannot show which came first; without the limit the path reaches the
+        // trigger, so the limit is held back and the liquidation cancels it
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[WIDE])));
+        let limit = e.limit_sell(0.5, 42_000.0);
+        let last = e.step();
+        let fills = priced(&e);
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[1].0, FillReason::Liquidation);
+        assert!(
+            (fills[1].1 - 40_020.01).abs() < 0.005,
+            "closed at {}",
+            fills[1].1
+        );
+        let reporter = e.reporter().expect("reporting is on");
+        let cancelled = reporter
+            .events()
+            .iter()
+            .find(|event| event.kind == EventKind::Cancelled)
+            .expect("the limit cancelled");
+        assert_eq!(
+            (cancelled.order, cancelled.reason),
+            (limit, EventReason::Liquidation)
+        );
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn a_limit_at_42_000_fills_where_the_bar_stays_clear_of_the_trigger() {
+        // the same bar with a low of 40,500 never reaches the trigger, so the limit
+        // fills as a maker and the account keeps 10,000 - 9,000 - 4.20
+        let shallow = Candle {
+            low: 40_500.0,
+            close: 41_000.0,
+            ..WIDE
+        };
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[shallow])));
+        e.limit_sell(0.5, 42_000.0);
+        let last = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![(FillReason::Limit, 60_000.0), (FillReason::Limit, 42_000.0)]
+        );
+        assert!(
+            (last.margin_cash - 995.8).abs() < 1e-9,
+            "kept {}",
+            last.margin_cash
+        );
+    }
+
+    #[test]
+    fn a_stop_that_saves_the_account_lets_the_limit_beside_it_fill() {
+        // the bar resolves without the limit first: a stop of 0.3 at 41,000 leaves
+        // 0.2 held on 4,293.85, which stands 93.85 clear at the low, so the bar
+        // resolves again with both, the worse exit first, and each fills once
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[WIDE])));
+        e.limit_sell(0.2, 42_000.0);
+        e.stop(Side::Sell, 0.3, 41_000.0, true);
+        let last = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![
+                (FillReason::Limit, 60_000.0),
+                (FillReason::Stop, 41_000.0),
+                (FillReason::Limit, 42_000.0)
+            ]
+        );
+        assert_eq!(e.num_fills(), 3);
+        assert_eq!(last.position, 0.0);
+        assert!(
+            (last.margin_cash - 692.17).abs() < 1e-9,
+            "kept {}",
+            last.margin_cash
+        );
+    }
+
+    #[test]
+    fn a_stop_too_small_to_save_the_account_still_holds_the_limit_back() {
+        // a stop of 0.1 at 41,000 leaves 0.4 held on 8,097.95, which the path still
+        // takes to its close point, (24,000 - 8,097.95) / 0.3998 = 39,775.01: the
+        // stop fills, the limit is held back, and the rest is closed there
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[WIDE])));
+        e.limit_sell(0.4, 42_000.0);
+        e.stop(Side::Sell, 0.1, 41_000.0, true);
+        let last = e.step();
+        let fills = priced(&e);
+        assert_eq!(fills.len(), 3);
+        assert_eq!(fills[1], (FillReason::Stop, 41_000.0));
+        assert_eq!(fills[2].0, FillReason::Liquidation);
+        let close = 15_902.05 / 0.3998;
+        assert!(
+            (fills[2].1 - close).abs() < 1e-6,
+            "closed at {}",
+            fills[2].1
+        );
+        assert_eq!(last.margin_cash, 0.0);
     }
 
     #[test]

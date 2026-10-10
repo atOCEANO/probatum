@@ -1150,9 +1150,10 @@ class Simulator:
         happened (Liquidation, The rule, 4)."""
         if self.venue.intrabar == "pessimistic" and self.favourable_exits(t):
             saved = self.snapshot()
-            self.fill_resting_orders(t, hold_favourable=True)
+            held  = self.fill_resting_orders(t, hold_favourable=True)
             if self.check(t):
-                self.hit("a favourable exit held back on a liquidating bar")
+                if held:
+                    self.hit("a favourable exit held back on a liquidating bar")
                 return
 
             self.restore(saved)
@@ -1926,8 +1927,11 @@ class Simulator:
 
     def fill_resting_orders(self, t, hold_favourable=False):
         """The step, 5: resting orders in slot order, a position's exits reordered by
-        the PnL per unit each would realize, worst first unless optimistic."""
+        the PnL per unit each would realize, worst first unless optimistic. Returns
+        how many favourable exits it held back."""
         offers = []
+        held   = 0
+
         for slot, order in enumerate(self.slots):
             if order is None:
                 continue
@@ -1949,8 +1953,8 @@ class Simulator:
             if found is None:
                 continue
             if hold_favourable and self.favourable(order, found[0], t):
+                held += 1
                 continue
-
             offers.append((slot, order, found[0], found[1]))
 
         offers = self.worst_first(offers)
@@ -2033,6 +2037,8 @@ class Simulator:
                 order["status"] = "expired"
                 self.slots[self.slots.index(order)] = None
                 self.log("expired", order, f"{order['tif']}: one bar")
+
+        return held
 
 
     def worst_first(self, offers):

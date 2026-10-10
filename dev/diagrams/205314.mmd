@@ -4,7 +4,7 @@ flowchart TD
     G["funding stamped between the rows<br/>charged at the last marks"]
     F["<b>0</b> the path of the perps carried in<br/>solved, each bar clipped where<br/>the margin ran out"]
     A["<b>1</b> pending market orders<br/>fill at the open"]
-    B["<b>2</b> resting limits and stops<br/>fill against the clipped range"]
+    B["<b>2</b> resting limits and stops<br/>fill against the clipped range,<br/>a take-profit held back on a bar<br/>that liquidates without it"]
     D["<b>3</b> the path solved again for<br/>the account the fills left,<br/>debits inside the bar counted"]
     C["<b>4</b> funding the row owns charged<br/>at the closes, on the positions<br/>still held"]
     E["<b>5</b> equity marked at the close,<br/>new state returned"]

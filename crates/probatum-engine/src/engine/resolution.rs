@@ -1,11 +1,12 @@
 //! Resolving orders against a bar: the queued market orders at their instruments'
 //! opens, then the resting book in slot order, with the exits a wide bar reaches
-//! ordered worst first among one instrument's (ADR 0012). An all-or-nothing order
+//! ordered worst first among one instrument's, and its take-profits held back where
+//! the bar liquidates the account without them (ADR 0012). An all-or-nothing order
 //! is judged against every clamp, and IOC and FOK limits expire after their one
 //! bar (ADR 0010). An order on an instrument that printed no bar waits for its
 //! next.
 
-use probatum_core::{Fill, OrderId, OrderType, Qty, Side, TimeInForce};
+use probatum_core::{Fill, Market, OrderId, OrderType, Qty, Side, TimeInForce};
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
@@ -125,10 +126,52 @@ impl Engine {
     /// volume the trigger may be crossed and nothing can fill, and treating that as
     /// a trigger would delete a stop-loss precisely on the illiquid data where it
     /// matters; it stays armed for the next bar that can trade instead (ADR 0010).
+    ///
+    /// A bar that reaches both a take-profit and the liquidation trigger cannot show
+    /// which came first either, and the liquidation is the worse exit. So the bar's
+    /// reducing perp fills priced on the favourable side of their open are held back
+    /// when the check would find the trigger without them, and the liquidation then
+    /// cancels them; otherwise they fill in slot order with the rest (ADR 0012).
     pub(super) fn resolve_resting(&mut self) {
         if self.book.is_empty() {
             return;
         }
+        let mut fills = self.offers();
+        if fills.iter().any(|offer| self.favourable(offer)) && self.liquidates_without(&fills) {
+            fills.retain(|offer| !self.favourable(offer));
+        }
+        self.worst_first(&mut fills);
+        self.fill_offers(&fills);
+
+        // IOC and FOK limits get one bar of exposure, the first their instrument
+        // prints, then expire whether or not they filled: they never rest for a
+        // later bar (ADR 0010).
+        let expiring: Vec<(OrderId, usize, TimeInForce)> = self
+            .book
+            .iter()
+            .filter(|o| {
+                o.kind == OrderType::Limit
+                    && matches!(o.tif, TimeInForce::Ioc | TimeInForce::Fok)
+                    && printed(&self.candles.bar(self.tick, o.instrument))
+            })
+            .map(|o| (o.id, o.instrument, o.tif))
+            .collect();
+        for (id, instrument, tif) in expiring {
+            self.log_event(
+                EventKind::Expired,
+                Some(id),
+                Some(instrument),
+                None,
+                None,
+                EventReason::OneBar(tif),
+            );
+            self.book.cancel(id);
+        }
+    }
+
+    /// The resting orders the bar reaches, each with the fill the model offers, in
+    /// slot order.
+    fn offers(&self) -> Vec<Offer> {
         let mut fills: Vec<Offer> = Vec::new();
         for order in self.book.iter() {
             let bar = self.bar_for(order.instrument);
@@ -153,7 +196,56 @@ impl Engine {
                 ));
             }
         }
+        fills
+    }
 
+    /// A reducing perp fill priced on the favourable side of its bar's open, for the
+    /// position as the bar's resting orders find it.
+    fn favourable(&self, &(_, i, fill, ..): &Offer) -> bool {
+        if self.account.markets[i] != Market::Perp {
+            return false;
+        }
+        let position = self.account.positions[i].qty.get();
+        let open = self.candles.bar(self.tick, i).open;
+        match fill.side {
+            Side::Sell => position > 0.0 && fill.price.get() > open,
+            Side::Buy => position < 0.0 && fill.price.get() < open,
+        }
+    }
+
+    /// Whether the check would find the trigger had the bar's resting orders filled
+    /// without its favourable exits. With no other perp order among them, the account
+    /// it would check is the one standing; otherwise they fill on that account with
+    /// nothing recorded, and the account and the book are put back.
+    fn liquidates_without(&mut self, fills: &[Offer]) -> bool {
+        let mut rest: Vec<Offer> = fills
+            .iter()
+            .filter(|offer| !self.favourable(offer))
+            .copied()
+            .collect();
+        if rest
+            .iter()
+            .all(|offer| self.account.markets[offer.1] != Market::Perp)
+        {
+            return self.reaches_trigger();
+        }
+        let (account, book) = (self.account.clone(), self.book.clone());
+        let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
+        let reporter = self.reporter.take();
+        self.worst_first(&mut rest);
+        self.fill_offers(&rest);
+        let liquidates = self.reaches_trigger();
+        self.account = account;
+        self.book = book;
+        self.notes.truncate(notes);
+        self.flipped = flipped;
+        self.fills = count;
+        self.reporter = reporter;
+        liquidates
+    }
+
+    /// Order the exits a wide bar reaches worst first among the slots they hold.
+    fn worst_first(&self, fills: &mut [Offer]) {
         // A bar that reaches both a stop and a target says nothing about which it
         // reached first, and the answer used to be slot order, which is the order
         // those two lines happen to appear in the strategy: place the stop first
@@ -196,8 +288,12 @@ impl Engine {
                 fills[*slot] = exit;
             }
         }
+    }
 
-        for (id, i, fill, kind, reduce_only, tif, requested, costs) in fills {
+    /// Fill the offers in turn, each clamped against the account the ones before it
+    /// left.
+    fn fill_offers(&mut self, fills: &[Offer]) {
+        for &(id, i, fill, kind, reduce_only, tif, requested, costs) in fills {
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the snapshot the loop above saw. The
@@ -252,31 +348,6 @@ impl Engine {
                 }
                 OrderType::Market => {}
             }
-        }
-
-        // IOC and FOK limits get one bar of exposure, the first their instrument
-        // prints, then expire whether or not they filled: they never rest for a
-        // later bar (ADR 0010).
-        let expiring: Vec<(OrderId, usize, TimeInForce)> = self
-            .book
-            .iter()
-            .filter(|o| {
-                o.kind == OrderType::Limit
-                    && matches!(o.tif, TimeInForce::Ioc | TimeInForce::Fok)
-                    && printed(&self.candles.bar(self.tick, o.instrument))
-            })
-            .map(|o| (o.id, o.instrument, o.tif))
-            .collect();
-        for (id, instrument, tif) in expiring {
-            self.log_event(
-                EventKind::Expired,
-                Some(id),
-                Some(instrument),
-                None,
-                None,
-                EventReason::OneBar(tif),
-            );
-            self.book.cancel(id);
         }
     }
 }
