@@ -484,3 +484,134 @@ impl Engine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{CheckLeg, Path, PathLeg, Point};
+    use crate::candles::{Candles, Instrument};
+    use crate::engine::fixtures::{ohlc, perp_cfg};
+    use crate::engine::{Engine, EngineConfig};
+    use probatum_core::{Market, Tier, TierBasis, Tiers};
+
+    /// Two perps at a fee of 1% on a bar of their own, B keeping 5% of its notional
+    /// by size when `maintained`; the path is built by hand.
+    fn engine(maintained: bool) -> Engine {
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let tiers = if maintained {
+            let tier = Tier {
+                up_to: 1e12,
+                leverage: 10.0,
+                rate: 0.05,
+                amount: 0.0,
+            };
+            Tiers::new(TierBasis::Quantity, vec![tier]).expect("a table")
+        } else {
+            Tiers::default()
+        };
+        let instruments = vec![
+            Instrument {
+                market: Some(Market::Perp),
+                tiers: Tiers::default(),
+            },
+            Instrument {
+                market: Some(Market::Perp),
+                tiers,
+            },
+        ];
+        let candles = Candles::universe(vec![flat, flat], 2, None).with_instruments(instruments);
+        let config = EngineConfig {
+            fee_taker: 0.01,
+            ..perp_cfg()
+        };
+        Engine::new(candles, config)
+    }
+
+    /// A long of 1 A from 100 falling to 95 on the first piece and on to 90 on the
+    /// second, where a long of 10 B joins at 95 and falls to 85.
+    fn joining() -> Path {
+        let a = |start, end| PathLeg {
+            i: 0,
+            q: 1.0,
+            entry: 100.0,
+            start,
+            end,
+        };
+        let b = PathLeg {
+            i: 1,
+            q: 10.0,
+            entry: 95.0,
+            start: 95.0,
+            end: 85.0,
+        };
+        Path {
+            legs: vec![a(100.0, 95.0), a(95.0, 90.0), b],
+            pieces: vec![(0, 1), (1, 3)],
+        }
+    }
+
+    #[test]
+    fn the_clip_stops_where_a_joining_leg_adds_its_fee_to_the_close_level() {
+        // on 10 of margin equity is 10 - 5u and then 5 - 105u, zero a twenty-first of
+        // the way along the second piece. The closing fee on 1,045 of notional takes
+        // the close level from 4.05 at the end of the first piece to -5.45 where B
+        // joins, so the account leaves at the start of the second
+        let (trigger, clip) = engine(false).solve(&joining(), 10.0).expect("liquidated");
+        assert_eq!(trigger.piece, 1);
+        assert!(
+            (trigger.at - 5.0 / 105.0).abs() < 1e-12,
+            "trigger at {}",
+            trigger.at
+        );
+        assert_eq!(clip, Point { piece: 1, at: 0.0 });
+    }
+
+    #[test]
+    fn the_clip_steps_back_across_a_piece_that_stays_past_the_close_level() {
+        // on 5.5 the close level is already -0.45 where the first piece ends, so the
+        // account leaves on it, where 4.5 - 4.95u reaches zero
+        let (trigger, clip) = engine(false).solve(&joining(), 5.5).expect("liquidated");
+        assert_eq!(trigger.piece, 1);
+        assert_eq!(clip.piece, 0);
+        assert!((clip.at - 4.5 / 4.95).abs() < 1e-12, "clip at {}", clip.at);
+    }
+
+    #[test]
+    fn a_leg_that_joins_with_its_maintenance_can_start_a_piece_past_the_trigger() {
+        // B keeps 5% of 950 when it joins, 47.5, which takes 40 of margin from 35 over
+        // its trigger at the end of the first piece to 12.5 under it at the start of
+        // the second; with maintenance the account leaves at its trigger
+        let (trigger, clip) = engine(true).solve(&joining(), 40.0).expect("liquidated");
+        assert_eq!(trigger, Point { piece: 1, at: 0.0 });
+        assert_eq!(clip, trigger);
+    }
+
+    #[test]
+    fn a_leg_that_joins_at_the_bars_end_runs_its_move_on_a_last_piece_of_no_length() {
+        let legs = [
+            CheckLeg {
+                i: 0,
+                q: 1.0,
+                entry: 100.0,
+                frac: 0.0,
+                start: 100.0,
+                end: 90.0,
+                leave: None,
+            },
+            CheckLeg {
+                i: 0,
+                q: 1.0,
+                entry: 90.0,
+                frac: 1.0,
+                start: 90.0,
+                end: 85.0,
+                leave: None,
+            },
+        ];
+        let (mut cuts, mut spans, mut path) = (Vec::new(), Vec::new(), Path::default());
+        Engine::check_path(&legs, &mut cuts, &mut spans, &mut path);
+        assert_eq!(spans, vec![(0.0, 1.0), (1.0, 1.0)]);
+        assert_eq!(path.pieces, vec![(0, 1), (1, 3)]);
+        let ends: Vec<(f64, f64)> = path.legs.iter().map(|leg| (leg.start, leg.end)).collect();
+        assert_eq!(ends, vec![(100.0, 90.0), (90.0, 90.0), (90.0, 85.0)]);
+    }
+}
