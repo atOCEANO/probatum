@@ -37,7 +37,6 @@ NOT_IN_THE_ENGINE = {
     "a post_only limit its first bar opened through",
     "an order trading against the account's own refused",
     "a favourable exit held back on a liquidating bar",
-    "a reducing fill bounded at a fee of its own",
     "a waiting market order cancelled",
 }
 

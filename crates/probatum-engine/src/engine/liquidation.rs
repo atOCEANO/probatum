@@ -269,13 +269,13 @@ impl Engine {
     /// all three, because the bound is read at the moment the fill lands rather
     /// than a step earlier (ADR 0018).
     ///
-    /// Closing at the bankruptcy price leaves equity exactly zero AT that price,
-    /// so a partial close is bounded by the same number as a full one and no
-    /// ordering of fills within a bar can book past it. With other perps held, the
-    /// price is solved against the wallet with what they hold beyond their own
-    /// closing fees, each at the fraction of its own bar the fill sits at on its
-    /// path, so no reducing fill on one leg overdraws the account its other legs
-    /// still stand in.
+    /// Closing at the bankruptcy price leaves the account exactly at its close level
+    /// AT that price, the size the fill closes paying its own fee and the rest the
+    /// closing fee, so no ordering of fills within a bar can book past it. With other
+    /// perps held, the price is solved against the wallet with what they hold beyond
+    /// their own closing fees, each at the fraction of its own bar the fill sits at
+    /// on its path, so no reducing fill on one leg overdraws the account its other
+    /// legs still stand in.
     ///
     /// The lift stops at the position's average entry, past which the close owes
     /// nothing, and inside `candle`, the bar the fill was priced on: a price the bar
@@ -296,9 +296,18 @@ impl Engine {
         let fee = self.cost.fee_taker;
         let price = fill.price.get();
         let wallet = self.wallet_beside(i, fee, price);
+        let closed = fill.size.get().min(position.abs());
+        let rate = if fill.is_taker {
+            self.cost.fee_taker
+        } else {
+            self.cost.fee_maker
+        };
+        // the size the fill closes pays its own fee and the rest of the position the
+        // closing fee, so a maker's exit is held to the close point its own fee sets
+        let paid = (closed * rate + (position.abs() - closed) * fee) / position.abs();
         // no close point above zero: a sale leaves the wallet whole at any price,
         // and a purchase overdraws it at every price, so it is lowered all the way
-        let star = match self.account.bankruptcy_price(i, fee, wallet) {
+        let star = match self.account.bankruptcy_price(i, paid, wallet) {
             Some(star) => star.get(),
             None if long => return 0.0,
             None => 0.0,
@@ -312,12 +321,6 @@ impl Engine {
             (goal, price.min(goal.max(candle.low)))
         };
         fill.price = Price(lifted);
-        let closed = fill.size.get().min(position.abs());
-        let rate = if fill.is_taker {
-            self.cost.fee_taker
-        } else {
-            self.cost.fee_maker
-        };
         // what closing that part realizes at a price, net of the fill's own fee
         let kept = |p: f64| position.signum() * closed * (p - entry) - closed * p * rate;
         (kept(goal) - kept(lifted)).max(0.0)
@@ -1224,6 +1227,70 @@ mod tests {
         };
         assert_eq!(*sale, 92.0);
         assert!((close - 310.92 / 9.99).abs() < 1e-9, "B closed at {close}");
+    }
+
+    /// 51.5 of margin behind a long of 10 bought at 100 for a taker's fee of 1, on a
+    /// bar down to 95, where the 50.5 left sits between the close point, 95.045, and
+    /// the trigger, 94.95; returned after that bar, with `next` to come.
+    fn between_the_close_point_and_the_trigger(next: Candle) -> Engine {
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let bars = vec![
+            flat(100.0),
+            flat(100.0),
+            ohlc(100.0, 100.0, 95.0, 95.0, 1e6),
+            next,
+        ];
+        let config = EngineConfig {
+            quote: 51.5,
+            fee_taker: 0.001,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(Candles::new(bars), config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.step();
+        e
+    }
+
+    #[test]
+    fn a_reducing_fill_is_bounded_at_its_own_fee_on_the_size_it_closes() {
+        // the Specification's example: a market sale at 95 pays the taker's fee, its
+        // close point is 95.045, past the bar, and the 0.45 the bar cannot hold is
+        // paid in, so the wallet ends at zero
+        let mut e = between_the_close_point_and_the_trigger(ohlc(95.0, 95.0, 95.0, 95.0, 1e6));
+        e.market_sell(10.0);
+        let taker = e.step();
+        let charge = e.reporter().expect("reporting is on").ledger()[3]
+            .costs
+            .liquidation;
+        assert!((charge + 0.45).abs() < 1e-9, "the charge was {charge}");
+        assert!(taker.margin_cash.abs() < 1e-9, "kept {}", taker.margin_cash);
+        // a limit at 95 above an open of 94.96 fills as a maker for no fee, so its
+        // close point is the trigger, below the fill: nothing is lifted and the
+        // wallet keeps 0.5, where the taker's fee would have paid it 0.45 more
+        let mut e = between_the_close_point_and_the_trigger(ohlc(94.96, 95.0, 94.96, 95.0, 1e6));
+        e.limit_sell(10.0, 95.0);
+        let maker = e.step();
+        let fill = *e
+            .reporter()
+            .expect("reporting is on")
+            .fills()
+            .last()
+            .expect("the sale");
+        assert_eq!((fill.price, fill.taker, fill.fee), (95.0, false, 0.0));
+        assert_eq!(
+            e.reporter().expect("reporting is on").ledger()[3]
+                .costs
+                .liquidation,
+            0.0
+        );
+        assert!(
+            (maker.margin_cash - 0.5).abs() < 1e-9,
+            "kept {}",
+            maker.margin_cash
+        );
     }
 
     const HOUR: i64 = 3_600 * 1_000_000_000;
