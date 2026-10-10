@@ -474,7 +474,7 @@ impl Engine {
 
     /// The check's path from `legs`, cut wherever a leg joins or leaves, the spans
     /// of the bar each piece covers in `spans`. A leg that joined at the bar's end
-    /// is tested on a last span of no length.
+    /// is tested on a last span of no length, which a leg that left there is not on.
     pub(super) fn check_path(
         legs: &[CheckLeg],
         cuts: &mut Vec<f64>,
@@ -497,7 +497,7 @@ impl Engine {
         for &(a, b) in spans.iter() {
             let from = path.legs.len();
             for leg in legs {
-                if leg.frac <= a && leg.leave.is_none_or(|leave| leave >= b) {
+                if leg.frac <= a && leg.leave.is_none_or(|leave| leave >= b && leave > a) {
                     let (start, end) = leg.ends(a, b);
                     path.legs.push(PathLeg {
                         i: leg.i,

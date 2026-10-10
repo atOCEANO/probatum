@@ -2073,6 +2073,45 @@ mod tests {
     }
 
     #[test]
+    fn a_flip_at_the_old_sides_extreme_tests_the_new_side_without_the_old() {
+        // a long of 10 from 100 on 480 of margin, at 5% maintenance and no cap, is
+        // sold 20 by a stop at the bar's low of 90: the long leaves there and the
+        // short joins to run to the high of 120. Alone, the short's level is
+        // 1,280 - 10.5p, clear at 120; with the long's requirement still beside it,
+        // 1,235 - 10.5p, which closed the short at 117.62
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 0.0,
+            rate: 0.05,
+            amount: 0.0,
+        };
+        let candles = Candles::new(vec![flat, flat, ohlc(100.0, 120.0, 90.0, 110.0, 1e6)])
+            .with_tiers(Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"));
+        let config = EngineConfig {
+            quote: 480.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.stop(Side::Sell, 20.0, 90.0, false);
+        let last = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![(FillReason::Market, 100.0), (FillReason::Stop, 90.0)]
+        );
+        assert_eq!(last.position, -10.0);
+        assert!(
+            (last.margin_cash - 380.0).abs() < 1e-9,
+            "kept {}",
+            last.margin_cash
+        );
+    }
+
+    #[test]
     fn a_reduce_onto_a_quantity_tiers_bound_is_read_in_the_tier_it_lies_in() {
         // 82 of margin behind a long of 3 from 100, the first 1.6 at 1% and above it
         // 5%; the bar falls to 50, which clips it for the 3 carried in at 76.49, and a

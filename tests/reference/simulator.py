@@ -1544,17 +1544,17 @@ class Simulator:
         """The check's path, cut where a leg joins or leaves: on each piece the legs
         held through it move in step, and a leg that joined at the path's end, filled
         at its own adverse extreme or flipped at the old side's, is tested on a last
-        piece of no length."""
+        piece of no length, without the old side that left there."""
         cuts = {0.0, 1.0} | {leg.frac for leg in legs}
         cuts |= {leg.leave for leg in legs if leg.leave is not None}
         cuts  = sorted(cuts)
         spans = list(zip(cuts, cuts[1:]))
         if any(leg.frac >= 1.0 for leg in legs):
             spans.append((1.0, 1.0))
-
         path = [[Leg(leg.instrument, leg.q, leg.entry, *self.ends(leg, a, b))
                  for leg in legs
-                 if leg.frac <= a and (leg.leave is None or leg.leave >= b)]
+                 if leg.frac <= a
+                 and (leg.leave is None or (leg.leave >= b and leg.leave > a))]
                 for a, b in spans]
         return path, spans
 

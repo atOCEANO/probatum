@@ -70,7 +70,7 @@ def built(*actions, shaped):
 
 def at(kind, side, size, price):
     """An action at a close of 100 whose price comes out at `price`."""
-    if kind == "stop":
+    if kind in ("stop", "stop_entry"):
         base, step = 0.8, 0.4
     else:
         base, step = (0.8 if side == "buy" else 0.99), 0.21
@@ -79,6 +79,18 @@ def at(kind, side, size, price):
 
 
 OPENED = "an exit held back from a position the bar's orders opened"
+
+
+def flipped_at_the_low():
+    """A long of 10 from 100 on 480 of margin, at 5% maintenance and no cap, sold 20
+    by a stop at its bar's low of 90, so the short joins the path where the long
+    leaves it, at its end, and runs on alone to the high of 120."""
+    bars, times, cfg, actions = built(None, ("market", "buy", 10.0, 0.0),
+                                      at("stop_entry", "sell", 20.0, 90.0),
+                                      shaped=(100.0, 120.0, 90.0, 110.0))
+    cfg.update(quote=480.0, leverage=0.0, tiers=[(1e12, 0.0, 0.05, 0.0)])
+    return bars, times, cfg, actions
+
 
 # cases built where random cases seldom reach a rule, each with the rule it reaches
 BUILT = {
@@ -97,6 +109,10 @@ BUILT = {
     "a sale below the open on a long the bar opened lower": (OPENED, built(
         None, at("limit", "buy", 10.0, 95.0), at("reduce_limit", "sell", 10.0, 98.0),
         shaped=(100.0, 101.0, 80.0, 90.0))),
+    # the short a flip opens at the long's extreme is tested without the long beside
+    # it, and stays clear of its trigger
+    "a flip at the low of a maintained long": (
+        "a flip's old side on the check", flipped_at_the_low()),
 }
 
 
