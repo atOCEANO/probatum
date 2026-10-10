@@ -2201,7 +2201,8 @@ class Simulator:
     def bound(self, i, side, size, price, bar, rate, costs):
         """The margin bound: a reducing perpetual fill whose close-level equity at its
         price is below zero, with its own fee on the size it closes, is lifted toward
-        the close point, never outside its bar nor past the position's average entry.
+        the price where that equity is zero, never outside its bar nor past the
+        position's average entry.
         The lift the bar holds is in the price and the part it cannot hold, net of the
         fee it moves, is paid into the wallet; both are a negative liquidation charge,
         and the fill log records the lift."""
