@@ -5,7 +5,7 @@
 //! bar (ADR 0010). An order on an instrument that printed no bar waits for its
 //! next.
 
-use probatum_core::{Candle, Fill, OrderId, OrderType, Qty, Side, TimeInForce};
+use probatum_core::{Fill, OrderId, OrderType, Qty, Side, TimeInForce};
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
@@ -39,10 +39,10 @@ type Offer = (
 
 impl Engine {
     /// Fill the market orders queued since the last step at their instruments'
-    /// opens, the fence's instrument at its clipped bar, in the order they were
+    /// opens, each on its bar as the path clipped it, in the order they were
     /// placed. One that cannot fill on this bar is dropped rather than carried to
     /// the next, and one whose instrument printed no bar waits for its next.
-    pub(super) fn resolve_pending(&mut self, clip: Option<(usize, Candle)>) {
+    pub(super) fn resolve_pending(&mut self) {
         if self.pending.is_empty() {
             return;
         }
@@ -50,7 +50,7 @@ impl Engine {
         let mut pending = std::mem::replace(&mut self.pending, spare);
         for order in pending.drain(..) {
             let i = order.instrument;
-            let bar = self.bar_for(i, clip);
+            let bar = self.bar_for(i);
             if !printed(&bar) {
                 self.pending.push(order);
                 continue;
@@ -118,20 +118,20 @@ impl Engine {
         self.spare = pending;
     }
 
-    /// Resolve the resting book against each order's instrument's bar, the fence's
-    /// instrument at its clipped bar, in slot order.
+    /// Resolve the resting book against each order's instrument's bar, as the path
+    /// clipped it, in slot order.
     ///
     /// A stop is consumed only when it produces a fill. On a bar that trades no
     /// volume the trigger may be crossed and nothing can fill, and treating that as
     /// a trigger would delete a stop-loss precisely on the illiquid data where it
     /// matters; it stays armed for the next bar that can trade instead (ADR 0010).
-    pub(super) fn resolve_resting(&mut self, clip: Option<(usize, Candle)>) {
+    pub(super) fn resolve_resting(&mut self) {
         if self.book.is_empty() {
             return;
         }
         let mut fills: Vec<Offer> = Vec::new();
         for order in self.book.iter() {
-            let bar = self.bar_for(order.instrument, clip);
+            let bar = self.bar_for(order.instrument);
             if !printed(&bar) {
                 continue;
             }
@@ -213,7 +213,7 @@ impl Engine {
             } else {
                 FillReason::Limit
             };
-            let bar = self.bar_for(i, clip);
+            let bar = self.bar_for(i);
             let applied =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
             match kind {

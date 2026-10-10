@@ -1,12 +1,12 @@
 flowchart TD
     S["<b>step()</b> advances one bar"]
     T["transfers decided at the last<br/>close land in their wallets"]
-    G["funding stamped between the rows<br/>charged at the last mark"]
-    F["<b>0</b> liquidation fence worked out,<br/>the bar clipped where the margin ran out"]
+    G["funding stamped between the rows<br/>charged at the last marks"]
+    F["<b>0</b> the path of the perps carried in<br/>solved, each bar clipped where<br/>the margin ran out"]
     A["<b>1</b> pending market orders<br/>fill at the open"]
     B["<b>2</b> resting limits and stops<br/>fill against the clipped range"]
-    D["<b>3</b> liquidation checked at<br/>the bar adverse extreme,<br/>debits inside the bar counted"]
-    C["<b>4</b> funding the row owns charged<br/>at the close, on the position<br/>still held"]
+    D["<b>3</b> the path solved again for<br/>the account the fills left,<br/>debits inside the bar counted"]
+    C["<b>4</b> funding the row owns charged<br/>at the closes, on the positions<br/>still held"]
     E["<b>5</b> equity marked at the close,<br/>new state returned"]
 
     S --> T

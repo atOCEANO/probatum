@@ -2,7 +2,7 @@
 //! and when reporting is on it is logged with what it paid and carried into the
 //! round trips, each of which holds every fee of its own fills (ADRs 0022, 0023).
 
-use probatum_core::{Candle, CostModel, Fill, OrderId, Side};
+use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Side};
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
@@ -61,6 +61,17 @@ impl Engine {
         // wallet, and the close then realizes against it
         self.account.margin_cash += credit;
         self.account.apply_fill(i, &fill, fee);
+        if self.account.markets[i] == Market::Perp {
+            let (held, _, _) = before;
+            let signed = fill.side.sign() * applied;
+            let closed = if held * signed < 0.0 {
+                applied.min(held.abs())
+            } else {
+                0.0
+            };
+            let after = self.account.positions[i].qty.get();
+            self.track(i, held, after, fill.price.get(), applied - closed);
+        }
         self.book_fill(
             i,
             applied,

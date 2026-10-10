@@ -1,46 +1,125 @@
-//! Where the margin behind a perp position runs out. The fence is worked out
-//! before a bar's orders are resolved and clips the bar there (ADR 0017); the
-//! forced close is priced at the bankruptcy price rather than at the bar's
-//! extreme, and no fill that reduces the position books past that price, so an
-//! account can end at zero but never owing (ADR 0018). The fence is the one perp's
-//! while the account holds one, and the bound counts every other perp held.
+//! Where the margin behind the perps runs out, on the path every perp held moves
+//! along (Specification, Liquidation). The path carried into a bar is solved before
+//! any of its orders resolves: a clip on the gap closed the account before the bar
+//! opened, and one inside the bar clips every held perp's bar there, so no order
+//! fills past the point the account left the market (ADR 0017). After the fills the
+//! path is solved again for the account they left, and the closes are checked once
+//! the row's funding is charged. A forced close takes the account over at the clip
+//! point and leaves the margin wallet at exactly zero, and no reducing fill books
+//! past the point the margin runs out, so an account can end at zero but never
+//! owing (ADRs 0018, 0019).
 
-use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Qty, Side};
+use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side};
 
 use super::ledger::Moment;
+use super::path::PathLeg;
 use super::Engine;
+use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord};
 
 impl Engine {
-    /// True when perp `p`, the only perp the account holds, is dead at `price` once
-    /// `debits` of funding are counted against the margin wallet: the check at a
-    /// bar's adverse extreme, with the debits stamped inside the bar (ADRs 0008,
-    /// 0017, 0020).
-    pub(super) fn dead_at(&self, p: usize, price: f64, debits: f64) -> bool {
-        let unrealized = self.account.positions[p].unrealized(Price(price));
-        price.is_finite() && self.account.margin_cash + unrealized - debits <= 0.0
+    /// The rule, 1 to 3: the path of the perps carried into the bar, solved once the
+    /// funding between rows is charged. A clip on the gap, its start included, means
+    /// the account was liquidated before the bar opened, and it is closed there
+    /// first; one inside the bar clips every held perp's bar at its price there.
+    pub(super) fn solve_carried(&mut self) {
+        self.clips.fill(None);
+        if self.account.perps_held() == 0 {
+            return;
+        }
+        let mut path = std::mem::take(&mut self.path);
+        self.carried_path(&mut path);
+        if let Some((_, clip)) = self.solve(&path, self.account.margin_cash) {
+            let (from, to) = path.pieces[clip.piece];
+            let at = |leg: &PathLeg| leg.start + clip.at * (leg.end - leg.start);
+            if clip.piece == 0 {
+                let mut closes = std::mem::take(&mut self.closes);
+                closes.clear();
+                closes.extend(
+                    path.legs[from..to]
+                        .iter()
+                        .map(|leg| (leg.i, leg.q, at(leg))),
+                );
+                self.take_over(&closes, Moment::BeforeOpen);
+                self.closes = closes;
+            } else {
+                for leg in &path.legs[from..to] {
+                    let bar = self.candles.bar(self.tick, leg.i);
+                    if printed(&bar) {
+                        self.clips[leg.i] = Some(Engine::fenced(&bar, at(leg), leg.q > 0.0));
+                    }
+                }
+            }
+        }
+        self.path = path;
     }
 
-    /// The price `bar` would take perp `p`'s margin to zero at, or `None` when
-    /// nothing on the bar can kill the account.
-    ///
-    /// The trigger is the bar's adverse extreme and the answer is the bankruptcy
-    /// price, which are two different numbers on purpose (ADR 0018). Read before
-    /// the bar's orders are resolved, because it is the point past which this
-    /// account was no longer in the market.
-    pub(super) fn liquidation_fence(&self, p: usize, bar: &Candle) -> Option<f64> {
-        let adverse = if self.account.positions[p].qty.get() >= 0.0 {
-            bar.low
-        } else {
-            bar.high
-        };
-        if !self.dead_at(p, adverse, 0.0) {
-            return None;
+    /// The rule, 5: the path solved again against the raw bars for the account the
+    /// fills left, every carried leg from its open and every leg opened during the
+    /// bar from its fill price, with the debits stamped inside the bar counted toward
+    /// it. On the trigger the account is taken over at the clip point recomputed for
+    /// it, a leg yet to join at its fill price, and the debits it counted are paid.
+    pub(super) fn check(&mut self) {
+        if self.account.perps_held() == 0 {
+            return;
         }
-        self.account
-            .bankruptcy_price(p, self.cost.fee_taker, self.account.margin_cash)
-            .map(|price| price.get())
+        let mut checked = std::mem::take(&mut self.checked);
+        let mut cuts = std::mem::take(&mut self.cuts);
+        let mut spans = std::mem::take(&mut self.spans);
+        let mut path = std::mem::take(&mut self.path);
+        self.check_legs(&mut checked);
+        Engine::check_path(&checked, &mut cuts, &mut spans, &mut path);
+        let wallet = self.account.margin_cash - self.debits_inside();
+        if let Some((_, clip)) = self.solve(&path, wallet) {
+            let (a, b) = spans[clip.piece];
+            let mut closes = std::mem::take(&mut self.closes);
+            closes.clear();
+            for leg in checked.iter().filter(|leg| leg.leave.is_none()) {
+                let (start, end) = leg.ends(a, b);
+                closes.push((leg.i, leg.q, start + clip.at * (end - start)));
+            }
+            self.pay_debits_inside();
+            self.take_over(&closes, Moment::InBar);
+            self.closes = closes;
+        }
+        self.checked = checked;
+        self.cuts = cuts;
+        self.spans = spans;
+        self.path = path;
+    }
+
+    /// The rule, 6: once the row's own funding is charged, an account a debit took
+    /// to its trigger is closed at the closes, a perp that printed no bar at its
+    /// mark (ADR 0020).
+    pub(super) fn check_closes(&mut self) {
+        if self.account.perps_held() == 0 {
+            return;
+        }
+        let mut path = std::mem::take(&mut self.path);
+        path.legs.clear();
+        path.pieces.clear();
+        for (i, position) in self.account.positions.iter().enumerate() {
+            let q = position.qty.get();
+            if self.account.markets[i] == Market::Perp && q != 0.0 {
+                let close = self.close_of(i);
+                path.legs.push(PathLeg {
+                    i,
+                    q,
+                    entry: position.avg_entry.get(),
+                    start: close,
+                    end: close,
+                });
+            }
+        }
+        if self.at_trigger(&path.legs, self.account.margin_cash) {
+            let mut closes = std::mem::take(&mut self.closes);
+            closes.clear();
+            closes.extend(path.legs.iter().map(|leg| (leg.i, leg.q, leg.start)));
+            self.take_over(&closes, Moment::AtClose);
+            self.closes = closes;
+        }
+        self.path = path;
     }
 
     /// The bar as far as this account got: a long sees nothing below `fence` and a
@@ -64,55 +143,31 @@ impl Engine {
         }
     }
 
-    /// Force-close perp `p`, the one the account holds, at the price that leaves
-    /// nothing.
-    ///
-    /// Not at the bar's adverse extreme, which is what the trigger was tested
-    /// against. Closing there charged the account for however far the bar happened
-    /// to run past the point its margin was gone, so a long on 100 of margin
-    /// against a bar that wicked to 80 booked a loss of 200 and left the account
-    /// owing 100. A position cannot lose more than the margin behind it, so the
-    /// exit is priced where the margin runs out, and the liquidation fee is inside
-    /// that price rather than charged past it (ADR 0018).
-    pub(super) fn liquidate(&mut self, p: usize, moment: Moment) {
-        let fee = self.cost.fee_taker;
-        if let Some(price) = self
-            .account
-            .bankruptcy_price(p, fee, self.account.margin_cash)
-        {
-            self.close_out(p, price.get(), moment);
-        }
-    }
-
-    /// Force-close every perp the account holds, each at its entry in `prices`,
-    /// paying the liquidation fee, and leave the margin wallet at exactly zero:
-    /// whatever it then holds, positive or negative, is the liquidation charge. A
-    /// funding debit that takes the account to its trigger at a bar's close is
-    /// closed here at the closes (ADR 0020).
-    pub(super) fn liquidate_at(&mut self, prices: &[f64], moment: Moment) {
-        for (i, &price) in prices.iter().enumerate() {
-            let qty = self.account.positions[i].qty.get();
-            if self.account.markets[i] != Market::Perp || qty == 0.0 {
-                continue;
-            }
+    /// Take the account over (The forced close): close every leg in `closes`, each an
+    /// instrument, a signed size and a price, at that price, so a perp with a leg
+    /// carried into the bar and one opened during it closes in two fills. With no
+    /// maintenance each close pays the liquidation fee on its notional, which at the
+    /// close point leaves exactly nothing; with maintenance it pays none. Whatever
+    /// the margin wallet then holds, positive or negative, is the liquidation charge.
+    pub(super) fn take_over(&mut self, closes: &[(usize, f64, f64)], moment: Moment) {
+        let maintained = (0..self.account.positions.len()).any(|i| {
+            self.account.markets[i] == Market::Perp
+                && self.account.positions[i].qty.get() != 0.0
+                && self.has_maintenance(i)
+        });
+        let rate = if maintained { 0.0 } else { self.cost.fee_taker };
+        for &(i, q, price) in closes {
+            let size = q.abs();
             let fill = Fill {
-                side: if qty > 0.0 { Side::Sell } else { Side::Buy },
-                size: Qty(qty.abs()),
+                side: if q > 0.0 { Side::Sell } else { Side::Buy },
+                size: Qty(size),
                 price: Price(price),
-                is_taker: true,
+                is_taker: false,
             };
-            let fee = self.cost.fee(&fill);
+            let fee = size * price * rate;
             let before = self.before_fill(i);
             self.account.apply_fill(i, &fill, fee);
-            self.book_fill(
-                i,
-                qty.abs(),
-                price,
-                fee,
-                before,
-                FillReason::Liquidation,
-                moment,
-            );
+            self.book_fill(i, size, price, fee, before, FillReason::Liquidation, moment);
             if let Some(reporter) = self.reporter.as_mut() {
                 reporter.costs_mut().fees += fee;
                 reporter.record_fill(FillRecord {
@@ -120,7 +175,7 @@ impl Engine {
                     instrument: i,
                     order: None,
                     side: fill.side,
-                    size: qty.abs(),
+                    size,
                     price,
                     costs: FillCosts {
                         reference: price,
@@ -250,11 +305,14 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use crate::candles::Candles;
+    use crate::candles::{Candles, Instrument};
+    use crate::clock::Clock;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, universe};
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::{EventKind, EventReason, FillReason};
-    use probatum_core::{Market, OrderType, Side, TimeInForce, Wallet};
+    use probatum_core::{
+        Candle, Market, OrderType, Side, Tier, TierBasis, Tiers, TimeInForce, Wallet,
+    };
 
     #[test]
     fn leveraged_long_is_liquidated_on_a_crashing_bar() {
@@ -807,9 +865,10 @@ mod tests {
 
     #[test]
     fn two_perps_are_closed_out_together_where_their_margin_runs_out() {
-        // 100 of margin behind a long of 1 from 100 and of 10 from 10: with both at
-        // their lows of 40 and 4 the wallet holds -20, so both close there, the -20
-        // is the liquidation charge, and the perp order goes while the spot one stays
+        // 100 of margin behind a long of 1 from 100 and of 10 from 10, on a bar where
+        // they fall to 40 and 4 together: the wallet runs out five sixths of the way
+        // down, at 50 and 5, so both close there with nothing left to charge, and the
+        // perp order goes while the spot one stays
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let rows = vec![
             vec![flat(100.0), flat(10.0), flat(50.0)],
@@ -857,8 +916,14 @@ mod tests {
             .filter(|fill| fill.reason == FillReason::Liquidation)
             .map(|fill| (fill.instrument, fill.price))
             .collect();
-        assert_eq!(closes, vec![(0, 40.0), (1, 4.0)]);
-        assert_eq!(reporter.ledger()[2].costs.liquidation, -20.0);
+        let [(0, a), (1, b)] = closes.as_slice() else {
+            panic!("A and B closed, in that order: {closes:?}");
+        };
+        assert!(
+            (a - 50.0).abs() < 1e-9 && (b - 5.0).abs() < 1e-9,
+            "closed at {a}, {b}"
+        );
+        assert!(reporter.ledger()[2].costs.liquidation.abs() < 1e-9);
         let cancelled = reporter
             .events()
             .iter()
@@ -1138,5 +1203,357 @@ mod tests {
         };
         assert_eq!(*sale, 92.0);
         assert!((close - 310.92 / 9.99).abs() < 1e-9, "B closed at {close}");
+    }
+
+    const HOUR: i64 = 3_600 * 1_000_000_000;
+    const DAY: i64 = 24 * HOUR;
+
+    /// Bitcoin at 60,000 on two rows, then the bars in `later`.
+    fn bitcoin(later: &[Candle]) -> Vec<Candle> {
+        let flat = ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6);
+        [&[flat, flat][..], later].concat()
+    }
+
+    /// The Specification's account at one instrument: 10,015 of margin and fees of
+    /// 0.02% and 0.05%, buying 0.5 BTC with a limit at 60,000 on a bar that opens on
+    /// it, a taker's fill of 15 that leaves 10,000; returned after that bar.
+    fn half_a_bitcoin(bars: Candles) -> Engine {
+        let config = EngineConfig {
+            quote: 10_015.0,
+            fee_maker: 0.0002,
+            fee_taker: 0.0005,
+            max_leverage: 10.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let gtc = TimeInForce::Gtc;
+        e.order_on(
+            0,
+            Side::Buy,
+            0.5,
+            OrderType::Limit,
+            Some(60_000.0),
+            None,
+            false,
+            false,
+            gtc,
+        );
+        e.step();
+        e
+    }
+
+    /// One tier at 20x keeping a maintenance rate of 0.5%.
+    fn maintained() -> Tiers {
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 20.0,
+            rate: 0.005,
+            amount: 0.0,
+        };
+        Tiers::new(TierBasis::Notional, vec![tier]).expect("a table")
+    }
+
+    const FALL: Candle = Candle {
+        open: 41_500.0,
+        high: 41_500.0,
+        low: 39_000.0,
+        close: 39_500.0,
+        volume: 1e6,
+    };
+
+    #[test]
+    fn with_no_maintenance_the_account_closes_at_40_020_01_and_ends_at_zero() {
+        // the Specification's example: equity is 0.5p - 20,000 and the fee 0.00025p,
+        // which meet at 40,020.01, where the 10.005 left pays the fee
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[FALL])));
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let close = reporter.fills().last().expect("the close");
+        assert_eq!(close.reason, FillReason::Liquidation);
+        assert!(
+            (close.price - 40_020.01).abs() < 0.005,
+            "closed at {}",
+            close.price
+        );
+        assert!((close.fee - 10.005).abs() < 5e-4, "paid {}", close.fee);
+        assert!(reporter.ledger()[2].costs.liquidation.abs() < 1e-6);
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn a_stop_at_41_000_fills_on_the_clipped_bar_and_keeps_489_75() {
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[FALL])));
+        e.stop(Side::Sell, 0.5, 41_000.0, false);
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let fills: Vec<(FillReason, f64)> = reporter
+            .fills()
+            .iter()
+            .map(|fill| (fill.reason, fill.price))
+            .collect();
+        assert_eq!(
+            fills,
+            vec![(FillReason::Limit, 60_000.0), (FillReason::Stop, 41_000.0)]
+        );
+        assert!(
+            (last.margin_cash - 489.75).abs() < 1e-9,
+            "kept {}",
+            last.margin_cash
+        );
+    }
+
+    #[test]
+    fn a_gap_through_the_clip_point_liquidates_the_account_before_the_bar_opens() {
+        // the last mark is 40,500 and the next bar opens at 40,010, so the gap
+        // crosses the close point, 40,020.01, before the bar opens: the account is
+        // closed there and the stop decided at the last close never fills
+        let later = [
+            ohlc(60_000.0, 60_000.0, 40_500.0, 40_500.0, 1e6),
+            ohlc(40_010.0, 40_600.0, 39_000.0, 39_500.0, 1e6),
+        ];
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&later)));
+        e.step();
+        let stop = e.stop(Side::Sell, 0.5, 40_300.0, false);
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let fills: Vec<(usize, FillReason)> = reporter
+            .fills()
+            .iter()
+            .map(|fill| (fill.tick, fill.reason))
+            .collect();
+        assert_eq!(
+            fills,
+            vec![(1, FillReason::Limit), (3, FillReason::Liquidation)]
+        );
+        let close = reporter.fills()[1].price;
+        assert!((close - 40_020.01).abs() < 0.005, "closed at {close}");
+        let cancelled = reporter
+            .events()
+            .iter()
+            .find(|event| event.kind == EventKind::Cancelled)
+            .expect("the stop cancelled");
+        assert_eq!(cancelled.order, stop);
+    }
+
+    #[test]
+    fn takeover_at_half_a_percent_maintenance_charges_the_100_50_left() {
+        // the trigger is where 0.5p - 20,000 falls to 0.0025p, 40,201.01, where
+        // equity and the requirement are both 100.50; the close pays no fee of its
+        // own and the 100.50 is the liquidation charge
+        let slide = ohlc(41_000.0, 41_200.0, 40_150.0, 40_500.0, 1e6);
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[slide])).with_tiers(maintained()));
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let close = reporter.fills().last().expect("the close");
+        assert_eq!(close.reason, FillReason::Liquidation);
+        assert!(
+            (close.price - 40_201.01).abs() < 0.005,
+            "closed at {}",
+            close.price
+        );
+        assert_eq!(close.fee, 0.0);
+        let charge = reporter.ledger()[2].costs.liquidation;
+        assert!((charge - 100.50).abs() < 0.005, "charged {charge}");
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn a_trigger_past_a_tiers_bound_is_solved_in_the_tier_it_lies_in() {
+        // up to 25,000 of notional at 0.4% and above it at 1% less 150: the long's
+        // notional crosses the bound at 50,000 on the way down, and below it the
+        // trigger is where 0.5p - 20,000 falls to 0.002p, 40,160.64, which leaves
+        // the 80.32 the requirement asks there to be charged
+        let tiers = Tiers::new(
+            TierBasis::Notional,
+            vec![
+                Tier {
+                    up_to: 25_000.0,
+                    leverage: 20.0,
+                    rate: 0.004,
+                    amount: 0.0,
+                },
+                Tier {
+                    up_to: 1e12,
+                    leverage: 10.0,
+                    rate: 0.01,
+                    amount: 150.0,
+                },
+            ],
+        )
+        .expect("a table");
+        let fall = ohlc(60_000.0, 60_000.0, 40_000.0, 41_000.0, 1e6);
+        let mut e = half_a_bitcoin(Candles::new(bitcoin(&[fall])).with_tiers(tiers));
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let close = reporter.fills().last().expect("the close");
+        assert!(
+            (close.price - 20_000.0 / 0.498).abs() < 1e-6,
+            "closed at {}",
+            close.price
+        );
+        let charge = reporter.ledger()[2].costs.liquidation;
+        assert!(
+            (charge - 0.002 * 20_000.0 / 0.498).abs() < 1e-6,
+            "charged {charge}"
+        );
+    }
+
+    /// The account with 0.5% maintenance on rows at 05:00, 06:00 and 07:00, the
+    /// last a bar from 60,000 down to 40,210 that closes at 41,000, and one funding
+    /// event at `rate` stamped at `stamp`; returned after its last bar.
+    fn seven_oclock(rate: f64, stamp: i64) -> Engine {
+        let bars = bitcoin(&[ohlc(60_000.0, 60_000.0, 40_210.0, 41_000.0, 1e6)]);
+        let clock = Clock::new(vec![5 * HOUR, 6 * HOUR, 7 * HOUR]);
+        let candles = Candles::on_clock(bars, clock)
+            .with_funding(&[(stamp, rate)])
+            .with_tiers(maintained());
+        let mut e = half_a_bitcoin(candles);
+        e.step();
+        e
+    }
+
+    #[test]
+    fn a_debit_charged_after_the_check_leaves_489_75_against_102_50() {
+        let e = seven_oclock(0.0005, 8 * HOUR);
+        let row = e.reporter().expect("reporting is on").ledger()[2];
+        assert!((row.costs.funding - 10.25).abs() < 1e-9);
+        assert!((row.equity - 489.75).abs() < 1e-9, "equity {}", row.equity);
+        assert_eq!(row.costs.liquidation, 0.0);
+    }
+
+    #[test]
+    fn a_debit_of_410_closes_the_account_at_the_close_and_charges_its_90_00() {
+        let e = seven_oclock(0.02, 8 * HOUR);
+        let reporter = e.reporter().expect("reporting is on");
+        let close = reporter.fills().last().expect("the close");
+        assert_eq!(
+            (close.reason, close.price, close.fee),
+            (FillReason::Liquidation, 41_000.0, 0.0)
+        );
+        let row = reporter.ledger()[2];
+        assert!((row.costs.funding - 410.0).abs() < 1e-9);
+        assert!((row.costs.liquidation - 90.0).abs() < 1e-9);
+        assert_eq!(row.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn a_debit_inside_the_bar_counts_toward_its_check() {
+        // a debit of 10.25 stamped at 07:30 moves the trigger to where 0.5p - 20,010.25
+        // falls to 0.0025p, 40,221.61, above the low of 40,210
+        let e = seven_oclock(0.0005, 7 * HOUR + 30 * 60 * 1_000_000_000);
+        let reporter = e.reporter().expect("reporting is on");
+        let close = reporter.fills().last().expect("the close");
+        assert!(
+            (close.price - 40_221.61).abs() < 0.005,
+            "closed at {}",
+            close.price
+        );
+        let row = reporter.ledger()[2];
+        assert!((row.costs.funding - 10.25).abs() < 1e-9);
+        assert!((row.costs.liquidation - 100.55).abs() < 0.005);
+    }
+
+    #[test]
+    fn a_debit_over_a_weekend_moves_the_trigger_onto_mondays_gap() {
+        // 7 January 1970 was a Wednesday, so the rows run Wednesday to Friday and
+        // Monday; Saturday's debit is charged at Friday's close of 41,000, which
+        // moves the trigger to 40,221.61, and Monday's gap down to 40,150 crosses it
+        let bars = bitcoin(&[
+            ohlc(60_000.0, 60_000.0, 41_000.0, 41_000.0, 1e6),
+            ohlc(40_150.0, 40_600.0, 40_000.0, 40_400.0, 1e6),
+        ]);
+        let clock = Clock::new(vec![6 * DAY, 7 * DAY, 8 * DAY, 11 * DAY]);
+        let candles = Candles::on_clock(bars, clock)
+            .with_funding(&[(9 * DAY + 8 * HOUR, 0.0005)])
+            .with_tiers(maintained());
+        let mut e = half_a_bitcoin(candles);
+        e.step();
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        assert!((reporter.ledger()[2].equity - 500.0).abs() < 1e-9);
+        let close = reporter.fills().last().expect("the close");
+        assert_eq!((close.tick, close.reason), (3, FillReason::Liquidation));
+        assert!(
+            (close.price - 40_221.61).abs() < 0.005,
+            "closed at {}",
+            close.price
+        );
+        let row = reporter.ledger()[3];
+        assert!((row.costs.funding - 10.25).abs() < 1e-9);
+        assert!((row.costs.liquidation - 100.55).abs() < 0.005);
+    }
+
+    #[test]
+    fn a_long_bitcoin_and_short_ether_are_both_closed_at_the_close_point() {
+        // the Specification's example: 10,000 of margin behind a long of 1 BTC and a
+        // short of 20 ETH, on a bar where BTC falls to 54,000 and ETH rises to 3,300.
+        // Equity on the path is 10,000 - 12,000s and the closing fee a constant 60,
+        // so both close where s is 0.8283, at 55,030.00 and 3,248.50
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = [
+            vec![flat(60_000.0), flat(3_000.0)],
+            vec![flat(60_000.0), flat(3_000.0)],
+            vec![
+                ohlc(60_000.0, 60_000.0, 54_000.0, 57_000.0, 1e6),
+                ohlc(3_000.0, 3_300.0, 3_000.0, 3_150.0, 1e6),
+            ],
+        ]
+        .concat();
+        let at = |leverage| Instrument {
+            market: Some(Market::Perp),
+            tiers: Tiers::new(
+                TierBasis::Notional,
+                vec![Tier {
+                    up_to: 1e12,
+                    leverage,
+                    rate: 0.0,
+                    amount: 0.0,
+                }],
+            )
+            .expect("a table"),
+        };
+        let bars = Candles::universe(rows, 2, None).with_instruments(vec![at(20.0), at(10.0)]);
+        let config = EngineConfig {
+            quote: 10_060.0,
+            fee_taker: 0.0005,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        let ioc = TimeInForce::Ioc;
+        e.order_on(
+            1,
+            Side::Sell,
+            20.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        assert!(
+            (e.reporter().expect("reporting is on").ledger()[1].equity - 10_000.0).abs() < 1e-9
+        );
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let closes: Vec<(usize, f64)> = reporter
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .map(|fill| (fill.instrument, fill.price))
+            .collect();
+        let [(0, btc), (1, eth)] = closes.as_slice() else {
+            panic!("BTC and ETH closed, in that order: {closes:?}");
+        };
+        assert!((btc - 55_030.0).abs() < 0.005, "BTC closed at {btc}");
+        assert!((eth - 3_248.50).abs() < 0.005, "ETH closed at {eth}");
+        assert!((reporter.ledger()[2].costs.fees - 60.0).abs() < 0.005);
+        assert_eq!(last.margin_cash, 0.0);
     }
 }

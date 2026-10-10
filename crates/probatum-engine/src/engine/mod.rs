@@ -5,27 +5,26 @@
 //!
 //! Within a step the order of events follows the bar. Transfers decided at the last
 //! close land first, then funding stamped between the last row and this one, at
-//! the last mark, and then the fence. The price the position's margin runs out at
-//! is worked out before any order is resolved: a bar that OPENED past it killed
-//! the account before it opened, so the forced close happens first and nothing on
-//! that bar fills, and any other bar is clipped there, so an order that would have
-//! filled beyond the fence never triggers. Then, against that clipped candle: 1.
-//! pending market orders fill at the open, 2. resting limit and stop orders fill
-//! against the range, 3. liquidation is checked at the bar's own adverse extreme,
-//! counting any debit stamped inside the bar, 4. the funding the row owns is
-//! charged at its close on the position still held, and an account a debit takes
-//! to zero is closed there. Equity is then marked at the close. A fill that reduces
-//! a perp is bounded once more as it lands, because the fence was read from the
-//! position carried into the bar and one grown or opened during the bar has none
-//! of its own (ADRs 0008, 0017, 0018, 0020).
+//! the last marks, and then the path: every perp held moves along one synchronous
+//! adverse path, from its last mark to its open and from the open to its adverse
+//! extreme, and the point its margin runs out at there is found before any order
+//! resolves. A clip on the gap closed the account before the bar opened, so the
+//! forced close happens first and nothing on a perp fills; any other clip cuts
+//! every held perp's bar there, so an order that would have filled beyond it never
+//! triggers. Then, against the clipped bars: 1. pending market orders fill at the
+//! open, 2. resting limit and stop orders fill against the range, 3. the path is
+//! solved again for the account the fills left, a leg opened during the bar
+//! joining it at its fill price, counting any debit stamped inside the bar, 4. the
+//! funding the row owns is charged at the closes on the positions still held, and
+//! an account a debit takes to its trigger is closed there. Equity is then marked
+//! at the close. A fill that reduces a perp is bounded once more as it lands, by
+//! what the other legs leave at the same point of their paths (ADRs 0008, 0017,
+//! 0018, 0020).
 //!
 //! Several instruments share the clock. Each order fills on its own instrument's
-//! bar, an instrument that printed no bar on a row keeps its last mark and its
-//! orders wait, and the fence and the check are the one perp's while one is held.
-//! The cap and the bound read every other perp at the fraction of its own bar the
-//! fill sits at on its path. With two or more held, the account is closed out
-//! wherever its margin equity reaches zero with every perp at its last mark, its
-//! open, its adverse extreme or its close.
+//! bar, and an instrument that printed no bar on a row keeps its last mark, its
+//! orders wait, and it stands still on the path. The cap and the bound read every
+//! other perp at the fraction of its own bar the fill sits at on its path.
 
 #[cfg(test)]
 mod fixtures;
@@ -34,10 +33,11 @@ mod ledger;
 mod liquidation;
 mod margin;
 mod orders;
+mod path;
 mod resolution;
 mod transfers;
 
-use ledger::Moment;
+use path::{CheckLeg, HeldLeg, Path};
 
 use probatum_core::{
     Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
@@ -48,14 +48,6 @@ use crate::clock::Clock;
 use crate::execution::FillModel;
 use crate::reporter::{BarCosts, LedgerRow, Leg, Reporter, RoundTrip};
 use crate::stats::Stats;
-
-/// The perps an account holds, as each phase of the step branches on them.
-#[derive(Clone, Copy)]
-enum Held {
-    None,
-    One(usize),
-    Several,
-}
 
 /// A position moved toward zero by less than this counts as no close, mirroring
 /// the position's own dust epsilon so a non-representable fractional close does
@@ -148,9 +140,18 @@ pub struct Engine {
     /// Each instrument's last close, the mark it keeps on a row it printed no bar
     /// on, NaN until its first bar.
     marks: Vec<f64>,
-    /// A price for each instrument, refilled wherever the account is valued at
-    /// prices other than its marks, so a step allocates nothing.
-    prices: Vec<f64>,
+    /// What each perp's position did during the bar, for the check: the part
+    /// carried into it and the parts opened or flipped during it (The path).
+    legs: Vec<Vec<HeldLeg>>,
+    /// Each instrument's bar clipped where the account left the market on it, or
+    /// none, for the orders a bar resolves.
+    clips: Vec<Option<Candle>>,
+    // the path's buffers, refilled on every bar so a step allocates nothing
+    path: Path,
+    checked: Vec<CheckLeg>,
+    cuts: Vec<f64>,
+    spans: Vec<(f64, f64)>,
+    closes: Vec<(usize, f64, f64)>,
 }
 
 impl Engine {
@@ -190,7 +191,13 @@ impl Engine {
             funding_paid: 0.0,
             bust: false,
             marks: vec![f64::NAN; width],
-            prices: vec![f64::NAN; width],
+            legs: vec![Vec::new(); width],
+            clips: vec![None; width],
+            path: Path::default(),
+            checked: Vec::new(),
+            cuts: Vec::new(),
+            spans: Vec::new(),
+            closes: Vec::new(),
             candles,
             config,
         };
@@ -346,59 +353,10 @@ impl Engine {
         self.marks[0]
     }
 
-    /// Instrument `i`'s bar on the current row, or the fence's clipped bar when it
-    /// is the instrument `clip` names.
-    fn bar_for(&self, i: usize, clip: Option<(usize, Candle)>) -> Candle {
-        match clip {
-            Some((p, bar)) if p == i => bar,
-            _ => self.candles.bar(self.tick, i),
-        }
-    }
-
-    /// The perps the account holds, as each phase of the step branches on them.
-    fn held(&self) -> Held {
-        match (self.account.perps_held(), self.account.sole_perp()) {
-            (0, _) => Held::None,
-            (_, Some(p)) => Held::One(p),
-            _ => Held::Several,
-        }
-    }
-
-    /// Fill the price buffer with each instrument's `pick` of its current bar, or
-    /// its mark where it printed none.
-    fn fill_prices(&mut self, pick: impl Fn(&Candle, f64) -> f64) {
-        for i in 0..self.prices.len() {
-            let bar = self.candles.bar(self.tick, i);
-            let qty = self.account.positions[i].qty.get();
-            self.prices[i] = if printed(&bar) {
-                pick(&bar, qty)
-            } else {
-                self.marks[i]
-            };
-        }
-    }
-
-    /// Close every perp out at the price buffer when margin equity there is at or
-    /// below zero once `debits` are counted, paying them.
-    fn close_out_at_prices(&mut self, debits: f64, moment: Moment) {
-        let equity = self.account.wallet_equity(Wallet::Margin, &self.prices) - debits;
-        if equity.is_nan() || equity > 0.0 {
-            return;
-        }
-        if debits > 0.0 {
-            self.pay_debits_inside();
-        }
-        let prices = std::mem::take(&mut self.prices);
-        self.liquidate_at(&prices, moment);
-        self.prices = prices;
-    }
-
-    /// Close perp `p`, the one the account holds, out at `price`.
-    fn close_out(&mut self, p: usize, price: f64, moment: Moment) {
-        let mut prices = std::mem::take(&mut self.prices);
-        prices[p] = price;
-        self.liquidate_at(&prices, moment);
-        self.prices = prices;
+    /// Instrument `i`'s bar on the current row, clipped where the account left the
+    /// market on it.
+    fn bar_for(&self, i: usize) -> Candle {
+        self.clips[i].unwrap_or_else(|| self.candles.bar(self.tick, i))
     }
 
     /// Advance one bar and resolve the bar, then mark and return the state. At the
@@ -414,116 +372,37 @@ impl Engine {
             self.apply_transfers();
 
             // funding stamped between the last row and this one, across a closure or
-            // a hole in the data, is charged next, at the last marks and before the
-            // path, so a debit that takes the account to its trigger liquidates it
-            // at the start of the gap, there if it is dead already and on the gap
-            // below if the open lies past the fence (ADR 0020)
+            // a hole in the data, is charged next, at the last marks the path starts
+            // from (ADR 0020)
             self.charge_between();
-            match self.held() {
-                Held::None => {}
-                Held::One(p) => {
-                    let mark = self.marks[p];
-                    if self.dead_at(p, mark, 0.0) {
-                        self.close_out(p, mark, Moment::BeforeOpen);
-                    }
-                }
-                Held::Several => {
-                    self.prices.copy_from_slice(&self.marks);
-                    self.close_out_at_prices(0.0, Moment::BeforeOpen);
-                }
-            }
 
-            // 0. the price a position's margin runs out at is a point on this bar's
-            //    own path, and everything past it belongs to a market the account
-            //    had already been closed out of. So the fence is worked out before
-            //    any order is resolved. A bar that OPENED past it killed the account
-            //    before it opened, so it is closed first and nothing on the bar
-            //    fills; on any other bar the orders are resolved against a candle
-            //    clipped at the fence, so an exit that would have filled beyond it
-            //    simply never triggers. Checking only afterwards, as this used to,
-            //    left ADR 0018's guarantee resting on the position still being open
-            //    at the end of the bar: a `close()` on a bar that gapped past the
-            //    liquidation booked the whole gap and left the account owing money,
-            //    and a partial close left a "liquidation" priced outside the bar
-            //    that booked a profit (ADR 0017).
-            let mut clip = None;
-            match self.held() {
-                Held::None => {}
-                Held::One(p) => {
-                    let bar = self.candles.bar(self.tick, p);
-                    let long = self.account.positions[p].qty.get() >= 0.0;
-                    let fence = self.liquidation_fence(p, &bar);
-                    let gapped =
-                        fence.is_some_and(|f| if long { bar.open <= f } else { bar.open >= f });
-                    if gapped {
-                        self.liquidate(p, Moment::BeforeOpen);
-                    } else if let Some(f) = fence {
-                        clip = Some((p, Engine::fenced(&bar, f, long)));
-                    }
-                }
-                Held::Several => {
-                    self.fill_prices(|bar, _| bar.open);
-                    self.close_out_at_prices(0.0, Moment::BeforeOpen);
-                }
-            }
+            // 0. the path of the perps carried into the bar is solved before any
+            //    order resolves, because the point the margin runs out at is a point
+            //    on this bar's own path and everything past it belongs to a market the
+            //    account had already left. A clip on the gap closed the account before
+            //    the bar opened, so nothing on a perp fills; any other clip cuts every
+            //    held perp's bar there, so an order that would have filled beyond it
+            //    never triggers (ADR 0017)
+            self.solve_carried();
+            self.start_legs();
 
             // 1. pending market orders fill at the open
-            self.resolve_pending(clip);
+            self.resolve_pending();
 
             // 2. resting limit and stop orders fill against the bar range
-            self.resolve_resting(clip);
+            self.resolve_resting();
 
-            // 3. liquidation at the bar's adverse extreme (long at the low, short
-            //    at the high), with the debits stamped inside the bar counted toward
-            //    it; an account it liquidates pays what it counted and nothing more.
-            //    A perp that printed no bar keeps its mark and closes there
-            match self.held() {
-                Held::None => {}
-                Held::One(p) => {
-                    let bar = self.candles.bar(self.tick, p);
-                    let debits = self.debits_inside();
-                    if !printed(&bar) {
-                        let mark = self.marks[p];
-                        if self.dead_at(p, mark, debits) {
-                            self.pay_debits_inside();
-                            self.close_out(p, mark, Moment::InBar);
-                        }
-                    } else {
-                        let long = self.account.positions[p].qty.get() >= 0.0;
-                        let adverse = if long { bar.low } else { bar.high };
-                        if self.dead_at(p, adverse, debits) {
-                            self.pay_debits_inside();
-                            self.liquidate(p, Moment::InBar);
-                        }
-                    }
-                }
-                Held::Several => {
-                    let debits = self.debits_inside();
-                    self.fill_prices(|bar, qty| if qty >= 0.0 { bar.low } else { bar.high });
-                    self.close_out_at_prices(debits, Moment::InBar);
-                }
-            }
+            // 3. the check: the path solved again for the account the fills left,
+            //    with the debits stamped inside the bar counted toward it
+            self.check();
 
             // 4. the funding the row owns, at its close and after the check, because
             //    a stamp at the bar's end comes after every price the bar printed:
             //    an account the check closed out holds nothing at the stamp and pays
-            //    nothing. emsl charged it before the check, at the clipped close,
-            //    which liquidated accounts on payments not yet made. An account a
-            //    debit takes to its trigger here is closed at the close (ADR 0020)
+            //    nothing. An account a debit takes to its trigger here is closed at
+            //    the closes (ADR 0020)
             self.charge_funding();
-            match self.held() {
-                Held::None => {}
-                Held::One(p) => {
-                    let close = self.close_of(p);
-                    if self.dead_at(p, close, 0.0) {
-                        self.close_out(p, close, Moment::AtClose);
-                    }
-                }
-                Held::Several => {
-                    self.fill_prices(|bar, _| bar.close);
-                    self.close_out_at_prices(0.0, Moment::AtClose);
-                }
-            }
+            self.check_closes();
             // a margin wallet that fees left below zero with no perp held, where no
             // bound stood behind the fill that left it there, is set to zero and the
             // deficit booked as a negative liquidation charge
