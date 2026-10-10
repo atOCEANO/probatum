@@ -33,9 +33,9 @@ use probatum_engine::{
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
-/// stream named from the run's `seed`.
-fn parse_intrabar(intrabar: &str, seed: Option<u64>) -> PyResult<Intrabar> {
-    match (intrabar, seed) {
+/// stream named from the run's `seed`, case-insensitively.
+fn parse_intrabar(intrabar: &str, seed: Option<u128>) -> PyResult<Intrabar> {
+    match (intrabar.to_ascii_lowercase().as_str(), seed) {
         ("pessimistic", _) => Ok(Intrabar::Pessimistic),
         ("optimistic", _) => Ok(Intrabar::Optimistic),
         ("random", Some(seed)) => Ok(Intrabar::Random(seed)),
@@ -663,7 +663,7 @@ fn build_config(
     funding_rate: f64,
     funding_interval: usize,
     intrabar: &str,
-    seed: Option<u64>,
+    seed: Option<u128>,
 ) -> PyResult<EngineConfig> {
     if max_open_orders == 0 || max_open_orders > MAX_OPEN_ORDERS_LIMIT {
         return Err(PyValueError::new_err(format!(
@@ -1226,7 +1226,7 @@ impl Engine {
         tiers: Option<Vec<Vec<f64>>>,
         tiers_by: &str,
         intrabar: &str,
-        seed: Option<u64>,
+        seed: Option<u128>,
     ) -> PyResult<Engine> {
         let config = build_config(
             market,
@@ -1743,7 +1743,7 @@ impl Batch {
         funding_times: Option<PyReadonlyArray1<'_, i64>>,
         funding_rates: Option<PyReadonlyArray1<'_, f64>>,
         intrabar: &str,
-        seed: Option<u64>,
+        seed: Option<u128>,
     ) -> PyResult<Batch> {
         let config = build_config(
             market,
@@ -2433,7 +2433,7 @@ fn universe_engine(
     tiers_by: &str,
     instruments: Option<Vec<Bound<'_, PyDict>>>,
     intrabar: &str,
-    seed: Option<u64>,
+    seed: Option<u128>,
 ) -> PyResult<Engine> {
     let series = candles_from_universe(candles, times)?;
     let width = series.width();

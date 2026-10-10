@@ -304,6 +304,8 @@ def test_a_random_bar_draws_one_way_for_a_seed_and_both_ways_over_seeds():
 
     assert exits      == [exit_at(seed) for seed in range(32)]
     assert set(exits) == {90.0, 110.0}
+    # as wide as the entropy NumPy draws for a SeedSequence given none
+    assert exit_at(2**128 - 1) in (90.0, 110.0)
 
 
 def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():

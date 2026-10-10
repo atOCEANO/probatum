@@ -28,12 +28,18 @@ fn mix(x: u32, y: u32) -> u32 {
 }
 
 /// The `words` that NumPy's `SeedSequence(seed, spawn_key=key)` generates, by its
-/// own algorithm: the seed as little-endian 32-bit words, padded with zeros to the
-/// pool where a key follows, hashed into a pool of four and drawn out of it.
-pub fn seed_state(seed: u64, key: &[u32], words: usize) -> Vec<u32> {
-    let mut entropy = vec![seed as u32];
-    if seed >> 32 != 0 {
-        entropy.push((seed >> 32) as u32);
+/// own algorithm: the seed as little-endian 32-bit words, as many as it needs and
+/// at least one, padded with zeros to the pool where a key follows, hashed into a
+/// pool of four and drawn out of it.
+pub fn seed_state(seed: u128, key: &[u32], words: usize) -> Vec<u32> {
+    let mut entropy = Vec::with_capacity(POOL + key.len());
+    let mut rest = seed;
+    loop {
+        entropy.push(rest as u32);
+        rest >>= 32;
+        if rest == 0 {
+            break;
+        }
     }
     if !key.is_empty() && entropy.len() < POOL {
         entropy.resize(POOL, 0);
@@ -75,7 +81,7 @@ pub fn named(name: &str) -> Vec<u32> {
 
 /// The stream `key` names in a run seeded with `seed`: ChaCha20, keyed by the
 /// eight words the two derive.
-pub fn stream(seed: u64, key: &[u32]) -> ChaCha20Rng {
+pub fn stream(seed: u128, key: &[u32]) -> ChaCha20Rng {
     let mut bytes = [0u8; 32];
     for (chunk, word) in bytes.chunks_exact_mut(4).zip(seed_state(seed, key, 8)) {
         chunk.copy_from_slice(&word.to_le_bytes());
@@ -93,7 +99,9 @@ mod tests {
         let intrabar = named("intrabar");
         let mut third = intrabar.clone();
         third.push(3);
-        let cases: [(u64, Vec<u32>, [u32; 8]); 4] = [
+        let mut fifth = intrabar.clone();
+        fifth.push(5);
+        let cases: [(u128, Vec<u32>, [u32; 8]); 7] = [
             (
                 42,
                 intrabar.clone(),
@@ -148,6 +156,48 @@ mod tests {
                     1_648_004_171,
                     1_614_310_572,
                     3_007_594_413,
+                ],
+            ),
+            (
+                0x0123_4567_89ab_cdef_fedc_ba98_7654_3210,
+                fifth,
+                [
+                    3_091_813_313,
+                    424_042_181,
+                    4_141_472_470,
+                    2_041_048_034,
+                    2_720_235_611,
+                    1_219_033_227,
+                    2_522_109_851,
+                    3_357_033_181,
+                ],
+            ),
+            (
+                (1 << 127) + 3,
+                Vec::new(),
+                [
+                    1_500_925_730,
+                    2_799_241_227,
+                    1_464_605_349,
+                    2_015_901_335,
+                    1_171_665_266,
+                    2_149_327_678,
+                    2_793_893_710,
+                    1_843_789_114,
+                ],
+            ),
+            (
+                1 << 96,
+                named("intrabar"),
+                [
+                    2_611_999_141,
+                    3_258_249_127,
+                    430_883_520,
+                    3_696_726_673,
+                    53_748_046,
+                    1_398_505_672,
+                    752_794_816,
+                    4_219_388_712,
                 ],
             ),
         ];

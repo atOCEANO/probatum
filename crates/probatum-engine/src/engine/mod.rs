@@ -67,7 +67,7 @@ pub enum Intrabar {
     Optimistic,
     /// Each event drawn one way or the other from the stream named `intrabar` in a
     /// run seeded with this, for training, where a fixed way could be learnt.
-    Random(u64),
+    Random(u128),
 }
 
 /// How the bar on hand decides each event its prices cannot order, true where it
