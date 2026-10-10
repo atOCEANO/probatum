@@ -281,8 +281,8 @@ impl Engine {
     /// maintenance the account leaves at its trigger; with none, from the point it
     /// stays at or past the close level, equity at the closing fee on every notional
     /// held, all the way to the trigger. A leg joining the check's path adds to that
-    /// fee, and funding counted from the open lowers the wallet, so the level can
-    /// step down where one piece meets the next.
+    /// fee, and funding counted from the open moves the wallet, so the level can
+    /// step where one piece meets the next.
     pub(super) fn solve(
         &self,
         path: &Path,

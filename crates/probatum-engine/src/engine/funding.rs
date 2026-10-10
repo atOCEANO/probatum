@@ -138,8 +138,8 @@ impl Engine {
     }
 
     /// Charge the events this row owns at the closes, on the positions still held,
-    /// so an account the check liquidated holds nothing at the stamp and pays
-    /// nothing.
+    /// so an account the check liquidated, having paid what it counted, pays nothing
+    /// more.
     pub(super) fn charge_funding(&mut self) {
         if self.owns_every_bars() {
             self.clear_through = false;

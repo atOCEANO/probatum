@@ -1354,8 +1354,8 @@ class Simulator:
 
         # with no maintenance the account leaves where it stays at or past the close
         # level all the way to the trigger; a leg joining the check's path adds to
-        # the closing fee and funding counted from the open lowers the wallet, so the
-        # level can step down where one piece meets the next
+        # the closing fee and funding counted from the open moves the wallet, so the
+        # level can step where one piece meets the next
         k, s = trigger
         while True:
             if h(k, 0.0) > 0.0:

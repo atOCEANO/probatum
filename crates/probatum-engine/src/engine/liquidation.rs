@@ -103,9 +103,10 @@ impl Engine {
 
     /// The rule, 5: the path solved again against the raw bars for the account the
     /// fills left, every carried leg from its open and every leg opened during the
-    /// bar from its fill price, with the debits stamped inside the bar counted toward
-    /// it. On the trigger the account is taken over at the clip point recomputed for
-    /// it, a leg yet to join at its fill price, and the debits it counted are paid.
+    /// bar from its fill price, with the funding stamped inside the bar counted as the
+    /// setting decides. On the trigger the account is taken over at the clip point
+    /// recomputed for it, a leg yet to join at its fill price, and the charges it
+    /// counted are paid.
     pub(super) fn check(&mut self) {
         // asked here as well as in the decision, so a bar with no perp held costs
         // this test and nothing of the decision's frame

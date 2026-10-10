@@ -504,7 +504,8 @@ impl Engine {
             //    account had already left. A clip on the gap closed the account before
             //    the bar opened, so nothing on a perp fills; any other clip cuts every
             //    held perp's bar there, so an order that would have filled beyond it
-            //    never triggers (ADR 0017)
+            //    never triggers. The funding stamped inside the bar counts on the bar
+            //    from the open, as the check counts it (ADR 0017)
             self.solve_carried();
             self.notes.clear();
             self.flipped = false;
@@ -531,14 +532,14 @@ impl Engine {
             self.resolve_resting();
 
             // 3. the check: the path solved again for the account the fills left,
-            //    with the debits stamped inside the bar counted toward it
+            //    with the funding stamped inside the bar counted as the setting decides
             self.check();
 
             // 4. the funding the row owns, at its close and after the check, because
             //    a stamp at the bar's end comes after every price the bar printed:
-            //    an account the check closed out holds nothing at the stamp and pays
-            //    nothing. An account a debit takes to its trigger here is closed at
-            //    the closes (ADR 0020)
+            //    an account the check closed out, having paid what it counted, holds
+            //    nothing at the stamp and pays nothing more. An account a debit takes
+            //    to its trigger here is closed at the closes (ADR 0020)
             self.charge_funding();
             self.check_closes();
             // a margin wallet that fees left below zero with no perp held, where no

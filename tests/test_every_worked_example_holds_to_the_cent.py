@@ -560,6 +560,17 @@ def test_a_debit_inside_the_bar_counts_toward_its_check_only_when_pessimistic(
         assert row["equity"] == pytest.approx(489.75)
 
 
+def test_a_debit_inside_the_bar_clips_it_above_a_stop_at_40_215_which_never_fills():
+    stop = dict(instrument=0, size=0.5, stop=40_215.0, reduce_only=True)
+    sim  = half_a_bitcoin([Bar(60_000.0, 60_000.0, 40_210.0, 41_000.0, 1_000.0)],
+                          script={1: [("sell", stop)]}, tiers=MAINTAINED,
+                          times=[5 * HOUR, 6 * HOUR, 7 * HOUR],
+                          events=[(7 * HOUR + 30 * 60 * 10**9, 0, 0.0005)], funding="data")
+
+    assert [fill["reason"] for fill in sim.fills] == ["limit", "liquidation"]
+    assert sim.fills[-1]["price"] == pytest.approx(40_221.61, abs=0.005)
+
+
 def test_a_debit_over_a_weekend_moves_the_trigger_onto_mondays_gap():
     # 7 January 1970 was a Wednesday, so the rows run Wednesday to Friday and Monday
     sim = half_a_bitcoin([Bar(60_000.0, 60_000.0, 41_000.0, 41_000.0, 1_000.0),
