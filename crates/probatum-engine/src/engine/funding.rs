@@ -71,12 +71,19 @@ impl Engine {
         }
     }
 
-    /// Whether the bar counts a funding `charge` stamped inside it toward its check.
-    /// A bar cannot show whether such an event came before its worst price: the
-    /// pessimistic way counts a debit and not a credit, the optimistic way a credit
-    /// and not a debit.
-    fn counts(&self, charge: f64) -> bool {
-        if self.unseen.worse {
+    /// Whether the bar counts a funding `charge` of the `event`th event the row owns,
+    /// stamped inside it, toward its check. A bar cannot show whether such an event
+    /// came before its worst price: the pessimistic way counts a debit and not a
+    /// credit, the optimistic way a credit and not a debit, and a random setting
+    /// draws the way of each event.
+    fn counts(&self, event: usize, charge: f64) -> bool {
+        let worse = self
+            .unseen
+            .funding
+            .get(event)
+            .copied()
+            .unwrap_or(self.unseen.worse);
+        if worse {
             charge > 0.0
         } else {
             charge < 0.0
@@ -91,13 +98,13 @@ impl Engine {
             return 0.0;
         };
         let mut counted = 0.0;
-        for &(rate, inside, instrument) in schedule.owned(self.tick) {
+        for (event, &(rate, inside, instrument)) in schedule.owned(self.tick).iter().enumerate() {
             for i in 0..self.marks.len() {
                 if !inside || !self.charges(instrument, i) {
                     continue;
                 }
                 let charge = self.account.positions[i].qty.get() * self.close_of(i) * rate;
-                if self.counts(charge) {
+                if self.counts(event, charge) {
                     counted += charge;
                 }
             }
@@ -110,14 +117,15 @@ impl Engine {
     /// did not count is not.
     pub(super) fn pay_counted_inside(&mut self) {
         if let Some(schedule) = self.candles.funding() {
-            for &(rate, inside, instrument) in schedule.owned(self.tick) {
+            for (event, &(rate, inside, instrument)) in schedule.owned(self.tick).iter().enumerate()
+            {
                 for i in 0..self.marks.len() {
                     if !inside || !self.charges(instrument, i) {
                         continue;
                     }
                     let close = self.close_of(i);
                     let charge = self.account.positions[i].qty.get() * close * rate;
-                    if self.counts(charge) {
+                    if self.counts(event, charge) {
                         let paid = self.account.apply_funding(i, rate, Price(close));
                         pay(&mut self.funding_paid, &mut self.reporter, i, paid);
                     }

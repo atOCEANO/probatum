@@ -162,7 +162,8 @@ eng = Engine(
     funding_rates=None,      # and the (K,) rate of each stamp
     tiers=None,              # or the venue's tiers: rows of (up_to, leverage, rate, amount)
     tiers_by="notional",     # what the tiers' bounds measure: "notional" or "quantity"
-    intrabar="pessimistic",  # how what a bar cannot show is decided, or "optimistic"
+    intrabar="pessimistic",  # how what a bar cannot show is decided, "optimistic" or "random"
+    seed=None,               # the run's seed, which "random" draws from
 )
 ```
 
@@ -201,7 +202,7 @@ eng = Engine(
 
 `order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` rejects a limit that would cross rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` unless you ask for `FOK`, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers ([ADR 0010](Decisions.md)). `FOK` is all or nothing against every clamp, not only the bar's liquidity, so a `FOK` the spot cash balance or the margin cap could only fill in part books nothing ([ADR 0010](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`, and a non-finite price or trigger is a `ValueError` too ([ADR 0007](Decisions.md)).
 
-**A bar that reaches both a stop and a target books the stop.** The engine cannot see the path inside a bar, so it cannot know which the price touched first, and it used to answer with book-slot order: place the stop before the target and every ambiguous bar booked a loss, swap the two lines and every one booked a win. Exits from one position are now applied worst first, so the result is a rule rather than a property of how the strategy was typed ([ADR 0012](Decisions.md)). Pessimism is the right direction because an optimistic guess about an unobservable ordering flatters a backtest. A bar that reaches only one leg is unaffected. With `intrabar="optimistic"` the better exit fills first instead, and the setting decides every other event a bar cannot order the same way, so a run under each brackets what the bars could have held ([Specification](Specification.md#what-a-bar-cannot-show)).
+**A bar that reaches both a stop and a target books the stop.** The engine cannot see the path inside a bar, so it cannot know which the price touched first, and it used to answer with book-slot order: place the stop before the target and every ambiguous bar booked a loss, swap the two lines and every one booked a win. Exits from one position are now applied worst first, so the result is a rule rather than a property of how the strategy was typed ([ADR 0012](Decisions.md)). Pessimism is the right direction because an optimistic guess about an unobservable ordering flatters a backtest. A bar that reaches only one leg is unaffected. With `intrabar="optimistic"` the better exit fills first instead, and the setting decides every other event a bar cannot order the same way, so a run under each brackets what the bars could have held ([Specification](Specification.md#what-a-bar-cannot-show)). `intrabar="random"` draws each event one way or the other from a stream named from `seed`, which it needs, so a seed draws the same way on every machine; it is for training, where an agent would otherwise learn the fixed tie-break and dodge it.
 
 Three things about resting orders that are easy to get wrong. Nothing links them into an OCO group, so **re-placing a trailing stop with `stop()` each bar rests a new order every time**; the one that fills leaves its siblings live, and on a perp those open a position on the other side. Use `replace`, which cannot leave two alive and quietly does nothing once the order has filled ([ADR 0010](Decisions.md)). Pass `reduce_only=True` as well, so even a leaked stop can only shrink the position ([ADR 0010](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the volume cap can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
 
@@ -319,6 +320,8 @@ states = b.step_all(actions)                 # positive buys, negative sells, ze
 Because the envs are independent, batched stepping is bit-identical to stepping each in a loop. The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`probatum.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
 
 Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
+
+Under `intrabar="random"` each env draws from its own stream, named from `seed` and the env's index, so each env decides the bars' hidden events apart from the others.
 
 <br>
 

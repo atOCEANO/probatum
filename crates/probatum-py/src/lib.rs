@@ -32,13 +32,19 @@ use probatum_engine::{
     OrderRef, RoundTrip, Script, Stats,
 };
 
-/// How a venue decides the events a bar's prices cannot order.
-fn parse_intrabar(intrabar: &str) -> PyResult<Intrabar> {
-    match intrabar {
-        "pessimistic" => Ok(Intrabar::Pessimistic),
-        "optimistic" => Ok(Intrabar::Optimistic),
-        other => Err(PyValueError::new_err(format!(
-            "intrabar: {other:?} is not a setting; use pessimistic or optimistic"
+/// How a venue decides the events a bar's prices cannot order, `"random"` from a
+/// stream named from the run's `seed`.
+fn parse_intrabar(intrabar: &str, seed: Option<u64>) -> PyResult<Intrabar> {
+    match (intrabar, seed) {
+        ("pessimistic", _) => Ok(Intrabar::Pessimistic),
+        ("optimistic", _) => Ok(Intrabar::Optimistic),
+        ("random", Some(seed)) => Ok(Intrabar::Random(seed)),
+        ("random", None) => Err(PyValueError::new_err(
+            "seed: none, and intrabar=\"random\" draws from a stream named from it; \
+             pass seed=",
+        )),
+        (other, _) => Err(PyValueError::new_err(format!(
+            "intrabar: {other:?} is not a setting; use pessimistic, optimistic or random"
         ))),
     }
 }
@@ -657,6 +663,7 @@ fn build_config(
     funding_rate: f64,
     funding_interval: usize,
     intrabar: &str,
+    seed: Option<u64>,
 ) -> PyResult<EngineConfig> {
     if max_open_orders == 0 || max_open_orders > MAX_OPEN_ORDERS_LIMIT {
         return Err(PyValueError::new_err(format!(
@@ -702,7 +709,7 @@ fn build_config(
         impact: at_least("impact", impact, 0.0)?,
         funding_rate: finite("funding_rate", funding_rate)?,
         funding_interval,
-        intrabar: parse_intrabar(intrabar)?,
+        intrabar: parse_intrabar(intrabar, seed)?,
     })
 }
 
@@ -1195,6 +1202,7 @@ impl Engine {
         tiers = None,
         tiers_by = "notional",
         intrabar = "pessimistic",
+        seed = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1218,6 +1226,7 @@ impl Engine {
         tiers: Option<Vec<Vec<f64>>>,
         tiers_by: &str,
         intrabar: &str,
+        seed: Option<u64>,
     ) -> PyResult<Engine> {
         let config = build_config(
             market,
@@ -1233,6 +1242,7 @@ impl Engine {
             funding_rate,
             funding_interval,
             intrabar,
+            seed,
         )?;
         let series = place_funding(
             candles_from_array(candles, times)?,
@@ -1706,6 +1716,7 @@ impl Batch {
         funding_times = None,
         funding_rates = None,
         intrabar = "pessimistic",
+        seed = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1732,6 +1743,7 @@ impl Batch {
         funding_times: Option<PyReadonlyArray1<'_, i64>>,
         funding_rates: Option<PyReadonlyArray1<'_, f64>>,
         intrabar: &str,
+        seed: Option<u64>,
     ) -> PyResult<Batch> {
         let config = build_config(
             market,
@@ -1747,6 +1759,7 @@ impl Batch {
             funding_rate,
             funding_interval,
             intrabar,
+            seed,
         )?;
         let series = place_funding(
             candles_from_array(candles, times)?,
@@ -2394,6 +2407,7 @@ fn read_script<'py>(
     tiers_by = "notional",
     instruments = None,
     intrabar = "pessimistic",
+    seed = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn universe_engine(
@@ -2419,6 +2433,7 @@ fn universe_engine(
     tiers_by: &str,
     instruments: Option<Vec<Bound<'_, PyDict>>>,
     intrabar: &str,
+    seed: Option<u64>,
 ) -> PyResult<Engine> {
     let series = candles_from_universe(candles, times)?;
     let width = series.width();
@@ -2499,6 +2514,7 @@ fn universe_engine(
         funding_rate,
         funding_interval,
         intrabar,
+        seed,
     )?;
     let series = place_funding(
         series.with_instruments(specs),

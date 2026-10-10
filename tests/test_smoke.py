@@ -264,11 +264,46 @@ def test_a_tier_table_the_loader_cannot_trust_is_refused(tiers, tiers_by, says):
 
 
 def test_an_intrabar_setting_it_does_not_know_is_refused():
-    says = 'intrabar: "neutral" is not a setting; use pessimistic or optimistic'
+    says = 'intrabar: "neutral" is not a setting; use pessimistic, optimistic or random'
 
     for build in (probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
         with pytest.raises(ValueError, match=re.escape(says)):
             build(series(), intrabar="neutral")
+
+
+def test_a_random_setting_without_a_seed_is_refused():
+    says = 'seed: none, and intrabar="random" draws from a stream named from it; pass seed='
+    for build in (probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
+        with pytest.raises(ValueError, match=re.escape(says)):
+            build(series(), intrabar="random")
+
+    with pytest.raises(ValueError, match=re.escape(says)):
+        probatum._probatum.run(series()[:, None, :], {"intrabar": "random"}, {})
+
+
+def test_a_random_bar_draws_one_way_for_a_seed_and_both_ways_over_seeds():
+    # a long of 1 from 100 meets a bar reaching both its stop at 90 and its target
+    # at 110, and each seed's stream books one of the two, the same one every run
+    candles = np.array([
+        [100.0, 100.0 + reach, 100.0 - reach, 100.0, 1000.0]
+        for reach in (1.0, 1.0, 20.0, 1.0)
+    ])
+    script = {
+        0: [("buy", {"size": 1.0})],
+        1: [
+            ("sell", {"size": 1.0, "stop": 90.0, "reduce_only": True}),
+            ("sell", {"size": 1.0, "limit": 110.0, "reduce_only": True}),
+        ],
+    }
+
+    def exit_at(seed):
+        venue = dict(fee_taker=0.0, fee_maker=0.0, intrabar="random", seed=seed)
+        return probatum._probatum.run(candles, venue, script)["trades"][0]["exit"]
+
+    exits = [exit_at(seed) for seed in range(32)]
+
+    assert exits      == [exit_at(seed) for seed in range(32)]
+    assert set(exits) == {90.0, 110.0}
 
 
 def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():

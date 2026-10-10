@@ -608,6 +608,7 @@ dependencies = [
  "libm",
  "probatum-core",
  "proptest",
+ "rand_chacha",
  "rayon",
 ]
 

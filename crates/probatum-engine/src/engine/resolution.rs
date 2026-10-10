@@ -714,6 +714,11 @@ mod tests {
     /// Where a long of 1 from 100 exits on one wide bar that reaches a stop at 90 and
     /// a target at 110, typed in the order `stop_first` says.
     fn both_reached(stop_first: bool, intrabar: Intrabar) -> f64 {
+        both_reached_in(stop_first, intrabar, None)
+    }
+
+    /// `both_reached` in env `env` of a batch, or alone with none.
+    fn both_reached_in(stop_first: bool, intrabar: Intrabar, env: Option<usize>) -> f64 {
         let candles = Candles::new(vec![
             ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
             ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
@@ -725,6 +730,9 @@ mod tests {
             ..report_cfg() // spot, so a sell clamps
         };
         let mut e = Engine::new(candles, config);
+        if let Some(env) = env {
+            e = e.for_env(env);
+        }
         e.reset();
         e.market_buy(1.0);
         e.step();
@@ -761,6 +769,26 @@ mod tests {
         for stop_first in [true, false] {
             let exit = both_reached(stop_first, Intrabar::Optimistic);
             assert_eq!(exit, 110.0, "stop_first={stop_first}");
+        }
+    }
+
+    #[test]
+    fn a_random_bar_books_the_stop_or_the_target_as_its_stream_draws() {
+        // each seed draws the bar's way, the same way each time it runs, and both
+        // ways come up over a few seeds, and over the envs of one seed
+        let alone: Vec<f64> = (0..32)
+            .map(|seed| both_reached(true, Intrabar::Random(seed)))
+            .collect();
+        let again: Vec<f64> = (0..32)
+            .map(|seed| both_reached(true, Intrabar::Random(seed)))
+            .collect();
+        assert_eq!(alone, again);
+        let envs: Vec<f64> = (0..32)
+            .map(|env| both_reached_in(true, Intrabar::Random(7), Some(env)))
+            .collect();
+        for exits in [alone, envs] {
+            assert!(exits.iter().all(|&exit| exit == 90.0 || exit == 110.0));
+            assert!(exits.contains(&90.0) && exits.contains(&110.0), "{exits:?}");
         }
     }
 

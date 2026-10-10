@@ -13,6 +13,7 @@ pub mod schedule;
 pub mod script;
 pub mod stats;
 pub mod strategy;
+pub mod streams;
 pub mod sweep;
 
 pub use batch::{BatchSnapshot, EnvBatch};

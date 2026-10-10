@@ -10,6 +10,7 @@ repository.workspace = true
 probatum-core = { path = "../probatum-core" }
 rayon = { workspace = true }
 libm = { workspace = true }
+rand_chacha = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

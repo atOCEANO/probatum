@@ -43,12 +43,15 @@ use path::{CheckLeg, FillNote, HeldLeg, Path};
 use probatum_core::{
     Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
 };
+use rand_chacha::rand_core::RngCore;
+use rand_chacha::ChaCha20Rng;
 
 use crate::candles::{printed, Candles};
 use crate::clock::Clock;
 use crate::execution::FillModel;
 use crate::reporter::{BarCosts, LedgerRow, Leg, Reporter, RoundTrip};
 use crate::stats::Stats;
+use crate::streams;
 
 /// A position moved toward zero by less than this counts as no close, mirroring
 /// the position's own dust epsilon so a non-representable fractional close does
@@ -62,6 +65,9 @@ pub enum Intrabar {
     Pessimistic,
     /// The better way, every time.
     Optimistic,
+    /// Each event drawn one way or the other from the stream named `intrabar` in a
+    /// run seeded with this, for training, where a fixed way could be learnt.
+    Random(u64),
 }
 
 /// How the bar on hand decides each event its prices cannot order, true where it
@@ -76,6 +82,25 @@ struct Unseen {
     hold: bool,
     /// Each instrument's exits fill worst first.
     exits: Vec<bool>,
+    /// Each funding event the row owns counts its debits and not its credits, drawn
+    /// by a random setting and empty under a fixed one.
+    funding: Vec<bool>,
+}
+
+impl Unseen {
+    /// Draw this bar's way for each event from `stream`, in a fixed order: the
+    /// perps together, the exits held back, each instrument's exits, and each of
+    /// the `events` funding events the row owns.
+    fn draw(&mut self, stream: &mut ChaCha20Rng, events: usize) {
+        let mut worse = || stream.next_u32() >> 31 == 1;
+        self.together = worse();
+        self.hold = worse();
+        for exits in &mut self.exits {
+            *exits = worse();
+        }
+        self.funding.clear();
+        self.funding.extend((0..events).map(|_| worse()));
+    }
 }
 
 /// Construction parameters for an engine.
@@ -194,6 +219,9 @@ pub struct Engine {
     /// NaN while it is flat.
     starts: Vec<f64>,
     unseen: Unseen,
+    /// The stream a random setting draws each bar's way from, which runs on across
+    /// resets, so each episode of one engine draws afresh.
+    stream: Option<ChaCha20Rng>,
     // the path's buffers, refilled on every bar so a step allocates nothing
     path: Path,
     checked: Vec<CheckLeg>,
@@ -252,13 +280,18 @@ impl Engine {
             maintains,
             starts: vec![f64::NAN; width],
             unseen: {
-                let worse = config.intrabar == Intrabar::Pessimistic;
+                let worse = config.intrabar != Intrabar::Optimistic;
                 Unseen {
                     worse,
                     together: worse,
                     hold: worse,
                     exits: vec![worse; width],
+                    funding: Vec::new(),
                 }
+            },
+            stream: match config.intrabar {
+                Intrabar::Random(seed) => Some(streams::stream(seed, &streams::named("intrabar"))),
+                _ => None,
             },
             path: Path::default(),
             checked: Vec::new(),
@@ -273,6 +306,18 @@ impl Engine {
             engine.record_ledger();
         }
         engine
+    }
+
+    /// The engine of env `env` of a batch, its random stream named apart from every
+    /// other env's, `intrabar` and the env's index, so the envs of one seed draw
+    /// apart.
+    pub fn for_env(mut self, env: usize) -> Engine {
+        if let Intrabar::Random(seed) = self.config.intrabar {
+            let mut key = streams::named("intrabar");
+            key.push(env as u32);
+            self.stream = Some(streams::stream(seed, &key));
+        }
+        self
     }
 
     /// Each wallet's opening cash: `quote` in the one the config's market settles
@@ -432,6 +477,16 @@ impl Engine {
         let advanced = self.tick + 1 < self.candles.len();
         if advanced {
             self.tick += 1;
+
+            // a random setting draws the bar's way with each event before any of
+            // them arises
+            if let Some(stream) = self.stream.as_mut() {
+                let events = self
+                    .candles
+                    .funding()
+                    .map_or(0, |s| s.owned(self.tick).len());
+                self.unseen.draw(stream, events);
+            }
 
             // transfers decided at the last close land first, before funding and
             // before any fill, so cash moved into the margin wallet backs the orders

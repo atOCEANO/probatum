@@ -22,7 +22,7 @@ impl EnvBatch {
     /// config.
     pub fn new(num_envs: usize, candles: Candles, config: EngineConfig) -> EnvBatch {
         let engines = (0..num_envs)
-            .map(|_| Engine::new(candles.clone(), config))
+            .map(|env| Engine::new(candles.clone(), config).for_env(env))
             .collect();
         EnvBatch { engines }
     }
@@ -33,7 +33,8 @@ impl EnvBatch {
     pub fn with_configs(candles: Candles, configs: &[EngineConfig]) -> EnvBatch {
         let engines = configs
             .iter()
-            .map(|config| Engine::new(candles.clone(), *config))
+            .enumerate()
+            .map(|(env, config)| Engine::new(candles.clone(), *config).for_env(env))
             .collect();
         EnvBatch { engines }
     }
@@ -212,7 +213,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::clock::Clock;
     use crate::engine::{Engine, EngineConfig, Intrabar};
-    use probatum_core::{Candle, Market, State};
+    use probatum_core::{Candle, Market, Side, State};
     use proptest::prelude::*;
 
     fn series() -> Candles {
@@ -444,6 +445,56 @@ mod tests {
         // both buy 1 at bar 1 open 200; env0 pays no taker fee, env1 pays 1%
         assert_eq!(states[0].quote, 9_800.0); // 10000 - 200
         assert_eq!(states[1].quote, 9_798.0); // 10000 - 200 - 0.01 * 200
+    }
+
+    #[test]
+    fn a_random_batch_draws_each_env_from_its_own_stream() {
+        // env k is the engine keyed for k, so the batch draws as a loop over those
+        // engines does, and its envs book the stop or the target apart
+        let candles = Candles::new(
+            [1.0, 1.0, 20.0, 1.0]
+                .map(|reach| Candle {
+                    open: 100.0,
+                    high: 100.0 + reach,
+                    low: 100.0 - reach,
+                    close: 100.0,
+                    volume: 1000.0,
+                })
+                .to_vec(),
+        );
+        let config = EngineConfig {
+            intrabar: Intrabar::Random(7),
+            ..cfg()
+        };
+        let bracket = |e: &mut Engine| {
+            e.stop(Side::Sell, 1.0, 90.0, true);
+            e.limit_sell(1.0, 110.0);
+        };
+        let mut batch = EnvBatch::new(32, candles.clone(), config);
+        batch.reset_all();
+        for e in batch.engines_mut() {
+            e.market_buy(1.0);
+        }
+        batch.step_all();
+        batch.engines_mut().iter_mut().for_each(bracket);
+        let batched = batch.step_all();
+        let looped: Vec<State> = (0..32)
+            .map(|env| {
+                let mut e = Engine::new(candles.clone(), config).for_env(env);
+                e.reset();
+                e.market_buy(1.0);
+                e.step();
+                bracket(&mut e);
+                e.step()
+            })
+            .collect();
+        assert_eq!(batched, looped);
+        let quotes: Vec<f64> = batched.iter().map(|s| s.quote).collect();
+        assert!(quotes.iter().all(|&q| q == 9_990.0 || q == 10_010.0));
+        assert!(
+            quotes.contains(&9_990.0) && quotes.contains(&10_010.0),
+            "{quotes:?}"
+        );
     }
 
     fn long_series() -> Candles {
