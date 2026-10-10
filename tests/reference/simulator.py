@@ -2054,8 +2054,9 @@ class Simulator:
         if growing <= DUST:
             return size
 
-        # the other legs sit where the fill sits on the path of the side it grows
-        s      = self.fraction(i, side == "buy", price, self.t)
+        # the other legs sit where the fill sits on the path of the position it
+        # flips or adds to, or from flat of the side it opens
+        s      = self.fraction(i, q > 0.0 if q != 0.0 else side == "buy", price, self.t)
         prices = self.others_at(s, self.t, skip=i)
         if prices and s > 0.0:
             self.hit("the cap with the other legs at the fill's fraction")

@@ -366,7 +366,7 @@ Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the 
 
 - Summed over the perpetuals, each position's notional over the maximum leverage of the tier its size falls in may not exceed margin equity: `sum_i N_i / L_k(i) <= E`, with equity measured before the fill's own fee. A leverage of 0.0 removes the cap for that instrument, and a fill past the last tier's bound is clamped there.
 - A growing fill is clamped to what the cap allows, and the clamp is an order-log event with the size allowed and the size asked.
-- When one fill is checked, every other leg is marked at the same fraction of its own bar's move as the fill sits at on its own path ([The path](#the-path)), or at its favourable extreme under `intrabar="optimistic"`.
+- When one fill is checked, every other leg is marked at the same fraction of its own bar's move as the fill sits at on its own path ([The path](#the-path)), or at its favourable extreme under `intrabar="optimistic"`. The fill's path is that of the position it reduces, flips or adds to, so a flip sits where its old side leaves, and from flat that of the side it opens.
 - While the account is over the cap because equity fell, no fill may raise the summed requirement, and a flip must fit the cap outright. A position over the cap is never force-reduced. With margin equity at or below zero, only reducing fills pass.
 
 **Worked example at one instrument.** A margin wallet of 10,000 USDT at 20x holds at most 200,000 of BTCUSDT notional, so a market buy of 5 BTC at an open of 60,000 fills 3.33333, and the order log records the clamp.

@@ -15,10 +15,11 @@ impl Engine {
     /// cap: summed over the perps, each notional over its leverage may not exceed
     /// the margin wallet's equity, the fill's own instrument at the fill's price and
     /// every other at the same fraction of its own bar's adverse move as the fill
-    /// sits at on the path of the side it grows. Reductions are never capped, and a
-    /// position already over the cap (from an equity drop) is not force-reduced,
-    /// only blocked from growing. With no cap set only an insolvent account is held,
-    /// to reductions. No-op on spot.
+    /// sits at on the path of the position it reduces, flips or adds to, or from
+    /// flat of the side it opens. Reductions are never capped, and a position
+    /// already over the cap (from an equity drop) is not force-reduced, only blocked
+    /// from growing. With no cap set only an insolvent account is held, to
+    /// reductions. No-op on spot.
     fn cap_leverage(&self, i: usize, fill: &mut Fill) {
         if self.account.markets[i] != Market::Perp {
             return;
@@ -27,10 +28,17 @@ impl Engine {
         if !mark.is_finite() || mark <= 0.0 {
             return;
         }
+        let pos = self.account.positions[i].qty.get();
         let own = usize::from(!self.account.positions[i].is_flat());
         let beside = self.account.perps_held() > own;
+        // a flip sits where the old side leaves, as the path places it
+        let long = if pos == 0.0 {
+            fill.side == Side::Buy
+        } else {
+            pos > 0.0
+        };
         let s = if beside {
-            self.fraction(i, fill.side == Side::Buy, mark)
+            self.fraction(i, long, mark)
         } else {
             0.0
         };
@@ -55,7 +63,6 @@ impl Engine {
             };
             self.max_size(i, mark, (equity - others).max(0.0))
         };
-        let pos = self.account.positions[i].qty.get();
         let new_pos = pos + fill.side.sign() * fill.size.get();
         // A same-side grow may keep an existing over-cap position (from an equity
         // drop) but not extend it, so the allowance is the larger of the cap and
@@ -337,7 +344,7 @@ impl Engine {
 mod tests {
     use crate::candles::{Candles, Instrument};
     use crate::engine::fixtures::{
-        cfg, crash_series, flat_series, ohlc, perp_cfg, report_cfg, series,
+        cfg, crash_series, flat_series, ohlc, perp_cfg, report_cfg, series, universe,
     };
     use crate::engine::{Engine, EngineConfig, CLOSE_EPS};
     use crate::reporter::{EventKind, FillReason};
@@ -1019,5 +1026,59 @@ mod tests {
             sell_eth(e, OrderType::Limit, Some(3_300.0), TimeInForce::Gtc)
         });
         assert!((held + 13_000.0 / 3_300.0).abs() < 1e-9, "sold {held}");
+    }
+
+    #[test]
+    fn the_cap_reads_a_flip_where_its_old_side_leaves() {
+        // 1,000 of margin at 10x behind a long of 10 A from 100 and 100 B from 50. A
+        // sell stop for 30 at 94 flips A at 0.6 of the long's fall to 90, where B
+        // stands at 47: equity is 640 and B uses 470, so the short has room for 1,700
+        // of notional, 18.09 A. On the short's own path the stop sits at 0, B at 50,
+        // and all 20 would have fit
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(50.0)],
+            vec![flat(100.0), flat(50.0)],
+            vec![
+                ohlc(100.0, 105.0, 90.0, 100.0, 1e6),
+                ohlc(50.0, 50.0, 45.0, 50.0, 1e6),
+            ],
+        ];
+        let config = EngineConfig {
+            quote: 1_000.0,
+            max_leverage: 10.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        let (ioc, gtc) = (TimeInForce::Ioc, TimeInForce::Gtc);
+        e.reset();
+        e.market_buy(10.0);
+        e.order_on(
+            1,
+            Side::Buy,
+            100.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        e.order_on(
+            0,
+            Side::Sell,
+            30.0,
+            OrderType::Stop,
+            None,
+            Some(94.0),
+            false,
+            false,
+            gtc,
+        );
+        e.step();
+        let held = e.reporter().expect("reporting is on").legs()[4].position;
+        assert!((held + 1_700.0 / 94.0).abs() < 1e-9, "A holds {held}");
     }
 }
