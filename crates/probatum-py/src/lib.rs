@@ -522,6 +522,10 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
                 "tiers[{row}]: a maintenance rate of {rate} reaches the initial rate of \
                  {initial}, one over the leverage; keep it below"
             ),
+            TierError::Amount { row: 0, amount, .. } => format!(
+                "tiers[0]: an amount of {amount} in the first tier, which has no bound below \
+                 it to meet; give 0"
+            ),
             TierError::Amount {
                 row,
                 amount,
@@ -541,6 +545,10 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
             } => format!(
                 "tiers[{row}]: leverage {leverage} is above the tier before it, {below}, \
                  0.0 standing for no cap; let the leverage fall as the bounds rise"
+            ),
+            TierError::Falling { row, rate, below } => format!(
+                "tiers[{row}]: a maintenance rate of {rate} is below the tier before it, \
+                 {below}; let the rate rise with the bounds"
             ),
         })
     })

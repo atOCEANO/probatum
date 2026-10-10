@@ -122,9 +122,10 @@ class Instrument:
 
     def check_tiers(self):
         """Margin, Maintenance: the loader refuses a notional table whose amounts break
-        continuity, any rate not below one, a maintenance rate that reaches the tier's
-        initial rate, and a table whose bounds do not rise or whose leverage rises
-        from one tier to the next, a leverage of 0.0 standing for no cap."""
+        continuity or whose first amount is not zero, any rate not below one, a
+        maintenance rate that reaches the tier's initial rate, and a table whose bounds
+        do not rise, whose leverage rises or whose maintenance rate falls from one tier
+        to the next, a leverage of 0.0 standing for no cap."""
         def cap(leverage):
             return leverage if leverage > 0.0 else math.inf
 
@@ -136,14 +137,18 @@ class Instrument:
             if previous is not None and cap(tier.leverage) > cap(previous.leverage):
                 raise ValueError(f"tiers: a leverage of {tier.leverage} above the "
                                  f"{previous.leverage} before it")
-
+            if previous is not None and tier.rate < previous.rate:
+                raise ValueError(f"tiers: a maintenance rate of {tier.rate} below the "
+                                 f"{previous.rate} before it")
             if tier.rate >= 1.0:
                 raise ValueError(f"tiers: a rate of {tier.rate} is not below one")
             if tier.leverage > 0.0 and tier.rate >= 1.0 / tier.leverage:
                 raise ValueError(f"tiers: a maintenance rate of {tier.rate} reaches "
                                  f"the initial rate of {1.0 / tier.leverage}")
-            if self.tiers_by == "notional" and previous is not None:
-                wanted = previous.amount + (tier.rate - previous.rate) * previous.up_to
+
+            if self.tiers_by == "notional":
+                wanted = 0.0 if previous is None else (
+                    previous.amount + (tier.rate - previous.rate) * previous.up_to)
                 if abs(tier.amount - wanted) > 1e-9 * max(1.0, abs(wanted)):
                     raise ValueError(f"tiers: an amount of {tier.amount} where "
                                      f"continuity needs {wanted}")

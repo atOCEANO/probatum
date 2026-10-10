@@ -44,6 +44,8 @@ pub enum TierError {
         leverage: f64,
         below: f64,
     },
+    /// A maintenance rate below the one before it.
+    Falling { row: usize, rate: f64, below: f64 },
 }
 
 /// A tier table, checked as the Specification's loader checks it. An empty table
@@ -57,9 +59,10 @@ pub struct Tiers {
 impl Tiers {
     /// The table of `rows` on `basis`, refused when a maintenance rate is not below
     /// one or reaches its tier's initial rate, when a notional table's amounts break
-    /// continuity, `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`, and when the
-    /// bounds do not rise or the leverage rises with them, since the cap's
-    /// requirement has to grow with the position.
+    /// continuity, `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)` from a first amount
+    /// of zero, and when the bounds do not rise, the leverage rises or the
+    /// maintenance rate falls with them, since both requirements have to grow with
+    /// the position.
     pub fn new(basis: TierBasis, rows: Vec<Tier>) -> Result<Tiers, TierError> {
         let cap = |leverage: f64| {
             if leverage > 0.0 {
@@ -86,6 +89,13 @@ impl Tiers {
                         below: previous.leverage,
                     });
                 }
+                if tier.rate < previous.rate {
+                    return Err(TierError::Falling {
+                        row,
+                        rate: tier.rate,
+                        below: previous.rate,
+                    });
+                }
             }
             if tier.rate >= 1.0 {
                 return Err(TierError::Rate {
@@ -100,8 +110,10 @@ impl Tiers {
                     initial: 1.0 / tier.leverage,
                 });
             }
-            if let (TierBasis::Notional, Some(previous)) = (basis, previous) {
-                let wanted = previous.amount + (tier.rate - previous.rate) * previous.up_to;
+            if basis == TierBasis::Notional {
+                let wanted = previous.map_or(0.0, |previous| {
+                    previous.amount + (tier.rate - previous.rate) * previous.up_to
+                });
                 if (tier.amount - wanted).abs() > 1e-9 * wanted.abs().max(1.0) {
                     return Err(TierError::Amount {
                         row,
@@ -186,6 +198,18 @@ mod tests {
                 wanted: 300.0
             })
         );
+        let first = Tiers::new(
+            TierBasis::Notional,
+            vec![tier(300_000.0, 125.0, 0.004, 30.0)],
+        );
+        assert_eq!(
+            first,
+            Err(TierError::Amount {
+                row: 0,
+                amount: 30.0,
+                wanted: 0.0
+            })
+        );
         let one = Tiers::new(TierBasis::Quantity, vec![tier(10.0, 0.0, 1.0, 0.0)]);
         assert_eq!(one, Err(TierError::Rate { row: 0, rate: 1.0 }));
         let initial = Tiers::new(TierBasis::Quantity, vec![tier(10.0, 20.0, 0.05, 0.0)]);
@@ -243,5 +267,16 @@ mod tests {
             );
         }
         assert!(quantity(vec![tier(10.0, 0.0, 0.0, 0.0), tier(50.0, 10.0, 0.0, 0.0)]).is_ok());
+        assert_eq!(
+            quantity(vec![
+                tier(10.0, 20.0, 0.02, 0.0),
+                tier(50.0, 10.0, 0.01, 0.0)
+            ]),
+            Err(TierError::Falling {
+                row: 1,
+                rate: 0.01,
+                below: 0.02
+            })
+        );
     }
 }
