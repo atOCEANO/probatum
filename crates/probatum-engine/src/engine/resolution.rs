@@ -96,7 +96,7 @@ impl Engine {
             } else {
                 FillReason::Market
             };
-            let flat = self.account.positions[i].qty.get() == 0.0;
+            let arming = self.book.legs() > 0 && self.account.positions[i].qty.get() == 0.0;
             let applied = self.apply_fill_clamped(
                 i,
                 order.id,
@@ -127,7 +127,7 @@ impl Engine {
                     EventReason::MarketBar,
                 );
             }
-            self.arm_if_opened(i, flat);
+            self.arm_if_opened(i, arming);
         }
         self.spare = pending;
         self.targets.keep_waiting(&self.pending);
@@ -469,7 +469,7 @@ impl Engine {
             };
             let bar = self.bar_for(i);
             let resting = self.book.len();
-            let flat = self.account.positions[i].qty.get() == 0.0;
+            let arming = self.book.legs() > 0 && self.account.positions[i].qty.get() == 0.0;
             let applied =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
             if applied > 0.0 {
@@ -528,7 +528,7 @@ impl Engine {
                     if done {
                         self.book.cancel(id);
                     }
-                    self.arm_if_opened(i, flat);
+                    self.arm_if_opened(i, arming);
                     // the orders the fill took off the book besides its own, an OCO
                     // partner, the legs of a bracket whose position closed or a
                     // take-profit that armed against the account's own, have no turn

@@ -99,11 +99,13 @@ impl Engine {
     }
 
     /// Arm the bracket legs waiting on instrument `i` when the fill just booked there
-    /// opened a position, `flat` saying whether it was flat before. It runs once the
-    /// fill and its order are booked, so an entry the fill completed has left the
-    /// book and is no resting order of the account's a take-profit could cross.
-    pub(super) fn arm_if_opened(&mut self, i: usize, flat: bool) {
-        if flat && self.account.positions[i].qty.get() != 0.0 {
+    /// opened a position, `arming` saying whether a leg rests and the instrument was
+    /// flat before it. It runs once the fill and its order are booked, so an entry the
+    /// fill completed has left the book and is no resting order of the account's a
+    /// take-profit could cross.
+    #[inline]
+    pub(super) fn arm_if_opened(&mut self, i: usize, arming: bool) {
+        if arming && self.account.positions[i].qty.get() != 0.0 {
             self.arm(i);
         }
     }
