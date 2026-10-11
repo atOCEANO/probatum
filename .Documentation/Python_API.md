@@ -189,6 +189,7 @@ eng = Engine(
 | `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, takes slippage. `None` when the queue already holds `max_open_orders` for this bar, or the size is not a positive finite number. |
 | `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Limit order; rests until a later bar reaches the price, and pays the maker fee unless its first bar opens through it. `None` if the book is full, the size is not a positive finite number, or it would trade against the account's own resting limit; a non-finite price raises. |
 | `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. `None` if the book is full, the size is not a positive finite number, or the trigger is not finite. Pass `reduce_only=True` for a stop-loss. |
+| `bracket(stop=None, take_profit=None)` | two ids or `None`s | A stop and a take-profit as one OCO pair, each a reduce-only leg with no size of its own that closes the position it finds. A leg takes its side from the position it arms on, at once when one is held and otherwise once the entry fills; the first fill of either cancels the other, and the bracket goes when that position closes or flips. `None` for a leg not asked for or refused; a non-finite price raises ([ADR 0010](Decisions.md)). |
 | `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `post_only` and `tif`. |
 | `close()` | id or `None` | Queue a reduce-only market order sized to the whole position. `None` when flat. |
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
@@ -256,7 +257,7 @@ Every `reset` and `step` returns the state, a typed record read by attribute or 
 | `funding_paid` | float | Funding paid since the reset: positive is paid away, negative is received. Zero on spot. |
 | `open_orders` | list | Resting limit and stop orders, each a dict. |
 
-Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `stop`), `price`, `trigger`, `size`, `filled`, `remaining`, `status` (always `resting` here, since these are the resting orders), `reduce_only`, and `post_only`.
+Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `stop`), `price`, `trigger`, `size`, `filled`, `remaining`, `status` (always `resting` here, since these are the resting orders), `reduce_only`, and `post_only`. A bracket's leg has `side` `None` until it arms, and `size` and `remaining` `None` while it closes the position it finds.
 
 ### Observations
 
@@ -497,7 +498,7 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `fee` | The fee, in quote. |
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
 | `taker` | True when the fill took liquidity. A forced close is the venue's and is not. |
-| `reason` | `market`, `limit`, `stop`, `rebalance` for a leg of a `target`, or `liquidation`. |
+| `reason` | `market`, `limit`, `stop`, `take_profit` for a bracket's take-profit, `rebalance` for a leg of a `target`, or `liquidation`. |
 
 ### The order log
 
@@ -506,7 +507,7 @@ Each entry in `order_log()` is one event in an order's life ([ADR 0022](Decision
 | Field | Meaning |
 | :--- | :--- |
 | `bar`, `time` | The bar it happened on, the decision's for a placement and the fill's for a fill, and that bar's open time when the engine was built with `times=`, else `None`. |
-| `kind` | `placed`, `refused`, `clamped`, `filled`, `not_filled`, `expired` or `cancelled`. |
+| `kind` | `placed`, `refused`, `clamped`, `filled`, `not_filled`, `expired`, `cancelled`, or `armed` for a bracket's leg taking its side. |
 | `order`, `instrument` | The order and its instrument, both `None` for a clamped transfer. |
 | `size` | What a fill or a clamp came to, else `None`. |
 | `price` | What a fill was booked at, else `None`. |

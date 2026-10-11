@@ -20,7 +20,8 @@ pub struct Order {
     pub price: Option<Price>,
     /// Stop trigger price; set for a stop order, `None` otherwise.
     pub trigger: Option<Price>,
-    /// Original size, a positive base quantity.
+    /// Original size, a positive base quantity, or infinite on a bracket's leg
+    /// while it closes the position it finds.
     pub size: Qty,
     /// Filled so far, from zero up to `size`.
     pub filled: Qty,
@@ -33,6 +34,22 @@ pub struct Order {
     /// Whether it has rested through a bar its instrument printed, after which a
     /// limit is on the book and fills as a maker (ADR 0011).
     pub on_book: bool,
+    /// The bracket leg it is, or `None`.
+    pub leg: Option<Leg>,
+}
+
+/// A bracket's leg: a reduce-only exit placed beside another as one OCO pair
+/// (ADR 0010).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Leg {
+    /// The other leg of its pair, which its first fill cancels.
+    pub pair: Option<OrderId>,
+    /// Whether it has taken its side from a position. A leg placed while flat waits
+    /// for the entry to fill, and keeps the side it arms on.
+    pub armed: bool,
+    /// Whether it closes the position it finds, as it does until a replace gives it
+    /// a size of its own.
+    pub sizeless: bool,
 }
 
 impl Order {
@@ -51,6 +68,7 @@ impl Order {
             post_only: false,
             tif: TimeInForce::Ioc,
             on_book: false,
+            leg: None,
         }
     }
 
@@ -77,6 +95,7 @@ impl Order {
             post_only,
             tif,
             on_book: false,
+            leg: None,
         }
     }
 
@@ -95,6 +114,7 @@ impl Order {
             post_only: false,
             tif: TimeInForce::Gtc,
             on_book: false,
+            leg: None,
         }
     }
 

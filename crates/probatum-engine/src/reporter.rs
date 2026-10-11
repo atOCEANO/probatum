@@ -14,6 +14,8 @@ pub enum FillReason {
     Market,
     Limit,
     Stop,
+    /// A bracket's take-profit leg.
+    TakeProfit,
     /// A leg a `target` placed.
     Rebalance,
     Liquidation,
@@ -26,6 +28,7 @@ impl FillReason {
             FillReason::Market => "market",
             FillReason::Limit => "limit",
             FillReason::Stop => "stop",
+            FillReason::TakeProfit => "take_profit",
             FillReason::Rebalance => "rebalance",
             FillReason::Liquidation => "liquidation",
         }
@@ -65,6 +68,8 @@ pub enum EventKind {
     NotFilled,
     Expired,
     Cancelled,
+    /// A bracket leg that took its side from a position.
+    Armed,
 }
 
 impl EventKind {
@@ -78,6 +83,7 @@ impl EventKind {
             EventKind::NotFilled => "not_filled",
             EventKind::Expired => "expired",
             EventKind::Cancelled => "cancelled",
+            EventKind::Armed => "armed",
         }
     }
 }
@@ -110,6 +116,8 @@ pub enum EventReason {
     Market,
     Limit,
     Stop,
+    /// Placed, armed or filled as a bracket's take-profit leg.
+    TakeProfit,
     /// Placed or filled as a leg of a `target`.
     Rebalance,
     /// Placed again by a replace, keeping its id.
@@ -136,6 +144,10 @@ pub enum EventReason {
     CancelledByAccount,
     /// A post_only limit its first bar opened at or through.
     OpenedThrough,
+    /// A bracket leg whose position closed or flipped.
+    PositionClosed,
+    /// A bracket leg whose partner filled.
+    PartnerFilled,
     /// A target's leg cancelled by a later target in the same decision.
     Retargeted,
     Liquidation,

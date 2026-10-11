@@ -11,7 +11,7 @@ use super::Engine;
 use crate::reporter::{EventKind, EventReason, OrderEvent, Refusal};
 
 impl Engine {
-    fn next_id(&mut self) -> OrderId {
+    pub(super) fn next_id(&mut self) -> OrderId {
         let id = OrderId(self.id_counter);
         self.id_counter += 1;
         id
@@ -148,7 +148,8 @@ impl Engine {
         // NaN and is false, so the order would camp on a slot until the book filled
         // up and later placements were silently rejected (ADR 0007).
         let size = order.remaining().get();
-        if !size.is_finite() || size <= 0.0 {
+        let sizeless = order.leg.is_some_and(|leg| leg.sizeless);
+        if !sizeless && (!size.is_finite() || size <= 0.0) {
             return Some(Refusal::Size(size));
         }
         if let Some(price) = order.price.map(Price::get) {
@@ -170,10 +171,13 @@ impl Engine {
             return Some(Refusal::Resting(self.config.max_open_orders));
         }
         // a limit that reaches the account's own resting limit of the other side
-        // would trade against the same account, which a venue refuses (ADR 0011)
-        if let Some(price) = order.price {
+        // would trade against the same account, which a venue refuses (ADR 0011). A
+        // bracket leg yet to arm has no side, so it is neither checked nor met
+        let sided = |order: &Order| order.leg.is_none_or(|leg| leg.armed);
+        if let Some(price) = order.price.filter(|_| sided(order)) {
             let own = self.book.iter().find(|own| {
                 own.instrument == order.instrument
+                    && sided(own)
                     && own.side != order.side
                     && own
                         .price
@@ -201,7 +205,7 @@ impl Engine {
     }
 
     /// Rest `order` in the first free slot, or log why it cannot rest.
-    fn rest(&mut self, order: Order, reason: EventReason) -> Option<OrderId> {
+    pub(super) fn rest(&mut self, order: Order, reason: EventReason) -> Option<OrderId> {
         if let Some(why) = self.resting_refusal(&order, None) {
             return self.refuse(order.id, order.instrument, why);
         }
@@ -406,6 +410,10 @@ impl Engine {
         let mut moved = old;
         if let Some(size) = size {
             moved.size = Qty(old.filled.get() + size);
+            // a bracket leg given a size closes that much rather than the position
+            if let Some(leg) = moved.leg.as_mut() {
+                leg.sizeless = false;
+            }
         }
         if moved.kind == OrderType::Limit {
             moved.price = price.map(Price).or(old.price);

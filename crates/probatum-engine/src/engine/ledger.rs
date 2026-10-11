@@ -157,6 +157,7 @@ impl Engine {
             FillReason::Market => EventReason::Market,
             FillReason::Limit => EventReason::Limit,
             FillReason::Stop => EventReason::Stop,
+            FillReason::TakeProfit => EventReason::TakeProfit,
             FillReason::Rebalance => EventReason::Rebalance,
             FillReason::Liquidation => EventReason::Liquidation,
         };
@@ -168,6 +169,12 @@ impl Engine {
             Some(fill.price.get()),
             why,
         );
+        // a bracket goes with the position it armed on (ADR 0010)
+        let (held, ..) = before;
+        let after = self.account.positions[i].qty.get();
+        if held != 0.0 && (after == 0.0 || held * after < 0.0) {
+            self.disarm(i, order);
+        }
         applied
     }
 

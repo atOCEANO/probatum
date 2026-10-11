@@ -13,7 +13,8 @@ use crate::strategy::Strategy;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderRef {
     /// What the script's placement `n` made, counting its `Order` and `Close`
-    /// actions from 0 in the order they are taken.
+    /// actions from 0 in the order they are taken, and a `Bracket` as two, its stop
+    /// and then its take-profit.
     Placed(usize),
     /// The oldest order still resting.
     Oldest,
@@ -32,6 +33,12 @@ pub enum Action {
         reduce_only: bool,
         post_only: bool,
         tif: TimeInForce,
+    },
+    /// A stop and a take-profit as one OCO pair, as `Engine::bracket` places them.
+    Bracket {
+        instrument: usize,
+        stop: Option<f64>,
+        take_profit: Option<f64>,
     },
     /// Flatten an instrument's position.
     Close(usize),
@@ -114,6 +121,14 @@ impl Strategy for Script {
                         tif,
                     );
                     self.placed.push(id);
+                }
+                Action::Bracket {
+                    instrument,
+                    stop,
+                    take_profit,
+                } => {
+                    let (stop, take_profit) = engine.bracket(instrument, stop, take_profit);
+                    self.placed.extend([stop, take_profit]);
                 }
                 Action::Close(instrument) => self.placed.push(engine.close_on(instrument)),
                 Action::Cancel(order) => {

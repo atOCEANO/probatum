@@ -22,7 +22,7 @@ pub use candle::Candle;
 pub use cost::{CostModel, FlatCostModel};
 pub use enums::{Market, OrderType, Side, TimeInForce, Wallet};
 pub use fill::Fill;
-pub use order::{Order, OrderId};
+pub use order::{Leg, Order, OrderId};
 pub use position::Position;
 pub use state::State;
 pub use tiers::{Tier, TierBasis, TierError, Tiers};

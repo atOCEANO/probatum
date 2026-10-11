@@ -416,6 +416,61 @@ def test_a_script_names_an_order_by_its_placement_or_as_the_oldest_resting():
     assert [event["kind"] for event in played["order_log"]] == ["placed", "refused"]
 
 
+def test_a_bracket_arms_on_its_entry_and_its_first_fill_cancels_the_other_leg():
+    # placed beside its entry, the legs arm as sells when the entry fills at 200,
+    # and the bar's high of 260 reaches the take-profit at 255, which closes the
+    # long and cancels the stop
+    e = engine(report=True)
+    e.reset()
+    e.market_buy(1.0)
+    stop, take_profit = e.bracket(stop=150.0, take_profit=255.0)
+    s = e.step()
+
+    assert (s.position, s.open_orders) == (0.0, [])
+
+    fills = [(fill["order"], fill["price"], fill["reason"]) for fill in e.fills()]
+    assert fills[1:] == [(take_profit, 255.0, "take_profit")]
+
+    log = [(event["order"], event["kind"], event["reason"]) for event in e.order_log()]
+    assert (stop, "armed", "stop") in log
+    assert log[-1] == (stop, "cancelled", "its OCO partner filled")
+
+
+def test_a_bracket_leg_has_no_side_until_it_arms_and_no_size_of_its_own():
+    e = engine()
+    e.reset()
+    e.bracket(stop=50.0)
+    [leg] = e.step().open_orders
+
+    assert (leg["side"], leg["size"], leg["remaining"]) == (None, None, None)
+
+    with pytest.raises(ValueError, match="bracket has no stop and no take_profit; give"):
+        e.bracket()
+
+    with pytest.raises(ValueError, match="take_profit must be a finite number, got NaN"):
+        e.bracket(take_profit=float("nan"))
+
+
+def test_a_bracket_in_a_script_is_two_placements_its_stop_then_its_take_profit():
+    # the entry is placement 0, the stop 1 and the take-profit 2: the take-profit
+    # is cancelled by its placement and the stop moved up to 295, where the last
+    # bar's low of 290 fills it
+    played = probatum._probatum.run(series(), None, {
+        0: [("buy", {"size": 1.0}), ("bracket", {"stop": 150.0, "take_profit": 400.0})],
+        1: [("cancel", {"order": 2}), ("replace", {"order": 1, "trigger": 295.0})],
+    })
+
+    log = played["order_log"]
+    stop, take_profit = [event["order"] for event in log if event["kind"] == "placed"][1:3]
+    fills = [(fill["order"], fill["price"], fill["reason"]) for fill in played["fills"]]
+
+    assert fills[1:] == [(stop, 295.0, "stop")]
+
+    cancelled = [(event["order"], event["reason"]) for event in log
+                 if event["kind"] == "cancelled"]
+    assert cancelled == [(take_profit, "cancelled by the account")]
+
+
 def test_a_universe_with_an_instrument_nobody_trades_records_what_the_other_alone_does():
     # a second instrument printing every row and never traded changes nothing the
     # first records, and the ledger gives each instrument a column of its own
@@ -525,6 +580,8 @@ def test_a_universe_s_book_is_bounded_in_all():
     ({0: [("buy", {"size": 1.0}), ("cancel", {"order": "1"})]},
      "order '1' is not one of the 1 placements before it"),
     ({0: [("transfer", {"amount": -1.0})]}, "amount: -1 is negative"),
+    ({0: [("bracket", {})]}, "bracket has no stop and no take_profit; give either or both"),
+    ({0: [("bracket", {"stop": 99.0, "size": 1.0})]}, "bracket takes no size"),
     ({0: None}, "bar 0 holds None; give it a list of actions"),
     ({2: [("close", {})]}, "bar 2 has no bar after it to fill on"),
     ({2**64 - 1: [("close", {})]}, "has no bar after it to fill on"),

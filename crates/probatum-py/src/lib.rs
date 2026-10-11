@@ -747,14 +747,18 @@ fn per_env_vec(
 
 fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
+    // a bracket leg has no side until it arms, and no size while it closes the
+    // position it finds
+    let armed = order.leg.is_none_or(|leg| leg.armed);
+    let sized = order.leg.is_none_or(|leg| !leg.sizeless);
     d.set_item("id", order.id.0)?;
-    d.set_item("side", side_str(order.side))?;
+    d.set_item("side", armed.then(|| side_str(order.side)))?;
     d.set_item("kind", kind_str(order.kind))?;
     d.set_item("price", order.price.map(|p| p.get()))?;
     d.set_item("trigger", order.trigger.map(|t| t.get()))?;
-    d.set_item("size", order.size.get())?;
+    d.set_item("size", sized.then(|| order.size.get()))?;
     d.set_item("filled", order.filled.get())?;
-    d.set_item("remaining", order.remaining().get())?;
+    d.set_item("remaining", sized.then(|| order.remaining().get()))?;
     // only resting orders are ever handed out, so this is a constant; the key stays
     // because the API documents it
     d.set_item("status", "resting")?;
@@ -995,6 +999,7 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::Market => "market".to_string(),
         EventReason::Limit => "limit".to_string(),
         EventReason::Stop => "stop".to_string(),
+        EventReason::TakeProfit => "take_profit".to_string(),
         EventReason::Rebalance => "rebalance".to_string(),
         EventReason::Retargeted => "replaced by a later target".to_string(),
         EventReason::Replace => "replace".to_string(),
@@ -1009,6 +1014,8 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::OneBar(_) => "ioc: one bar".to_string(),
         EventReason::CancelledByAccount => "cancelled by the account".to_string(),
         EventReason::OpenedThrough => "post_only: the first bar opened through".to_string(),
+        EventReason::PositionClosed => "its position closed".to_string(),
+        EventReason::PartnerFilled => "its OCO partner filled".to_string(),
         EventReason::Liquidation => "liquidation".to_string(),
     }
 }
@@ -1416,6 +1423,33 @@ impl Engine {
             .inner
             .stop(side, size, trigger, reduce_only)
             .map(|id| id.0))
+    }
+
+    /// Place a bracket: a stop at `stop` and a take-profit at `take_profit`, each a
+    /// reduce-only leg with no size of its own that closes the position it finds,
+    /// the two one OCO pair. A leg takes its side from the position it arms on, at
+    /// once when one is held and otherwise once the entry fills, and the bracket
+    /// goes when that position closes or flips. Returns the two legs' ids, None for
+    /// one not asked for or refused; a non-finite price raises (ADR 0010).
+    #[pyo3(signature = (stop = None, take_profit = None))]
+    fn bracket(
+        &mut self,
+        stop: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> PyResult<(Option<u64>, Option<u64>)> {
+        if stop.is_none() && take_profit.is_none() {
+            return Err(PyValueError::new_err(
+                "bracket has no stop and no take_profit; give either or both",
+            ));
+        }
+        if let Some(price) = stop {
+            finite("stop", price)?;
+        }
+        if let Some(price) = take_profit {
+            finite("take_profit", price)?;
+        }
+        let (stop, take_profit) = self.inner.bracket(0, stop, take_profit);
+        Ok((stop.map(|id| id.0), take_profit.map(|id| id.0)))
     }
 
     /// Flatten the position with a reduce-only market order. None when flat.
@@ -2110,7 +2144,7 @@ impl Batch {
 }
 
 /// The verbs a script takes, as an error lists them.
-const VERBS: &str = "buy, sell, close, cancel, cancel_all, replace, transfer or target";
+const VERBS: &str = "buy, sell, bracket, close, cancel, cancel_all, replace, transfer or target";
 
 /// The weights a target takes, as each instrument and its weight: one number for an
 /// engine of one instrument, one weight for each instrument in order, or a dict from
@@ -2352,6 +2386,7 @@ fn read_action(
             "reduce_only",
             "instrument",
         ],
+        "bracket" => &["stop", "take_profit", "instrument"],
         "close" | "cancel_all" => &["instrument"],
         "cancel" => &["order"],
         "replace" => &["order", "price", "trigger", "size"],
@@ -2413,6 +2448,19 @@ fn read_action(
                         "{at}: tif {tif:?} is not a time in force; use gtc, ioc or fok"
                     ))
                 })?,
+            }
+        }
+        "bracket" => {
+            let (stop, take_profit) = (args.price("stop")?, args.price("take_profit")?);
+            if stop.is_none() && take_profit.is_none() {
+                return Err(PyValueError::new_err(format!(
+                    "{at}: bracket has no stop and no take_profit; give either or both"
+                )));
+            }
+            Action::Bracket {
+                instrument: args.traded(width)?,
+                stop,
+                take_profit,
             }
         }
         "close" => Action::Close(args.traded(width)?),
@@ -2504,9 +2552,12 @@ fn read_script<'py>(
                 )));
             };
             let action = read_action(&at, &verb, &given, placements, engine)?;
-            if matches!(action, Action::Order { .. } | Action::Close(_)) {
-                placements += 1;
-            }
+            placements += match action {
+                Action::Order { .. } | Action::Close(_) => 1,
+                // a bracket places its stop and then its take-profit
+                Action::Bracket { .. } => 2,
+                _ => 0,
+            };
             out[t].push(action);
         }
     }
