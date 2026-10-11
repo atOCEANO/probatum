@@ -23,6 +23,7 @@ SHARED = [
     "a bracket cancelled by another's leg",
     "a bracket cancelled with its position",
     "a bracket leg filled",
+    "a bracket leg filled on the bar a resting fill armed it",
     "a bracket leg filled on the bar it armed",
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
@@ -132,6 +133,17 @@ def flipped_at_the_low():
     return bars, times, cfg, actions
 
 
+def crossed_as_it_arms():
+    """A bid at 101 placed at the second bar's close, a third bar that trades nothing,
+    so the bid still rests, and at its close a bracket placed flat with a market
+    entry and a take-profit at 101 alone."""
+    bars, times, cfg, actions = built(None, ("limit", "buy", 1.0, 1.0),
+                                      ("bracket", "buy", 1.0, 1.0),
+                                      shaped=(100.0, 102.0, 99.0, 100.0))
+    bars[2] = Bar(100.0, 100.0, 100.0, 100.0, 0.0)
+    return bars, times, cfg, actions
+
+
 # cases built where random cases seldom reach a rule, each with the rule it reaches
 BUILT = {
     # a buy opens a long a take-profit and a stop both close, and the stop, the
@@ -156,6 +168,19 @@ BUILT = {
     # a bar the path survives, closed at its closes by the debit charged there
     "a debit at the close that takes the account to its trigger": (
         "a liquidation at the closes", debited_at_the_close()),
+    # a buy limit of 10 at 98.90 placed while flat with a take-profit at 102.90 after
+    # it: the entry fills on the way down to 88, which liquidates the long, and the
+    # take-profit it armed, on the favourable side of its start, is held back
+    "a take-profit a limit entry armed on a liquidating bar": (
+        "a leg a resting fill armed held back on a liquidating bar",
+        built(None, None, ("bracket", "buy", 10.0, 0.9),
+              shaped=(100.0, 103.0, 88.0, 95.0))),
+    # a bid at 101 rests through a bar that trades nothing, and a bracket placed flat
+    # beside a market entry arms its take-profit at 101 on that entry's fill, a sell
+    # at the account's own bid, so it is cancelled as it arms
+    "a take-profit armed against the account's own bid": (
+        "a take-profit cancelled as it armed against the account's own",
+        crossed_as_it_arms()),
     # a bracket on a long of 1, its stop at 95 and its take-profit at 105, and the
     # stop moved to 94 and given a size of 2: it sells the 1 held and goes with it
     "a stop given more than its long": (

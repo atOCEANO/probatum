@@ -25,6 +25,7 @@ SHARED = [
     "a bracket cancelled by a liquidation",
     "a bracket cancelled with its position",
     "a bracket leg filled",
+    "a bracket leg filled on the bar a resting fill armed it",
     "a bracket leg filled on the bar it armed",
     "a bracket waiting through a row without its bar",
     "a corner or the closes reaching the trigger",
