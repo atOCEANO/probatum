@@ -122,6 +122,8 @@ pub enum EventReason {
     Rebalance,
     /// Placed again by a replace, keeping its id.
     Replace,
+    /// A placement refused, or a bracket's take-profit cancelled as it arms against
+    /// the account's own order.
     Refused(Refusal),
     /// A replace refused, which leaves the order as it was.
     Replacing(Refusal),

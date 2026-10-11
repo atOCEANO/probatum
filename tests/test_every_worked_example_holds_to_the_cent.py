@@ -355,6 +355,18 @@ def test_a_bracket_placed_with_its_entry_arms_when_the_entry_fills():
                                                           "resting"]
 
 
+def test_a_bracket_placed_after_a_limit_entry_stops_it_on_the_bar_it_fills():
+    sim = run(hourly(2), [[flat(100.0)], [Bar(100.0, 100.0, 85.0, 88.0, 1_000.0)]],
+              [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0),
+              script={0: [("buy", dict(instrument=0, size=1.0, limit=95.0)),
+                          ("bracket", dict(instrument=0, stop=90.0,
+                                           take_profit=110.0))]})
+
+    assert [(f["price"], f["reason"]) for f in sim.fills] == [(95.0, "limit"),
+                                                             (90.0, "stop")]
+    assert sim.position[0] == 0.0
+
+
 def test_a_bracket_armed_on_a_long_is_cancelled_when_the_long_flips_short():
     sim = run(hourly(4), [[flat(100.0)], [flat(100.0)], [flat(100.0)],
                           [Bar(100.0, 111.0, 94.0, 100.0, 1_000.0)]],

@@ -169,11 +169,14 @@ impl Engine {
             Some(fill.price.get()),
             why,
         );
-        // a bracket goes with the position it armed on (ADR 0010)
+        // a bracket goes with the position it armed on, and one placed while flat arms
+        // on the first fill that opens a position (ADR 0010)
         let (held, ..) = before;
         let after = self.account.positions[i].qty.get();
         if held != 0.0 && (after == 0.0 || held * after < 0.0) {
             self.disarm(i, order);
+        } else if held == 0.0 && after != 0.0 {
+            self.arm(i);
         }
         applied
     }

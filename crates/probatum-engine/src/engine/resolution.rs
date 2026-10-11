@@ -3,8 +3,8 @@
 //! ordered worst first among one instrument's, and its take-profits held back where
 //! the bar liquidates the account without them (ADR 0012). An all-or-nothing order
 //! is judged against every clamp, IOC and FOK limits expire after their one bar,
-//! and a post_only limit its first bar opens through is cancelled (ADR 0010). An
-//! order on an instrument that printed no bar waits for its next.
+//! and a post_only limit its first bar opens at or through is cancelled (ADR 0010).
+//! An order on an instrument that printed no bar waits for its next.
 
 use probatum_core::{
     Candle, Fill, Market, Order, OrderId, OrderType, Price, Qty, Side, TimeInForce,
@@ -27,21 +27,22 @@ fn adversity(position: f64, entry: f64, side: Side, price: f64) -> f64 {
     (price - entry) * position.signum()
 }
 
-/// A resting order a bar reaches: its id and instrument, the fill the model offers
-/// and its costs, its type, `reduce_only` and time in force, what it still asks, and
-/// whether it asks for the position as it stands, as a bracket leg with no size of
-/// its own does.
-type Offer = (
-    OrderId,
-    usize,
-    Fill,
-    OrderType,
-    bool,
-    TimeInForce,
-    f64,
-    FillCosts,
-    bool,
-);
+/// A resting order's turn on a bar: the order, and the fill the bar offers it as the
+/// turn finds the account, with its costs and what the order still asks, or `None`
+/// where the bar does not reach it.
+#[derive(Clone, Copy)]
+struct Offer {
+    id: OrderId,
+    instrument: usize,
+    kind: OrderType,
+    reduce_only: bool,
+    tif: TimeInForce,
+    /// Whether each turn makes the offer again: a bracket leg with no size of its own
+    /// asks for the position as the fills before it left it, and one yet to arm can
+    /// be armed by them.
+    again: bool,
+    made: Option<(Fill, FillCosts, f64)>,
+}
 
 impl Engine {
     /// Fill the market orders queued since the last step at their instruments'
@@ -150,8 +151,8 @@ impl Engine {
             return;
         }
         // a post_only limit is checked again on its first bar, and one that bar
-        // opens at or through would take liquidity, so it goes before anything fills
-        // (ADR 0010)
+        // opens at or through would take liquidity, so it goes before any resting
+        // order fills (ADR 0010)
         let opened: Vec<(OrderId, usize)> = self
             .book
             .iter()
@@ -214,27 +215,34 @@ impl Engine {
         }
     }
 
-    /// The resting orders the bar reaches, each with the fill the model offers, in
-    /// slot order. A bracket leg yet to arm has no side to fill on.
+    /// Each resting order's turn on the bar, in slot order: those the bar reaches,
+    /// each with the fill the model offers, and the bracket legs waiting to arm, which
+    /// a fill before their turn can arm (ADR 0010).
     fn offers(&self) -> Vec<Offer> {
         let mut fills: Vec<Offer> = Vec::new();
         for order in self.book.iter() {
             let bar = self.bar_for(order.instrument);
-            if !printed(&bar) || order.leg.is_some_and(|leg| !leg.armed) {
+            if !printed(&bar) {
                 continue;
             }
-            if let Some(offer) = self.offer(order, &bar) {
+            // a bar of no volume fills nothing, so nothing on it can arm a leg either
+            let waiting = order.leg.is_some_and(|leg| !leg.armed) && bar.volume > 0.0;
+            let offer = self.offer(order, &bar);
+            if offer.made.is_some() || waiting {
                 fills.push(offer);
             }
         }
         fills
     }
 
-    /// What `bar` offers `order`, if it reaches it: a bracket leg with no size of its
-    /// own asks for the position on its instrument as it now stands (ADR 0010).
-    fn offer(&self, order: &Order, bar: &Candle) -> Option<Offer> {
-        let sizeless = order.leg.is_some_and(|leg| leg.sizeless);
-        let order = if sizeless {
+    /// What `bar` offers `order` as the account now stands: nothing to a bracket leg
+    /// yet to arm, which has no side, and to a leg with no size of its own, the
+    /// position on its instrument (ADR 0010).
+    fn offer(&self, order: &Order, bar: &Candle) -> Offer {
+        let (sizeless, armed) = order
+            .leg
+            .map_or((false, true), |leg| (leg.sizeless, leg.armed));
+        let sized = if sizeless {
             let held = self.account.positions[order.instrument].qty.get().abs();
             Order {
                 size: Qty(held),
@@ -244,36 +252,21 @@ impl Engine {
         } else {
             *order
         };
-        let (fill, costs) = match order.kind {
-            OrderType::Limit => self.fill_model.fill_limit(&order, bar),
-            OrderType::Stop => self.fill_model.fill_stop(&order, bar),
+        let made = match order.kind {
+            _ if !armed => None,
+            OrderType::Limit => self.fill_model.fill_limit(&sized, bar),
+            OrderType::Stop => self.fill_model.fill_stop(&sized, bar),
             OrderType::Market => None,
-        }?;
-        Some((
-            order.id,
-            order.instrument,
-            fill,
-            order.kind,
-            order.reduce_only,
-            order.tif,
-            order.remaining().get(),
-            costs,
-            sizeless,
-        ))
-    }
-
-    /// `offer` made again for the position as it now stands, which a bracket leg with
-    /// no size of its own asks for; nothing, where none is held.
-    fn resized(&self, offer: Offer) -> Offer {
-        let made = self
-            .book
-            .get(offer.0)
-            .and_then(|order| self.offer(order, &self.bar_for(offer.1)));
-        made.unwrap_or_else(|| {
-            let (id, i, mut fill, kind, reduce_only, tif, _, costs, sizeless) = offer;
-            fill.size = Qty(0.0);
-            (id, i, fill, kind, reduce_only, tif, 0.0, costs, sizeless)
-        })
+        };
+        Offer {
+            id: order.id,
+            instrument: order.instrument,
+            kind: order.kind,
+            reduce_only: order.reduce_only,
+            tif: order.tif,
+            again: sizeless || !armed,
+            made: made.map(|(fill, costs)| (fill, costs, sized.remaining().get())),
+        }
     }
 
     /// A perp fill that reduces the position as it now stands, the price the bar
@@ -282,7 +275,11 @@ impl Engine {
     /// takes a position away from its start, so the bar reached such a price only on
     /// a move back, which it cannot show came before the trigger. The fill's
     /// reference is that price; what the fill pays beyond it was never on the bar.
-    fn favourable(&self, &(_, i, fill, .., costs, _): &Offer) -> bool {
+    fn favourable(&self, offer: &Offer) -> bool {
+        let Some((fill, costs, _)) = offer.made else {
+            return false;
+        };
+        let i = offer.instrument;
         let (position, start) = (self.account.positions[i].qty.get(), self.starts[i]);
         self.account.markets[i] == Market::Perp
             && match fill.side {
@@ -295,32 +292,43 @@ impl Engine {
     /// where that position started: one favourable as the bar's resting orders find
     /// the account, or one reached beyond a fill on its instrument on the other side,
     /// which could open or flip that position there, in whatever order the bar's
-    /// exits come to be taken.
+    /// exits come to be taken. A perp bracket leg waiting to arm could arm on a
+    /// position a fill before it opens, on either side, so the dry run decides it.
     fn may_hold(&self, fills: &[Offer]) -> bool {
-        let beyond = |offer: &Offer, at: f64| match offer.2.side {
-            Side::Sell => offer.7.reference > at,
-            Side::Buy => offer.7.reference < at,
+        let perp = |offer: &Offer| self.account.markets[offer.instrument] == Market::Perp;
+        let beyond = |side: Side, reference: f64, at: f64| match side {
+            Side::Sell => reference > at,
+            Side::Buy => reference < at,
         };
-        fills.iter().any(|offer| {
-            self.favourable(offer)
-                || (self.account.markets[offer.1] == Market::Perp
-                    && fills.iter().any(|other| {
-                        other.1 == offer.1
-                            && other.2.side != offer.2.side
-                            && beyond(offer, other.7.reference)
-                    }))
+        fills.iter().any(|offer| match offer.made {
+            None => perp(offer),
+            Some((fill, costs, _)) => {
+                self.favourable(offer)
+                    || (perp(offer)
+                        && fills.iter().any(|other| {
+                            other.instrument == offer.instrument
+                                && other.made.is_some_and(|(theirs, at, _)| {
+                                    theirs.side != fill.side
+                                        && beyond(fill.side, costs.reference, at.reference)
+                                })
+                        }))
+            }
         })
     }
 
     /// Whether the check would find the trigger had the bar's resting orders filled
     /// with its favourable exits held back. Where every perp order among them is one
-    /// such exit as the orders find the account, none fills and the account the check
-    /// would read is the one standing; otherwise they fill on that account with
-    /// nothing recorded, and the account and the book are put back.
+    /// such exit as the orders find the account, none fills, so no leg waiting to arm
+    /// can arm on a perp, and the account the check would read is the one standing;
+    /// otherwise they fill on that account with nothing recorded, and the account and
+    /// the book are put back.
     fn liquidates_without(&mut self, fills: &[Offer]) -> bool {
         if fills
             .iter()
-            .all(|offer| self.account.markets[offer.1] != Market::Perp || self.favourable(offer))
+            .filter(|offer| offer.made.is_some())
+            .all(|offer| {
+                self.account.markets[offer.instrument] != Market::Perp || self.favourable(offer)
+            })
         {
             return self.reaches_trigger();
         }
@@ -358,10 +366,14 @@ impl Engine {
         // a position the bar's own fills open or flip are ordered too, where a sort
         // made once against the position the bar started with left them in the
         // order they were typed
-        let i = fills[k].1;
+        let i = fills[k].instrument;
         let position = self.account.positions[i].qty.get();
         let entry = self.account.positions[i].avg_entry.get();
-        let rank = |offer: &Offer| adversity(position, entry, offer.2.side, offer.2.price.get());
+        let rank = |offer: &Offer| {
+            offer.made.map_or(f64::INFINITY, |(fill, ..)| {
+                adversity(position, entry, fill.side, fill.price.get())
+            })
+        };
         if position == 0.0 || !rank(&fills[k]).is_finite() {
             return;
         }
@@ -374,7 +386,7 @@ impl Engine {
         // (ADR 0011) would have left it, which is the optimism ADR 0012 exists
         // to remove rather than relocate (ADR 0012)
         let slots: Vec<usize> = (k..fills.len())
-            .filter(|&j| fills[j].1 == i && rank(&fills[j]).is_finite())
+            .filter(|&j| fills[j].instrument == i && rank(&fills[j]).is_finite())
             .collect();
         if slots.len() < 2 {
             return;
@@ -401,24 +413,37 @@ impl Engine {
     /// where that position started. Returns whether any was held back.
     fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool) -> bool {
         let mut held = false;
-        let resizing = fills.iter().any(|offer| offer.8);
+        let again = fills.iter().any(|offer| offer.again);
         let mut k = 0;
         while k < fills.len() {
             // a bracket leg with no size of its own asks for the position this turn
-            // finds, which the fills before it may have grown or shrunk
-            if resizing {
-                for offer in fills[k..].iter_mut().filter(|offer| offer.8) {
-                    *offer = self.resized(*offer);
+            // finds, which the fills before it may have grown or shrunk, and one
+            // waiting to arm may have been armed by them
+            if again {
+                for offer in fills[k..].iter_mut().filter(|offer| offer.again) {
+                    if let Some(order) = self.book.get(offer.id) {
+                        *offer = self.offer(order, &self.bar_for(offer.instrument));
+                    }
                 }
             }
             self.order_exits(&mut fills, k);
             let offer = fills[k];
             k += 1;
+            let Some((fill, costs, requested)) = offer.made else {
+                continue;
+            };
             if hold && self.favourable(&offer) {
                 held = true;
                 continue;
             }
-            let (id, i, fill, kind, reduce_only, tif, requested, costs, sizeless) = offer;
+            let Offer {
+                id,
+                instrument: i,
+                kind,
+                reduce_only,
+                tif,
+                ..
+            } = offer;
             // FOK limit: all or nothing against every clamp, not just the bar's
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the one its offer was made on, and left
@@ -479,23 +504,30 @@ impl Engine {
                     // takes. Enough of those and the book is full of orders that
                     // will never trade, and every later placement is refused in
                     // silence, which is the harm ADR 0007 names (ADR 0010). A bracket
-                    // leg with no size of its own is done when its position is
-                    let done = if sizeless {
-                        applied > 0.0 && self.account.positions[i].qty.get() == 0.0
-                    } else {
-                        self.book
+                    // leg whose fill closed its position goes with it, whatever it had
+                    // left to fill
+                    let closed = leg.is_some()
+                        && applied > 0.0
+                        && self.account.positions[i].qty.get() == 0.0;
+                    let done = closed
+                        || self
+                            .book
                             .get(id)
-                            .is_some_and(|o| o.remaining().get() <= CLOSE_EPS)
-                    };
+                            .is_some_and(|o| o.remaining().get() <= CLOSE_EPS);
                     if done {
                         self.book.cancel(id);
                     }
                     // the orders the fill took off the book besides its own, an OCO
-                    // partner or the legs of a bracket whose position closed, have no
-                    // turn left on this bar
+                    // partner, the legs of a bracket whose position closed or a
+                    // take-profit that armed against the account's own, have no turn
+                    // left on this bar
                     if self.book.len() + usize::from(done) < resting {
                         let later = fills.split_off(k);
-                        fills.extend(later.into_iter().filter(|o| self.book.get(o.0).is_some()));
+                        fills.extend(
+                            later
+                                .into_iter()
+                                .filter(|offer| self.book.get(offer.id).is_some()),
+                        );
                     }
                 }
                 OrderType::Market => {}

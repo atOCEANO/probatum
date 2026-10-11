@@ -1,7 +1,8 @@
 //! The next-bar fill model. An order decided at the close of one bar fills on the
 //! NEXT bar, so a fill is never priced off information the decision could not have
-//! seen. Market fills are takers, limit fills are makers, and a stop triggers and
-//! then fills as a taker. See ADR 0013 (slippage) and ADR 0013 (volume cap).
+//! seen. Market fills are takers, a limit is a taker only on a first bar that opens
+//! at or through it, and a stop triggers and then fills as a taker. See ADR 0013
+//! (slippage and the volume cap) and ADR 0011 (maker and taker).
 
 use probatum_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
 

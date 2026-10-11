@@ -1,35 +1,52 @@
 //! Brackets: two reduce-only exits placed as one OCO pair, neither with a size of
-//! its own, each closing the position it finds when it fills. A leg takes its side
-//! from the position it arms on and keeps it, the first fill of either cancels the
-//! other, and a bracket goes when the position it armed on closes or flips, so its
-//! legs never act on a position they were not placed for (ADR 0010).
+//! its own, each closing the position it finds when it fills. A bracket arms at once
+//! on a position held, and otherwise on the first fill that opens one on its
+//! instrument; a leg takes its side from the position it arms on and keeps it, the
+//! first fill of either cancels the other, and a bracket goes when the position it
+//! armed on closes or flips, so its legs never act on a position they were not
+//! placed for (ADR 0010). A take-profit is held to the self-trade rule when it takes
+//! its side (ADR 0011).
 
 use probatum_core::{Leg, Order, OrderId, OrderType, Price, Qty, Side, TimeInForce};
 
 use super::Engine;
-use crate::reporter::{EventKind, EventReason};
+use crate::reporter::{EventKind, EventReason, Refusal};
+
+/// The reason a leg of `kind` is placed, armed or filled for.
+fn reason(kind: OrderType) -> EventReason {
+    if kind == OrderType::Stop {
+        EventReason::Stop
+    } else {
+        EventReason::TakeProfit
+    }
+}
 
 impl Engine {
     /// Place a bracket on `instrument`: a stop at `stop` and a take-profit at
     /// `take_profit`, each a reduce-only leg with no size of its own, the two one OCO
-    /// pair. A leg arms at once on a position held, and otherwise once the entry
-    /// fills. Returns each leg's id, `None` for one not asked for or refused.
+    /// pair. A bracket placed beside a position held arms at once, its take-profit
+    /// refused if it would trade against the account's own; one placed while flat
+    /// arms on the first fill that opens a position there. Returns each leg's id,
+    /// `None` for one not asked for or refused.
     pub fn bracket(
         &mut self,
         instrument: usize,
         stop: Option<f64>,
         take_profit: Option<f64>,
     ) -> (Option<OrderId>, Option<OrderId>) {
+        let held = self.account.positions[instrument].qty.get();
         let leg = Some(Leg {
             pair: None,
-            armed: false,
+            armed: held != 0.0,
             sizeless: true,
         });
-        // the side is a placeholder until the leg arms, and nothing reads it before
+        // a leg placed while flat has no side yet, and nothing reads this one before
+        // it arms
+        let side = if held < 0.0 { Side::Buy } else { Side::Sell };
         let unbounded = Qty(f64::INFINITY);
         let stop = stop.and_then(|trigger| {
             let id = self.next_id();
-            let order = Order::stop(id, Side::Sell, unbounded, Price(trigger), true);
+            let order = Order::stop(id, side, unbounded, Price(trigger), true);
             self.rest(
                 Order {
                     leg,
@@ -42,7 +59,7 @@ impl Engine {
             let id = self.next_id();
             let order = Order::limit(
                 id,
-                Side::Sell,
+                side,
                 unbounded,
                 Price(price),
                 TimeInForce::Gtc,
@@ -64,45 +81,72 @@ impl Engine {
                 }
             }
         }
-        self.arm();
+        if held != 0.0 {
+            for (id, kind) in [(stop, OrderType::Stop), (take_profit, OrderType::Limit)] {
+                if let Some(id) = id {
+                    self.log_event(
+                        EventKind::Armed,
+                        Some(id),
+                        Some(instrument),
+                        None,
+                        None,
+                        reason(kind),
+                    );
+                }
+            }
+        }
         (stop, take_profit)
     }
 
-    /// Arm each bracket leg resting on an instrument whose position is held, on the
-    /// side that closes it.
-    pub(super) fn arm(&mut self) {
+    /// Arm the bracket legs waiting on instrument `i` on the position a fill has just
+    /// opened there, on the side that closes it. A take-profit that would then trade
+    /// against the account's own resting limit is cancelled (ADR 0011).
+    pub(super) fn arm(&mut self, i: usize) {
         if self.book.is_empty() {
             return;
         }
-        let mut armed = Vec::new();
-        for order in self.book.iter_mut() {
-            let held = self.account.positions[order.instrument].qty.get();
-            if let Some(leg) = order.leg.as_mut().filter(|leg| !leg.armed && held != 0.0) {
-                leg.armed = true;
-                order.side = if held > 0.0 { Side::Sell } else { Side::Buy };
-                armed.push((order.id, order.instrument, order.kind));
-            }
-        }
-        for (id, instrument, kind) in armed {
-            let reason = if kind == OrderType::Stop {
-                EventReason::Stop
-            } else {
-                EventReason::TakeProfit
+        let held = self.account.positions[i].qty.get();
+        let side = if held > 0.0 { Side::Sell } else { Side::Buy };
+        let waiting: Vec<OrderId> = self
+            .book
+            .iter()
+            .filter(|order| order.instrument == i && order.leg.is_some_and(|leg| !leg.armed))
+            .map(|order| order.id)
+            .collect();
+        for id in waiting {
+            let Some(order) = self.book.get_mut(id) else {
+                continue;
             };
+            order.side = side;
+            if let Some(leg) = order.leg.as_mut() {
+                leg.armed = true;
+            }
+            let order = *order;
             self.log_event(
                 EventKind::Armed,
                 Some(id),
-                Some(instrument),
+                Some(i),
                 None,
                 None,
-                reason,
+                reason(order.kind),
             );
+            if let Some(own) = self.crossed(&order) {
+                self.book.cancel(id);
+                self.log_event(
+                    EventKind::Cancelled,
+                    Some(id),
+                    Some(i),
+                    None,
+                    None,
+                    EventReason::Refused(Refusal::SelfTrade(own)),
+                );
+            }
         }
     }
 
     /// Cancel the armed legs resting on instrument `i`, whose position a fill by
-    /// `filling` closed or flipped, but that order and its partner, which the OCO rule
-    /// settles.
+    /// `filling` closed or flipped, but that order, which goes as its fill leaves it,
+    /// and its partner, which the OCO rule cancels.
     pub(super) fn disarm(&mut self, i: usize, filling: OrderId) {
         if self.book.is_empty() {
             return;
@@ -138,7 +182,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{ohlc, perp_cfg, report_cfg};
     use crate::engine::{Engine, EngineConfig, Intrabar};
-    use crate::reporter::{EventKind, EventReason, FillReason, OrderEvent};
+    use crate::reporter::{EventKind, EventReason, FillReason, OrderEvent, Refusal};
     use probatum_core::{Candle, OrderId, Side};
 
     const FLAT: Candle = Candle {
@@ -438,5 +482,159 @@ mod tests {
         let s = e.step();
         assert_eq!(fills(&e)[1], (id(stop), 1.0, 105.0, FillReason::Stop));
         assert_eq!(s.position, 0.0);
+    }
+
+    /// A perp engine over a flat bar and then `after`, with margin to spare.
+    fn perp(after: &[Candle]) -> Engine {
+        let mut bars = vec![FLAT];
+        bars.extend_from_slice(after);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(Candles::new(bars), config);
+        e.reset();
+        e
+    }
+
+    #[test]
+    fn a_bracket_placed_after_a_limit_entry_arms_when_it_fills_and_can_stop_it_there() {
+        // the Specification's example of the book: a buy limit at 95 placed while
+        // flat, with a bracket at 90 and 110 placed after it, meets a bar that opens
+        // at 100 and trades down to 85: the entry fills at 95, the bracket arms on
+        // that long, and its stop closes it at 90 on the same bar
+        let mut e = spot(
+            &[ohlc(100.0, 100.0, 85.0, 88.0, 1e6)],
+            Intrabar::Pessimistic,
+        );
+        let entry = e.limit_buy(1.0, 95.0).expect("rests").0;
+        let (stop, take_profit) = e.bracket(0, Some(90.0), Some(110.0));
+        let s = e.step();
+        assert_eq!(
+            fills(&e),
+            vec![
+                (entry, 1.0, 95.0, FillReason::Limit),
+                (id(stop), 1.0, 90.0, FillReason::Stop),
+            ]
+        );
+        assert_eq!(
+            events(&e)[3..],
+            [
+                (entry, EventKind::Filled, EventReason::Limit),
+                (id(stop), EventKind::Armed, EventReason::Stop),
+                (id(take_profit), EventKind::Armed, EventReason::TakeProfit),
+                (id(stop), EventKind::Filled, EventReason::Stop),
+                (
+                    id(take_profit),
+                    EventKind::Cancelled,
+                    EventReason::PartnerFilled
+                ),
+            ]
+        );
+        assert_eq!(s.position, 0.0);
+    }
+
+    #[test]
+    fn a_leg_in_an_earlier_slot_than_the_fill_that_arms_it_waits_for_the_next_bar() {
+        // placed before its entry, the stop takes its turn on the entry's bar before
+        // the entry fills, while it has no side, and stops the long on the bar after
+        let mut e = spot(
+            &[
+                ohlc(100.0, 100.0, 85.0, 88.0, 1e6),
+                ohlc(88.0, 89.0, 86.0, 87.0, 1e6),
+            ],
+            Intrabar::Pessimistic,
+        );
+        let (stop, _) = e.bracket(0, Some(90.0), Some(110.0));
+        e.limit_buy(1.0, 95.0).expect("rests");
+        assert_eq!(e.step().position, 1.0);
+        let s = e.step();
+        assert_eq!(fills(&e)[1], (id(stop), 1.0, 88.0, FillReason::Stop));
+        assert_eq!(s.position, 0.0);
+    }
+
+    #[test]
+    fn a_flip_at_the_open_after_a_limit_entry_cancels_the_bracket_it_armed() {
+        // the limit entry fills at 95 on a bar that reaches neither leg, so the
+        // bracket rests armed on the long, and a market sell of 2 flipping it short
+        // at the next open cancels both legs before a buy stop at 90 and a buy limit
+        // at 110 could close the short
+        let mut e = perp(&[
+            ohlc(100.0, 101.0, 94.0, 100.0, 1e6),
+            ohlc(100.0, 111.0, 89.0, 100.0, 1e6),
+        ]);
+        let entry = e.limit_buy(1.0, 95.0).expect("rests").0;
+        let (stop, take_profit) = e.bracket(0, Some(90.0), Some(110.0));
+        e.step();
+        assert_eq!(fills(&e), vec![(entry, 1.0, 95.0, FillReason::Limit)]);
+        let flip = e.market_sell(2.0).expect("queued").0;
+        let s = e.step();
+        assert_eq!(
+            events(&e)[events(&e).len() - 3..],
+            [
+                (flip, EventKind::Filled, EventReason::Market),
+                (id(stop), EventKind::Cancelled, EventReason::PositionClosed),
+                (
+                    id(take_profit),
+                    EventKind::Cancelled,
+                    EventReason::PositionClosed
+                ),
+            ]
+        );
+        assert_eq!(s.position, -1.0);
+    }
+
+    #[test]
+    fn a_leg_given_a_size_goes_with_the_position_its_fill_closes() {
+        // the stop given a size of 2 behind a long of 1 sells 1 at 95, all the long
+        // there is, and goes with it rather than resting on to sell a later long
+        let mut e = spot(
+            &[
+                FLAT,
+                ohlc(100.0, 101.0, 94.0, 96.0, 1e6),
+                FLAT,
+                ohlc(100.0, 101.0, 94.0, 96.0, 1e6),
+            ],
+            Intrabar::Pessimistic,
+        );
+        e.market_buy(1.0);
+        e.step();
+        let (stop, _) = e.bracket(0, Some(95.0), Some(110.0));
+        e.replace(stop.expect("the leg rests"), Some(2.0), None, None);
+        let s = e.step();
+        assert_eq!(fills(&e)[1], (id(stop), 1.0, 95.0, FillReason::Stop));
+        assert!(s.open_orders.is_empty());
+        e.market_buy(3.0);
+        e.step();
+        assert_eq!(e.step().position, 3.0);
+    }
+
+    #[test]
+    fn a_take_profit_against_the_accounts_own_bid_is_refused_or_cancelled_as_it_arms() {
+        // beside a long, a take-profit at 98 is a sell at or below the account's bid
+        // at 99 and is refused when placed; placed while flat it has no side, and it
+        // is cancelled when the long a market buy opens arms it
+        let quiet = ohlc(100.0, 100.5, 99.5, 100.0, 1e6);
+        let mut e = spot(&[quiet, quiet], Intrabar::Pessimistic);
+        let bid = e.limit_buy(1.0, 99.0).expect("rests");
+        let (_, flat) = e.bracket(0, None, Some(98.5));
+        let entry = e.market_buy(1.0).expect("queued").0;
+        e.step();
+        let crossed = EventReason::Refused(Refusal::SelfTrade(bid));
+        assert_eq!(
+            events(&e)[events(&e).len() - 3..],
+            [
+                (entry, EventKind::Filled, EventReason::Market),
+                (id(flat), EventKind::Armed, EventReason::TakeProfit),
+                (id(flat), EventKind::Cancelled, crossed),
+            ]
+        );
+        assert_eq!(e.bracket(0, None, Some(98.0)), (None, None));
+        assert_eq!(
+            events(&e).last().map(|event| (event.1, event.2)),
+            Some((EventKind::Refused, crossed))
+        );
+        assert_eq!(e.step().open_orders.len(), 1);
     }
 }

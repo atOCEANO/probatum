@@ -23,8 +23,14 @@ RULES = [
     "a bar clipped",
     "a bar clipped across several perpetuals",
     "a bracket armed",
+    "a bracket armed by a resting fill",
+    "a bracket armed on a short",
+    "a bracket cancelled by a liquidation",
+    "a bracket cancelled by another's leg",
     "a bracket cancelled with its position",
     "a bracket leg filled",
+    "a bracket leg filled on the bar it armed",
+    "a bracket waiting through a row without its bar",
     "a check closing the account at the open",
     "a corner or the closes reaching the trigger",
     "a delisting",
@@ -63,9 +69,12 @@ RULES = [
     "a replace",
     "a round trip closed",
     "a size rounded down to the lot",
+    "a sized leg gone with the position its fill closed",
+    "a sizeless leg sized at a position the bar's fills moved",
     "a spot buy held to its cash",
     "a spot sale held to the holding",
     "a stop triggered",
+    "a take-profit cancelled as it armed against the account's own",
     "a takeover",
     "a taker's price held inside the bar",
     "a target",
@@ -115,6 +124,7 @@ RULES = [
 # inverse contract settles alone
 SEVERAL_ONLY = {
     "a bar clipped across several perpetuals",
+    "a bracket waiting through a row without its bar",
     "a liquidation of several perpetuals",
     "a waiting market order cancelled",
     "a waiting target leg replaced",
@@ -136,6 +146,7 @@ UNREACHABLE = {"dust swept at the close", "a target leg on an instrument yet to 
 # random accounts seldom reach these, so a case built for each reaches it in the
 # comparison with the engine
 BUILT = {
+    "a sized leg gone with the position its fill closed",
     "a wallet a fill left within rounding of zero set to zero",
     "an exit held back from a position the bar's orders opened",
     "the exits of a position the bar's orders opened reordered",

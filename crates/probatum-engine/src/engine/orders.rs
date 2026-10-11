@@ -170,22 +170,8 @@ impl Engine {
         if replacing.is_none() && resting >= self.config.max_open_orders {
             return Some(Refusal::Resting(self.config.max_open_orders));
         }
-        // a limit that reaches the account's own resting limit of the other side
-        // would trade against the same account, which a venue refuses (ADR 0011). A
-        // bracket leg yet to arm has no side, so it is neither checked nor met
-        let sided = |order: &Order| order.leg.is_none_or(|leg| leg.armed);
-        if let Some(price) = order.price.filter(|_| sided(order)) {
-            let own = self.book.iter().find(|own| {
-                own.instrument == order.instrument
-                    && sided(own)
-                    && own.side != order.side
-                    && own
-                        .price
-                        .is_some_and(|at| self.fill_model.limit_crosses(order.side, price, at))
-            });
-            if let Some(own) = own {
-                return Some(Refusal::SelfTrade(own.id));
-            }
+        if let Some(own) = self.crossed(order) {
+            return Some(Refusal::SelfTrade(own));
         }
         // Crossing is judged against the instrument's last close, the last price the
         // strategy actually saw. The next bar's open is what this order would really
@@ -202,6 +188,26 @@ impl Engine {
             return Some(Refusal::PostOnly);
         }
         None
+    }
+
+    /// The account's own resting limit of the other side on `order`'s instrument that a
+    /// limit at `order`'s price reaches, a sell at or below it for a buy and a buy at
+    /// or above it for a sell, which a venue refuses to trade against (ADR 0011). A
+    /// bracket leg yet to arm has no side, so it is neither checked nor met.
+    pub(super) fn crossed(&self, order: &Order) -> Option<OrderId> {
+        let sided = |order: &Order| order.leg.is_none_or(|leg| leg.armed);
+        let price = order.price.filter(|_| sided(order))?;
+        self.book
+            .iter()
+            .find(|own| {
+                own.instrument == order.instrument
+                    && sided(own)
+                    && own.side != order.side
+                    && own
+                        .price
+                        .is_some_and(|at| self.fill_model.limit_crosses(order.side, price, at))
+            })
+            .map(|own| own.id)
     }
 
     /// Rest `order` in the first free slot, or log why it cannot rest.
@@ -262,8 +268,9 @@ impl Engine {
     /// Dispatches on `kind`: a market ignores `price` and `trigger`, a limit needs a
     /// `price`, a stop needs a `trigger`. `tif` applies to market and limit orders;
     /// a stop rests until it triggers (ADR 0010). `None` if the book is full, the
-    /// size is not a positive finite number, a post_only limit would cross, or a
-    /// limit has no price or a stop no trigger.
+    /// size is not a positive finite number, a post_only limit would cross, a limit
+    /// would trade against the account's own, or a limit has no price or a stop no
+    /// trigger.
     #[allow(clippy::too_many_arguments)]
     pub fn order(
         &mut self,
@@ -328,15 +335,15 @@ impl Engine {
     }
 
     /// Rest a buy limit; it fills when a later bar trades down to `price`. `None`
-    /// if the book is full, the size is not a positive finite number, or `price`
-    /// is not finite.
+    /// if the book is full, the size is not a positive finite number, `price` is
+    /// not finite, or the account rests a sell at or below it (ADR 0011).
     pub fn limit_buy(&mut self, size: f64, price: f64) -> Option<OrderId> {
         self.place_limit(0, Side::Buy, size, price, false, false, TimeInForce::Gtc)
     }
 
     /// Rest a sell limit; it fills when a later bar trades up to `price`. `None`
-    /// if the book is full, the size is not a positive finite number, or `price`
-    /// is not finite.
+    /// if the book is full, the size is not a positive finite number, `price` is
+    /// not finite, or the account rests a buy at or above it (ADR 0011).
     pub fn limit_sell(&mut self, size: f64, price: f64) -> Option<OrderId> {
         self.place_limit(0, Side::Sell, size, price, false, false, TimeInForce::Gtc)
     }

@@ -1390,15 +1390,17 @@ impl Engine {
         self.inner.market_sell(size).map(|id| id.0)
     }
 
-    /// Rest a buy limit. Returns the order id, or None if the book is full or size
-    /// is not a positive finite number; a non-finite price raises instead.
+    /// Rest a buy limit. Returns the order id, or None if the book is full, size is
+    /// not a positive finite number, or the account rests a sell at or below `price`;
+    /// a non-finite price raises instead.
     fn limit_buy(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
         Ok(self.inner.limit_buy(size, price).map(|id| id.0))
     }
 
-    /// Rest a sell limit. Returns the order id, or None if the book is full or size
-    /// is not a positive finite number; a non-finite price raises instead.
+    /// Rest a sell limit. Returns the order id, or None if the book is full, size is
+    /// not a positive finite number, or the account rests a buy at or above `price`;
+    /// a non-finite price raises instead.
     fn limit_sell(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
         Ok(self.inner.limit_sell(size, price).map(|id| id.0))
@@ -1549,8 +1551,8 @@ impl Engine {
     /// The one order primitive the shortcuts wrap. `side` is "buy" or "sell",
     /// `type` is "market", "limit", or "stop", `tif` is "GTC", "IOC", or "FOK". A
     /// limit needs `price`, a stop needs `trigger`. Returns the order id, or None if
-    /// the book is full, a post_only limit would cross, or `size` is not a positive
-    /// finite number. `tif` applies to market and limit orders; a stop rests until
+    /// the book is full, a post_only limit would cross, a limit would trade against
+    /// the account's own, or `size` is not a positive finite number. `tif` applies to market and limit orders; a stop rests until
     /// it triggers (ADR 0010).
     #[pyo3(signature = (
         side,
