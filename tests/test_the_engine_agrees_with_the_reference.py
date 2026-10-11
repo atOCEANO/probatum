@@ -18,8 +18,12 @@ from reference.simulator import Bar
 SHARED = [
     "a bar clipped",
     "a bracket armed",
+    "a bracket armed by a resting fill",
+    "a bracket armed on a short",
+    "a bracket cancelled by another's leg",
     "a bracket cancelled with its position",
     "a bracket leg filled",
+    "a bracket leg filled on the bar it armed",
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
@@ -44,6 +48,7 @@ SHARED = [
     "a reduce_only order held to the position",
     "a reduce_only order with nothing to reduce",
     "a replace",
+    "a sizeless leg sized at a position the bar's fills moved",
     "a spot buy held to its cash",
     "a spot sale held to the holding",
     "a stop triggered",
@@ -151,6 +156,12 @@ BUILT = {
     # a bar the path survives, closed at its closes by the debit charged there
     "a debit at the close that takes the account to its trigger": (
         "a liquidation at the closes", debited_at_the_close()),
+    # a bracket on a long of 1, its stop at 95 and its take-profit at 105, and the
+    # stop moved to 94 and given a size of 2: it sells the 1 held and goes with it
+    "a stop given more than its long": (
+        "a sized leg gone with the position its fill closed",
+        built(("market", "buy", 1.0, 0.0), ("bracket", "buy", 1.0, 15.0 / 19.0),
+              ("replace", "buy", 4.0, 0.35), shaped=(100.0, 101.0, 93.0, 95.0))),
     # a sale the bound pays into, which leaves the account flat at zero
     "a sale the bound pays into that leaves the account flat": (
         "a wallet a fill left within rounding of zero set to zero", bounded_flat()),

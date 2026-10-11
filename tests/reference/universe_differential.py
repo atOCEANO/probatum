@@ -24,8 +24,8 @@ import numpy as np
 import probatum
 from .differential import (KINDS, Script, before, bracket, clock, close_enough,
                            closed_before, cut, limit_price, live, log_difference,
-                           resting, setting, settings, stamps, stop_price, tally,
-                           tier_table, walk, weight, worded)
+                           prune, resting, setting, settings, stamps, stop_price,
+                           tally, tier_table, walk, weight, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -342,13 +342,16 @@ def place(sim, action, t, theirs, script, reached):
         return
 
     i, kind, side, size, u = action
+    prune(sim, theirs)
 
     if kind in ("close", "reduce", "exits") and sim.position[i] == 0.0:
         # an exit drawn on an instrument the account does not hold acts on one it
-        # does, where there is one
+        # does, where there is one, for the same worth
         held = [k for k, q in enumerate(sim.position) if q != 0.0]
         if held:
-            i = held[int(u * len(held))]
+            k = held[int((11.0 * u) % 1.0 * len(held))]
+            size *= sim.mark[i] / sim.mark[k]
+            i = k
 
     close = sim.mark[i]
     on    = next((r for r in range(t + 1, len(sim.bars)) if sim.bars[r][i] is not None),
@@ -449,8 +452,9 @@ def place(sim, action, t, theirs, script, reached):
             theirs[:] = [got for got in theirs if sim.orders[got[0]]["instrument"] != i]
     elif kind == "replace" and theirs:
         order, placed = theirs[0]
-        size = None if sim.orders[order]["leg"] and u > 0.5 else size / 2.0
-        mark = sim.mark[sim.orders[order]["instrument"]]
+        sizeless = sim.orders[order]["leg"] and (7.0 * u) % 1.0 > 0.5
+        size     = None if sizeless else size / 2.0
+        mark     = sim.mark[sim.orders[order]["instrument"]]
         if sim.orders[order]["kind"] == "stop":
             trigger = stop_price(mark, u)
             script.take(t, "replace", order=placed, size=size, trigger=trigger)

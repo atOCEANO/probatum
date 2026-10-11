@@ -226,13 +226,23 @@ def bracket_prices(held, side, close, u):
 
 def bracket(sim, i, t, side, size, close, u, theirs, script, **on):
     """A bracket on instrument `i`, on the position it holds, or placed while flat
-    beside the entry it waits for, so it arms when that entry fills, each leg that
-    rests written into `theirs` with the placement that made it. Returns whether
-    any rests."""
+    after the entry it waits for, a market order or, half the time, a limit, so it
+    arms when that entry fills, on its bar where the bar reaches the limit; a spot
+    entry buys, since spot cannot be short. Each order that rests is written into
+    `theirs` with the placement that made it. Returns whether a leg rests."""
     held = sim.position[i]
     if held == 0.0:
-        script.take(t, side, size=size, tif="ioc", **on)
-        sim.order(i, side, size)
+        if sim.instruments[i].kind == "spot":
+            side = "buy"
+        if (13.0 * u) % 1.0 < 0.5:
+            script.take(t, side, size=size, tif="ioc", **on)
+            sim.order(i, side, size)
+        else:
+            price  = limit_price(side, close, u)
+            placed = script.take(t, side, size=size, limit=price, **on)
+            entry  = sim.order(i, side, size, limit=price)
+            if resting(sim, entry):
+                theirs.append((entry, placed))
 
     stop, take_profit = bracket_prices(held, side, close, u)
     placed = dict(zip(("stop", "take_profit"),
@@ -241,6 +251,13 @@ def bracket(sim, i, t, side, size, close, u, theirs, script, **on):
     legs = sim.bracket(i, stop=stop, take_profit=take_profit)
     theirs.extend((order, placed[sim.orders[order]["leg"]]) for order in legs)
     return bool(legs)
+
+
+def prune(sim, theirs):
+    """Drop from the front of `theirs` the orders that filled, expired or were
+    cancelled, so a cancel or a replace acts on one still resting."""
+    while theirs and not resting(sim, theirs[0][0]):
+        theirs.pop(0)
 
 
 def weight(market, u, k=0, among=1):
@@ -382,6 +399,7 @@ def place(sim, action, t, close, theirs, script, reached=None):
         return
 
     kind, side, size, u = action
+    prune(sim, theirs)
 
     if reached is not None:
         # what the action had to act on when it was placed: one that never meets a
@@ -470,7 +488,9 @@ def place(sim, action, t, close, theirs, script, reached=None):
         order, placed = theirs[0]
         # a bracket leg given a size closes that much, and one moved without a size
         # still closes the position it finds
-        size = None if sim.orders[order]["leg"] and u > 0.5 else size / 2.0
+        sizeless = sim.orders[order]["leg"] and (7.0 * u) % 1.0 > 0.5
+        size     = None if sizeless else size / 2.0
+
         if sim.orders[order]["kind"] == "stop":
             trigger = stop_price(close, u)
             script.take(t, "replace", order=placed, size=size, trigger=trigger)
