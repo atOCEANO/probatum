@@ -222,6 +222,10 @@ pub struct Engine {
     /// opened at it, the reference of the fill that opened or flipped it otherwise,
     /// NaN while it is flat.
     starts: Vec<f64>,
+    /// The money at stake as the bar's fills began, the margin wallet and every perp
+    /// held at its last mark, which the rounding a close can leave in a margin wallet
+    /// it empties is measured against.
+    reach: f64,
     unseen: Unseen,
     /// The stream a random setting draws each bar's way from, which runs on across
     /// resets, so each episode of one engine draws afresh.
@@ -284,6 +288,7 @@ impl Engine {
             notes: Vec::new(),
             maintains,
             starts: vec![f64::NAN; width],
+            reach: 0.0,
             unseen: {
                 let worse = config.intrabar != Intrabar::Optimistic;
                 Unseen {
@@ -534,6 +539,15 @@ impl Engine {
                         f64::NAN
                     };
                 }
+            }
+            if !self.pending.is_empty() || !self.book.is_empty() {
+                self.reach = self.account.margin_cash.abs()
+                    + (0..self.marks.len())
+                        .filter(|&i| self.account.markets[i] == Market::Perp)
+                        .map(|i| (self.account.positions[i].qty.get(), self.marks[i]))
+                        .filter(|&(q, _)| q != 0.0)
+                        .map(|(q, mark)| (q * mark).abs())
+                        .sum::<f64>();
             }
 
             // 1. pending market orders fill at the open

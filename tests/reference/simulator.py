@@ -432,6 +432,7 @@ class Simulator:
         self.asked_before    = list(self.asked)
         self.target_transfer = None                   # where this decision's shortfall was queued
         self.paid_in         = 0.0                    # what the last bound paid into the wallet
+        self.reach           = 0.0                    # the money at stake as the bar's fills began
         self.budget_left     = {}
         self.costs           = self.no_costs()
         self.clipped         = {}
@@ -1125,7 +1126,7 @@ class Simulator:
                 order = self.orders[order_id]
                 self.target_legs.append(order)
                 if order["status"] != "refused":
-                    placed.append((i, leg))
+                    placed.append((i, math.copysign(order["size"], leg)))
 
         if transfer:
             # what the spot legs it queued cost at the close, fees in, less what
@@ -1183,6 +1184,12 @@ class Simulator:
                      for i in self.perps() if self.position[i] != 0.0}
         self.start = [bar.open if bar is not None and self.position[i] != 0.0 else None
                       for i, bar in enumerate(self.bars[t])]
+
+        # Numbers: the money at stake as the bar's fills begin, which the rounding a
+        # close can leave in a margin wallet it empties is measured against
+        self.reach = abs(self.margin_cash) + sum(
+            abs(self.instruments[i].notional(self.position[i], self.mark[i]))
+            for i in self.perps() if self.position[i] != 0.0)
 
         self.delist(t)
         self.fill_market_orders(t)                                  # 4
@@ -1833,9 +1840,11 @@ class Simulator:
 
             q = self.position[i]
             if q != 0.0:
+                cash = self.margin_cash
                 self.apply(i, "sell" if q > 0.0 else "buy", abs(q), self.mark[i],
                            rate=0.0, taker=False, order=None, reason="delist",
                            reference=self.mark[i], moment="before")
+                self.zero_rounding(i, cash, 0.0, abs(q), self.mark[i])
 
 
     def taker_price(self, i, side, reference, size, bar):
@@ -1955,7 +1964,7 @@ class Simulator:
                                       costs)
             self.apply(i, side, size, price, self.venue.taker, True, order,
                        order["reason"], reference=bar.open, costs=costs)
-            self.zero_rounding(i, cash, size, price)
+            self.zero_rounding(i, cash, self.paid_in, size, price)
             order["filled"] += size
 
             # a market order lives one bar: what it did not fill is gone
@@ -2118,7 +2127,7 @@ class Simulator:
             reason = order["leg"] or order["reason"]
             self.apply(i, side, size, price, rate, taker, order, reason,
                        reference=reference, costs=costs)
-            self.zero_rounding(i, cash, size, price)
+            self.zero_rounding(i, cash, self.paid_in, size, price)
             order["filled"] += size
 
             if order["pair"] is not None:
@@ -2380,18 +2389,20 @@ class Simulator:
         return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price)
 
 
-    def zero_rounding(self, i, cash, size, price):
+    def zero_rounding(self, i, cash, credit, size, price):
         """Numbers that are the same everywhere: a perpetual fill that leaves no
-        perpetual held and the margin wallet within the rounding of what it moved,
-        from `cash` before the fill, sets the wallet to zero, as a takeover does, the
-        hair the liquidation charge."""
-        if self.instruments[i].kind == "spot" or any(self.position[j] != 0.0
-                                                      for j in self.perps()):
+        perpetual held and the margin wallet within the rounding of the money at
+        stake, the bar's own, the wallet's `cash` before the fill, the bound's
+        `credit` and the fill's notional, sets the wallet to zero, as a takeover
+        does, the hair the liquidation charge."""
+        inst = self.instruments[i]
+        if inst.kind == "spot" or any(self.position[j] != 0.0 for j in self.perps()):
             return
 
-        rounding = 1e-12 * (abs(cash) + self.paid_in + size * price)
-        if abs(self.margin_cash) <= rounding:
-            self.hit("a wallet a fill left within rounding of zero set to zero")
+        stake = self.reach + abs(cash) + credit + abs(inst.notional(size, price))
+        if abs(self.margin_cash) <= 1e-12 * stake:
+            if self.margin_cash != 0.0:
+                self.hit("a wallet a fill left within rounding of zero set to zero")
             self.costs["liquidation"] += self.margin_cash
             self.margin_cash = 0.0
 

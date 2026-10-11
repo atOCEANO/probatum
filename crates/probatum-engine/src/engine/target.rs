@@ -201,7 +201,7 @@ mod tests {
     use crate::engine::fixtures::{cfg, ohlc, perp_cfg, universe, ABSENT};
     use crate::engine::{Engine, EngineConfig};
     use crate::reporter::{EventKind, EventReason, FillReason};
-    use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
+    use probatum_core::{Candle, Market, OrderType, Side, TimeInForce, Wallet};
 
     /// A flat perp account of 10,000 with no fees, on a bar at 60,000 and then `next`.
     fn bitcoin(next: Candle) -> Engine {
@@ -418,10 +418,52 @@ mod tests {
     }
 
     #[test]
-    fn a_target_replaces_the_legs_an_earlier_one_left_waiting() {
-        // the second perp prints no bar on the third and fourth rows, so the buy of
-        // 500 a target decides on the second row waits; the same target on the third
-        // row replaces it with its own, and one buy of 500 fills on the fifth row
+    fn a_second_target_takes_back_only_the_first_ones_transfer() {
+        // the account's own transfer of 100, made between the two targets, lands
+        // beside the second target's 4,005, which saw the same 1,000 of spot cash
+        let mut e = spot_and_margin(8);
+        e.target(&[(0, 0.5)], 0.0, true).expect("a long on spot");
+        e.transfer(100.0, Wallet::Spot);
+        e.target(&[(0, 0.5)], 0.0, true).expect("a long on spot");
+        let s = e.step();
+        let kept = 9_000.0 - 100.0 - 4_005.0;
+        assert!(
+            (s.margin_cash - kept).abs() < 1e-6,
+            "kept {}",
+            s.margin_cash
+        );
+        assert!((s.spot_cash - 100.0).abs() < 1e-6, "spot {}", s.spot_cash);
+    }
+
+    #[test]
+    fn a_flip_whose_whole_leg_clears_the_tolerance_queues_both_parts() {
+        // a long of 4 at 100 on 10,000, 0.04 of equity, asked to -0.04 with a
+        // tolerance of 0.05: the whole leg of 8 is 800 of notional, past the 500 the
+        // tolerance skips, though each part of 4 is 400
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let config = EngineConfig {
+            quote: 10_000.0,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(Candles::new(vec![flat; 3]), config);
+        e.reset();
+        e.market_buy(4.0);
+        e.step();
+        e.target(&[(0, -0.04)], 0.05, false).expect("a perp");
+        let queued: Vec<(Side, f64, bool)> = e
+            .pending
+            .iter()
+            .map(|order| (order.side, order.size.get(), order.reduce_only))
+            .collect();
+        assert_eq!(
+            queued,
+            vec![(Side::Sell, 4.0, true), (Side::Sell, 4.0, false)]
+        );
+    }
+
+    /// Two perps, the second at 10 printing no bar on the third and fourth rows, on
+    /// 10,000 of margin with no fees, reset.
+    fn waiting() -> Engine {
         let at = |price: f64| ohlc(price, price, price, price, 1e6);
         let rows = vec![
             vec![at(100.0), at(10.0)],
@@ -437,6 +479,38 @@ mod tests {
         };
         let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
         e.reset();
+        e
+    }
+
+    #[test]
+    fn a_later_target_leaves_a_waiting_leg_on_what_it_does_not_name() {
+        // the second perp's buy of 500 waits, and a target of the first alone lets it
+        // fill on the fifth row beside its own buy of 20 on the fourth
+        let mut e = waiting();
+        e.step();
+        let first = e.target(&[(1, 0.5)], 0.0, false).expect("a perp");
+        e.step();
+        let second = e.target(&[(0, 0.2)], 0.0, false).expect("a perp");
+        e.step();
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let fills: Vec<_> = reporter
+            .fills()
+            .iter()
+            .map(|fill| (fill.order, fill.size))
+            .collect();
+        assert_eq!(
+            fills,
+            vec![(Some(second[0]), 20.0), (Some(first[0]), 500.0)]
+        );
+    }
+
+    #[test]
+    fn a_target_replaces_the_legs_an_earlier_one_left_waiting() {
+        // the buy of 500 a target decides on the second row waits; the same target
+        // on the third row replaces it with its own, and one buy of 500 fills on the
+        // fifth row
+        let mut e = waiting();
         e.step();
         let first = e.target(&[(1, 0.5)], 0.0, false).expect("a perp");
         e.step();

@@ -101,26 +101,30 @@ def bitcoin_and_ether(closes, intrabar):
     return times, ["linear", "linear"], columns, cfg, actions
 
 
-def closed_out_on_two():
-    """Longs of 10 on two perpetuals from 100 on 102 of margin and a taker fee of
-    0.2%, closed by one target on a bar where the first opens at 90, which the bound
-    lifts to 90.18 to leave the second's closing fee, and the second at 100, which
-    that fee takes to the zero exact arithmetic gives; the buy decided at that
-    close then has nothing to back it."""
+def closed_out_on_two(units):
+    """Longs of `units` and of 10 on two perpetuals from 100, on the margin that
+    leaves the second's closing fee once the first is marked at 90, with a taker fee
+    of 0.2%, closed by one target on a bar where the first opens at 90, which the
+    bound lifts to 90.18 to leave that fee, and the second at 100, which the fee
+    takes to the zero exact arithmetic gives; the buy decided at that close then
+    has nothing to back it."""
     def flat(price):
-        return Bar(price, price, price, price, 1e6)
+        return Bar(price, price, price, price, 1e9)
 
+    margin  = 10.0 * units + 2.0
+    quote   = margin + 0.2 * units + 2.0
     columns = [
-        [flat(100.0)] * 3 + [Bar(90.0, 95.0, 90.0, 92.0, 1e6), flat(92.0)],
-        [flat(100.0)] * 3 + [Bar(100.0, 105.0, 100.0, 103.0, 1e6), flat(103.0)],
+        [flat(100.0)] * 3 + [Bar(90.0, 95.0, 90.0, 92.0, 1e9), flat(92.0)],
+        [flat(100.0)] * 3 + [Bar(100.0, 105.0, 100.0, 103.0, 1e9), flat(103.0)],
     ]
 
     times = [k * differential.HOUR for k in range(5)]
-    cfg   = dict(kinds=["linear", "linear"], quote=106.0, balance=106.0,
+    cfg   = dict(kinds=["linear", "linear"], quote=quote, balance=quote,
                  fee_taker=0.002, fee_maker=0.0, slippage_bps=0.0, max_open_orders=8,
                  leverage=0.0, funding=("none",), tiers=[(None, "notional")] * 2,
                  intrabar="pessimistic")
-    actions = [(0, "market", "buy", 10.0, 0.0), (1, "market", "buy", 10.0, 0.0),
+
+    actions = [(0, "market", "buy", units, 0.0), (1, "market", "buy", 10.0, 0.0),
                (0, "weights", "buy", {0: 0.0, 1: 0.0}, 0.0),
                (0, "market", "buy", 5.0, 0.0), None]
 
@@ -155,17 +159,22 @@ def waiting_and_unlisted():
 
 # universes built where random ones seldom reach a rule, each with the rule it reaches
 BUILT = {
-    "a target naming an instrument before its first bar":     (
+    "a target naming an instrument before its first bar": (
         "a target leg on an instrument yet to print", waiting_and_unlisted()),
     "a target replacing the leg an earlier one left waiting": (
         "a waiting target leg replaced", waiting_and_unlisted()),
-    "two perps closed out where the margin ran out":          (
+    "two perps closed out where the margin ran out": (
         "a wallet a fill left within rounding of zero set to zero",
-        closed_out_on_two()),
-    "every corner and the closes clear of the trigger":       (
+        closed_out_on_two(10.0)),
+    # the first close is a million units, whose rounding the second's own fill is
+    # far too small to measure
+    "two perps closed out where the margin ran out, the first a million units": (
+        "a wallet a fill left within rounding of zero set to zero",
+        closed_out_on_two(1e6)),
+    "every corner and the closes clear of the trigger": (
         "a path inside the bars that never reaches the trigger",
         bitcoin_and_ether((57_000.0, 3_150.0), "optimistic")),
-    "the closes at the trigger":                              (
+    "the closes at the trigger": (
         "a corner or the closes reaching the trigger",
         bitcoin_and_ether((55_000.0, 3_250.0), "optimistic")),
 }
