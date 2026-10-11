@@ -66,13 +66,14 @@ impl Engine {
         // a close that leaves no perp held where the margin ran out leaves the wallet
         // at the zero exact arithmetic gives, which floating point misses by a hair
         // either side, and a hair above zero is equity the cap levers; a wallet
-        // within the rounding of the money at stake on the bar and in the fill is set
+        // within the rounding of the money the bar's perp fills put at stake is set
         // to zero, as a takeover sets it, and the hair is the liquidation charge
         // (ADRs 0015, 0018)
-        if self.account.markets[i] == Market::Perp && self.account.perps_held() == 0 {
-            let stake = self.reach + cash.abs() + credit + applied * fill.price.get();
-            let rounding = 1e-12 * stake;
-            if self.account.margin_cash.abs() <= rounding {
+        if self.account.markets[i] == Market::Perp {
+            self.reach += cash.abs() + credit + applied * fill.price.get();
+            if self.account.perps_held() == 0
+                && self.account.margin_cash.abs() <= 1e-12 * self.reach
+            {
                 if let Some(reporter) = self.reporter.as_mut() {
                     reporter.costs_mut().liquidation += self.account.margin_cash;
                 }

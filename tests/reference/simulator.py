@@ -364,7 +364,7 @@ class Trip:
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
            "legs", "next_id", "target_legs", "liquidations", "reached", "first",
-           "start")
+           "start", "reach")
 
 
 class Simulator:
@@ -432,7 +432,7 @@ class Simulator:
         self.asked_before    = list(self.asked)
         self.target_transfer = None                   # where this decision's shortfall was queued
         self.paid_in         = 0.0                    # what the last bound paid into the wallet
-        self.reach           = 0.0                    # the money at stake as the bar's fills began
+        self.reach           = 0.0                    # what the bar's perpetual fills put at stake
         self.budget_left     = {}
         self.costs           = self.no_costs()
         self.clipped         = {}
@@ -1184,12 +1184,7 @@ class Simulator:
                      for i in self.perps() if self.position[i] != 0.0}
         self.start = [bar.open if bar is not None and self.position[i] != 0.0 else None
                       for i, bar in enumerate(self.bars[t])]
-
-        # Numbers: the money at stake as the bar's fills begin, which the rounding a
-        # close can leave in a margin wallet it empties is measured against
-        self.reach = abs(self.margin_cash) + sum(
-            abs(self.instruments[i].notional(self.position[i], self.mark[i]))
-            for i in self.perps() if self.position[i] != 0.0)
+        self.reach = 0.0
 
         self.delist(t)
         self.fill_market_orders(t)                                  # 4
@@ -2390,17 +2385,20 @@ class Simulator:
 
 
     def zero_rounding(self, i, cash, credit, size, price):
-        """Numbers that are the same everywhere: a perpetual fill that leaves no
-        perpetual held and the margin wallet within the rounding of the money at
-        stake, the bar's own, the wallet's `cash` before the fill, the bound's
-        `credit` and the fill's notional, sets the wallet to zero, as a takeover
-        does, the hair the liquidation charge."""
+        """Numbers that are the same everywhere: a perpetual fill puts at stake the
+        margin wallet's `cash` before it, the bound's `credit` and its notional, and
+        one that leaves no perpetual held and the wallet within the rounding of what
+        the bar's perpetual fills have put at stake sets the wallet to zero, as a
+        takeover does, the hair the liquidation charge."""
         inst = self.instruments[i]
-        if inst.kind == "spot" or any(self.position[j] != 0.0 for j in self.perps()):
+        if inst.kind == "spot":
             return
 
-        stake = self.reach + abs(cash) + credit + abs(inst.notional(size, price))
-        if abs(self.margin_cash) <= 1e-12 * stake:
+        self.reach += abs(cash) + credit + abs(inst.notional(size, price))
+        if any(self.position[j] != 0.0 for j in self.perps()):
+            return
+
+        if abs(self.margin_cash) <= 1e-12 * self.reach:
             if self.margin_cash != 0.0:
                 self.hit("a wallet a fill left within rounding of zero set to zero")
             self.costs["liquidation"] += self.margin_cash

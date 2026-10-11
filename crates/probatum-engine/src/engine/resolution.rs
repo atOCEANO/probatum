@@ -254,13 +254,14 @@ impl Engine {
         }
         let (account, book) = (self.account.clone(), self.book.clone());
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
-        let starts = self.starts.clone();
+        let (starts, reach) = (self.starts.clone(), self.reach);
         let reporter = self.reporter.take();
         let held = self.fill_offers(fills.to_vec(), true);
         let liquidates = held && self.reaches_trigger();
         self.account = account;
         self.book = book;
         self.starts = starts;
+        self.reach = reach;
         self.notes.truncate(notes);
         self.flipped = flipped;
         self.fills = count;

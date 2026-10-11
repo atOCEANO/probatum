@@ -559,7 +559,7 @@ Each bar, the change in equity equals the price PnL less spread, slippage, impac
 - Random draws come from named streams, PCG64 in Python and ChaCha in Rust, each derived from the run's seed through a NumPy `SeedSequence` and recorded with it.
 - Sums run in a fixed instrument order, the batch has no cross-environment reductions, and the statistics a search ranks on are summed in a fixed order.
 - Compensated sums are used only for totals reported over many bars, such as fees, funding and turnover; cash and positions stay plain arithmetic in event order.
-- A perpetual fill that leaves no perpetual held, with the margin wallet's size within `1e-12` times the money at stake, leaves the wallet at zero, as a takeover does, the remainder booked as the liquidation charge. The money at stake is the margin wallet and every perpetual's notional as the bar's fills began, the wallet before the fill, what the margin bound paid in, and the fill's notional. Exact arithmetic leaves zero where the margin ran out, and floating point a hair either side of it, which above zero is equity the cap would lever.
+- A perpetual fill that leaves no perpetual held, with the margin wallet's size within `1e-12` times the money at stake, leaves the wallet at zero, as a takeover does, the remainder booked as the liquidation charge. The money at stake is what the bar's perpetual fills have put there so far, for each the margin wallet before it, what the margin bound paid in and its notional. Exact arithmetic leaves zero where the margin ran out, and floating point a hair either side of it, which above zero is equity the cap would lever.
 
 <br>
 <br>
