@@ -456,6 +456,7 @@ For linear contracts, margin equity less the requirement rises with a long leg's
 - liquidation in slices is not modelled (pessimistic for large positions);
 - auto-deleveraging is not modelled (optimistic for winners);
 - a flip that rule 4 holds back is held whole, the side it would open with it, so an exit of that side, which the bar may have reached only after the trigger, can fill (optimistic);
+- an exit of a position the bar's own fill opened is judged against the whole bar: its take-profit fills where the bar's range reaches it, which the bar may have done before the fill (optimistic), and its stop fills at the worse of its trigger and the open, which no path after the fill reaches (pessimistic);
 - funding stamped inside a bar counts toward the liquidation on the size the path holds, but is paid at the close on the size the bar's fills left, so a fill that shrinks a position escapes part of a counted debit, or forgoes part of a counted credit, each against its setting's direction;
 - under the optimistic setting, a leg that a fill opens on the favourable side of its open runs to its adverse extreme, which the bar may have reached before the fill, so an account some path spares can be liquidated (pessimistic).
 
