@@ -981,6 +981,9 @@ fn refusal_text(why: Refusal) -> String {
         Refusal::Price(price) => format!("limit: {price} is not a price"),
         Refusal::Trigger(trigger) => format!("stop: {trigger} is not a price"),
         Refusal::PostOnly => "post_only: it would take liquidity at the last close".to_string(),
+        Refusal::SelfTrade(own) => {
+            format!("it would trade against the account's own order {}", own.0)
+        }
         Refusal::Unlisted => "the instrument has not printed its first bar".to_string(),
     }
 }
@@ -1005,6 +1008,7 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::OneBar(TimeInForce::Fok) => "fok: one bar".to_string(),
         EventReason::OneBar(_) => "ioc: one bar".to_string(),
         EventReason::CancelledByAccount => "cancelled by the account".to_string(),
+        EventReason::OpenedThrough => "post_only: the first bar opened through".to_string(),
         EventReason::Liquidation => "liquidation".to_string(),
     }
 }

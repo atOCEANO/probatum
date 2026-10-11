@@ -26,9 +26,13 @@ pub struct Order {
     pub filled: Qty,
     /// Can only shrink the position (take-profit or stop-loss).
     pub reduce_only: bool,
-    /// A limit that would cross is rejected rather than turned taker.
+    /// A limit that would cross is refused at placement, and cancelled when its
+    /// first bar opens at or through it, rather than turned taker (ADR 0010).
     pub post_only: bool,
     pub tif: TimeInForce,
+    /// Whether it has rested through a bar its instrument printed, after which a
+    /// limit is on the book and fills as a maker (ADR 0011).
+    pub on_book: bool,
 }
 
 impl Order {
@@ -46,6 +50,7 @@ impl Order {
             reduce_only,
             post_only: false,
             tif: TimeInForce::Ioc,
+            on_book: false,
         }
     }
 
@@ -71,6 +76,7 @@ impl Order {
             reduce_only,
             post_only,
             tif,
+            on_book: false,
         }
     }
 
@@ -88,6 +94,7 @@ impl Order {
             reduce_only,
             post_only: false,
             tif: TimeInForce::Gtc,
+            on_book: false,
         }
     }
 

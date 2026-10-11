@@ -133,9 +133,10 @@ impl Engine {
 
     /// Why a limit or a stop could not rest as `order`, or `None`: an instrument
     /// that has not printed its first bar, a size, price or trigger that can never
-    /// fill, a full share of the book, or a post_only limit that would cross.
-    /// `replacing` is the order a replace moves, whose slot has just been given up
-    /// (ADRs 0007, 0010).
+    /// fill, a full share of the book, a limit that would trade against the
+    /// account's own, or a post_only limit that would cross. `replacing` is the
+    /// order a replace moves, whose slot has just been given up (ADRs 0007, 0010,
+    /// 0011).
     fn resting_refusal(&self, order: &Order, replacing: Option<&Order>) -> Option<Refusal> {
         let last = self.marks[order.instrument];
         if last.is_nan() {
@@ -167,6 +168,20 @@ impl Engine {
             .count();
         if replacing.is_none() && resting >= self.config.max_open_orders {
             return Some(Refusal::Resting(self.config.max_open_orders));
+        }
+        // a limit that reaches the account's own resting limit of the other side
+        // would trade against the same account, which a venue refuses (ADR 0011)
+        if let Some(price) = order.price {
+            let own = self.book.iter().find(|own| {
+                own.instrument == order.instrument
+                    && own.side != order.side
+                    && own
+                        .price
+                        .is_some_and(|at| self.fill_model.limit_crosses(order.side, price, at))
+            });
+            if let Some(own) = own {
+                return Some(Refusal::SelfTrade(own.id));
+            }
         }
         // Crossing is judged against the instrument's last close, the last price the
         // strategy actually saw. The next bar's open is what this order would really
@@ -396,6 +411,11 @@ impl Engine {
             moved.price = price.map(Price).or(old.price);
         } else {
             moved.trigger = trigger.map(Price).or(old.trigger);
+        }
+        // a limit moved to another price enters the book again, for maker or taker
+        // and for post_only (ADR 0011)
+        if moved.price != old.price {
+            moved.on_book = false;
         }
         if let Some(why) = self.resting_refusal(&moved, Some(&old)) {
             // The cancel came first, so a replacement refused here would otherwise
@@ -1077,6 +1097,52 @@ mod tests {
         assert_eq!(
             log(&e).last().map(|event| event.reason),
             Some(EventReason::Replacing(Refusal::PostOnly))
+        );
+    }
+
+    #[test]
+    fn a_replace_that_moves_a_limits_price_takes_it_off_the_book() {
+        // a bid at 99 rests through a bar that does not reach it, so it is on the
+        // book; moved to 99.5 it is a new placement and a taker on a next bar that
+        // opens at 98.50, where one whose size alone changed stays a maker
+        for (price, taker) in [(Some(99.5), true), (None, false)] {
+            let bars = Candles::new(vec![
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+                ohlc(100.0, 100.5, 99.6, 100.0, 1e6),
+                ohlc(98.5, 99.5, 98.0, 99.0, 1e6),
+            ]);
+            let mut e = Engine::new(bars, report_cfg());
+            e.reset();
+            let id = e.limit_buy(1.0, 99.0).expect("rests below the close");
+            e.step();
+            assert_eq!(e.replace(id, Some(2.0), price, None), Some(id));
+            e.step();
+            let fills = e.reporter().expect("reporting is on").fills();
+            assert_eq!((fills.len(), fills[0].taker), (1, taker));
+        }
+    }
+
+    #[test]
+    fn a_limit_reaching_the_accounts_own_of_the_other_side_is_refused() {
+        // the Specification's example: a buy at 101 placed while the account rests
+        // a sell at 100.50 is refused, and so is a bid moved up to it, where a bid
+        // below the sell, a buy stop above it and a bid at 101 on another instrument
+        // all rest
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let rows = vec![vec![flat, flat], vec![flat, flat]];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        e.reset();
+        let ask = e.limit_sell(1.0, 100.5).expect("rests above the close");
+        let refused = EventReason::Refused(Refusal::SelfTrade(ask));
+        assert_eq!(bid(&mut e, 0, 101.0), None);
+        assert_eq!(log(&e).last().map(|event| event.reason), Some(refused));
+        let below = bid(&mut e, 0, 100.25).expect("rests below the sell");
+        assert!(e.stop(Side::Buy, 1.0, 101.0, false).is_some());
+        assert!(bid(&mut e, 1, 101.0).is_some());
+        assert_eq!(e.replace(below, None, Some(101.0), None), None);
+        assert_eq!(
+            log(&e).last().map(|event| event.reason),
+            Some(EventReason::Replacing(Refusal::SelfTrade(ask)))
         );
     }
 

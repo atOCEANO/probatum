@@ -1008,7 +1008,8 @@ class Simulator:
 
         if size is not None:
             moved["size"] = float(size) + old["filled"]
-        if moved["kind"] == "limit" and price is not None:
+
+        if moved["kind"] == "limit" and moved["price"] != old["price"]:
             # a moved limit is a new placement for maker or taker and for post_only
             moved["placed"], moved["seen"] = self.t, 0
 

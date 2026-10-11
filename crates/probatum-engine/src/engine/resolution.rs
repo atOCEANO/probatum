@@ -2,11 +2,11 @@
 //! opens, then the resting book in slot order, with the exits a wide bar reaches
 //! ordered worst first among one instrument's, and its take-profits held back where
 //! the bar liquidates the account without them (ADR 0012). An all-or-nothing order
-//! is judged against every clamp, and IOC and FOK limits expire after their one
-//! bar (ADR 0010). An order on an instrument that printed no bar waits for its
-//! next.
+//! is judged against every clamp, IOC and FOK limits expire after their one bar,
+//! and a post_only limit its first bar opens through is cancelled (ADR 0010). An
+//! order on an instrument that printed no bar waits for its next.
 
-use probatum_core::{Fill, Market, OrderId, OrderType, Qty, Side, TimeInForce};
+use probatum_core::{Fill, Market, OrderId, OrderType, Price, Qty, Side, TimeInForce};
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
@@ -144,6 +144,34 @@ impl Engine {
         if self.book.is_empty() {
             return;
         }
+        // a post_only limit is checked again on its first bar, and one that bar
+        // opens at or through would take liquidity, so it goes before anything fills
+        // (ADR 0010)
+        let opened: Vec<(OrderId, usize)> = self
+            .book
+            .iter()
+            .filter(|o| o.post_only && !o.on_book)
+            .filter(|o| {
+                let bar = self.bar_for(o.instrument);
+                printed(&bar)
+                    && o.price.is_some_and(|price| {
+                        self.fill_model
+                            .limit_crosses(o.side, price, Price(bar.open))
+                    })
+            })
+            .map(|o| (o.id, o.instrument))
+            .collect();
+        for (id, instrument) in opened {
+            self.book.cancel(id);
+            self.log_event(
+                EventKind::Cancelled,
+                Some(id),
+                Some(instrument),
+                None,
+                None,
+                EventReason::OpenedThrough,
+            );
+        }
         let fills = self.offers();
         let hold = self.unseen.hold && self.may_hold(&fills) && self.liquidates_without(&fills);
         self.fill_offers(fills, hold);
@@ -171,6 +199,13 @@ impl Engine {
                 EventReason::OneBar(tif),
             );
             self.book.cancel(id);
+        }
+        // what still rests has rested through a bar its instrument printed, which
+        // puts a limit on the book (ADR 0011)
+        for order in self.book.iter_mut() {
+            if !order.on_book && printed(&self.candles.bar(self.tick, order.instrument)) {
+                order.on_book = true;
+            }
         }
     }
 
@@ -404,8 +439,7 @@ mod tests {
         cfg, crash_series, dip_series, ohlc, perp_cfg, report_cfg, series, universe, ABSENT,
     };
     use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
-    use crate::reporter::EventKind;
-    use crate::reporter::FillReason;
+    use crate::reporter::{EventKind, EventReason, FillReason, Refusal};
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
 
     #[test]
@@ -824,40 +858,139 @@ mod tests {
     }
 
     #[test]
-    fn a_straddle_of_limits_at_one_price_never_ends_richer() {
-        // ADR 0011 accepts that a buy and a sell resting at the same price can both
-        // fill against one wide bar, which is a bar-fidelity artifact. Booking both
-        // as makers turned that artifact into a money printer, because a maker rate
-        // is legally a rebate: the account came back flat and richer every bar,
-        // without bound, and a search over anything placing limits walks into it
-        for maker in [-0.0002, 0.0, 0.0002] {
-            for market in [Market::Spot, Market::Perp] {
-                let config = EngineConfig {
-                    market,
-                    quote: 10_000.0,
-                    fee_maker: maker,
-                    fee_taker: 0.0006,
-                    max_leverage: 10.0,
-                    ..cfg()
-                };
-                let candles = Candles::new(vec![
-                    ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
-                    ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
-                    ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
-                ]);
-                let mut e = Engine::new(candles, config);
-                e.reset();
-                e.place_limit(0, Side::Buy, 1.0, 100.0, false, false, TimeInForce::Gtc);
-                e.place_limit(0, Side::Sell, 1.0, 100.0, false, false, TimeInForce::Gtc);
-                let s = e.step();
-                assert!(s.position.abs() <= CLOSE_EPS, "{market:?} left a position");
-                assert!(
-                    s.equity <= 10_000.0 + CLOSE_EPS,
-                    "{market:?} at maker {maker} ended with {}",
-                    s.equity
-                );
-            }
+    fn a_straddle_of_limits_at_one_price_is_refused() {
+        // a buy and a sell resting at one price both fill on one wide bar, and once
+        // on the book both as makers, whose rate is legally a rebate: the account
+        // came back flat and richer every bar, without bound. The second reaches the
+        // first, so it is refused as trading against the account's own, beside it
+        // or after it has rested, and the bid fills alone, as a maker (ADR 0011)
+        for market in [Market::Spot, Market::Perp] {
+            let config = EngineConfig {
+                market,
+                quote: 10_000.0,
+                fee_maker: -0.0002,
+                fee_taker: 0.0006,
+                max_leverage: 10.0,
+                ..report_cfg()
+            };
+            let candles = Candles::new(vec![
+                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+                ohlc(100.5, 101.0, 100.2, 100.5, 1000.0),
+                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+            ]);
+            let mut e = Engine::new(candles, config);
+            e.reset();
+            let bid = e
+                .place_limit(0, Side::Buy, 1.0, 100.0, false, false, TimeInForce::Gtc)
+                .expect("rests");
+            let ask = |e: &mut Engine| {
+                e.place_limit(0, Side::Sell, 1.0, 100.0, false, false, TimeInForce::Gtc)
+            };
+            assert_eq!(ask(&mut e), None);
+            e.step();
+            assert_eq!(ask(&mut e), None);
+            let s = e.step();
+            let reporter = e.reporter().expect("reporting is on");
+            let refusals: Vec<EventReason> = reporter
+                .events()
+                .iter()
+                .filter(|event| event.kind == EventKind::Refused)
+                .map(|event| event.reason)
+                .collect();
+            assert_eq!(
+                refusals,
+                vec![EventReason::Refused(Refusal::SelfTrade(bid)); 2]
+            );
+            assert_eq!(s.position, 1.0, "{market:?}");
+            assert!(!reporter.fills()[0].taker, "{market:?}");
         }
+    }
+
+    /// A buy limit at 99 placed at a close of 100 and stepped through `after`.
+    fn bid_at_99(after: &[Candle], post_only: bool) -> Engine {
+        let mut bars = vec![ohlc(100.0, 100.0, 100.0, 100.0, 1e6)];
+        bars.extend_from_slice(after);
+        let mut e = Engine::new(Candles::new(bars), report_cfg());
+        e.reset();
+        e.place_limit(0, Side::Buy, 1.0, 99.0, false, post_only, TimeInForce::Gtc)
+            .expect("rests below the close");
+        for _ in after {
+            e.step();
+        }
+        e
+    }
+
+    #[test]
+    fn a_limit_is_a_taker_on_a_first_bar_through_it_and_a_maker_once_on_the_book() {
+        // the Specification's example: a buy limit at 99 placed at a close of 100
+        // fills at 99 as a taker on a next bar that opens at 98.50, as a maker on one
+        // that opens at 100 and trades down to 98, and as a maker on a bar that opens
+        // at 98.50 after resting through one that does not reach it
+        let through = ohlc(98.5, 99.5, 98.0, 99.0, 1e6);
+        let down = ohlc(100.0, 100.0, 98.0, 99.0, 1e6);
+        let quiet = ohlc(100.0, 100.5, 99.5, 100.0, 1e6);
+        for (after, taker) in [
+            (vec![through], true),
+            (vec![down], false),
+            (vec![quiet, through], false),
+        ] {
+            let e = bid_at_99(&after, false);
+            let fills = e.reporter().expect("reporting is on").fills();
+            assert_eq!(fills.len(), 1);
+            assert_eq!((fills[0].price, fills[0].taker), (99.0, taker));
+        }
+    }
+
+    #[test]
+    fn a_post_only_limit_its_first_bar_opens_through_is_cancelled() {
+        // a post_only bid at 99 below a close of 100: a next bar that opens at 98.50
+        // would fill it as a taker, so it goes before anything fills, on a bar of no
+        // volume too, while one that has rested through a bar fills as a maker on a
+        // later bar that opens below it
+        for volume in [1e6, 0.0] {
+            let e = bid_at_99(&[ohlc(98.5, 99.5, 98.0, 99.0, volume)], true);
+            let reporter = e.reporter().expect("reporting is on");
+            assert!(reporter.fills().is_empty());
+            let last = reporter.events().last().expect("an event");
+            assert_eq!(
+                (last.kind, last.reason),
+                (EventKind::Cancelled, EventReason::OpenedThrough)
+            );
+        }
+        let quiet = ohlc(100.0, 100.5, 99.5, 100.0, 1e6);
+        let e = bid_at_99(&[quiet, ohlc(98.5, 99.5, 98.0, 99.0, 1e6)], true);
+        let fills = e.reporter().expect("reporting is on").fills();
+        assert_eq!((fills.len(), fills[0].taker), (1, false));
+    }
+
+    #[test]
+    fn a_row_its_instrument_prints_no_bar_on_leaves_a_limit_off_the_book() {
+        // the first bar after a placement is the first its instrument prints, so a
+        // bid that waits through a row without one is a taker on the bar after
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let rows = vec![
+            vec![flat, flat],
+            vec![flat, ABSENT],
+            vec![flat, ohlc(98.5, 99.5, 98.0, 99.0, 1e6)],
+        ];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        e.reset();
+        e.order_on(
+            1,
+            Side::Buy,
+            1.0,
+            OrderType::Limit,
+            Some(99.0),
+            None,
+            false,
+            false,
+            TimeInForce::Gtc,
+        )
+        .expect("rests below the close");
+        e.step();
+        e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        assert_eq!((fills.len(), fills[0].taker), (1, true));
     }
 
     #[test]

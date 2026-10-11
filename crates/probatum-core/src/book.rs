@@ -119,6 +119,11 @@ impl RestingOrderBook {
     pub fn iter(&self) -> impl Iterator<Item = &Order> {
         self.slots.iter().flatten()
     }
+
+    /// The resting orders, in slot order, for changing in place.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Order> {
+        self.slots.iter_mut().flatten()
+    }
 }
 
 #[cfg(test)]

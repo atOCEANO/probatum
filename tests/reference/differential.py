@@ -33,9 +33,6 @@ TOL  = 1e-6
 NOT_IN_THE_ENGINE = {
     "the liquidity budget",
     "a limit held to the prices traded since the last close",
-    "a limit on the book its bar opened through",
-    "a post_only limit its first bar opened through",
-    "an order trading against the account's own refused",
     "a waiting market order cancelled",
 }
 

@@ -97,6 +97,8 @@ pub enum Refusal {
     Trigger(f64),
     /// A post_only limit that would take liquidity at the last close.
     PostOnly,
+    /// A limit that reaches the account's own resting limit of the other side.
+    SelfTrade(OrderId),
     /// An order on an instrument that has not printed its first bar.
     Unlisted,
 }
@@ -132,6 +134,8 @@ pub enum EventReason {
     /// An ioc or fok limit, gone after its one bar.
     OneBar(TimeInForce),
     CancelledByAccount,
+    /// A post_only limit its first bar opened at or through.
+    OpenedThrough,
     /// A target's leg cancelled by a later target in the same decision.
     Retargeted,
     Liquidation,
