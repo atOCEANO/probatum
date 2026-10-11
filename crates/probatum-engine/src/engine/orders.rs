@@ -1215,4 +1215,39 @@ mod tests {
         let refused = log(&e).last().copied().expect("an event");
         assert_eq!(refused.reason, EventReason::Refused(Refusal::Resting(1)));
     }
+
+    #[test]
+    fn a_slot_freed_on_one_instrument_goes_to_the_next_placement_on_any() {
+        // one table for the account: the second instrument's bid at 10 takes the first
+        // slot and the first instrument's bid at 50 the second; cancelling the 10 frees
+        // the first slot, and a bid at 40 on the second instrument takes it, so on a bar
+        // that dips through both it resolves first and the 60 of cash buys 1 at 40 and
+        // then 0.4 at 50
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let dip = ohlc(100.0, 100.0, 35.0, 100.0, 1e6);
+        let rows = vec![vec![flat, flat], vec![flat, flat], vec![dip, dip]];
+        let config = EngineConfig {
+            quote: 60.0,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), config);
+        e.reset();
+        let placeholder = bid(&mut e, 1, 10.0).expect("takes the first slot");
+        bid(&mut e, 0, 50.0).expect("takes the second");
+        e.step();
+        assert!(e.cancel(placeholder));
+        bid(&mut e, 1, 40.0).expect("takes the slot the cancel freed");
+        e.step();
+        let fills: Vec<(usize, f64, f64)> = e
+            .reporter()
+            .expect("reporting is on")
+            .fills()
+            .iter()
+            .map(|fill| (fill.instrument, fill.size, fill.price))
+            .collect();
+        assert_eq!(fills.len(), 2);
+        assert_eq!((fills[0].0, fills[0].1, fills[0].2), (1, 1.0, 40.0));
+        assert_eq!((fills[1].0, fills[1].2), (0, 50.0));
+        assert!((fills[1].1 - 0.4).abs() < 1e-12);
+    }
 }
