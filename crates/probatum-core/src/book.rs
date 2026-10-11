@@ -16,6 +16,10 @@ pub struct RestingOrderBook {
     // the slots taken, kept as orders come and go so a step with nothing resting
     // learns it without a pass over the slots
     taken: usize,
+    // the bracket legs among them, so a fill that opens or closes a position learns
+    // there is no bracket to arm or cancel without a pass either; an order is a leg
+    // for as long as it rests
+    legs: usize,
 }
 
 impl RestingOrderBook {
@@ -24,12 +28,18 @@ impl RestingOrderBook {
         RestingOrderBook {
             slots: vec![None; capacity],
             taken: 0,
+            legs: 0,
         }
     }
 
     /// Number of resting orders.
     pub fn len(&self) -> usize {
         self.taken
+    }
+
+    /// Number of resting bracket legs.
+    pub fn legs(&self) -> usize {
+        self.legs
     }
 
     /// True when no order rests.
@@ -48,6 +58,7 @@ impl RestingOrderBook {
         match self.slots.iter_mut().find(|s| s.is_none()) {
             Some(slot) => {
                 let id = order.id;
+                self.legs += usize::from(order.leg.is_some());
                 *slot = Some(order);
                 self.taken += 1;
                 Ok(id)
@@ -78,7 +89,9 @@ impl RestingOrderBook {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.as_ref().is_some_and(|o| o.id == id) {
                 self.taken -= 1;
-                return slot.take().map(|order| (index, order));
+                let order = slot.take()?;
+                self.legs -= usize::from(order.leg.is_some());
+                return Some((index, order));
             }
         }
         None
@@ -90,8 +103,10 @@ impl RestingOrderBook {
     /// a priority it did not have (ADR 0010).
     pub fn restore(&mut self, index: usize, order: Order) {
         if let Some(slot) = self.slots.get_mut(index) {
-            if slot.replace(order).is_none() {
-                self.taken += 1;
+            self.legs += usize::from(order.leg.is_some());
+            match slot.replace(order) {
+                None => self.taken += 1,
+                Some(old) => self.legs -= usize::from(old.leg.is_some()),
             }
         }
     }
@@ -103,13 +118,14 @@ impl RestingOrderBook {
             *slot = None;
         }
         self.taken = 0;
+        self.legs = 0;
     }
 
     /// Remove every resting order `picked` chooses, freeing its slot.
     pub fn cancel_where(&mut self, mut picked: impl FnMut(&Order) -> bool) {
         for slot in &mut self.slots {
             if slot.as_ref().is_some_and(&mut picked) {
-                *slot = None;
+                self.legs -= usize::from(slot.take().is_some_and(|o| o.leg.is_some()));
                 self.taken -= 1;
             }
         }
@@ -130,7 +146,7 @@ impl RestingOrderBook {
 mod tests {
     use super::RestingOrderBook;
     use crate::enums::{Side, TimeInForce};
-    use crate::order::{Order, OrderId};
+    use crate::order::{Leg, Order, OrderId};
     use crate::units::{Price, Qty};
 
     fn a_limit(id: u64) -> Order {
@@ -211,5 +227,30 @@ mod tests {
         b.place(a_limit(4)).unwrap(); // reuses the freed middle slot, not appended
         let ids: Vec<u64> = b.iter().map(|o| o.id.0).collect();
         assert_eq!(ids, vec![1, 4, 3]);
+    }
+
+    #[test]
+    fn the_book_counts_its_bracket_legs_as_they_come_and_go() {
+        let leg = Order {
+            leg: Some(Leg {
+                pair: None,
+                armed: false,
+                sizeless: true,
+            }),
+            ..a_limit(1)
+        };
+        let mut b = RestingOrderBook::new(4);
+        b.place(leg).unwrap();
+        b.place(a_limit(2)).unwrap();
+        assert_eq!(b.legs(), 1);
+        let (slot, order) = b.cancel_at(OrderId(1)).unwrap();
+        assert_eq!(b.legs(), 0);
+        b.restore(slot, order);
+        assert_eq!(b.legs(), 1);
+        b.cancel_where(|o| o.leg.is_some());
+        assert_eq!((b.legs(), b.len()), (0, 1));
+        b.place(leg).unwrap();
+        b.cancel_all();
+        assert_eq!(b.legs(), 0);
     }
 }

@@ -30,6 +30,7 @@ RULES = [
     "a bracket cancelled with its position",
     "a bracket leg filled",
     "a bracket leg filled on the bar it armed",
+    "a bracket leg filled on the bar a resting fill armed it",
     "a bracket waiting through a row without its bar",
     "a check closing the account at the open",
     "a corner or the closes reaching the trigger",
@@ -46,6 +47,7 @@ RULES = [
     "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
     "a held perp read at its last mark",
+    "a leg a resting fill armed held back on a liquidating bar",
     "a leg joining the check after the open",
     "a limit filled as a maker",
     "a limit filled as a taker",
@@ -146,6 +148,7 @@ UNREACHABLE = {"dust swept at the close", "a target leg on an instrument yet to 
 # random accounts seldom reach these, so a case built for each reaches it in the
 # comparison with the engine
 BUILT = {
+    "a leg a resting fill armed held back on a liquidating bar",
     "a sized leg gone with the position its fill closed",
     "a wallet a fill left within rounding of zero set to zero",
     "an exit held back from a position the bar's orders opened",

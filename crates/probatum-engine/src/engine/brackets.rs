@@ -98,11 +98,21 @@ impl Engine {
         (stop, take_profit)
     }
 
+    /// Arm the bracket legs waiting on instrument `i` when the fill just booked there
+    /// opened a position, `flat` saying whether it was flat before. It runs once the
+    /// fill and its order are booked, so an entry the fill completed has left the
+    /// book and is no resting order of the account's a take-profit could cross.
+    pub(super) fn arm_if_opened(&mut self, i: usize, flat: bool) {
+        if flat && self.account.positions[i].qty.get() != 0.0 {
+            self.arm(i);
+        }
+    }
+
     /// Arm the bracket legs waiting on instrument `i` on the position a fill has just
     /// opened there, on the side that closes it. A take-profit that would then trade
     /// against the account's own resting limit is cancelled (ADR 0011).
     pub(super) fn arm(&mut self, i: usize) {
-        if self.book.is_empty() {
+        if self.book.legs() == 0 {
             return;
         }
         let held = self.account.positions[i].qty.get();
@@ -148,7 +158,7 @@ impl Engine {
     /// `filling` closed or flipped, but that order, which goes as its fill leaves it,
     /// and its partner, which the OCO rule cancels.
     pub(super) fn disarm(&mut self, i: usize, filling: OrderId) {
-        if self.book.is_empty() {
+        if self.book.legs() == 0 {
             return;
         }
         let pair = self
@@ -608,6 +618,27 @@ mod tests {
         e.market_buy(3.0);
         e.step();
         assert_eq!(e.step().position, 3.0);
+    }
+
+    #[test]
+    fn a_take_profit_is_not_held_against_the_entry_whose_whole_fill_arms_it() {
+        // the bid at 99 fills whole and leaves the book before its bracket arms, so
+        // the take-profit, a sell at that same 99, is no self-trade and closes the long
+        let mut e = spot(
+            &[ohlc(100.0, 100.5, 98.5, 99.5, 1e6)],
+            Intrabar::Pessimistic,
+        );
+        let entry = e.limit_buy(1.0, 99.0).expect("rests").0;
+        let (_, take_profit) = e.bracket(0, Some(95.0), Some(99.0));
+        let s = e.step();
+        assert_eq!(
+            fills(&e),
+            vec![
+                (entry, 1.0, 99.0, FillReason::Limit),
+                (id(take_profit), 1.0, 99.0, FillReason::TakeProfit),
+            ]
+        );
+        assert_eq!(s.position, 0.0);
     }
 
     #[test]

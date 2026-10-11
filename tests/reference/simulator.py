@@ -727,7 +727,7 @@ class Simulator:
                      trigger=None if trigger is None else float(trigger),
                      filled=0.0, placed=self.t, seen=0, status="pending", tif=tif,
                      post_only=post_only, reduce_only=reduce_only, reason=reason,
-                     pair=None, leg=None, armed=True, armed_at=None)
+                     pair=None, leg=None, armed=True, armed_at=None, armed_by=None)
 
         self.next_id += 1
         self.orders[order["id"]] = order
@@ -985,14 +985,17 @@ class Simulator:
                 self.hit("a bracket armed by a resting fill")
 
             order["armed"], order["armed_at"] = True, self.t
-            order["side"] = "sell" if q > 0.0 else "buy"
+            order["armed_by"] = None if filling is None else filling["kind"]
+            order["side"]     = "sell" if q > 0.0 else "buy"
             self.log("armed", order, order["leg"])
 
-            own = self.crossing(order, [o for o in self.resting(i) if o is not order])
+            others = [o for o in self.resting(i) if o is not order]
+            own    = self.crossing(order, others)
             if own is not None:
-                self.hit("a take-profit cancelled as it armed against the account's own")
-                self.cancel(order["id"],
-                            f"it would trade against the account's own order {own['id']}")
+                self.hit("a take-profit cancelled as it armed against the "
+                         "account's own")
+                self.cancel(order["id"], "it would trade against the account's own "
+                                         f"order {own['id']}")
 
 
     def disarm(self, i, filling):
@@ -2010,6 +2013,7 @@ class Simulator:
             cash = self.margin_cash
             price, costs = self.bound(i, side, size, price, bar, self.venue.taker,
                                       costs)
+            flat = self.position[i] == 0.0
             self.apply(i, side, size, price, self.venue.taker, True, order,
                        order["reason"], reference=bar.open, costs=costs)
             self.zero_rounding(i, cash, self.paid_in, size, price)
@@ -2021,6 +2025,9 @@ class Simulator:
                 self.log("expired", order, "a market order takes one bar")
             else:
                 order["status"] = "filled"
+
+            if flat and self.position[i] != 0.0:
+                self.arm(i, order)
 
         self.pending = waiting
 
@@ -2081,7 +2088,8 @@ class Simulator:
         where it is offered, since its price orders the bar's exits even when a cancel
         or a clamp then leaves it unfilled."""
         found = self.offer(order, bar)
-        if found is not None and order["kind"] == "limit" and found[0] != order["price"]:
+        limit = found is not None and order["kind"] == "limit"
+        if limit and found[0] != order["price"]:
             self.hit("a limit held to the prices traded since the last close")
 
         return found
@@ -2125,7 +2133,8 @@ class Simulator:
         for k in range(len(offers)):
             for j in range(k, len(offers)):
                 slot, order, reference, _ = offers[j]
-                if reference is None and order["status"] == "resting" and order["armed"]:
+                waiting = reference is None and order["status"] == "resting"
+                if waiting and order["armed"]:
                     found = self.offered(order, self.bar_for(t, order["instrument"]))
                     if found is not None:
                         offers[j] = (slot, order, found[0], found[1])
@@ -2148,6 +2157,10 @@ class Simulator:
                 if not reduced:
                     self.hit("an exit held back from a position the bar's orders "
                              "opened")
+                if order["leg"] and order["armed_at"] == t \
+                        and order["armed_by"] != "market":
+                    self.hit("a leg a resting fill armed held back on a liquidating "
+                             "bar")
                 continue
 
             remaining = (abs(self.position[i]) if order["size"] is None
@@ -2187,6 +2200,9 @@ class Simulator:
                 self.hit("a bracket leg filled")
                 if order["armed_at"] == t:
                     self.hit("a bracket leg filled on the bar it armed")
+                    if order["armed_by"] != "market":
+                        self.hit("a bracket leg filled on the bar a resting fill "
+                                 "armed it")
                 if order["size"] is None and before[i] != 0.0 \
                         and abs(self.position[i]) != abs(before[i]):
                     self.hit("a sizeless leg sized at a position the bar's fills moved")
@@ -2195,6 +2211,7 @@ class Simulator:
             cash = self.margin_cash
             price, costs = self.bound(i, side, size, price, bar, rate, costs)
             reason = order["leg"] or order["reason"]
+            flat   = self.position[i] == 0.0
             self.apply(i, side, size, price, rate, taker, order, reason,
                        reference=reference, costs=costs)
             self.zero_rounding(i, cash, self.paid_in, size, price)
@@ -2216,6 +2233,12 @@ class Simulator:
             if done:
                 order["status"] = "filled"
                 self.slots[self.slots.index(order)] = None
+
+            # Order types: a bracket arms once the fill that opens its position is
+            # booked, so an entry that fill completed is no longer the account's own
+            # resting order (Maker, taker and the book)
+            if flat and self.position[i] != 0.0:
+                self.arm(i, order)
 
         for order in self.resting():
             if self.bars[t][order["instrument"]] is None:
@@ -2513,6 +2536,9 @@ class Simulator:
             self.costs["dust"] += value
             self.position[i], self.entry[i] = 0.0, 0.0
 
+            # Order types: a bracket goes with the position it armed on
+            self.disarm(i, None)
+
             if self.trip[i] is not None:
                 trip = self.trip[i]
                 trip.close_bar, trip.close_time = self.t, self.times[self.t]
@@ -2610,13 +2636,10 @@ class Simulator:
         if order is not None:
             self.log("filled", order, reason, size=size, price=price)
 
-        # a liquidation cancels every perpetual order itself, with its own reason; a
-        # bracket placed while flat arms on the first fill that opens a position
+        # a liquidation cancels every perpetual order itself, with its own reason
         if before != 0.0 and (after == 0.0 or before * after < 0.0) \
                 and reason != "liquidation":
             self.disarm(i, order)
-        elif before == 0.0 and after != 0.0:
-            self.arm(i, order)
 
         return fee
 

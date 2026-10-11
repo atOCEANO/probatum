@@ -96,6 +96,7 @@ impl Engine {
             } else {
                 FillReason::Market
             };
+            let flat = self.account.positions[i].qty.get() == 0.0;
             let applied = self.apply_fill_clamped(
                 i,
                 order.id,
@@ -126,6 +127,7 @@ impl Engine {
                     EventReason::MarketBar,
                 );
             }
+            self.arm_if_opened(i, flat);
         }
         self.spare = pending;
         self.targets.keep_waiting(&self.pending);
@@ -413,16 +415,21 @@ impl Engine {
     /// where that position started. Returns whether any was held back.
     fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool) -> bool {
         let mut held = false;
-        let again = fills.iter().any(|offer| offer.again);
+        // the instrument the last fill traded, whose bracket legs alone it can have
+        // resized or armed
+        let mut touched: Option<usize> = None;
         let mut k = 0;
         while k < fills.len() {
             // a bracket leg with no size of its own asks for the position this turn
             // finds, which the fills before it may have grown or shrunk, and one
             // waiting to arm may have been armed by them
-            if again {
-                for offer in fills[k..].iter_mut().filter(|offer| offer.again) {
+            if let Some(i) = touched.take() {
+                for offer in fills[k..]
+                    .iter_mut()
+                    .filter(|offer| offer.again && offer.instrument == i)
+                {
                     if let Some(order) = self.book.get(offer.id) {
-                        *offer = self.offer(order, &self.bar_for(offer.instrument));
+                        *offer = self.offer(order, &self.bar_for(i));
                     }
                 }
             }
@@ -462,8 +469,12 @@ impl Engine {
             };
             let bar = self.bar_for(i);
             let resting = self.book.len();
+            let flat = self.account.positions[i].qty.get() == 0.0;
             let applied =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
+            if applied > 0.0 {
+                touched = Some(i);
+            }
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
                 // ADR 0010 says and what it used to say only for a bar with no
@@ -517,6 +528,7 @@ impl Engine {
                     if done {
                         self.book.cancel(id);
                     }
+                    self.arm_if_opened(i, flat);
                     // the orders the fill took off the book besides its own, an OCO
                     // partner, the legs of a bracket whose position closed or a
                     // take-profit that armed against the account's own, have no turn
