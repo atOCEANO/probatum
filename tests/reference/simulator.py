@@ -2160,6 +2160,10 @@ class Simulator:
         holds the positions the bar's resting orders found."""
         def realize(item):
             _, order, price, _ = item
+            # an OCO partner or a bracket a fill before it cancelled holds no slot
+            if order["status"] != "resting":
+                return None
+
             i       = order["instrument"]
             q       = self.position[i]
             side    = self.side_of(order)

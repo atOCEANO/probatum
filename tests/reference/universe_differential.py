@@ -22,7 +22,7 @@ import sys
 import numpy as np
 
 import probatum
-from .differential import (KINDS, Script, before, clock, close_enough,
+from .differential import (KINDS, Script, before, bracket, clock, close_enough,
                            closed_before, cut, limit_price, live, log_difference,
                            resting, setting, settings, stamps, stop_price, tally,
                            tier_table, walk, weight, worded)
@@ -342,6 +342,14 @@ def place(sim, action, t, theirs, script, reached):
         return
 
     i, kind, side, size, u = action
+
+    if kind in ("close", "reduce", "exits") and sim.position[i] == 0.0:
+        # an exit drawn on an instrument the account does not hold acts on one it
+        # does, where there is one
+        held = [k for k, q in enumerate(sim.position) if q != 0.0]
+        if held:
+            i = held[int(u * len(held))]
+
     close = sim.mark[i]
     on    = next((r for r in range(t + 1, len(sim.bars)) if sim.bars[r][i] is not None),
                  None)
@@ -393,6 +401,10 @@ def place(sim, action, t, theirs, script, reached):
             order = sim.order(i, side, size, reduce_only=True, **leg)
             if resting(sim, order):
                 theirs.append((order, placed))
+    elif kind == "bracket":
+        rests = bracket(sim, i, t, side, size, close, u, theirs, script, instrument=i)
+        if rests and on is not None:
+            reached[on][kind] += 1
     elif kind == "transfer":
         to = "margin" if side == "buy" else "spot"
         script.take(t, "transfer", amount=size * close, to=to)
@@ -437,7 +449,7 @@ def place(sim, action, t, theirs, script, reached):
             theirs[:] = [got for got in theirs if sim.orders[got[0]]["instrument"] != i]
     elif kind == "replace" and theirs:
         order, placed = theirs[0]
-        size = size / 2.0
+        size = None if sim.orders[order]["leg"] and u > 0.5 else size / 2.0
         mark = sim.mark[sim.orders[order]["instrument"]]
         if sim.orders[order]["kind"] == "stop":
             trigger = stop_price(mark, u)

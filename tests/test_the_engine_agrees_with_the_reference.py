@@ -17,6 +17,9 @@ from reference.simulator import Bar
 # the rules both simulators apply, each of which a comparison at length must reach
 SHARED = [
     "a bar clipped",
+    "a bracket armed",
+    "a bracket cancelled with its position",
+    "a bracket leg filled",
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
@@ -53,6 +56,7 @@ SHARED = [
     "a target's spot shortfall moved across",
     "a transfer",
     "a transfer clamped",
+    "an OCO partner cancelled",
     "an account over the cap kept from growing",
     "an ioc or fok limit expiring after one bar",
     "an order trading against the account's own refused",

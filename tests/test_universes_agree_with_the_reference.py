@@ -19,6 +19,9 @@ from reference.simulator import Bar
 SHARED = [
     "a bar clipped",
     "a bar clipped across several perpetuals",
+    "a bracket armed",
+    "a bracket cancelled with its position",
+    "a bracket leg filled",
     "a corner or the closes reaching the trigger",
     "a favourable exit held back on a liquidating bar",
     "a fill held at a tier's bound",
@@ -63,6 +66,7 @@ SHARED = [
     "a tier above the first",
     "a transfer",
     "a transfer clamped",
+    "an OCO partner cancelled",
     "an account over the cap kept from growing",
     "an exit held back from a position the bar's orders opened",
     "an ioc or fok limit expiring after one bar",

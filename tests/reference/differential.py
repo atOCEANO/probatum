@@ -167,14 +167,14 @@ def money(cfg):
 KINDS = os.environ.get(
     "KINDS",
     "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,"
-    "cancel_all,reduce_limit,stop_entry,exits,transfer,target,retarget",
+    "cancel_all,reduce_limit,stop_entry,exits,transfer,target,retarget,bracket",
 ).split(",")
 
 # the kinds that only mean something with a live position or order to act on; a run
 # in which one never met anything agreed about nothing
 TRACKED = [kind for kind in ("close", "reduce", "cancel", "replace", "cancel_all",
                              "ioc_limit", "fok_limit", "reduce_limit", "stop_entry",
-                             "exits")
+                             "exits", "bracket")
            if kind in KINDS]
 
 
@@ -207,6 +207,40 @@ def limit_price(side, close, u):
 
 def stop_price(close, u):
     return close * (0.8 + 0.4 * u)
+
+
+def bracket_prices(held, side, close, u):
+    """A bracket's stop and take-profit about `close`, below and above it for the
+    long held, or for the long a buy is opening, and mirrored for a short, now and
+    then with only one of the two."""
+    low, high = close * (0.8 + 0.19 * u), close * (1.2 - 0.19 * u)
+    long = held > 0.0 if held != 0.0 else side == "buy"
+    stop, take_profit = (low, high) if long else (high, low)
+
+    if u < 0.15:
+        return stop, None
+    if u > 0.85:
+        return None, take_profit
+    return stop, take_profit
+
+
+def bracket(sim, i, t, side, size, close, u, theirs, script, **on):
+    """A bracket on instrument `i`, on the position it holds, or placed while flat
+    beside the entry it waits for, so it arms when that entry fills, each leg that
+    rests written into `theirs` with the placement that made it. Returns whether
+    any rests."""
+    held = sim.position[i]
+    if held == 0.0:
+        script.take(t, side, size=size, tif="ioc", **on)
+        sim.order(i, side, size)
+
+    stop, take_profit = bracket_prices(held, side, close, u)
+    placed = dict(zip(("stop", "take_profit"),
+                      script.take(t, "bracket", stop=stop, take_profit=take_profit,
+                                  **on)))
+    legs = sim.bracket(i, stop=stop, take_profit=take_profit)
+    theirs.extend((order, placed[sim.orders[order]["leg"]]) for order in legs)
+    return bool(legs)
 
 
 def weight(market, u, k=0, among=1):
@@ -323,8 +357,14 @@ class Script:
 
 
     def take(self, t, verb, **arguments):
-        """Write one action at bar `t`, returning the placement it makes, if any."""
+        """Write one action at bar `t`, returning the placement it makes, if any: a
+        bracket makes two, its stop's and then its take-profit's."""
         self.bars.setdefault(t, []).append((verb, arguments))
+
+        if verb == "bracket":
+            self.placements += 2
+            return self.placements - 2, self.placements - 1
+
         if verb not in ("buy", "sell", "close"):
             return None
 
@@ -394,6 +434,10 @@ def place(sim, action, t, close, theirs, script, reached=None):
             order  = sim.order(0, side, size, reduce_only=True, **leg)
             if resting(sim, order):
                 theirs.append((order, placed))
+    elif kind == "bracket":
+        rests = bracket(sim, 0, t, side, size, close, u, theirs, script)
+        if rests and reached is not None:
+            reached[t + 1][kind] += 1
     elif kind == "transfer":
         # into the margin wallet on a buy and out of it on a sell, from a twentieth
         # of the balance to twelve times it, so both clamps bind
@@ -424,7 +468,9 @@ def place(sim, action, t, close, theirs, script, reached=None):
         # the side and kind stay the order's own: a replacement moves an order, it
         # never turns one into another, and it keeps its id on both sides
         order, placed = theirs[0]
-        size = size / 2.0
+        # a bracket leg given a size closes that much, and one moved without a size
+        # still closes the position it finds
+        size = None if sim.orders[order]["leg"] and u > 0.5 else size / 2.0
         if sim.orders[order]["kind"] == "stop":
             trigger = stop_price(close, u)
             script.take(t, "replace", order=placed, size=size, trigger=trigger)
