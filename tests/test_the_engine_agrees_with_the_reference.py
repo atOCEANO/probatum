@@ -134,6 +134,13 @@ def flipped_at_the_low():
     return bars, times, cfg, actions
 
 
+def changed(case, **settings):
+    """`case` with `settings` in place of its own."""
+    bars, times, cfg, actions = case
+    cfg.update(settings)
+    return bars, times, cfg, actions
+
+
 def crossed_as_it_arms():
     """A bid at 101 placed at the second bar's close, a third bar that trades nothing,
     so the bid still rests, and at its close a bracket placed flat with a market
@@ -187,6 +194,48 @@ BUILT = {
         "an exit the bar reached only before its position's fill",
         built(None, None, ("bracket", "buy", 1.0, 0.9),
               shaped=(100.0, 104.0, 95.0, 100.0))),
+    # a sell limit at 105 opens a short inside a bar that reached 98 and closes at
+    # 104: the low came before the fill, so a reduce-only buy at 102 rests
+    "a take-profit of a short the bar reached only before its entry": (
+        "an exit the bar reached only before its position's fill",
+        built(at("limit", "sell", 1.0, 105.0), None,
+              at("reduce_limit", "buy", 1.0, 102.0),
+              shaped=(100.0, 106.0, 98.0, 104.0))),
+    # on spot the buy at 95 makes the holding inside a bar from 100, and a sale at 97,
+    # which only that holding can fill, meets the bar from there and rests
+    "a spot sale the bar reached only before its holding was bought": (
+        "an exit the bar reached only before its position's fill",
+        changed(built(at("limit", "buy", 1.0, 95.0), None,
+                      at("limit", "sell", 1.0, 97.0),
+                      shaped=(100.0, 100.5, 94.0, 95.5)), market="spot")),
+    # a long of 1 a sell of 2 at 105 flips short inside the bar, and a reduce-only
+    # buy at 101 the bar reached only before the flip rests
+    "a take-profit of a short a flip opened inside the bar": (
+        "an exit the bar reached only before its position's fill",
+        built(("market", "buy", 1.0, 0.0), at("limit", "sell", 2.0, 105.0),
+              at("reduce_limit", "buy", 1.0, 101.0),
+              shaped=(100.0, 106.0, 98.0, 103.0))),
+    # a buy stop at 105 opens a long on a bar from 100, and a reduce-only stop at 102
+    # fills at 102, where the price crossed it after the entry, and not at the open
+    "a stop between the open and a breakout long's entry": (
+        "an exit priced from its position's fill",
+        built(at("stop_entry", "buy", 1.0, 105.0), at("stop", "sell", 1.0, 102.0),
+              None, shaped=(100.0, 108.0, 98.0, 103.0))),
+    # under the optimistic setting the high came after a buy at 95, and a reduce-only
+    # sale at 98 decided at the last close reaches it as a maker, where the bar's open
+    # of 100 would have made it a taker
+    "a take-profit after a limit entry under the optimistic setting": (
+        "an exit priced from its position's fill",
+        changed(built(at("limit", "buy", 1.0, 95.0), None,
+                      at("reduce_limit", "sell", 1.0, 98.0),
+                      shaped=(100.0, 101.0, 94.0, 95.5)), intrabar="optimistic")),
+    # a bracket placed while flat rests unarmed through two bars beside its limit
+    # entry at 92.18, and a market buy arms it at the open of 100, through its
+    # take-profit at 93.77, which then fills there as a taker on the way down to 93
+    "a take-profit armed through the open it arms at": (
+        "a limit filled as a taker",
+        built(("bracket", "buy", 1.0, 0.58), None, ("market", "buy", 1.0, 0.0),
+              shaped=(100.0, 101.0, 93.0, 95.0))),
     # a bid at 101 rests through a bar that trades nothing, and a bracket placed flat
     # beside a market entry arms its take-profit at 101 on that entry's fill, a sell
     # at the account's own bid, so it is cancelled as it arms
