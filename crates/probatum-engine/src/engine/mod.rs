@@ -730,6 +730,7 @@ impl Engine {
 
     /// The state the one-instrument surface reads: the account, and the first
     /// instrument's position and bar.
+    #[inline(always)]
     fn state(&self) -> State {
         let bar = self.candles.bar(self.tick, 0);
         let mark = Price(self.marks[0]);
