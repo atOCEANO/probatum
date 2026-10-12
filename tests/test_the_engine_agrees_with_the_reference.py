@@ -64,6 +64,7 @@ SHARED = [
     "a transfer clamped",
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
+    "an exit priced from its position's fill",
     "an ioc or fok limit expiring after one bar",
     "an order trading against the account's own refused",
     "funding at the close of its row",
@@ -171,7 +172,7 @@ BUILT = {
     # a bar the path survives, closed at its closes by the debit charged there
     "a debit at the close that takes the account to its trigger": (
         "a liquidation at the closes", debited_at_the_close()),
-    # a buy limit of 10 at 98.90 placed while flat with a take-profit at 102.90 after
+    # a buy limit of 10 at 98.90 placed while flat with a take-profit at 102.66 after
     # it: the entry fills on the way down to 88, which liquidates the long, and the
     # take-profit it armed, which the bar reaches after the fill only on its way back
     # up to the close, is held back

@@ -211,9 +211,16 @@ def take_profit(rng, band):
             # deep enough, for the position A opens on the bar, to reach its trigger
             depth = rng.uniform(entry + (0.25 if beside == "opened" else 0.02), 0.6)
 
-        a.append(bar(close, close * (1.0 - sign * depth),
-                     price * (1.0 + sign * rng.uniform(0.0, 0.01)),
-                     close * (1.0 + sign * rng.uniform(-depth, 0.0))))
+        extreme = price * (1.0 + sign * rng.uniform(0.0, 0.01))
+        if beside == "opened":
+            # a reduce-only take-profit meets the position the limit opened from the
+            # fill, so the bar closes beyond it, and the take-profit is reached only
+            # on the way back
+            last = price * (1.0 + sign * rng.uniform(0.0, 0.01))
+        else:
+            last = close * (1.0 + sign * rng.uniform(-depth, 0.0))
+
+        a.append(bar(close, close * (1.0 - sign * depth), extreme, last))
         share = rng.choice([0.5, 1.0, 2.0])
 
         if beside == "stop":
@@ -374,7 +381,14 @@ def place(sim, action, t, theirs, script, reached):
         sim.order(i, side, size, tif=tif, reduce_only=reduce_only)
     elif kind in ("limit", "post", "ioc_limit", "fok_limit", "reduce_limit"):
         price = limit_price(side, close, u)
-        tif   = {"ioc_limit": "ioc", "fok_limit": "fok"}.get(kind, "gtc")
+        # now and then at the account's own resting limit of the other side on the
+        # instrument, which would trade against the same account and is refused
+        own = [order for order in sim.resting(i)
+               if order["kind"] == "limit" and order["side"] not in (None, side)]
+        if own and (17.0 * u) % 1.0 < 0.2:
+            price = own[0]["price"]
+
+        tif = {"ioc_limit": "ioc", "fok_limit": "fok"}.get(kind, "gtc")
         post_only, reduce_only = kind == "post", kind == "reduce_limit"
         placed = script.take(t, side, size=size, limit=price, tif=tif,
                              post_only=post_only, reduce_only=reduce_only,

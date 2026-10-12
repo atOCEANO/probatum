@@ -226,25 +226,42 @@ def bracket_prices(held, side, close, u):
 
 def bracket(sim, i, t, side, size, close, u, theirs, script, **on):
     """A bracket on instrument `i`, on the position it holds, or placed while flat
-    after the entry it waits for, a market order or, half the time, a limit, so it
-    arms when that entry fills, on its bar where the bar reaches the limit; a spot
-    entry buys, since spot cannot be short. Each order that rests is written into
-    `theirs` with the placement that made it. Returns whether a leg rests."""
+    after the entry it waits for, a market order half the time, otherwise a limit or
+    a breakout stop, so it arms when that entry fills, inside its bar where the bar
+    reaches a resting one; a spot entry buys, since spot cannot be short. A resting
+    entry's legs sit close about its own price, where a bar can reach them before
+    the fill and not after it. Each order that rests is written into `theirs` with
+    the placement that made it. Returns whether a leg rests."""
     held = sim.position[i]
+    way  = (13.0 * u) % 1.0
+
     if held == 0.0:
         if sim.instruments[i].kind == "spot":
             side = "buy"
-        if (13.0 * u) % 1.0 < 0.5:
+
+        if way < 0.5:
             script.take(t, side, size=size, tif="ioc", **on)
             sim.order(i, side, size)
         else:
-            price  = limit_price(side, close, u)
-            placed = script.take(t, side, size=size, limit=price, **on)
-            entry  = sim.order(i, side, size, limit=price)
-            if resting(sim, entry):
-                theirs.append((entry, placed))
+            sign = 1.0 if side == "buy" else -1.0
+            if way < 0.8:
+                price = limit_price(side, close, u)
+                entry = dict(limit=price)
+            else:
+                price = close * (1.0 + sign * 0.03 * ((5.0 * u) % 1.0))
+                entry = dict(stop=price)
+
+            placed = script.take(t, side, size=size, **entry, **on)
+            order  = sim.order(i, side, size, **entry)
+            if resting(sim, order):
+                theirs.append((order, placed))
 
     stop, take_profit = bracket_prices(held, side, close, u)
+    if held == 0.0 and way >= 0.5:
+        gap         = 0.002 + 0.04 * ((11.0 * u) % 1.0)
+        stop        = None if stop is None else price * (1.0 - sign * gap)
+        take_profit = None if take_profit is None else price * (1.0 + sign * gap)
+
     placed = dict(zip(("stop", "take_profit"),
                       script.take(t, "bracket", stop=stop, take_profit=take_profit,
                                   **on)))

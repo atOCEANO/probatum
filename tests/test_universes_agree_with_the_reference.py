@@ -75,6 +75,7 @@ SHARED = [
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
     "an exit held back from a position the bar's orders opened",
+    "an exit priced from its position's fill",
     "an ioc or fok limit expiring after one bar",
     "an order trading against the account's own refused",
     "an order waiting for its instrument's next bar",
