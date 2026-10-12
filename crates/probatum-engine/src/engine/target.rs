@@ -121,8 +121,11 @@ impl Engine {
             let close = self.marks[i];
             if close.is_nan() {
                 // an instrument yet to print its first bar has no close to size a
-                // leg on, and its leg is refused as any order there is
-                growing.push((i, f64::NAN));
+                // leg on: a weight of zero there asks for nothing, and any other
+                // places a leg refused as any order there is
+                if weight != 0.0 {
+                    growing.push((i, f64::NAN));
+                }
                 continue;
             }
             let q = self.account.positions[i].qty.get();
@@ -459,6 +462,37 @@ mod tests {
             queued,
             vec![(Side::Sell, 4.0, true), (Side::Sell, 4.0, false)]
         );
+    }
+
+    #[test]
+    fn a_weight_of_zero_on_an_instrument_yet_to_print_places_nothing() {
+        // the second perp prints its first bar on the third row: a weight of zero on
+        // it asks for nothing, and any other places a leg refused there
+        let at = |price: f64| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![at(100.0), ABSENT],
+            vec![at(100.0), ABSENT],
+            vec![at(100.0), at(10.0)],
+        ];
+        let config = EngineConfig {
+            quote: 10_000.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        e.reset();
+        let refused = |e: &Engine| {
+            let reporter = e.reporter().expect("reporting is on");
+            reporter
+                .events()
+                .iter()
+                .filter(|event| event.kind == EventKind::Refused)
+                .count()
+        };
+        let legs = e.target(&[(0, 0.5), (1, 0.0)], 0.0, false).expect("perps");
+        assert_eq!((legs.len(), refused(&e)), (1, 0));
+        e.target(&[(1, 0.3)], 0.0, false).expect("perps");
+        assert_eq!(refused(&e), 1);
     }
 
     /// Two perps, the second at 10 printing no bar on the third and fourth rows, on

@@ -1130,12 +1130,14 @@ class Simulator:
 
             # the wanted position is the one whose notional at the close is the
             # weight's share of equity: base units, or contracts on an inverse. An
-            # instrument yet to print its first bar has no close to size a leg on,
-            # and its leg is refused as any order there is
+            # instrument yet to print its first bar has no close to size a leg on: a
+            # weight of zero there asks for nothing, and any other places a leg
+            # refused as any order there is
             close = self.mark[i]
             if close is None:
-                self.hit("a target leg on an instrument yet to print")
-                growing.append((i, math.nan))
+                if weight != 0.0:
+                    self.hit("a target leg on an instrument yet to print")
+                    growing.append((i, math.nan))
                 continue
 
             unit = inst.notional(1.0, close)
