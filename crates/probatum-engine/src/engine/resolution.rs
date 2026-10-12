@@ -61,15 +61,16 @@ impl Engine {
         }
         let spare = std::mem::take(&mut self.spare);
         let mut pending = std::mem::replace(&mut self.pending, spare);
-        for order in pending.drain(..) {
+        // read in place, an order being too large to copy out on every fill
+        for order in &pending {
             let i = order.instrument;
             let bar = self.bar_for(i);
             if !printed(&bar) {
-                self.pending.push(order);
+                self.pending.push(*order);
                 continue;
             }
             let requested = order.remaining().get();
-            let Some((fill, costs)) = self.fill_model.fill_market(&order, &bar) else {
+            let Some((fill, costs)) = self.fill_model.fill_market(order, &bar) else {
                 self.log_event(
                     EventKind::NotFilled,
                     Some(order.id),
@@ -135,6 +136,7 @@ impl Engine {
             }
             self.arm_if_opened(i, arming);
         }
+        pending.clear();
         self.spare = pending;
         self.targets.keep_waiting(&self.pending);
     }
