@@ -297,7 +297,7 @@ impl Engine {
     /// reaches the extreme beyond the fill, and reaches the one on the open's side
     /// where that extreme came after the fill, going no further that way than the
     /// fill and the close otherwise (ADR 0012).
-    fn after_fill(&self, i: usize, bar: &Candle) -> Candle {
+    pub(super) fn after_fill(&self, i: usize, bar: &Candle) -> Candle {
         let start = self.starts[i];
         let long = self.account.positions[i].qty.get() > 0.0;
         // the price came to the fill from the open, so the extreme beyond it came

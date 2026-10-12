@@ -592,15 +592,22 @@ impl Engine {
                     continue;
                 }
                 // the part of this bar a round trip still open lived through: from
-                // its fill to the close when it opened on this bar, the whole bar
-                // otherwise
+                // its fill to the close when it opened on this bar, which after a fill
+                // inside the bar is the part of it after that fill and after one at
+                // the open the whole bar, and the whole bar otherwise (ADR 0023)
+                let entered = if self.inside[i] {
+                    self.after_fill(i, &bar)
+                } else {
+                    bar
+                };
                 if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
-                    if trip.open_tick == self.tick {
-                        trip.see(bar.close);
+                    let lived = if trip.open_tick == self.tick {
+                        entered
                     } else {
-                        trip.see(bar.low);
-                        trip.see(bar.high);
-                    }
+                        bar
+                    };
+                    trip.see(lived.low);
+                    trip.see(lived.high);
                 }
                 self.marks[i] = bar.close;
             }

@@ -772,6 +772,39 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_lives_through_what_its_bar_printed_after_the_fill() {
+        // a market buy fills at the open of 100 of a bar that then prints 120 and 80,
+        // all of it after the fill; a bid at 100 fills inside a bar from 130 that
+        // goes on down to 90, which came after the fill, while the high came before
+        // it (ADR 0023)
+        for (bar, entry, best, worst) in [
+            (ohlc(100.0, 120.0, 80.0, 100.0, 1e6), None, 0.2, -0.2),
+            (
+                ohlc(130.0, 130.0, 90.0, 101.0, 1e6),
+                Some(100.0),
+                0.01,
+                -0.1,
+            ),
+        ] {
+            let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+            let mut e = Engine::new(Candles::new(vec![flat, bar, flat]), report_cfg());
+            e.reset();
+            match entry {
+                Some(price) => e.limit_buy(1.0, price),
+                None => e.market_buy(1.0),
+            };
+            e.step();
+            e.close();
+            e.step();
+            let [t] = trips(&e) else {
+                panic!("one round trip");
+            };
+            assert!((t.best - best).abs() < 1e-12, "best {}", t.best);
+            assert!((t.worst - worst).abs() < 1e-12, "worst {}", t.worst);
+        }
+    }
+
+    #[test]
     fn a_close_out_before_the_open_counts_none_of_the_bar_that_gapped() {
         // the long of 10 on 100 of margin dies at 90, on the way down to an open of
         // 85, so the 85 and the 80 after it are a market it had already left
