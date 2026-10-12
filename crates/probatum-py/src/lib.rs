@@ -252,6 +252,32 @@ fn candles_from_universe(
     Ok(Candles::universe(bars, width, clock))
 }
 
+/// The instrument each stamped funding event charges, of the series' `width`, or
+/// None where it charges every perp held.
+fn funding_instruments_of(
+    given: Option<Vec<Option<i64>>>,
+    width: usize,
+) -> PyResult<Option<Vec<Option<usize>>>> {
+    let Some(given) = given else {
+        return Ok(None);
+    };
+    let mut out = Vec::with_capacity(given.len());
+    for (row, instrument) in given.into_iter().enumerate() {
+        match instrument.map(usize::try_from) {
+            Some(Ok(i)) if i < width => out.push(Some(i)),
+            None => out.push(None),
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "funding_instruments: row {row} names instrument {}, of {width}; name one \
+                     counted from 0, or None for every perp held",
+                    instrument.unwrap_or(0)
+                )))
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
 /// `series` with a time-stamped funding source placed on its clock: every
 /// `funding_hours` from 00:00 UTC at `funding_rate`, or the events `funding_times`
 /// and `funding_rates`, each charging the instrument `funding_instruments` names for
@@ -1717,12 +1743,13 @@ impl Engine {
         fills_of(py, &self.inner)
     }
 
-    /// The ledger as a dict of `(T,)` numpy columns, one row per bar from the opening
-    /// balance on, or None when reporting is off: the bar and its open time, equity,
-    /// each wallet's cash, gross and net exposure, leverage, margin used and the
+    /// The ledger as a dict of numpy columns, one row per bar from the opening balance
+    /// on, or None when reporting is off: the bar and its open time, equity, each
+    /// wallet's cash, gross and net exposure, leverage, margin used and the
     /// maintenance requirement, what the bar cost in fees, funding, spread, slippage,
-    /// impact, the liquidation charge and dust, and the position, its entry, mark,
-    /// notional, unrealized PnL and weight (ADR 0022).
+    /// impact, the liquidation charge and dust, each `(T,)`, and the position, its
+    /// entry, mark, notional, unrealized PnL, weight and drift, `(T,)` for one
+    /// instrument and `(T, N)` for a universe (ADR 0022).
     fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
         ledger_of(py, &self.inner, self.universe)
     }
@@ -2111,18 +2138,40 @@ impl Batch {
 
     /// Bring every env to its row of `weights`, an `(num_envs, N)` float64 array of
     /// weights of equity, one per instrument, as `Engine.target` does for one, with
-    /// `tolerance` and `transfer` alike for every env. The orders fill at the next
-    /// step's opens. A weight that is not finite, or a negative one on a spot
-    /// instrument, is refused before any env places anything (ADR 0009).
+    /// `tolerance` and `transfer` alike for every env. Each leg fills at its
+    /// instrument's next open, or waits for the next bar it prints. A weight that is
+    /// not finite, or a negative one on a spot instrument, is refused before any env
+    /// places anything (ADR 0009).
     #[pyo3(signature = (weights, tolerance = 0.0, transfer = false))]
     fn target(
         &mut self,
         py: Python<'_>,
-        weights: PyReadonlyArray2<'_, f64>,
+        weights: Bound<'_, PyAny>,
         tolerance: f64,
         transfer: bool,
     ) -> PyResult<()> {
         let (n, width) = (self.inner.len(), self.inner.width());
+        let Ok(array) = weights.cast::<PyUntypedArray>() else {
+            return Err(PyValueError::new_err(format!(
+                "weights: a {}; give a ({n}, {width}) float64 array, one row per env",
+                weights.get_type().name()?
+            )));
+        };
+        if array.ndim() != 2 {
+            return Err(PyValueError::new_err(format!(
+                "weights: an array of {} dimensions for {n} envs of {width} instruments; give \
+                 ({n}, {width}), one row per env",
+                array.ndim()
+            )));
+        }
+        let weights = weights
+            .extract::<PyReadonlyArray2<'_, f64>>()
+            .map_err(|_| {
+                PyValueError::new_err(format!(
+                    "weights: an array of {}; give float64 values",
+                    array.dtype()
+                ))
+            })?;
         let view = weights.as_array();
         if view.dim() != (n, width) {
             return Err(PyValueError::new_err(format!(
@@ -2139,7 +2188,10 @@ impl Batch {
         let rows: Vec<f64> = view.iter().copied().collect();
         py.detach(|| self.inner.target_all(&rows, tolerance, transfer))
             .map_err(|(env, TargetError::Short { instrument, weight })| {
-                short_spot(&format!("env {env}: "), instrument, weight)
+                PyValueError::new_err(format!(
+                    "weights: {weight} for instrument {instrument} of env {env}, which trades \
+                     spot and cannot be short; trade a perpetual instead"
+                ))
             })
     }
 
@@ -2222,10 +2274,9 @@ impl Batch {
     }
 
     /// A batched per-env account snapshot as a dict of `(num_envs,)` arrays, for
-    /// building a reward: equity, position, unrealized_pnl, realized_pnl,
-    /// mark_price, funding_paid, the four of a position read on the first
-    /// instrument, and every instrument's `positions` and `marks` as
-    /// `(num_envs, N)` arrays.
+    /// building a reward: equity, realized_pnl and funding_paid for the account,
+    /// position, unrealized_pnl and mark_price read on the first instrument, and
+    /// every instrument's `positions` and `marks` as `(num_envs, N)` arrays.
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.inner.snapshot();
         let (n, width) = (self.inner.len(), self.inner.width());
@@ -2743,23 +2794,29 @@ fn build_series(
     intrabar: &str,
     seed: Option<u128>,
 ) -> PyResult<(Candles, EngineConfig, bool)> {
-    let ndim = candles
-        .cast::<PyUntypedArray>()
-        .map_or(0, |array| array.ndim());
+    let Ok(array) = candles.cast::<PyUntypedArray>() else {
+        return Err(PyValueError::new_err(format!(
+            "candles: a {}; pass a float64 array, (T, 5) for one instrument, or (T, N, 5) \
+             for a universe of N",
+            candles.get_type().name()?
+        )));
+    };
+    let ndim = array.ndim();
     if ndim != 2 && ndim != 3 {
         return Err(PyValueError::new_err(format!(
             "candles: an array of {ndim} dimensions; pass (T, 5) for one instrument, or \
              (T, N, 5) for a universe of N"
         )));
     }
-    let dtype = |error: String| {
+    let dtype = || {
         PyValueError::new_err(format!(
-            "candles: {error}; pass float64 values, (T, 5) for one instrument, or \
-             (T, N, 5) for a universe of N"
+            "candles: an array of {}; pass float64 values, (T, 5) for one instrument, or \
+             (T, N, 5) for a universe of N",
+            array.dtype()
         ))
     };
     if ndim == 2 {
-        if instruments.is_some() || funding_instruments.is_some() {
+        if instruments.is_some() {
             return Err(PyValueError::new_err(
                 "instruments: given with one instrument's (T, 5) candles; pass (T, N, 5) \
                  for a universe, or market and tiers for one instrument",
@@ -2767,7 +2824,7 @@ fn build_series(
         }
         let candles = candles
             .extract::<PyReadonlyArray2<'_, f64>>()
-            .map_err(|error| dtype(error.to_string()))?;
+            .map_err(|_| dtype())?;
         let config = build_config(
             market,
             quote,
@@ -2791,7 +2848,7 @@ fn build_series(
             funding_hours,
             funding_times,
             funding_rates,
-            None,
+            funding_instruments_of(funding_instruments, 1)?,
         )?;
         let series = match tiers {
             Some(rows) => series.with_tiers(tiers_from(rows, tiers_by)?),
@@ -2801,7 +2858,7 @@ fn build_series(
     }
     let candles = candles
         .extract::<PyReadonlyArray3<'_, f64>>()
-        .map_err(|error| dtype(error.to_string()))?;
+        .map_err(|_| dtype())?;
     let series = candles_from_universe(candles, times)?;
     let width = series.width();
     let named = parse_market(market)?;
@@ -2813,26 +2870,7 @@ fn build_series(
             width.saturating_mul(max_open_orders)
         )));
     }
-    let funding_instruments = match funding_instruments {
-        Some(given) => {
-            let mut out = Vec::with_capacity(given.len());
-            for (row, instrument) in given.into_iter().enumerate() {
-                match instrument.map(usize::try_from) {
-                    Some(Ok(i)) if i < width => out.push(Some(i)),
-                    None => out.push(None),
-                    _ => {
-                        return Err(PyValueError::new_err(format!(
-                            "funding_instruments: row {row} names instrument {}, of {width}; \
-                             name one counted from 0, or None for every perp held",
-                            instrument.unwrap_or(0)
-                        )))
-                    }
-                }
-            }
-            Some(out)
-        }
-        None => None,
-    };
+    let funding_instruments = funding_instruments_of(funding_instruments, width)?;
     let specs = match instruments {
         Some(_) if tiers.is_some() => {
             return Err(PyValueError::new_err(

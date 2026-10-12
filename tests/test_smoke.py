@@ -631,10 +631,16 @@ def test_a_universe_batch_records_for_each_env_what_its_own_run_does():
 @pytest.mark.parametrize("market, weights, says", [
     ("perp", np.zeros((3, 2)),
      "weights: shape (3, 2) for 2 envs of 2 instruments; give (2, 2)"),
+    ("perp", np.zeros(2),
+     "weights: an array of 1 dimensions for 2 envs of 2 instruments; give (2, 2)"),
+    ("perp", [[0.5, 0.0], [0.5, 0.0]],
+     "weights: a list; give a (2, 2) float64 array, one row per env"),
+    ("perp", np.zeros((2, 2), dtype=np.int64),
+     "weights: an array of int64; give float64 values"),
     ("perp", np.array([[0.5, np.nan], [0.0, 0.0]]),
      "weights: NaN for instrument 1 of env 0; give finite weights"),
     ("spot", np.array([[0.5, 0.0], [-0.5, 0.0]]),
-     "env 1: weights: -0.5 for instrument 0, which trades spot and cannot be short"),
+     "weights: -0.5 for instrument 0 of env 1, which trades spot and cannot be short"),
 ])
 def test_a_batch_refuses_weights_it_cannot_place_before_any_env_trades(market, weights,
                                                                           says):
@@ -654,10 +660,21 @@ def test_a_batch_refuses_weights_it_cannot_place_before_any_env_trades(market, w
      "instruments: given with one instrument's (T, 5)"),
     (np.zeros(5), {},
      "candles: an array of 1 dimensions; pass (T, 5) for one instrument"),
+    (series().tolist(), {},
+     "candles: a list; pass a float64 array, (T, 5) for one instrument"),
+    (series().astype(np.int64), {},
+     "candles: an array of int64; pass float64 values"),
 ])
-def test_candles_of_one_shape_refuse_the_settings_of_another(candles, settings, says):
+def test_candles_the_engine_cannot_read_are_refused(candles, settings, says):
     with pytest.raises(ValueError, match=re.escape(says)):
         probatum.Engine(candles, **settings)
+
+
+def test_an_empty_batch_over_a_universe_keeps_its_instrument_axis():
+    batch = probatum.Batch(universe_pair(), 0)
+
+    assert batch.observe(2).shape == (0, 2, 2, 5)
+    assert batch.snapshot()["positions"].shape == (0, 2)
 
 
 @pytest.mark.parametrize("script, says", [
@@ -1239,6 +1256,38 @@ def test_funding_every_eight_hours_is_charged_at_the_close_of_the_bar_ending_the
         paid = [eng.step()["funding_paid"] for _ in range(8)]
 
         assert paid == [0.0] * 6 + [pytest.approx(0.1)] * 2, source
+
+
+def test_funding_named_on_the_one_instrument_is_charged_as_funding_named_on_none():
+    candles, times = hourly(10)
+    stamps = dict(funding_times=np.array([8 * HOUR], dtype=np.int64),
+                  funding_rates=np.array([0.001]))
+
+    paid = []
+    for named in ({}, {"funding_instruments": [0]}, {"funding_instruments": [None]}):
+        eng = probatum.Engine(
+            candles,
+            market    = "perp",
+            quote     = 10_000.0,
+            fee_taker = 0.0,
+            times     = times,
+            **stamps,
+            **named,
+        )
+        eng.reset()
+        eng.market_buy(1.0)
+        paid.append([eng.step()["funding_paid"] for _ in range(8)])
+
+    assert paid[0] == paid[1] == paid[2]
+
+    with pytest.raises(ValueError, match=re.escape("row 0 names instrument 1, of 1")):
+        probatum.Engine(
+            candles,
+            market              = "perp",
+            times               = times,
+            funding_instruments = [1],
+            **stamps,
+        )
 
 
 def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
