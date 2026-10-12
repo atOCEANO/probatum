@@ -16,7 +16,8 @@ pub const POS_EPS: f64 = 1e-9;
 /// for it either (ADR 0014).
 #[inline]
 pub fn moves_position(fill: &Fill) -> bool {
-    fill.size.get().is_finite() && fill.size.get() > POS_EPS && fill.price.get().is_finite()
+    let size = fill.size.get();
+    size > POS_EPS && size < f64::INFINITY && fill.price.get().is_finite()
 }
 
 /// A net long, net short, or flat position. There is never a simultaneous long
