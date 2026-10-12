@@ -15,28 +15,31 @@ use crate::engine::{Engine, EngineConfig, TargetError};
 /// A batch of independent engines over one shared candle series.
 pub struct EnvBatch {
     engines: Vec<Engine>,
+    width: usize,
 }
 
 impl EnvBatch {
     /// Build `num_envs` engines over the same candles (shared by `Arc`) and
     /// config.
     pub fn new(num_envs: usize, candles: Candles, config: EngineConfig) -> EnvBatch {
+        let width = candles.width();
         let engines = (0..num_envs)
             .map(|env| Engine::new(candles.clone(), config).for_env(env))
             .collect();
-        EnvBatch { engines }
+        EnvBatch { engines, width }
     }
 
     /// Build one engine per entry in `configs`, all over the one shared candle
     /// series. Lets each env carry its own config (per-env cost randomization,
     /// ADR 0038) while the candles stay shared with no duplication.
     pub fn with_configs(candles: Candles, configs: &[EngineConfig]) -> EnvBatch {
+        let width = candles.width();
         let engines = configs
             .iter()
             .enumerate()
             .map(|(env, config)| Engine::new(candles.clone(), *config).for_env(env))
             .collect();
-        EnvBatch { engines }
+        EnvBatch { engines, width }
     }
 
     /// Number of envs, fixed at construction: a batch never grows or shrinks, so
@@ -79,9 +82,9 @@ impl EnvBatch {
         &self.engines
     }
 
-    /// Instruments on each row of the shared series, one when there are no envs.
+    /// Instruments on each row of the shared series.
     pub fn width(&self) -> usize {
-        self.engines.first().map_or(1, Engine::width)
+        self.width
     }
 
     /// Bring every env to its own row of `weights`, one weight of equity per
@@ -360,6 +363,12 @@ mod tests {
         let b = EnvBatch::new(0, series(), cfg());
         assert!(b.is_empty());
         assert!(b.done());
+    }
+
+    #[test]
+    fn an_empty_batch_keeps_the_width_of_its_series() {
+        // the instrument axis of what it hands back comes from it, envs or none
+        assert_eq!(EnvBatch::new(0, three(), both()).width(), 3);
     }
 
     #[test]
