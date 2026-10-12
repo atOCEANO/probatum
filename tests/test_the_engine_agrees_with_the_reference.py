@@ -146,21 +146,24 @@ def crossed_as_it_arms():
 
 # cases built where random cases seldom reach a rule, each with the rule it reaches
 BUILT = {
-    # a buy opens a long a take-profit and a stop both close, and the stop, the
-    # worse, fills first though typed last
+    # a buy opens a long a take-profit and a stop both close, the take-profit below
+    # the close the bar reaches after the fill, and the stop, the worse, fills first
+    # though typed last
     "a stop and a take-profit of a long the bar opened": (
         "the exits of a position the bar's orders opened reordered",
         built(at("limit", "buy", 1.0, 95.0), at("reduce_limit", "sell", 1.0, 110.0),
-              at("stop", "sell", 1.0, 90.0), shaped=(100.0, 112.0, 85.0, 100.0))),
+              at("stop", "sell", 1.0, 90.0), shaped=(100.0, 112.0, 85.0, 111.0))),
     # a sale above the open would close the long the bar's buy opened, which the
     # path without it takes to its trigger
     "a sale above the open on a long the bar opened": (OPENED, built(
         None, at("limit", "buy", 10.0, 95.0), at("limit", "sell", 10.0, 105.0),
         shaped=(100.0, 106.0, 80.0, 95.0))),
-    # the same with the sale below the open, above where the bar's buy opened it
+    # the same with a reduce-only sale below the open, above where the bar's buy
+    # opened the long, which meets the bar from that fill and so needs a close above
+    # it to reach it
     "a sale below the open on a long the bar opened lower": (OPENED, built(
         None, at("limit", "buy", 10.0, 95.0), at("reduce_limit", "sell", 10.0, 98.0),
-        shaped=(100.0, 101.0, 80.0, 90.0))),
+        shaped=(100.0, 101.0, 80.0, 99.0))),
     # the short a flip opens at the long's extreme is tested without the long beside
     # it, and stays clear of its trigger
     "a flip at the low of a maintained long": (
@@ -170,11 +173,19 @@ BUILT = {
         "a liquidation at the closes", debited_at_the_close()),
     # a buy limit of 10 at 98.90 placed while flat with a take-profit at 102.90 after
     # it: the entry fills on the way down to 88, which liquidates the long, and the
-    # take-profit it armed, on the favourable side of its start, is held back
+    # take-profit it armed, which the bar reaches after the fill only on its way back
+    # up to the close, is held back
     "a take-profit a limit entry armed on a liquidating bar": (
         "a leg a resting fill armed held back on a liquidating bar",
         built(None, None, ("bracket", "buy", 10.0, 0.9),
-              shaped=(100.0, 103.0, 88.0, 95.0))),
+              shaped=(100.0, 104.0, 88.0, 103.0))),
+    # the same bracket of 1, on a bar that reached 104 before the entry and closes at
+    # 100: after the fill the bar goes no higher than that close, so the take-profit
+    # rests
+    "a take-profit the bar reached only before its limit entry": (
+        "an exit the bar reached only before its position's fill",
+        built(None, None, ("bracket", "buy", 1.0, 0.9),
+              shaped=(100.0, 104.0, 95.0, 100.0))),
     # a bid at 101 rests through a bar that trades nothing, and a bracket placed flat
     # beside a market entry arms its take-profit at 101 on that entry's fill, a sell
     # at the account's own bid, so it is cancelled as it arms

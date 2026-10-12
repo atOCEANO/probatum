@@ -96,6 +96,8 @@ RULES = [
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
     "an exit held back from a position the bar's orders opened",
+    "an exit priced from its position's fill",
+    "an exit the bar reached only before its position's fill",
     "an inverse contract filled",
     "an ioc or fok limit expiring after one bar",
     "an order below the minimum notional refused",
@@ -148,6 +150,7 @@ UNREACHABLE = {"dust swept at the close", "a target leg on an instrument yet to 
 # random accounts seldom reach these, so a case built for each reaches it in the
 # comparison with the engine
 BUILT = {
+    "an exit the bar reached only before its position's fill",
     "a leg a resting fill armed held back on a liquidating bar",
     "a sized leg gone with the position its fill closed",
     "a wallet a fill left within rounding of zero set to zero",

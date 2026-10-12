@@ -129,7 +129,11 @@ impl Engine {
             let Some(order) = self.book.get_mut(id) else {
                 continue;
             };
+            // arming is the leg's placement as an order with a side, so a limit is a
+            // taker on the bar it arms on where that bar, from its fill, is at or
+            // through it (ADR 0011)
             order.side = side;
+            order.on_book = false;
             if let Some(leg) = order.leg.as_mut() {
                 leg.armed = true;
             }
@@ -545,6 +549,87 @@ mod tests {
             ]
         );
         assert_eq!(s.position, 0.0);
+    }
+
+    #[test]
+    fn a_take_profit_the_bar_reached_only_before_its_limit_entry_fills_only_if_optimistic() {
+        // the Specification's example of what a bar cannot show: the buy limit at 95
+        // fills inside a bar that opens at 100, reaches 100.50 and 94, and closes at
+        // 95.50; the high came before the fill under the pessimistic setting, so the
+        // take-profit at 97 rests, and after it under the optimistic one, so it fills
+        // there as a maker
+        let wide = ohlc(100.0, 100.5, 94.0, 95.5, 1e6);
+        for (intrabar, held) in [(Intrabar::Pessimistic, 1.0), (Intrabar::Optimistic, 0.0)] {
+            let mut e = spot(&[wide], intrabar);
+            let entry = e.limit_buy(1.0, 95.0).expect("rests").0;
+            let (_, take_profit) = e.bracket(0, Some(90.0), Some(97.0));
+            let s = e.step();
+            let mut expected = vec![(entry, 1.0, 95.0, FillReason::Limit)];
+            if held == 0.0 {
+                expected.push((id(take_profit), 1.0, 97.0, FillReason::TakeProfit));
+            }
+            assert_eq!(fills(&e), expected);
+            assert_eq!(s.position, held);
+            let reporter = e.reporter().expect("reporting is on");
+            assert!(reporter.fills().iter().all(|fill| !fill.taker));
+        }
+    }
+
+    #[test]
+    fn a_stop_leg_of_a_breakout_long_fills_where_the_price_crossed_it_after_the_entry() {
+        // the buy stop at 105 fills inside a bar that opens at 100, reaches 108 and 98,
+        // and closes at 103: the high came after the fill under either setting, and
+        // the low too under the pessimistic one, so the stop leg fills at 102, where
+        // the price crossed it, and not at the open; under the optimistic setting the
+        // low came first, and the long is held
+        let wide = ohlc(100.0, 108.0, 98.0, 103.0, 1e6);
+        for (intrabar, held) in [(Intrabar::Pessimistic, 0.0), (Intrabar::Optimistic, 1.0)] {
+            let mut e = spot(&[wide], intrabar);
+            let entry = e.stop(Side::Buy, 1.0, 105.0, false).expect("rests").0;
+            let (stop, _) = e.bracket(0, Some(102.0), Some(110.0));
+            let s = e.step();
+            let mut expected = vec![(entry, 1.0, 105.0, FillReason::Stop)];
+            if held == 0.0 {
+                expected.push((id(stop), 1.0, 102.0, FillReason::Stop));
+            }
+            assert_eq!(fills(&e), expected);
+            assert_eq!(s.position, held);
+        }
+    }
+
+    #[test]
+    fn a_spot_sale_meets_a_holding_a_limit_bought_inside_the_bar_from_that_fill() {
+        // a sale on spot can only sell the holding, which the buy at 95 makes inside
+        // the bar, so it meets the bar from there: a sell at 97 the bar reached only
+        // on its way down from 100 rests, where the whole bar would have filled it
+        let mut e = spot(
+            &[ohlc(100.0, 100.5, 94.0, 95.5, 1e6)],
+            Intrabar::Pessimistic,
+        );
+        e.limit_buy(1.0, 95.0).expect("rests");
+        let sale = e.limit_sell(1.0, 97.0).expect("rests");
+        let s = e.step();
+        assert_eq!(fills(&e).len(), 1);
+        assert_eq!(s.position, 1.0);
+        assert!(s.open_orders.iter().any(|order| order.id == sale));
+    }
+
+    #[test]
+    fn a_leg_arming_is_its_placement_for_maker_and_taker() {
+        // the take-profit at 99 rests through a bar while flat, then arms at the open
+        // of 100 on the long a market buy opens there: it is through the price it arms
+        // at, so it fills at once as a taker, though it had rested through a bar
+        let mut e = spot(&[FLAT, FLAT], Intrabar::Pessimistic);
+        let (_, take_profit) = e.bracket(0, None, Some(99.0));
+        e.step();
+        e.market_buy(1.0);
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let fill = reporter.fills().last().expect("the take-profit filled");
+        assert_eq!(
+            (fill.order, fill.price, fill.taker),
+            (take_profit, 99.0, true)
+        );
     }
 
     #[test]

@@ -38,8 +38,9 @@ struct Offer {
     reduce_only: bool,
     tif: TimeInForce,
     /// Whether each turn makes the offer again: a bracket leg with no size of its own
-    /// asks for the position as the fills before it left it, and one yet to arm can
-    /// be armed by them.
+    /// asks for the position as the fills before it left it, one yet to arm can be
+    /// armed by them, and an order that can only reduce meets a position they opened
+    /// inside the bar from their fill on.
     again: bool,
     made: Option<(Fill, FillCosts, f64)>,
 }
@@ -239,11 +240,22 @@ impl Engine {
 
     /// What `bar` offers `order` as the account now stands: nothing to a bracket leg
     /// yet to arm, which has no side, and to a leg with no size of its own, the
-    /// position on its instrument (ADR 0010).
+    /// position on its instrument (ADR 0010). An order that can only reduce, a
+    /// reduce-only one or a sale on spot, meets a position a fill inside the bar
+    /// opened on the part of the bar after that fill (ADR 0012).
     fn offer(&self, order: &Order, bar: &Candle) -> Offer {
+        let i = order.instrument;
         let (sizeless, armed) = order
             .leg
             .map_or((false, true), |leg| (leg.sizeless, leg.armed));
+        let reduces = order.reduce_only
+            || (self.account.markets[i] == Market::Spot && order.side == Side::Sell);
+        let bar = if reduces && self.inside[i] {
+            self.after_fill(i, bar)
+        } else {
+            *bar
+        };
+        let bar = &bar;
         let sized = if sizeless {
             let held = self.account.positions[order.instrument].qty.get().abs();
             Order {
@@ -266,9 +278,39 @@ impl Engine {
             kind: order.kind,
             reduce_only: order.reduce_only,
             tif: order.tif,
-            again: sizeless || !armed,
+            again: sizeless || !armed || reduces,
             made: made.map(|(fill, costs)| (fill, costs, sized.remaining().get())),
         }
+    }
+
+    /// The part of `bar` after the fill inside it that opened or flipped the position
+    /// on instrument `i`: it opens at the fill's reference and closes at the close,
+    /// reaches the extreme beyond the fill, and reaches the one on the open's side
+    /// where the setting places it after the fill, going no further that way than
+    /// the fill and the close otherwise (ADR 0012).
+    fn after_fill(&self, i: usize, bar: &Candle) -> Candle {
+        let start = self.starts[i];
+        let long = self.account.positions[i].qty.get() > 0.0;
+        // the price came to the fill from the open, so the extreme beyond it came
+        // after it, and the one on the open's side favours a position a limit opened
+        // and hurts one a stop opened; the worse way places it where it hurts
+        let down = start < bar.open;
+        let favours = down == long;
+        let after = favours != self.unseen.opened[i];
+        let mut part = Candle {
+            open: start,
+            ..*bar
+        };
+        if down {
+            part.high = if after {
+                bar.high
+            } else {
+                start.max(bar.close)
+            };
+        } else {
+            part.low = if after { bar.low } else { start.min(bar.close) };
+        }
+        part
     }
 
     /// A perp fill that reduces the position as it now stands, the price the bar
@@ -336,13 +378,14 @@ impl Engine {
         }
         let (account, book) = (self.account.clone(), self.book.clone());
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
-        let (starts, reach) = (self.starts.clone(), self.reach);
+        let (starts, inside, reach) = (self.starts.clone(), self.inside.clone(), self.reach);
         let reporter = self.reporter.take();
         let held = self.fill_offers(fills.to_vec(), true);
         let liquidates = held && self.reaches_trigger();
         self.account = account;
         self.book = book;
         self.starts = starts;
+        self.inside = inside;
         self.reach = reach;
         self.notes.truncate(notes);
         self.flipped = flipped;
@@ -415,14 +458,14 @@ impl Engine {
     /// where that position started. Returns whether any was held back.
     fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool) -> bool {
         let mut held = false;
-        // the instrument the last fill traded, whose bracket legs alone it can have
-        // resized or armed
+        // the instrument the last fill traded, whose offers alone it can have changed
         let mut touched: Option<usize> = None;
         let mut k = 0;
         while k < fills.len() {
             // a bracket leg with no size of its own asks for the position this turn
-            // finds, which the fills before it may have grown or shrunk, and one
-            // waiting to arm may have been armed by them
+            // finds, which the fills before it may have grown or shrunk, one waiting
+            // to arm may have been armed by them, and an order that can only reduce
+            // meets a position they opened inside the bar from their fill on
             if let Some(i) = touched.take() {
                 for offer in fills[k..]
                     .iter_mut()

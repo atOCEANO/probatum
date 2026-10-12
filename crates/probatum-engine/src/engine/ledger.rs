@@ -2,7 +2,7 @@
 //! and when reporting is on it is logged with what it paid and carried into the
 //! round trips, each of which holds every fee of its own fills (ADRs 0022, 0023).
 
-use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Side};
+use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Side};
 
 use super::path::FillNote;
 use super::{Engine, CLOSE_EPS};
@@ -97,11 +97,26 @@ impl Engine {
                 price: fill.price.get(),
                 opened: applied - closed,
             });
-            if after == 0.0 {
-                self.starts[i] = f64::NAN;
-            } else if held == 0.0 || held * after < 0.0 {
-                self.starts[i] = costs.reference;
-            }
+        }
+        // where the position now stands started on the bar, and whether a fill inside
+        // the bar opened it, a resting order's at a price the open had not reached,
+        // which the price came to from the open (ADR 0012)
+        let (held, ..) = before;
+        let after = self.account.positions[i].qty.get();
+        if after == 0.0 {
+            self.starts[i] = f64::NAN;
+            self.inside[i] = false;
+        } else if held == 0.0 || held * after < 0.0 {
+            self.starts[i] = costs.reference;
+            self.inside[i] = match reason {
+                FillReason::Limit | FillReason::TakeProfit => !self.fill_model.limit_crosses(
+                    fill.side,
+                    Price(costs.reference),
+                    Price(candle.open),
+                ),
+                FillReason::Stop => costs.reference != candle.open,
+                _ => false,
+            };
         }
         self.book_fill(
             i,
@@ -170,8 +185,6 @@ impl Engine {
             why,
         );
         // a bracket goes with the position it armed on (ADR 0010)
-        let (held, ..) = before;
-        let after = self.account.positions[i].qty.get();
         if held != 0.0 && (after == 0.0 || held * after < 0.0) {
             self.disarm(i, order);
         }

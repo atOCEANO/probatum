@@ -1766,11 +1766,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_above_where_its_long_started_is_judged_at_its_trigger_not_its_fill() {
-        // the buy at 95 opens a long on a bar from 100, and a reduce-only stop at 95.3
-        // would close it above where it started, though a slippage of 50 bps fills it
-        // at 94.82: the bar reached 95.3 after 95 only on a move back up, so the stop
-        // is held back and the long closed at its trigger, 85
+    fn a_stop_above_where_its_long_started_fills_at_the_fill_that_opened_it() {
+        // the buy at 95 opens a long inside a bar from 100, and a reduce-only stop at
+        // 95.3 is through at that moment, so it fills there, at 95 less 50 bps,
+        // 94.525, rather than on a move back up the bar never shows after the fill;
+        // the fall to 80 finds the account flat, where its trigger was at 85
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 80.0, 85.0, 1e6),
@@ -1788,9 +1788,9 @@ mod tests {
         let last = e.step();
         assert_eq!(
             priced(&e),
-            vec![(FillReason::Limit, 95.0), (FillReason::Liquidation, 85.0)]
+            vec![(FillReason::Limit, 95.0), (FillReason::Stop, 94.525)]
         );
-        assert_eq!(last.margin_cash, 0.0);
+        assert_eq!(last.position, 0.0);
     }
 
     #[test]

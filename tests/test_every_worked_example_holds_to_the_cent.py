@@ -367,6 +367,37 @@ def test_a_bracket_placed_after_a_limit_entry_stops_it_on_the_bar_it_fills():
     assert sim.position[0] == 0.0
 
 
+@pytest.mark.parametrize("intrabar, fills", [
+    ("pessimistic", [(95.0, "limit")]),
+    ("optimistic", [(95.0, "limit"), (97.0, "take_profit")]),
+])
+def test_a_take_profit_reached_only_before_its_limit_entry_needs_the_optimistic_way(
+        intrabar, fills):
+    sim = run(hourly(2), [[flat(100.0)], [Bar(100.0, 100.5, 94.0, 95.5, 1_000.0)]],
+              [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0, intrabar=intrabar),
+              script={0: [("buy", dict(instrument=0, size=1.0, limit=95.0)),
+                          ("bracket", dict(instrument=0, stop=90.0,
+                                           take_profit=97.0))]})
+
+    assert [(f["price"], f["reason"]) for f in sim.fills] == fills
+    assert not any(f["taker"] for f in sim.fills)
+
+
+@pytest.mark.parametrize("intrabar, fills", [
+    ("pessimistic", [(105.0, "stop"), (102.0, "stop")]),
+    ("optimistic", [(105.0, "stop")]),
+])
+def test_a_stop_leg_of_a_breakout_long_fills_where_the_price_crossed_it_after_the_entry(
+        intrabar, fills):
+    sim = run(hourly(2), [[flat(100.0)], [Bar(100.0, 108.0, 98.0, 103.0, 1_000.0)]],
+              [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0, intrabar=intrabar),
+              script={0: [("buy", dict(instrument=0, size=1.0, stop=105.0)),
+                          ("bracket", dict(instrument=0, stop=102.0,
+                                           take_profit=110.0))]})
+
+    assert [(f["price"], f["reason"]) for f in sim.fills] == fills
+
+
 def test_a_bracket_armed_on_a_long_is_cancelled_when_the_long_flips_short():
     sim = run(hourly(4), [[flat(100.0)], [flat(100.0)], [flat(100.0)],
                           [Bar(100.0, 111.0, 94.0, 100.0, 1_000.0)]],

@@ -86,6 +86,10 @@ struct Unseen {
     hold: bool,
     /// Each instrument's exits fill worst first.
     exits: Vec<bool>,
+    /// The extreme on the open's side of a fill inside the bar that opens a position
+    /// on each instrument lies where it hurts that position: before the fill where it
+    /// favours it, after the fill where it does not.
+    opened: Vec<bool>,
     /// Each funding event the row owns counts its debits and not its credits, drawn
     /// by a random setting and empty under a fixed one.
     funding: Vec<bool>,
@@ -93,14 +97,18 @@ struct Unseen {
 
 impl Unseen {
     /// Draw this bar's way for each event from `stream`, in a fixed order: the
-    /// perps together, the exits held back, each instrument's exits, and each of
-    /// the `events` funding events the row owns.
+    /// perps together, the exits held back, each instrument's exits, each
+    /// instrument's fill inside the bar, and each of the `events` funding events the
+    /// row owns.
     fn draw(&mut self, stream: &mut ChaCha20Rng, events: usize) {
         let mut worse = || stream.next_u32() >> 31 == 1;
         self.together = worse();
         self.hold = worse();
         for exits in &mut self.exits {
             *exits = worse();
+        }
+        for opened in &mut self.opened {
+            *opened = worse();
         }
         self.funding.clear();
         self.funding.extend((0..events).map(|_| worse()));
@@ -223,6 +231,10 @@ pub struct Engine {
     /// opened at it, the reference of the fill that opened or flipped it otherwise,
     /// NaN while it is flat.
     starts: Vec<f64>,
+    /// Whether a fill inside the bar opened or flipped each position, at a price the
+    /// open had not reached, which an order that can only reduce it then meets the
+    /// bar from (ADR 0012).
+    inside: Vec<bool>,
     /// The money the bar's perp fills have put at stake so far, for each the margin
     /// wallet before it, what the bound paid in and its notional, which the rounding a
     /// close can leave in a margin wallet it empties is measured against.
@@ -289,6 +301,7 @@ impl Engine {
             notes: Vec::new(),
             maintains,
             starts: vec![f64::NAN; width],
+            inside: vec![false; width],
             reach: 0.0,
             unseen: {
                 let worse = config.intrabar != Intrabar::Optimistic;
@@ -297,6 +310,7 @@ impl Engine {
                     together: worse,
                     hold: worse,
                     exits: vec![worse; width],
+                    opened: vec![worse; width],
                     funding: Vec::new(),
                 }
             },
@@ -540,6 +554,7 @@ impl Engine {
                         f64::NAN
                     };
                 }
+                self.inside.fill(false);
             }
             self.reach = 0.0;
 

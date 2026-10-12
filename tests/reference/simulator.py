@@ -364,7 +364,7 @@ class Trip:
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
            "legs", "next_id", "target_legs", "liquidations", "reached", "first",
-           "start", "reach")
+           "start", "inside", "reach")
 
 
 class Simulator:
@@ -408,8 +408,10 @@ class Simulator:
         self.position = [0.0] * n
         self.entry    = [0.0] * n
 
-        # where each position started on this bar's path (Liquidation, The rule, 4)
+        # where each position started on this bar's path (Liquidation, The rule, 4),
+        # and whether a fill inside the bar opened it (What a bar cannot show)
         self.start       = [None] * n
+        self.inside      = [False] * n
         self.mark        = [None] * n
         self.history     = [[] for _ in range(n)]  # each instrument's own bars
         self.listed      = [False] * n
@@ -970,8 +972,8 @@ class Simulator:
     def arm(self, i, filling):
         """Order types: the legs waiting on instrument `i` arm on the position the fill
         of `filling` has just opened there and keep its side; Maker, taker and the
-        book: a take-profit that would then trade against the account's own is
-        cancelled."""
+        book: arming is a placement, and a take-profit that would then trade against
+        the account's own is cancelled."""
         q = self.position[i]
 
         for order in self.resting(i):
@@ -984,7 +986,7 @@ class Simulator:
             if filling is not None and filling["kind"] != "market":
                 self.hit("a bracket armed by a resting fill")
 
-            order["armed"], order["armed_at"] = True, self.t
+            order["armed"], order["armed_at"], order["seen"] = True, self.t, 0
             order["armed_by"] = None if filling is None else filling["kind"]
             order["side"]     = "sell" if q > 0.0 else "buy"
             self.log("armed", order, order["leg"])
@@ -1234,7 +1236,8 @@ class Simulator:
                      for i in self.perps() if self.position[i] != 0.0}
         self.start = [bar.open if bar is not None and self.position[i] != 0.0 else None
                       for i, bar in enumerate(self.bars[t])]
-        self.reach = 0.0
+        self.inside = [False] * len(self.bars[t])
+        self.reach  = 0.0
 
         self.delist(t)
         self.fill_market_orders(t)                                  # 4
@@ -2043,14 +2046,70 @@ class Simulator:
         return "sell" if q > 0.0 else "buy"
 
 
-    def offer(self, order, bar):
+    def inside_fill(self, order, t):
+        """What a bar cannot show: whether `order` filled inside bar `t`, a resting
+        order at a price the open had not reached, a limit beyond the open or a stop
+        whose trigger lies beyond it."""
+        if order is None or order["kind"] == "market":
+            return False
+
+        bar   = self.bars[t][order["instrument"]]
+        level = order["price"] if order["kind"] == "limit" else order["trigger"]
+        below = (order["side"] == "buy") == (order["kind"] == "limit")
+        return level < bar.open if below else level > bar.open
+
+
+    def reduces_only(self, order):
+        """Whether `order` can only reduce the position it meets: a reduce-only order,
+        or a sale on spot, which is held to the holding."""
+        spot = self.instruments[order["instrument"]].kind == "spot"
+        return order["reduce_only"] or (spot and self.side_of(order) == "sell")
+
+
+    def after_fill(self, i, bar):
+        """What a bar cannot show: the part of `bar` after the fill inside it that
+        opened or flipped the position on instrument `i`. It opens at that fill's
+        reference and closes at the close, reaches the extreme beyond the fill, and
+        reaches the one on the open's side where it came after the fill, under the
+        pessimistic setting where it does not favour the position and under the
+        optimistic one where it does, and otherwise no further that way than the fill
+        and the close."""
+        start, long = self.start[i], self.position[i] > 0.0
+        down    = start < bar.open
+        favours = down == long
+        after   = favours if self.venue.intrabar == "optimistic" else not favours
+
+        if down:
+            high = bar.high if after else max(start, bar.close)
+            return Bar(start, high, bar.low, bar.close, bar.volume)
+
+        low = bar.low if after else min(start, bar.close)
+        return Bar(start, bar.high, low, bar.close, bar.volume)
+
+
+    def met(self, order, bar):
+        """The bar as `order` meets it, and the last close a limit is held to: the part
+        after the fill inside it that opened the position on its instrument, with
+        that fill's reference as its last close, for an order that can only reduce
+        that position, and the bar itself otherwise."""
+        i = order["instrument"]
+        if self.inside[i] and self.reduces_only(order):
+            return self.after_fill(i, bar), self.start[i]
+        return bar, self.mark[i]
+
+
+    def offer(self, order, bar, close=None):
         """Whether the bar reaches a resting order, at what reference, and whether it
-        fills as a taker (Order types, Maker, taker and the book, Fills, Limits)."""
+        fills as a taker (Order types, Maker, taker and the book, Fills, Limits), a
+        limit held to the trades since `close`, the last close unless given."""
         side = self.side_of(order)
         if side is None or not order["armed"]:
             return None
 
         inst = self.instruments[order["instrument"]]
+        if close is None:
+            close = self.mark[order["instrument"]]
+
         if order["kind"] == "limit":
             price = order["price"]
             # through needs the market a tick past the limit; prices sit on the tick,
@@ -2065,7 +2124,6 @@ class Simulator:
                 return None
 
             # never past every price traded from the last close through the bar
-            close = self.mark[order["instrument"]]
             if side == "buy":
                 price = min(price, max(close, bar.high))
             else:
@@ -2084,15 +2142,32 @@ class Simulator:
 
 
     def offered(self, order, bar):
-        """`offer`, counting a limit the prices traded since the last close hold back
-        where it is offered, since its price orders the bar's exits even when a cancel
-        or a clamp then leaves it unfilled."""
-        found = self.offer(order, bar)
+        """`offer` on the bar as `order` meets it, counting a limit the prices traded
+        since the last close hold back where it is offered, since its price orders the
+        bar's exits even when a cancel or a clamp then leaves it unfilled."""
+        found = self.offer(order, *self.met(order, bar))
         limit = found is not None and order["kind"] == "limit"
         if limit and found[0] != order["price"]:
             self.hit("a limit held to the prices traded since the last close")
 
         return found
+
+
+    def count_part(self, order, found, t):
+        """What a bar cannot show, counted at an order's turn where the part of the bar
+        after its position's fill offers it otherwise than the whole bar would."""
+        i = order["instrument"]
+        if not (order["armed"] and self.inside[i] and self.reduces_only(order)):
+            return
+
+        whole = self.offer(order, self.bar_for(t, i))
+        if whole is None:
+            return
+
+        if found is None:
+            self.hit("an exit the bar reached only before its position's fill")
+        elif found != whole:
+            self.hit("an exit priced from its position's fill")
 
 
     def fill_resting_orders(self, t, hold_favourable=False):
@@ -2133,14 +2208,21 @@ class Simulator:
         for k in range(len(offers)):
             for j in range(k, len(offers)):
                 slot, order, reference, _ = offers[j]
-                waiting = reference is None and order["status"] == "resting"
-                if waiting and order["armed"]:
+                if order["status"] != "resting":
+                    continue
+                # a leg a fill before it armed, and an order that can only reduce,
+                # which meets a position a fill inside the bar opened from that fill
+                # on, are offered the bar as it now stands for them
+                if (reference is None and order["armed"]) or self.reduces_only(order):
                     found = self.offered(order, self.bar_for(t, order["instrument"]))
-                    if found is not None:
-                        offers[j] = (slot, order, found[0], found[1])
+                    offers[j] = (slot, order) + (found or (None, None))
 
             self.order_exits(offers, k, before)
             slot, order, reference, taker = offers[k]
+            if order["status"] == "resting":
+                found = None if reference is None else (reference, taker)
+                self.count_part(order, found, t)
+
             if order["status"] != "resting" or reference is None:
                 continue                     # its OCO partner filled first, or unarmed
 
@@ -2620,10 +2702,11 @@ class Simulator:
             self.trip[i].size = max(self.trip[i].size, abs(after))
         if self.instruments[i].kind != "spot":
             self.track(i, before, after, price, opened)
-            if after == 0.0:
-                self.start[i] = None
-            elif before == 0.0 or before * after < 0.0:
-                self.start[i] = reference
+
+        if after == 0.0:
+            self.start[i], self.inside[i] = None, False
+        elif before == 0.0 or before * after < 0.0:
+            self.start[i], self.inside[i] = reference, self.inside_fill(order, t)
 
         self.position[i] = after
         self.fills.append(dict(
