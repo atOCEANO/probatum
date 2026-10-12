@@ -595,19 +595,20 @@ impl Engine {
                 // its fill to the close when it opened on this bar, which after a fill
                 // inside the bar is the part of it after that fill and after one at
                 // the open the whole bar, and the whole bar otherwise (ADR 0023)
-                let entered = if self.inside[i] {
-                    self.after_fill(i, &bar)
-                } else {
-                    bar
-                };
+                let mut entered_inside = false;
                 if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
-                    let lived = if trip.open_tick == self.tick {
-                        entered
-                    } else {
-                        bar
-                    };
-                    trip.see(lived.low);
-                    trip.see(lived.high);
+                    entered_inside = trip.open_tick == self.tick && self.inside[i];
+                    if !entered_inside {
+                        trip.see(bar.low);
+                        trip.see(bar.high);
+                    }
+                }
+                if entered_inside {
+                    let part = self.after_fill(i, &bar);
+                    if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
+                        trip.see(part.low);
+                        trip.see(part.high);
+                    }
                 }
                 self.marks[i] = bar.close;
             }
