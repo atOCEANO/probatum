@@ -9,6 +9,7 @@ use probatum_core::{Fill, Market, Price, Qty, Side, TierBasis};
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
+use crate::execution::positive;
 
 impl Engine {
     /// Clamp a fill on perp `i` so it does not grow the positions past the margin
@@ -27,7 +28,7 @@ impl Engine {
             return;
         }
         let mark = fill.price.get();
-        if !mark.is_finite() || mark <= 0.0 {
+        if !positive(mark) {
             return;
         }
         let pos = self.account.positions[i].qty.get();
@@ -278,7 +279,7 @@ impl Engine {
             return;
         }
         let price = fill.price.get();
-        if !price.is_finite() || price <= 0.0 {
+        if !positive(price) {
             return;
         }
         if self.account.spot_cash <= 0.0 {
@@ -314,7 +315,7 @@ impl Engine {
         // validator lets through because it checks only for finiteness (ADR 0007)
         let size = fill.size.get();
         let price = fill.price.get();
-        if !size.is_finite() || size <= 0.0 || !price.is_finite() || price <= 0.0 {
+        if !positive(size) || !positive(price) {
             fill.size = Qty(0.0);
             return fill;
         }

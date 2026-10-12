@@ -46,6 +46,13 @@ pub struct FillCosts {
     pub adjustment: f64,
 }
 
+/// Whether `x` is a positive finite number, as a size, a price or a volume has to be.
+/// Two comparisons, where `is_finite` beside a sign test compiles to a classification
+/// of the float's bits some twenty instructions long, on every fill of the step loop.
+pub(crate) fn positive(x: f64) -> bool {
+    x > 0.0 && x < f64::INFINITY
+}
+
 impl FillModel {
     /// The fillable size: the order's remaining, capped at the volume fraction.
     /// `f64::min` keeps the other operand when one side is NaN, so BOTH sides
@@ -57,7 +64,7 @@ impl FillModel {
     fn cap(&self, order: &Order, bar: &Candle) -> f64 {
         let remaining = order.remaining().get();
         let available = self.max_fill_fraction * bar.volume;
-        if !remaining.is_finite() || !available.is_finite() || available <= 0.0 {
+        if !remaining.is_finite() || !positive(available) {
             return 0.0;
         }
         remaining.min(available)
@@ -70,7 +77,7 @@ impl FillModel {
     /// dropped to zero or through it, the parts scaled down with it (ADR 0013).
     fn taker_slip(&self, size: f64, volume: f64) -> (f64, f64, f64) {
         let flat = self.slippage_bps.as_fraction().max(0.0);
-        let impact = if volume > 0.0 && volume.is_finite() {
+        let impact = if positive(volume) {
             self.impact.max(0.0) * (size / volume)
         } else {
             0.0

@@ -8,6 +8,7 @@
 use probatum_core::{Order, OrderId, OrderType, Price, Qty, Side, TimeInForce};
 
 use super::Engine;
+use crate::execution::positive;
 use crate::reporter::{EventKind, EventReason, OrderEvent, Refusal};
 
 impl Engine {
@@ -96,7 +97,7 @@ impl Engine {
         // size that can never fill used to take a slot anyway, so two of them ahead
         // of a real order refused it: `qty_from_weight` returns exactly zero on a
         // flat mark, which is how a strategy places one without meaning to.
-        if !size.is_finite() || size <= 0.0 {
+        if !positive(size) {
             return self.refuse(id, instrument, Refusal::Size(size));
         }
         // The queue holds the same number of orders the resting book does, for each
@@ -149,7 +150,7 @@ impl Engine {
         // up and later placements were silently rejected (ADR 0007).
         let size = order.remaining().get();
         let sizeless = order.leg.is_some_and(|leg| leg.sizeless);
-        if !sizeless && (!size.is_finite() || size <= 0.0) {
+        if !sizeless && !positive(size) {
             return Some(Refusal::Size(size));
         }
         if let Some(price) = order.price.map(Price::get) {
