@@ -1,6 +1,7 @@
 """A universe in which every weight but one is zero reproduces that instrument's own
-run: the shared account, the cross margin, the path and the funding add nothing for
-instruments the account never holds.
+run: the shared account and its other wallet, the cross margin, the path and the
+funding add nothing for instruments the account never holds, whether they list late,
+print no bar now and then or trade on the other market.
 """
 
 import math
@@ -20,22 +21,29 @@ LEGS = ("position", "entry", "mark", "notional", "unrealized", "weight", "drift"
 
 
 def case(rng):
-    """Two to five instruments of one kind, each printing every row on its own walk
-    at its own scale, and a venue the universe comparison draws for them."""
+    """Two to five instruments, spot or perpetual, each on its own walk at its own
+    scale, a venue the universe comparison draws for them, both wallets funded where
+    both kinds trade, and the one to weight, which prints every row while the others
+    now and then list late or print no bar."""
     n, rows = rng.randint(2, 5), rng.randint(8, 40)
-    times   = differential.clock(rng, rows)
-    kind    = rng.choice(["spot", "linear"])
-    columns = []
+    times = differential.clock(rng, rows)
+    k     = rng.randrange(n)
 
-    for _ in range(n):
+    kinds, columns = [], []
+    for i in range(n):
+        kinds.append(rng.choice(["spot", "linear", "linear"]))
         scale = rng.choice([0.05, 1.0, 30.0])
-        columns.append([Bar(*(price * scale for price in bar[:4]), bar.volume)
-                        for bar in differential.walk(rng, rows)])
+        bars  = [Bar(*(price * scale for price in bar[:4]), bar.volume)
+                 for bar in differential.walk(rng, rows)]
+        start = rng.randint(1, 3) if i != k and rng.random() < 0.3 else 0
+        gone  = [t < start or (i != k and t > start and rng.random() < 0.1)
+                 for t in range(rows)]
+        columns.append([None if out else bar for out, bar in zip(gone, bars)])
 
-    cfg = universe_differential.config(rng, times, [kind] * n, columns)
+    cfg = universe_differential.config(rng, times, kinds, columns)
     cfg["intrabar"] = rng.choice(["pessimistic", "optimistic"])
 
-    return np.array(times, dtype=np.int64), kind, columns, cfg
+    return np.array(times, dtype=np.int64), kinds, columns, cfg, k
 
 
 def alone(cfg, k):
@@ -74,16 +82,17 @@ def same(mine, theirs):
 @pytest.mark.parametrize("seed", range(24))
 def test_a_universe_weighted_on_one_instrument_runs_as_that_instrument_alone(seed):
     rng = random.Random(seed)
-    times, kind, columns, cfg = case(rng)
+    times, kinds, columns, cfg, k = case(rng)
     n, rows = len(columns), len(times) - 1
-    k = rng.randrange(n)
 
     # up to eight times equity either way on a perpetual, so the cap and the tiers
     # bind and a violent bar liquidates
-    low, high = (0.0, 3.0) if kind == "spot" else (-8.0, 8.0)
+    low, high = (0.0, 3.0) if kinds[k] == "spot" else (-8.0, 8.0)
     weights = [rng.uniform(low, high) for _ in range(rows)]
-    candles = np.array([[list(column[t]) for column in columns]
-                        for t in range(len(times))], dtype=np.float64)
+    nan     = [math.nan] * 5
+    candles = np.array([[nan if column[t] is None else list(column[t])
+                         for column in columns] for t in range(len(times))],
+                       dtype=np.float64)
 
     together = probatum._probatum.run(
         candles, universe_differential.venue(cfg),
