@@ -772,26 +772,46 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_lives_through_what_its_bar_printed_after_the_fill() {
+    fn an_entry_lives_through_what_its_bar_surely_printed_after_the_fill() {
         // a market buy fills at the open of 100 of a bar that then prints 120 and 80,
         // all of it after the fill; a bid at 100 fills inside a bar from 130 that
-        // goes on down to 90, which came after the fill, while the high came before
-        // it (ADR 0023)
+        // goes on down to 90, which came after the fill, while its high came before
+        // it; a buy stop at 105 fills inside a bar from 100 that goes on up to 108
+        // and closes at 103, while its low of 98 may have come before the fill, so
+        // the long's worst is its close (ADR 0023)
+        enum Entry {
+            Market,
+            Limit(f64),
+            Stop(f64),
+        }
         for (bar, entry, best, worst) in [
-            (ohlc(100.0, 120.0, 80.0, 100.0, 1e6), None, 0.2, -0.2),
+            (
+                ohlc(100.0, 120.0, 80.0, 100.0, 1e6),
+                Entry::Market,
+                0.2,
+                -0.2,
+            ),
             (
                 ohlc(130.0, 130.0, 90.0, 101.0, 1e6),
-                Some(100.0),
+                Entry::Limit(100.0),
                 0.01,
                 -0.1,
             ),
+            (
+                ohlc(100.0, 108.0, 98.0, 103.0, 1e6),
+                Entry::Stop(105.0),
+                3.0 / 105.0,
+                -2.0 / 105.0,
+            ),
         ] {
             let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
-            let mut e = Engine::new(Candles::new(vec![flat, bar, flat]), report_cfg());
+            let after = ohlc(bar.close, bar.close, bar.close, bar.close, 1e6);
+            let mut e = Engine::new(Candles::new(vec![flat, bar, after]), report_cfg());
             e.reset();
             match entry {
-                Some(price) => e.limit_buy(1.0, price),
-                None => e.market_buy(1.0),
+                Entry::Market => e.market_buy(1.0),
+                Entry::Limit(price) => e.limit_buy(1.0, price),
+                Entry::Stop(trigger) => e.stop(Side::Buy, 1.0, trigger, false),
             };
             e.step();
             e.close();

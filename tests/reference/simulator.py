@@ -1767,17 +1767,22 @@ class Simulator:
 
 
     def live_through(self, t):
-        """Round trips: one still open at the close lived through its entry bar from
-        the fill to the close, the part of the bar after a fill inside it and the
-        whole bar after one at the open, and through any later bar whole."""
+        """Round trips: one still open at the close surely lived through its entry bar
+        from the fill to the close, the fill, the extreme beyond it and the close
+        after a fill inside the bar and the whole bar after one at the open, and
+        through any later bar whole."""
         for i, trip in enumerate(self.trip):
             bar = self.bars[t][i]
             if trip is None or bar is None:
                 continue
 
-            if trip.open_bar == t and self.inside[i]:
-                bar = self.after_fill(i, bar)
-            trip.see(bar.high, bar.low)
+            start = self.start[i]
+            if trip.open_bar != t or not self.inside[i]:
+                trip.see(bar.high, bar.low)
+            elif start < bar.open:
+                trip.see(bar.low, max(start, bar.close))
+            else:
+                trip.see(min(start, bar.close), bar.high)
 
 
     def liquidate(self, closes, t, path=None, wallets=None, trigger=None, moment="bar"):

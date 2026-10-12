@@ -542,7 +542,8 @@ impl Engine {
             self.notes.clear();
             self.flipped = false;
             self.clear_through = false;
-            // read only by the resting orders, which no step adds to
+            // read by the resting orders, which no step adds to, and at the close for a
+            // round trip opened on the bar, whose opening fill set them
             if !self.book.is_empty() {
                 for (i, start) in self.starts.iter_mut().enumerate() {
                     let bar = self.candles.bar(self.tick, i);
@@ -591,24 +592,25 @@ impl Engine {
                 if !printed(&bar) {
                     continue;
                 }
-                // the part of this bar a round trip still open lived through: from
-                // its fill to the close when it opened on this bar, which after a fill
-                // inside the bar is the part of it after that fill and after one at
-                // the open the whole bar, and the whole bar otherwise (ADR 0023)
-                let mut entered_inside = false;
+                // the part of this bar a round trip still open surely lived through:
+                // from its fill to the close when it opened on this bar, which after a
+                // fill inside the bar is the fill, the extreme beyond it and the close,
+                // and after one at the open the whole bar, and the whole bar otherwise,
+                // so an excursion never counts a price that may have printed before
+                // the fill (ADR 0023)
                 if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
-                    entered_inside = trip.open_tick == self.tick && self.inside[i];
-                    if !entered_inside {
-                        trip.see(bar.low);
-                        trip.see(bar.high);
-                    }
-                }
-                if entered_inside {
-                    let part = self.after_fill(i, &bar);
-                    if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
-                        trip.see(part.low);
-                        trip.see(part.high);
-                    }
+                    let (low, high) = if trip.open_tick == self.tick && self.inside[i] {
+                        let start = self.starts[i];
+                        if start < bar.open {
+                            (bar.low, start.max(bar.close))
+                        } else {
+                            (start.min(bar.close), bar.high)
+                        }
+                    } else {
+                        (bar.low, bar.high)
+                    };
+                    trip.see(low);
+                    trip.see(high);
                 }
                 self.marks[i] = bar.close;
             }
