@@ -160,7 +160,7 @@ eng = Engine(
     funding_hours=0.0,       # or funding every this many hours from 00:00 UTC; needs times
     funding_times=None,      # or the venue's own (K,) int64 stamps; needs times
     funding_rates=None,      # and the (K,) rate of each stamp
-    funding_instruments=None,  # a universe's instrument each stamp charges, or None for all
+    funding_instruments=None,  # the instrument each stamp charges, or None for every perp held
     tiers=None,              # or the venue's tiers: rows of (up_to, leverage, rate, amount)
     tiers_by="notional",     # what the tiers' bounds measure: "notional" or "quantity"
     instruments=None,        # a universe's market, tiers and tiers_by, a dict per instrument
@@ -171,7 +171,7 @@ eng = Engine(
 
 **A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound. The table is refused where the Specification's loader refuses it: a maintenance rate not below one, one reaching its tier's initial rate, one over the leverage, or a notional table whose amounts break continuity ([Specification](Specification.md#the-cap)).
 
-**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers` and `tiers_by`, or `market` and `tiers` for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument.
+**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers` and `tiers_by`, or `market` and `tiers` for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
 
 `eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
 
@@ -320,7 +320,7 @@ states = b.step_all(actions)                 # positive buys, negative sells, ze
 | :--- | :--- | :--- |
 | `reset_all()` | list of states | Reset every env, in parallel. |
 | `step_all(actions=None)` | list of states | Apply the per-env signed-size actions (market orders) and step every env in parallel with the GIL released. |
-| `target(weights, tolerance=0.0, transfer=False)` | `None` | Bring every env to its row of an `(num_envs, N)` array of weights of equity, refusing a non-finite weight, or a negative one on spot, before any env places anything; the next step fills them. |
+| `target(weights, tolerance=0.0, transfer=False)` | `None` | Bring every env to its row of an `(num_envs, N)` array of weights of equity, refusing a non-finite weight, or a negative one on spot, before any env places anything; each leg fills at its instrument's next open, or waits for the next bar it prints. |
 | `records(env)` | dict | What env `env` recorded, as `run` returns it: its ledger, fill log, order log and round trips, each `None` without `report=True`. |
 | `done()` | bool | True when the envs have reached the last bar (they step in lockstep here). |
 | `num_envs` | int | Number of envs (also `len(batch)`). |
@@ -329,7 +329,7 @@ Because the envs are independent, batched stepping is bit-identical to stepping 
 
 Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
 
-**A batch over a universe** takes `(T, N, 5)` candles and the same `instruments` and `funding_instruments` as `Engine`, and steps each env through `target`; the signed sizes `step_all` and `advance` take trade the first instrument. Its `observe(window)` is `(num_envs, window, N, 5)`, zero where an instrument printed no bar, and `snapshot()` adds every instrument's `positions` and `marks` as `(num_envs, N)` arrays.
+**A batch over a universe** takes `(T, N, 5)` candles and the same `instruments` and `funding_instruments` as `Engine`, and steps each env through `target`; the signed sizes `step_all` and `advance` take trade the first instrument. Its `observe(window)` is `(num_envs, window, N, 5)`, zero where an instrument printed no bar, and `snapshot()` adds every instrument's `positions` and `marks` as `(num_envs, N)` arrays beside its `(num_envs,)` fields, whose position, unrealized PnL and mark read the first instrument.
 
 Under `intrabar="random"` each env draws from its own stream, named from `seed` and the env's index, so each env decides the bars' hidden events apart from the others.
 
@@ -473,7 +473,7 @@ When the `Backtester` is given a pandas DataFrame or parquet input with a dateti
 
 ### The ledger
 
-Each column of `ledger()` holds one value per bar, the first for the opening balance, so no column is one shorter than the data ([ADR 0022](Decisions.md)):
+Each column of `ledger()` holds one value per bar, the first for the opening balance, so no column is one shorter than the data, and a universe's columns from `position` to `drift` hold a row of `N` per bar ([ADR 0022](Decisions.md)):
 
 | Column | Meaning |
 | :--- | :--- |

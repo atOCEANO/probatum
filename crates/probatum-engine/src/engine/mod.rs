@@ -181,8 +181,8 @@ pub struct Engine {
     book: RestingOrderBook,
     reporter: Option<Reporter>,
     pending: Vec<Order>,
-    /// The queue's other buffer: the orders a bar resolves are drained from one
-    /// while those that wait go into the other, so a step allocates no queue.
+    /// The queue's other buffer: the orders a bar resolves are read from one while
+    /// those that wait go into the other, so a step allocates no queue.
     spare: Vec<Order>,
     /// Transfers decided since the last step, in order, each an amount and the
     /// wallet it goes into.
