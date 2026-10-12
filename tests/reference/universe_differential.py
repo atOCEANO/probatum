@@ -8,8 +8,11 @@ wallet, so the cap, the margin bound and funding run across them. Every fourth
 universe is drawn around a shape random ones rarely reach, a stop beside another
 perp that moves against both or a limit filled on its gap, and every eighth around a
 take-profit, on a bar that may liquidate the account or with the account between its
-close point and its trigger. A case is compared up to the bar on which the reference
-first applied a rule the engine does not have yet, as `differential` cuts its own.
+close point and its trigger, and as many again around the margin two to five
+perpetuals share, held long and short or all one way near their tier bounds, on a
+bar that takes the account to about where it runs out. A case is compared up to the
+bar on which the reference first applied a rule the engine does not have yet, as
+`differential` cuts its own.
 
   python -m reference.universe_differential [cases] [seed]     (from tests/)
 """
@@ -266,6 +269,103 @@ def take_profit(rng, band):
     # reduce-only, as a take-profit is, unless it is to flip A
     kind = "limit" if share > 1.0 else "reduce_limit"
     actions[2] = (0, kind, exit_side, size * share, (price / close - base) / 0.21)
+
+    return times, kinds, columns, cfg, actions
+
+
+def shared_margin(rng):
+    """A universe drawn around the margin two to five perpetuals share. A target at
+    the first row's close takes every one, long and short or all one way, each with
+    a tier table whose first bound lies near its position. The fourth row's bar
+    moves each against its own position, or the whole market one way, from about
+    half to past the depth at which the account's margin runs out, now and then on a
+    gap, with a reduce-only stop resting on one leg; a target at its close then
+    halves or closes every leg. The rows around it are quiet."""
+    rows  = rng.randint(6, 10)
+    times = clock(rng, rows)
+    n     = rng.randint(2, 5)
+    kinds = ["linear"] * n
+    signs = [rng.choice([1.0, -1.0])] * n
+    if rng.random() < 0.5:
+        signs = [1.0, -1.0] + [rng.choice([1.0, -1.0]) for _ in range(n - 2)]
+        rng.shuffle(signs)
+
+    columns = [[calm(rng, rng.choice([5.0, 100.0, 3_000.0]))] for _ in kinds]
+    for column in columns:
+        for _ in range(2):
+            column.append(calm(rng, column[-1].close))
+
+    cfg = config(rng, times, kinds, columns)
+    cfg["max_open_orders"] = 8
+
+    gross   = rng.uniform(1.5, 8.0)
+    shares  = [rng.uniform(0.5, 1.5) for _ in kinds]
+    weights = [sign * gross * share / sum(shares) for sign, share in zip(signs, shares)]
+
+    tiers, required = [], 0.0
+    for w, column in zip(weights, columns):
+        basis = rng.choice(["notional", "quantity"])
+        scale = abs(w) * cfg["quote"]
+        if basis == "quantity":
+            scale /= column[0].close
+
+        first    = scale * rng.uniform(0.5, 1.5)
+        bounds   = [first, 2.0 * first, 4.0 * first]
+        leverage = sorted(rng.sample([20.0, 10.0, 5.0, 3.0, 2.0], 3), reverse=True)
+        rates    = sorted(rng.sample([0.002, 0.005, 0.01, 0.02], 3))
+        amounts  = [0.0] * 3
+        if basis == "notional":
+            for k in (1, 2):
+                amounts[k] = amounts[k - 1] + (rates[k] - rates[k - 1]) * bounds[k - 1]
+
+        tiers.append((list(zip(bounds, leverage, rates, amounts)), basis))
+        required += abs(w) / leverage[0 if scale <= first else 1]
+
+    cfg["tiers"] = tiers
+
+    # the cap holds the target to about this share of what it asks
+    held = min(1.0, 1.0 / required)
+
+    # every leg against itself, or the market one way, which a hedged book's other
+    # side gains from but for the room the bar moves the other way
+    common = rng.choice([None, signs[0], -signs[0]])
+    if common is not None and common not in signs:
+        common = -common
+    hit         = [common is None or sign == common for sign in signs]
+    against_hit = sum(abs(w) for w, h in zip(weights, hit) if h) or 1.0
+    depth       = min(0.9, rng.uniform(0.5, 1.3) / (against_hit * held))
+    gap         = rng.uniform(0.0, depth / 2.0) if rng.random() < 0.25 else 0.0
+
+    # closing near where it moved to, so the closes the optimistic setting checks
+    # reach about as far as the corner the pessimistic one does
+    there = rng.random() < 0.5
+    for sign, column in zip(signs, columns):
+        long  = sign > 0.0 if common is None else common > 0.0
+        last  = column[-1].close
+        open_ = last * (1.0 - gap if long else 1.0 + gap)
+        bar   = against(rng, open_, long, depth - gap)
+        if there:
+            span = (bar.high - bar.low) * rng.uniform(0.0, 0.1)
+            bar  = bar._replace(close=bar.low + span if long else bar.high - span)
+        column.append(bar)
+
+    while len(columns[0]) < rows:
+        for column in columns:
+            column.append(calm(rng, column[-1].close))
+
+    actions = [None] * (rows - 1)
+    actions[0] = (0, "weights", "buy", dict(enumerate(weights)), 0.0)
+
+    k     = rng.randrange(n)
+    worth = cfg["quote"] / columns[k][2].close
+    x     = min(0.19, depth * rng.uniform(0.3, 1.2))
+    actions[2] = (k, "stop", "sell" if signs[k] > 0.0 else "buy",
+                  abs(weights[k]) * worth * rng.choice([0.5, 1.0]),
+                  (0.2 - x if signs[k] > 0.0 else 0.2 + x) / 0.4)
+
+    kept = rng.choice([0.0, 0.5])
+    actions[3] = (0, "weights", "buy", {i: w * kept for i, w in enumerate(weights)},
+                  0.0)
 
     return times, kinds, columns, cfg, actions
 
@@ -642,6 +742,8 @@ def compare(cases, seed):
             case = shaped(rng)
         elif number % 8 == 1 and SHAPED <= set(KINDS):
             case = take_profit(rng, rng.random() < 0.5)
+        elif number % 8 == 5 and SHAPED <= set(KINDS):
+            case = shared_margin(rng)
         else:
             times, kinds, columns = universe(rng)
             cfg  = config(rng, times, kinds, columns)
