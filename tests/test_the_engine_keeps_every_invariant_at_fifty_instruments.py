@@ -109,19 +109,6 @@ def decisions(rng, kinds, columns, rows, balance, calm, margin):
     return script, prices
 
 
-def gentle(source):
-    """A funding source as the universe comparison draws it, each rate taken to a
-    hundredth of a percent, which a calm account pays without being closed out."""
-    if source[0] == "data":
-        return ("data", [(stamp, i, math.copysign(1e-4, rate))
-                         for stamp, i, rate in source[1]])
-
-    if source[0] in ("every_bars", "every"):
-        return source[:2] + (math.copysign(1e-4, source[2]),)
-
-    return source
-
-
 def band(rng, n):
     """`n` perpetuals a target takes long and short at three to eight times equity,
     with no maintenance, cap, slippage or funding, on flat rows. The fourth row moves
@@ -379,7 +366,7 @@ def test_every_invariant_holds_at_up_to_fifty_instruments(n, seed, calm):
     cfg = universe_differential.config(rng, times, kinds, columns)
     cfg["intrabar"] = rng.choice(["pessimistic", "optimistic"])
     if calm:
-        cfg["funding"] = gentle(cfg["funding"])
+        cfg["funding"] = universe_differential.gentle(cfg["funding"])
 
     wallets = cfg["balance"]
     margin  = wallets["margin"] / cfg["quote"] if isinstance(wallets, dict) else 1.0

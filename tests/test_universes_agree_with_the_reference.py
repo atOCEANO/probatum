@@ -38,7 +38,6 @@ SHARED = [
     "a flip's old side on the check",
     "a flip split by a target",
     "a fok order filling nothing",
-    "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
     "a held perp read at its last mark",
     "a leg joining the check after the open",
@@ -75,7 +74,6 @@ SHARED = [
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
     "an exit held back from a position the bar's orders opened",
-    "an exit priced from its position's fill",
     "an ioc or fok limit expiring after one bar",
     "an order trading against the account's own refused",
     "an order waiting for its instrument's next bar",
@@ -89,6 +87,14 @@ SHARED = [
     "the margin bound lifting a fill inside its bar",
     "the margin bound paying what the bar cannot hold",
     "tiers by quantity",
+]
+
+
+MARGINED = [
+    "a bar clipped across several perpetuals",
+    "a liquidation at the maintenance trigger",
+    "a liquidation of several perpetuals",
+    "a tier above the first",
 ]
 
 
@@ -171,6 +177,25 @@ def waiting_and_unlisted():
     return times, ["linear", "linear"], columns, cfg, actions
 
 
+def beside(first, actions, margin=100.0):
+    """Two perpetuals on three quiet rows at 100 and then `first`, an (open, high,
+    low, close), on the first and a quiet row on the second, on `margin` with no cap,
+    fees or slippage; `actions` are decided at the quiet closes, a stop's and a
+    limit's price set by the `u` that puts it at the price named."""
+    columns = [
+        [Bar(100.0, 100.0, 100.0, 100.0, 1e6)] * 3 + [Bar(*first, 1e6)],
+        [Bar(100.0, 100.0, 100.0, 100.0, 1e6)] * 4,
+    ]
+
+    times = [k * differential.HOUR for k in range(4)]
+    cfg   = dict(kinds=["linear", "linear"], quote=margin, balance=margin,
+                 fee_taker=0.0, fee_maker=0.0, slippage_bps=0.0, max_open_orders=8,
+                 leverage=0.0, funding=("none",), tiers=[(None, "notional")] * 2,
+                 intrabar="pessimistic")
+
+    return times, ["linear", "linear"], columns, cfg, actions
+
+
 # universes built where random ones seldom reach a rule, each with the rule it reaches
 BUILT = {
     "a target naming an instrument before its first bar": (
@@ -191,6 +216,23 @@ BUILT = {
     "the closes at the trigger": (
         "a corner or the closes reaching the trigger",
         bitcoin_and_ether((55_000.0, 3_250.0), "optimistic")),
+    # beside a long on the second, a buy stop at 105 opens a long on the first on a
+    # bar from 100, and a reduce-only stop at 102 fills at 102, where the price crossed
+    # it after the entry, and not at the open
+    "a stop between the open and a breakout long's entry, beside another perp": (
+        "an exit priced from its position's fill",
+        beside((100.0, 108.0, 98.0, 103.0),
+               [(1, "market", "buy", 0.2, 0.0), (0, "stop_entry", "buy", 0.2, 0.625),
+                (0, "stop", "sell", 0.2, 0.55)])),
+    # a long of 7 on the first, beside one of 5 on the second, on 100 of margin runs
+    # out below 86 on a bar down to 85, and a buy of 2 at 95 decided before it grows
+    # the first on the way, so the forced close takes the first in two legs, the one
+    # it carried and the one it grew
+    "a forced close of a long grown on its liquidating bar": (
+        "a forced close of a leg that joined during the bar",
+        beside((100.0, 100.0, 85.0, 86.0),
+               [(0, "market", "buy", 7.0, 0.0), (1, "market", "buy", 5.0, 0.0),
+                (0, "limit", "buy", 2.0, (0.95 - 0.8) / 0.21)])),
 }
 
 
@@ -229,3 +271,6 @@ def test_random_universes_agree_at_length_and_reach_every_rule_both_apply(seed):
     out = check(360, seed)
 
     assert not [rule for rule in SHARED if not out.rules[rule]]
+    # the universes drawn around shared margin reach its trigger and its tiers on
+    # their own, where random ones seldom hold more than two perps at once
+    assert not [rule for rule in MARGINED if not out.margined[rule]]
