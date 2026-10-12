@@ -10,7 +10,7 @@
 //! The conversion is the macro's, not ours.
 #![allow(clippy::useless_conversion)]
 
-use numpy::ndarray::{Array2, Array3, ArrayView2};
+use numpy::ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 use numpy::npyffi::flags::NPY_ARRAY_WRITEABLE;
 use numpy::{
     PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
@@ -18,7 +18,7 @@ use numpy::{
 };
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 use probatum_core::candle::floats;
 use probatum_core::{
@@ -1185,11 +1185,54 @@ fn column_view<'py>(
     array
 }
 
+/// A universe's candles, whole rows of `width` instruments, as a zero-copy read-only
+/// `(rows, width, 5)` view, as `candle_view` gives one instrument's.
+fn universe_view<'py>(
+    rows: &[Candle],
+    width: usize,
+    container: Bound<'py, PyAny>,
+) -> Bound<'py, PyArray3<f64>> {
+    let view = ArrayView3::from_shape((rows.len() / width, width, 5), floats(rows))
+        .expect("the slice holds whole rows of width candles");
+    // SAFETY: as in `candle_view`, the view points into the immutable candle buffer,
+    // which outlives the array because `container` holds it, and the array is made
+    // read-only immediately below.
+    let array = unsafe { PyArray3::borrow_from_array(&view, container) };
+    // SAFETY: the array was just created and is not yet shared with Python.
+    unsafe {
+        (*array.as_array_ptr()).flags &= !(NPY_ARRAY_WRITEABLE as std::os::raw::c_int);
+    }
+    array
+}
+
+/// One field of a universe's candles as a zero-copy read-only `(rows, width)` view.
+fn universe_column<'py>(
+    rows: &[Candle],
+    width: usize,
+    column: usize,
+    container: Bound<'py, PyAny>,
+) -> Bound<'py, PyArray2<f64>> {
+    let view = ArrayView3::from_shape((rows.len() / width, width, 5), floats(rows))
+        .expect("the slice holds whole rows of width candles");
+    // SAFETY: as in `universe_view`.
+    let array =
+        unsafe { PyArray2::borrow_from_array(&view.index_axis(Axis(2), column), container) };
+    // SAFETY: the array was just created and is not yet shared with Python.
+    unsafe {
+        (*array.as_array_ptr()).flags &= !(NPY_ARRAY_WRITEABLE as std::os::raw::c_int);
+    }
+    array
+}
+
 /// The market simulation engine, exposed to Python as `probatum.Engine`. It wraps one
-/// single-env bar engine; orders decided on a bar fill on the next.
+/// single-env bar engine, over one instrument or a universe; orders decided on a bar
+/// fill on the next.
 #[pyclass]
 struct Engine {
     inner: BarEngine,
+    // built from a universe's (T, N, 5) candles, whose views and ledger carry an
+    // instrument axis
+    universe: bool,
 }
 
 #[pymethods]
@@ -1213,14 +1256,16 @@ impl Engine {
         funding_hours = 0.0,
         funding_times = None,
         funding_rates = None,
+        funding_instruments = None,
         tiers = None,
         tiers_by = "notional",
+        instruments = None,
         intrabar = "pessimistic",
         seed = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        candles: PyReadonlyArray2<'_, f64>,
+        candles: Bound<'_, PyAny>,
         market: &str,
         quote: Opening,
         fee_taker: f64,
@@ -1237,12 +1282,15 @@ impl Engine {
         funding_hours: f64,
         funding_times: Option<PyReadonlyArray1<'_, i64>>,
         funding_rates: Option<PyReadonlyArray1<'_, f64>>,
+        funding_instruments: Option<Vec<Option<i64>>>,
         tiers: Option<Vec<Vec<f64>>>,
         tiers_by: &str,
+        instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
         seed: Option<u128>,
     ) -> PyResult<Engine> {
-        let config = build_config(
+        let (series, config, universe) = build_series(
+            &candles,
             market,
             quote,
             fee_taker,
@@ -1255,24 +1303,20 @@ impl Engine {
             impact,
             funding_rate,
             funding_interval,
-            intrabar,
-            seed,
-        )?;
-        let series = place_funding(
-            candles_from_array(candles, times)?,
-            funding_rate,
-            funding_interval,
+            times,
             funding_hours,
             funding_times,
             funding_rates,
-            None,
+            funding_instruments,
+            tiers,
+            tiers_by,
+            instruments,
+            intrabar,
+            seed,
         )?;
-        let series = match tiers {
-            Some(rows) => series.with_tiers(tiers_from(rows, tiers_by)?),
-            None => series,
-        };
         Ok(Engine {
             inner: BarEngine::new(series, config),
+            universe,
         })
     }
 
@@ -1298,82 +1342,87 @@ impl Engine {
         self.inner.periods_per_year()
     }
 
-    /// The shape of the loaded candles as `(T, 5)`, the honesty check on how many
-    /// bars the engine actually holds.
+    /// The shape of the loaded candles as `(T, 5)`, or `(T, N, 5)` over a universe,
+    /// the honesty check on how many bars the engine actually holds.
     #[getter]
-    fn shape(&self) -> (usize, usize) {
-        (self.inner.num_bars(), 5)
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let rows = self.inner.num_bars();
+        if self.universe {
+            PyTuple::new(py, [rows, self.inner.width(), 5])
+        } else {
+            PyTuple::new(py, [rows, 5])
+        }
     }
 
     /// A zero-copy, read-only numpy view of the `lookback` bars ending at the
-    /// current tick: shape `(rows, 5)`, columns open, high, low, close, volume.
+    /// current tick: shape `(rows, 5)`, columns open, high, low, close, volume, or
+    /// `(rows, N, 5)` over a universe, NaN where an instrument printed no bar.
     /// `rows` is `lookback`, or fewer early in the series. The array borrows the
     /// engine's immutable candle buffer directly with no copy; it is read-only
     /// because that buffer is shared across envs, and it holds the engine alive
     /// for as long as the view exists (ADR 0040).
-    fn observation<'py>(
-        slf: Bound<'py, Self>,
-        lookback: usize,
-    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    fn observation<'py>(slf: Bound<'py, Self>, lookback: usize) -> Bound<'py, PyAny> {
         // The engine owns the Arc-backed candle buffer, so keeping it as the
         // array's base keeps the data alive for the whole life of the view.
         let container = slf.clone().into_any();
         let engine = slf.borrow();
-        Ok(candle_view(engine.inner.candle_window(lookback), container))
+        if engine.universe {
+            let width = engine.inner.width();
+            let end = engine.inner.tick() + 1;
+            let start = end.saturating_sub(lookback);
+            let rows = &engine.inner.candles_all()[start * width..end * width];
+            return universe_view(rows, width, container).into_any();
+        }
+        candle_view(engine.inner.candle_window(lookback), container).into_any()
     }
 
     /// A zero-copy, read-only numpy view of the whole candle series: shape
     /// `(T, 5)`, columns open, high, low, close, volume by position (close is
-    /// column 3). Like `observation` it borrows the engine's immutable buffer with
-    /// no copy and holds the engine alive for the view's life; it is the
-    /// full-series companion, so `eng.data[:, 3]` reads every close (ADR 0040).
+    /// column 3), or `(T, N, 5)` over a universe. Like `observation` it borrows the
+    /// engine's immutable buffer with no copy and holds the engine alive for the
+    /// view's life; it is the full-series companion, so `eng.data[:, 3]` reads every
+    /// close (ADR 0040).
     #[getter]
-    fn data<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray2<f64>> {
+    fn data<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
         let container = slf.clone().into_any();
         let engine = slf.borrow();
-        candle_view(engine.inner.candles_all(), container)
+        if engine.universe {
+            return universe_view(engine.inner.candles_all(), engine.inner.width(), container)
+                .into_any();
+        }
+        candle_view(engine.inner.candles_all(), container).into_any()
     }
 
-    /// Every open, as a zero-copy read-only view. The named companions to `data`,
-    /// so a strategy reads `engine.closes` rather than remembering that the close
-    /// is column 3 of a `(T, 5)` array.
+    /// Every open, as a zero-copy read-only view, `(T,)`, or `(T, N)` over a universe.
+    /// The named companions to `data`, so a strategy reads `engine.closes` rather
+    /// than remembering that the close is column 3 of a `(T, 5)` array.
     #[getter]
-    fn opens<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
-        let container = slf.clone().into_any();
-        let engine = slf.borrow();
-        column_view(engine.inner.candles_all(), 0, container)
+    fn opens<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+        Engine::column(slf, 0)
     }
 
     /// Every high, as a zero-copy read-only view.
     #[getter]
-    fn highs<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
-        let container = slf.clone().into_any();
-        let engine = slf.borrow();
-        column_view(engine.inner.candles_all(), 1, container)
+    fn highs<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+        Engine::column(slf, 1)
     }
 
     /// Every low, as a zero-copy read-only view.
     #[getter]
-    fn lows<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
-        let container = slf.clone().into_any();
-        let engine = slf.borrow();
-        column_view(engine.inner.candles_all(), 2, container)
+    fn lows<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+        Engine::column(slf, 2)
     }
 
     /// Every close, as a zero-copy read-only view.
     #[getter]
-    fn closes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
-        let container = slf.clone().into_any();
-        let engine = slf.borrow();
-        column_view(engine.inner.candles_all(), 3, container)
+    fn closes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+        Engine::column(slf, 3)
     }
 
     /// Every volume, as a zero-copy read-only view. Base units (ADR 0013).
     #[getter]
-    fn volumes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
-        let container = slf.clone().into_any();
-        let engine = slf.borrow();
-        column_view(engine.inner.candles_all(), 4, container)
+    fn volumes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+        Engine::column(slf, 4)
     }
 
     /// Queue a market buy; it fills on the next bar's open. Returns the order id,
@@ -1552,8 +1601,8 @@ impl Engine {
     /// `type` is "market", "limit", or "stop", `tif` is "GTC", "IOC", or "FOK". A
     /// limit needs `price`, a stop needs `trigger`. Returns the order id, or None if
     /// the book is full, a post_only limit would cross, a limit would trade against
-    /// the account's own, or `size` is not a positive finite number. `tif` applies to market and limit orders; a stop rests until
-    /// it triggers (ADR 0010).
+    /// the account's own, or `size` is not a positive finite number. `tif` applies to
+    /// market and limit orders; a stop rests until it triggers (ADR 0010).
     #[pyo3(signature = (
         side,
         size,
@@ -1675,7 +1724,7 @@ impl Engine {
     /// impact, the liquidation charge and dust, and the position, its entry, mark,
     /// notional, unrealized PnL and weight (ADR 0022).
     fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        ledger_of(py, &self.inner, false)
+        ledger_of(py, &self.inner, self.universe)
     }
 
     /// The order log as a list of dicts, one per event in the order they happened,
@@ -1743,11 +1792,26 @@ impl Engine {
     }
 }
 
-/// A batch of independent envs over one shared candle series, stepped in
-/// parallel. Every env sees the same candles (shared by `Arc`, no duplication)
-/// but carries its own account and orders, so the batched step is bit-identical
-/// to stepping each env in a loop. `step_all` releases the GIL around the
-/// parallel fills, so many envs advance while Python threads run.
+impl Engine {
+    /// One field of every candle as a zero-copy read-only view, `(T,)`, or `(T, N)`
+    /// over a universe.
+    fn column<'py>(slf: Bound<'py, Self>, column: usize) -> Bound<'py, PyAny> {
+        let container = slf.clone().into_any();
+        let engine = slf.borrow();
+        if engine.universe {
+            let width = engine.inner.width();
+            return universe_column(engine.inner.candles_all(), width, column, container)
+                .into_any();
+        }
+        column_view(engine.inner.candles_all(), column, container).into_any()
+    }
+}
+
+/// A batch of independent envs over one shared candle series, of one instrument or
+/// a universe, stepped in parallel. Every env sees the same candles (shared by
+/// `Arc`, no duplication) but carries its own account and orders, so the batched
+/// step is bit-identical to stepping each env in a loop. `step_all` releases the
+/// GIL around the parallel fills, so many envs advance while Python threads run.
 #[pyclass]
 struct Batch {
     inner: EnvBatch,
@@ -1756,6 +1820,9 @@ struct Batch {
     // matrix from numpy, matching how the candles are copied once and shared
     features: Vec<f64>,
     n_features: usize,
+    // built from a universe's (T, N, 5) candles, whose observation and records
+    // carry an instrument axis
+    universe: bool,
 }
 
 #[pymethods]
@@ -1784,12 +1851,16 @@ impl Batch {
         funding_hours = 0.0,
         funding_times = None,
         funding_rates = None,
+        funding_instruments = None,
+        tiers = None,
+        tiers_by = "notional",
+        instruments = None,
         intrabar = "pessimistic",
         seed = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        candles: PyReadonlyArray2<'_, f64>,
+        candles: Bound<'_, PyAny>,
         num_envs: usize,
         market: &str,
         quote: Opening,
@@ -1811,10 +1882,15 @@ impl Batch {
         funding_hours: f64,
         funding_times: Option<PyReadonlyArray1<'_, i64>>,
         funding_rates: Option<PyReadonlyArray1<'_, f64>>,
+        funding_instruments: Option<Vec<Option<i64>>>,
+        tiers: Option<Vec<Vec<f64>>>,
+        tiers_by: &str,
+        instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
         seed: Option<u128>,
     ) -> PyResult<Batch> {
-        let config = build_config(
+        let (series, config, universe) = build_series(
+            &candles,
             market,
             quote,
             fee_taker,
@@ -1827,17 +1903,16 @@ impl Batch {
             impact,
             funding_rate,
             funding_interval,
-            intrabar,
-            seed,
-        )?;
-        let series = place_funding(
-            candles_from_array(candles, times)?,
-            funding_rate,
-            funding_interval,
+            times,
             funding_hours,
             funding_times,
             funding_rates,
-            None,
+            funding_instruments,
+            tiers,
+            tiers_by,
+            instruments,
+            intrabar,
+            seed,
         )?;
 
         // Per-env cost randomization (ADR 0038): each override, if given, replaces
@@ -1881,6 +1956,7 @@ impl Batch {
             inner,
             features: Vec::new(),
             n_features: 0,
+            universe,
         })
     }
 
@@ -2015,14 +2091,73 @@ impl Batch {
     }
 
     /// Batched observation: the `window` most recent candles per env as an
-    /// `(num_envs, window, 5)` float64 array, front-padded with zeros at warmup.
-    fn observe<'py>(&self, py: Python<'py>, window: usize) -> PyResult<Bound<'py, PyArray3<f64>>> {
+    /// `(num_envs, window, 5)` float64 array, or `(num_envs, window, N, 5)` over a
+    /// universe, front-padded with zeros at warmup and zero where an instrument
+    /// printed no bar.
+    fn observe<'py>(&self, py: Python<'py>, window: usize) -> PyResult<Bound<'py, PyAny>> {
         check_window(window)?;
-        let n = self.inner.len();
+        let (n, width) = (self.inner.len(), self.inner.width());
         let flat = py.detach(|| self.inner.observe_all(window));
-        let array = Array3::from_shape_vec((n, window, 5), flat)
+        let array = numpy::ndarray::Array::from_shape_vec((n, window, width, 5), flat)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyArray3::from_owned_array(py, array))
+        if self.universe {
+            return Ok(numpy::PyArray::from_owned_array(py, array).into_any());
+        }
+        let array = array
+            .into_shape_with_order((n, window, 5))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyArray3::from_owned_array(py, array).into_any())
+    }
+
+    /// Bring every env to its row of `weights`, an `(num_envs, N)` float64 array of
+    /// weights of equity, one per instrument, as `Engine.target` does for one, with
+    /// `tolerance` and `transfer` alike for every env. The orders fill at the next
+    /// step's opens. A weight that is not finite, or a negative one on a spot
+    /// instrument, is refused before any env places anything (ADR 0009).
+    #[pyo3(signature = (weights, tolerance = 0.0, transfer = false))]
+    fn target(
+        &mut self,
+        py: Python<'_>,
+        weights: PyReadonlyArray2<'_, f64>,
+        tolerance: f64,
+        transfer: bool,
+    ) -> PyResult<()> {
+        let (n, width) = (self.inner.len(), self.inner.width());
+        let view = weights.as_array();
+        if view.dim() != (n, width) {
+            return Err(PyValueError::new_err(format!(
+                "weights: shape {:?} for {n} envs of {width} instruments; give ({n}, {width})",
+                view.dim()
+            )));
+        }
+        if let Some(((env, i), weight)) = view.indexed_iter().find(|(_, w)| !w.is_finite()) {
+            return Err(PyValueError::new_err(format!(
+                "weights: {weight} for instrument {i} of env {env}; give finite weights"
+            )));
+        }
+        let tolerance = read_tolerance("", tolerance)?;
+        let rows: Vec<f64> = view.iter().copied().collect();
+        py.detach(|| self.inner.target_all(&rows, tolerance, transfer))
+            .map_err(|(env, TargetError::Short { instrument, weight })| {
+                short_spot(&format!("env {env}: "), instrument, weight)
+            })
+    }
+
+    /// What env `env` recorded, as `run` returns it: its ledger, fill log, order log
+    /// and round trips, each None when the batch was built without `report`.
+    fn records<'py>(&self, py: Python<'py>, env: usize) -> PyResult<Bound<'py, PyDict>> {
+        let n = self.inner.len();
+        let Some(engine) = self.inner.engines().get(env) else {
+            return Err(PyValueError::new_err(format!(
+                "env: {env} of {n}; name one counted from 0"
+            )));
+        };
+        let out = PyDict::new(py);
+        out.set_item("ledger", ledger_of(py, engine, self.universe)?)?;
+        out.set_item("fills", fills_of(py, engine)?)?;
+        out.set_item("order_log", order_log_of(py, engine)?)?;
+        out.set_item("trades", round_trips_of(py, engine)?)?;
+        Ok(out)
     }
 
     /// Per-env equity as a `(num_envs,)` array, for building the reward.
@@ -2088,10 +2223,20 @@ impl Batch {
 
     /// A batched per-env account snapshot as a dict of `(num_envs,)` arrays, for
     /// building a reward: equity, position, unrealized_pnl, realized_pnl,
-    /// mark_price, funding_paid.
+    /// mark_price, funding_paid, the four of a position read on the first
+    /// instrument, and every instrument's `positions` and `marks` as
+    /// `(num_envs, N)` arrays.
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.inner.snapshot();
+        let (n, width) = (self.inner.len(), self.inner.width());
+        let grid = |values: Vec<f64>| {
+            Array2::from_shape_vec((n, width), values)
+                .map(|array| PyArray2::from_owned_array(py, array))
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        };
         let d = PyDict::new(py);
+        d.set_item("positions", grid(snap.positions)?)?;
+        d.set_item("marks", grid(snap.marks)?)?;
         d.set_item("equity", PyArray1::from_vec(py, snap.equity))?;
         d.set_item("position", PyArray1::from_vec(py, snap.position))?;
         d.set_item(
@@ -2566,41 +2711,15 @@ fn read_script<'py>(
     Ok(out)
 }
 
-/// The engine `run` plays a universe through: `Engine`'s settings over the candles of
-/// N instruments, `(T, N, 5)`, with each instrument's market and tier table in
-/// `instruments`, or `market` and `tiers` for every one, and the instrument each of
-/// `funding_times` charges in `funding_instruments`. A number for `quote` funds the
-/// one wallet a universe of one kind uses, and a universe holding both kinds names
-/// each wallet's cash.
-#[pyfunction]
-#[pyo3(name = "run", signature = (
-    candles,
-    market = "spot",
-    quote = Opening::Cash(10_000.0),
-    fee_taker = 0.0006,
-    fee_maker = 0.0002,
-    slippage_bps = 0.0,
-    max_fill_fraction = 1.0,
-    max_open_orders = 8,
-    report = false,
-    leverage = 10.0,
-    impact = 0.0,
-    funding_rate = 0.0,
-    funding_interval = 0,
-    times = None,
-    funding_hours = 0.0,
-    funding_times = None,
-    funding_rates = None,
-    funding_instruments = None,
-    tiers = None,
-    tiers_by = "notional",
-    instruments = None,
-    intrabar = "pessimistic",
-    seed = None,
-))]
+/// The series and the settings `Engine` and `Batch` are built from: one instrument's
+/// candles, `(T, 5)`, or a universe's, `(T, N, 5)`, with each instrument's market and
+/// tier table in `instruments`, or `market` and `tiers` for every one, and the
+/// instrument each of `funding_times` charges in `funding_instruments`. A number for
+/// `quote` funds the one wallet a universe of one kind uses, and a universe holding
+/// both kinds names each wallet's cash. Returns whether it is a universe as well.
 #[allow(clippy::too_many_arguments)]
-fn universe_engine(
-    candles: PyReadonlyArray3<'_, f64>,
+fn build_series(
+    candles: &Bound<'_, PyAny>,
     market: &str,
     quote: Opening,
     fee_taker: f64,
@@ -2623,7 +2742,66 @@ fn universe_engine(
     instruments: Option<Vec<Bound<'_, PyDict>>>,
     intrabar: &str,
     seed: Option<u128>,
-) -> PyResult<Engine> {
+) -> PyResult<(Candles, EngineConfig, bool)> {
+    let ndim = candles
+        .cast::<PyUntypedArray>()
+        .map_or(0, |array| array.ndim());
+    if ndim != 2 && ndim != 3 {
+        return Err(PyValueError::new_err(format!(
+            "candles: an array of {ndim} dimensions; pass (T, 5) for one instrument, or \
+             (T, N, 5) for a universe of N"
+        )));
+    }
+    let dtype = |error: String| {
+        PyValueError::new_err(format!(
+            "candles: {error}; pass float64 values, (T, 5) for one instrument, or \
+             (T, N, 5) for a universe of N"
+        ))
+    };
+    if ndim == 2 {
+        if instruments.is_some() || funding_instruments.is_some() {
+            return Err(PyValueError::new_err(
+                "instruments: given with one instrument's (T, 5) candles; pass (T, N, 5) \
+                 for a universe, or market and tiers for one instrument",
+            ));
+        }
+        let candles = candles
+            .extract::<PyReadonlyArray2<'_, f64>>()
+            .map_err(|error| dtype(error.to_string()))?;
+        let config = build_config(
+            market,
+            quote,
+            fee_taker,
+            fee_maker,
+            slippage_bps,
+            max_fill_fraction,
+            max_open_orders,
+            report,
+            leverage,
+            impact,
+            funding_rate,
+            funding_interval,
+            intrabar,
+            seed,
+        )?;
+        let series = place_funding(
+            candles_from_array(candles, times)?,
+            funding_rate,
+            funding_interval,
+            funding_hours,
+            funding_times,
+            funding_rates,
+            None,
+        )?;
+        let series = match tiers {
+            Some(rows) => series.with_tiers(tiers_from(rows, tiers_by)?),
+            None => series,
+        };
+        return Ok((series, config, false));
+    }
+    let candles = candles
+        .extract::<PyReadonlyArray3<'_, f64>>()
+        .map_err(|error| dtype(error.to_string()))?;
     let series = candles_from_universe(candles, times)?;
     let width = series.width();
     let named = parse_market(market)?;
@@ -2714,9 +2892,7 @@ fn universe_engine(
         funding_rates,
         funding_instruments,
     )?;
-    Ok(Engine {
-        inner: BarEngine::new(series, config),
-    })
+    Ok((series, config, true))
 }
 
 /// Play `script` over `candles` at `venue` in one call and return what the run
@@ -2758,16 +2934,10 @@ fn run_script<'py>(
         settings.set_item("times", times)?;
     }
     settings.set_item("report", true)?;
-    let universe = candles
-        .cast::<PyUntypedArray>()
-        .is_ok_and(|array| array.ndim() == 3);
-    let engine = if universe {
-        wrap_pyfunction!(universe_engine, py)?.call((candles,), Some(&settings))?
-    } else {
-        py.get_type::<Engine>().call((candles,), Some(&settings))?
-    };
+    let engine = py.get_type::<Engine>().call((candles,), Some(&settings))?;
     let engine = engine.cast_into::<Engine>()?;
     let mut engine = engine.borrow_mut();
+    let universe = engine.universe;
     let bars = engine.inner.num_bars();
     let mut script = Script::new(read_script(&script, bars, &engine.inner)?);
     let inner = &mut engine.inner;

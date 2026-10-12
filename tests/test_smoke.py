@@ -550,7 +550,7 @@ def test_a_universe_of_one_keeps_an_instrument_column_per_instrument():
      "instruments[1]: tiers 3.0 is not a list of rows"),
     (None, {"funding_instruments": [None]}, {}, "given without funding_times"),
     (None, {"funding_instruments": [-1]}, {}, "row 0 names instrument -1, of 2"),
-    (None, {"fee": 0.001}, {}, "run() got an unexpected keyword argument 'fee'"),
+    (None, {"fee": 0.001}, {}, "Engine.__new__() got an unexpected keyword argument 'fee'"),
 ])
 def test_a_universe_the_engine_cannot_play_is_refused(change, venue, script, says):
     pair = np.stack([series(), series() / 10.0], axis=1)
@@ -567,6 +567,97 @@ def test_a_universe_s_book_is_bounded_in_all():
     # bound up front
     with pytest.raises(ValueError, match="is 1052672 slots, past 1048576; lower it"):
         probatum._probatum.run(np.ones((3, 257, 5)), {"max_open_orders": 4096}, {})
+
+
+def universe_pair():
+    """Two instruments, the second printing nothing on the second row."""
+    pair = np.stack([series(), series() / 10.0], axis=1)
+    pair[1, 1] = np.nan
+    return pair
+
+
+def test_a_universe_engine_shows_its_candles_with_an_instrument_axis():
+    pair = universe_pair()
+    eng  = probatum.Engine(pair)
+
+    eng.reset()
+    eng.step()
+
+    assert eng.shape == (3, 2, 5)
+    np.testing.assert_array_equal(eng.data, pair)
+    np.testing.assert_array_equal(eng.closes, pair[:, :, 3])
+
+    window = eng.observation(5)
+    np.testing.assert_array_equal(window, pair[:2])
+    assert not window.flags.writeable
+
+
+def test_a_universe_batch_records_for_each_env_what_its_own_run_does():
+    # each env targets weights of its own, the second instrument's leg waiting for
+    # its next bar, and records what a run of those targets does
+    pair  = universe_pair()
+    venue = dict(market="perp", quote=10_000.0, fee_taker=0.0006, leverage=5.0)
+    rows  = ([0.5, -0.5], [1.0, 0.25])
+    batch = probatum.Batch(pair, 2, report=True, **venue)
+    batch.reset_all()
+    batch.target(np.array(rows))
+    batch.advance()
+
+    assert batch.observe(2).shape == (2, 2, 2, 5)
+    np.testing.assert_array_equal(batch.observe(2)[0, 1, 1], np.zeros(5))
+
+    batch.advance()
+    snap = batch.snapshot()
+
+    assert snap["positions"].shape == snap["marks"].shape == (2, 2)
+
+    for env, weights in enumerate(rows):
+        script = {0: [("target", {"weights": weights})]}
+        played = probatum._probatum.run(pair, venue, script)
+        mine   = batch.records(env)
+
+        # an open round trip has no exit, NaN, which repr compares as the same
+        assert mine["fills"]        == played["fills"]
+        assert repr(mine["trades"]) == repr(played["trades"])
+        for name, column in played["ledger"].items():
+            np.testing.assert_array_equal(mine["ledger"][name], column)
+        np.testing.assert_array_equal(snap["positions"][env],
+                                      played["ledger"]["position"][-1])
+
+    with pytest.raises(ValueError, match="env: 2 of 2; name one counted from 0"):
+        batch.records(2)
+
+
+@pytest.mark.parametrize("market, weights, says", [
+    ("perp", np.zeros((3, 2)),
+     "weights: shape (3, 2) for 2 envs of 2 instruments; give (2, 2)"),
+    ("perp", np.array([[0.5, np.nan], [0.0, 0.0]]),
+     "weights: NaN for instrument 1 of env 0; give finite weights"),
+    ("spot", np.array([[0.5, 0.0], [-0.5, 0.0]]),
+     "env 1: weights: -0.5 for instrument 0, which trades spot and cannot be short"),
+])
+def test_a_batch_refuses_weights_it_cannot_place_before_any_env_trades(market, weights,
+                                                                          says):
+    batch = probatum.Batch(universe_pair(), 2, market=market)
+    batch.reset_all()
+
+    with pytest.raises(ValueError, match=re.escape(says)):
+        batch.target(weights)
+
+    batch.advance()
+
+    assert not batch.snapshot()["positions"].any()
+
+
+@pytest.mark.parametrize("candles, settings, says", [
+    (series(), {"instruments": [{}]},
+     "instruments: given with one instrument's (T, 5)"),
+    (np.zeros(5), {},
+     "candles: an array of 1 dimensions; pass (T, 5) for one instrument"),
+])
+def test_candles_of_one_shape_refuse_the_settings_of_another(candles, settings, says):
+    with pytest.raises(ValueError, match=re.escape(says)):
+        probatum.Engine(candles, **settings)
 
 
 @pytest.mark.parametrize("script, says", [

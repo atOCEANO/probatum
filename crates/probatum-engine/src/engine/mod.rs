@@ -464,6 +464,16 @@ impl Engine {
         self.account.markets[i]
     }
 
+    /// Instrument `i`'s signed position, in base units or contracts.
+    pub fn position(&self, i: usize) -> f64 {
+        self.account.positions[i].qty.get()
+    }
+
+    /// Instrument `i`'s last close, the mark its position is valued at.
+    pub fn mark(&self, i: usize) -> f64 {
+        self.marks[i]
+    }
+
     /// Bars a year by the series' own clock, or `None` when its bars came without
     /// times (ADR 0004).
     pub fn periods_per_year(&self) -> Option<f64> {

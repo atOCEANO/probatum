@@ -7,10 +7,10 @@
 
 use rayon::prelude::*;
 
-use probatum_core::State;
+use probatum_core::{Market, State};
 
-use crate::candles::Candles;
-use crate::engine::{Engine, EngineConfig};
+use crate::candles::{printed, Candles};
+use crate::engine::{Engine, EngineConfig, TargetError};
 
 /// A batch of independent engines over one shared candle series.
 pub struct EnvBatch {
@@ -74,6 +74,45 @@ impl EnvBatch {
         &mut self.engines
     }
 
+    /// The engines, for reading what each env recorded.
+    pub fn engines(&self) -> &[Engine] {
+        &self.engines
+    }
+
+    /// Instruments on each row of the shared series, one when there are no envs.
+    pub fn width(&self) -> usize {
+        self.engines.first().map_or(1, Engine::width)
+    }
+
+    /// Bring every env to its own row of `weights`, one weight of equity per
+    /// instrument, env by env, as `Engine::target` does, with `tolerance` and
+    /// `transfer` alike for every env. Refuses before any env places anything where a
+    /// row gives a spot instrument a negative weight, naming that env (ADR 0009).
+    pub fn target_all(
+        &mut self,
+        weights: &[f64],
+        tolerance: f64,
+        transfer: bool,
+    ) -> Result<(), (usize, TargetError)> {
+        let width = self.width();
+        for (env, (engine, row)) in self.engines.iter().zip(weights.chunks(width)).enumerate() {
+            for (instrument, &weight) in row.iter().enumerate() {
+                if engine.market(instrument) == Market::Spot && weight < 0.0 {
+                    return Err((env, TargetError::Short { instrument, weight }));
+                }
+            }
+        }
+        self.engines
+            .par_iter_mut()
+            .zip(weights.par_chunks(width))
+            .for_each(|(engine, row)| {
+                let named: Vec<(usize, f64)> = row.iter().copied().enumerate().collect();
+                // every negative spot weight was refused above, the one way it fails
+                let _ = engine.target(&named, tolerance, transfer);
+            });
+        Ok(())
+    }
+
     /// Reset every env, returning the initial state of each.
     pub fn reset_all(&mut self) -> Vec<State> {
         self.engines.par_iter_mut().map(Engine::reset).collect()
@@ -112,19 +151,22 @@ impl EnvBatch {
             .collect()
     }
 
-    /// Batched observation: each env's `window` most recent candles as
-    /// `num_envs * window * 5` row-major floats laid out (env, bar, ohlcv),
-    /// front-padded with zeros when an env has fewer than `window` bars yet.
+    /// Batched observation: each env's `window` most recent rows of every
+    /// instrument's candles as `num_envs * window * width * 5` row-major floats laid
+    /// out (env, row, instrument, ohlcv), front-padded with zeros when an env has
+    /// fewer than `window` rows yet, and zeros where an instrument printed no bar.
     pub fn observe_all(&self, window: usize) -> Vec<f64> {
-        let cols = 5;
-        let mut out = vec![0.0; self.engines.len() * window * cols];
-        out.par_chunks_mut(window * cols)
+        let (width, cols) = (self.width(), 5);
+        let mut out = vec![0.0; self.engines.len() * window * width * cols];
+        out.par_chunks_mut(window * width * cols)
             .zip(self.engines.par_iter())
             .for_each(|(chunk, engine)| {
-                let bars = engine.candle_window(window);
-                let pad = window - bars.len();
-                for (row, bar) in bars.iter().enumerate() {
-                    let base = (pad + row) * cols;
+                let end = engine.tick() + 1;
+                let start = end.saturating_sub(window);
+                let pad = window - (end - start);
+                let rows = &engine.candles_all()[start * width..end * width];
+                for (k, bar) in rows.iter().enumerate().filter(|(_, bar)| printed(bar)) {
+                    let base = (pad * width + k) * cols;
                     chunk[base] = bar.open;
                     chunk[base + 1] = bar.high;
                     chunk[base + 2] = bar.low;
@@ -184,6 +226,13 @@ impl EnvBatch {
     /// A batched snapshot of the per-env account fields a reward reads.
     pub fn snapshot(&self) -> BatchSnapshot {
         let states: Vec<State> = self.engines.iter().map(Engine::current_state).collect();
+        let width = self.width();
+        let each = |read: fn(&Engine, usize) -> f64| -> Vec<f64> {
+            self.engines
+                .iter()
+                .flat_map(|engine| (0..width).map(move |i| read(engine, i)))
+                .collect()
+        };
         BatchSnapshot {
             equity: states.iter().map(|s| s.equity).collect(),
             position: states.iter().map(|s| s.position).collect(),
@@ -191,6 +240,8 @@ impl EnvBatch {
             realized_pnl: states.iter().map(|s| s.realized_pnl).collect(),
             mark_price: states.iter().map(|s| s.mark_price).collect(),
             funding_paid: states.iter().map(|s| s.funding_paid).collect(),
+            positions: each(Engine::position),
+            marks: each(Engine::mark),
         }
     }
 }
@@ -205,15 +256,19 @@ pub struct BatchSnapshot {
     /// Funding paid per env since its reset, positive when paid away. A perp
     /// reward that does not see it cannot separate a carry from a direction.
     pub funding_paid: Vec<f64>,
+    /// Every instrument's signed position and last close, env by env, `num_envs *
+    /// width` each.
+    pub positions: Vec<f64>,
+    pub marks: Vec<f64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::EnvBatch;
-    use crate::candles::Candles;
+    use crate::candles::{Candles, Instrument};
     use crate::clock::Clock;
-    use crate::engine::{Engine, EngineConfig, Intrabar};
-    use probatum_core::{Candle, Market, Side, State};
+    use crate::engine::{Engine, EngineConfig, Intrabar, TargetError};
+    use probatum_core::{Candle, Market, Side, State, Tiers};
     use proptest::prelude::*;
 
     fn series() -> Candles {
@@ -538,6 +593,125 @@ mod tests {
         let held: Vec<f64> = batched.iter().map(|s| s.position).collect();
         assert!(held.iter().all(|&q| q == 0.0 || q == 1.0));
         assert!(held.contains(&0.0) && held.contains(&1.0), "{held:?}");
+    }
+
+    /// Two perps and a spot coin over eight rows, the coin printing no bar on the
+    /// fourth.
+    fn three() -> Candles {
+        let bar = |base: f64, k: usize| Candle {
+            open: base,
+            high: base * 1.02,
+            low: base * 0.98,
+            close: base * (1.0 + 0.005 * ((k % 3) as f64 - 1.0)),
+            volume: 1e6,
+        };
+        let absent = Candle {
+            open: f64::NAN,
+            high: f64::NAN,
+            low: f64::NAN,
+            close: f64::NAN,
+            volume: f64::NAN,
+        };
+        let mut bars = Vec::new();
+        for t in 0..8 {
+            let base = 100.0 + 5.0 * ((t as f64) * 0.9).sin();
+            bars.push(bar(base, t));
+            bars.push(bar(base * 0.5, t + 1));
+            bars.push(if t == 3 {
+                absent
+            } else {
+                bar(base * 2.0, t + 2)
+            });
+        }
+        let specs = [Market::Perp, Market::Perp, Market::Spot]
+            .map(|market| Instrument {
+                market: Some(market),
+                tiers: Tiers::default(),
+            })
+            .to_vec();
+        Candles::universe(bars, 3, None).with_instruments(specs)
+    }
+
+    /// A margin wallet and a spot wallet of 10,000 each, at 10x.
+    fn both() -> EngineConfig {
+        EngineConfig {
+            market: Market::Perp,
+            idle_cash: 10_000.0,
+            max_leverage: 10.0,
+            ..cfg()
+        }
+    }
+
+    #[test]
+    fn a_universe_batch_steps_each_env_as_its_engine_does_alone() {
+        // every env targets weights of its own on two perps and a spot coin that
+        // prints no bar on one row, and the batch books what a loop over engines does
+        let weights = |env: usize, step: usize| -> Vec<f64> {
+            let w = ((env * 7 + step * 3) % 11) as f64 / 10.0 - 0.5;
+            vec![w, -w / 2.0, w.abs()]
+        };
+        let n = 6;
+        let mut batch = EnvBatch::new(n, three(), both());
+        batch.reset_all();
+        let mut engines: Vec<Engine> = (0..n)
+            .map(|env| Engine::new(three(), both()).for_env(env))
+            .collect();
+        for engine in &mut engines {
+            engine.reset();
+        }
+        for step in 0..6 {
+            let rows: Vec<f64> = (0..n).flat_map(|env| weights(env, step)).collect();
+            batch.target_all(&rows, 0.0, false).expect("no spot short");
+            let batched = batch.step_all();
+            let looped: Vec<State> = engines
+                .iter_mut()
+                .enumerate()
+                .map(|(env, engine)| {
+                    let named: Vec<(usize, f64)> =
+                        weights(env, step).into_iter().enumerate().collect();
+                    engine.target(&named, 0.0, false).expect("no spot short");
+                    engine.step()
+                })
+                .collect();
+            assert_eq!(batched, looped);
+            let positions: Vec<f64> = engines
+                .iter()
+                .flat_map(|engine| (0..3).map(move |i| engine.position(i)))
+                .collect();
+            assert_eq!(batch.snapshot().positions, positions);
+        }
+        assert!(batch.snapshot().positions.iter().any(|&q| q != 0.0));
+    }
+
+    #[test]
+    fn observing_a_universe_lays_out_each_instruments_bars_with_zeros_where_none_printed() {
+        // a window of the fourth and fifth rows, (row, instrument, ohlcv), where the
+        // coin printed nothing on the fourth
+        let candles = three();
+        let mut b = EnvBatch::new(1, candles.clone(), both());
+        b.reset_at_each(&[4]);
+        let obs = b.observe_all(2);
+        assert_eq!(obs.len(), 2 * 3 * 5);
+        assert_eq!(obs[0], candles.bar(3, 0).open);
+        assert_eq!(&obs[10..15], &[0.0; 5]);
+        assert_eq!(obs[15], candles.bar(4, 0).open);
+        let coin = candles.bar(4, 2);
+        assert_eq!(
+            &obs[25..30],
+            &[coin.open, coin.high, coin.low, coin.close, coin.volume]
+        );
+    }
+
+    #[test]
+    fn a_negative_spot_weight_is_refused_naming_its_env_before_any_env_trades() {
+        let mut b = EnvBatch::new(2, three(), both());
+        b.reset_all();
+        let refused = b.target_all(&[0.5, 0.0, 0.2, 0.5, 0.0, -0.2], 0.0, false);
+        assert_eq!(
+            refused.map_err(|(env, TargetError::Short { instrument, .. })| (env, instrument)),
+            Err((1, 2))
+        );
+        assert!(b.step_all().iter().all(|s| s.position == 0.0));
     }
 
     fn long_series() -> Candles {
