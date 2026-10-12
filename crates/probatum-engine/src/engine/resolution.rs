@@ -44,6 +44,9 @@ struct Offer {
     /// Whether the order can only reduce, and so is made again when a fill opens,
     /// flips or closes its position, which moves where that position started.
     reduces: bool,
+    /// Whether the offer was made on the part of the bar after the fill that opened
+    /// the position it meets, which its fill then reads as its bar.
+    parted: bool,
     made: Option<(Fill, FillCosts, f64)>,
 }
 
@@ -258,7 +261,8 @@ impl Engine {
             Side::Sell => held > 0.0,
             Side::Buy => held < 0.0,
         };
-        let bar = if reduces && against && self.inside[i] {
+        let parted = reduces && against && self.inside[i];
+        let bar = if parted {
             self.after_fill(i, bar)
         } else {
             *bar
@@ -288,6 +292,7 @@ impl Engine {
             tif: order.tif,
             again: sizeless || !armed,
             reduces,
+            parted,
             made: made.map(|(fill, costs)| (fill, costs, sized.remaining().get())),
         }
     }
@@ -297,7 +302,7 @@ impl Engine {
     /// reaches the extreme beyond the fill, and reaches the one on the open's side
     /// where that extreme came after the fill, going no further that way than the
     /// fill and the close otherwise (ADR 0012).
-    pub(super) fn after_fill(&self, i: usize, bar: &Candle) -> Candle {
+    fn after_fill(&self, i: usize, bar: &Candle) -> Candle {
         let start = self.starts[i];
         let long = self.account.positions[i].qty.get() > 0.0;
         // the price came to the fill from the open, so the extreme beyond it came
@@ -538,7 +543,13 @@ impl Engine {
                 _ if leg.is_some() => FillReason::TakeProfit,
                 _ => FillReason::Limit,
             };
+            // the bar the fill met, which the margin bound holds its lift inside
             let bar = self.bar_for(i);
+            let bar = if offer.parted {
+                self.after_fill(i, &bar)
+            } else {
+                bar
+            };
             let resting = self.book.len();
             let before = self.account.positions[i].qty.get();
             let arming = self.book.legs() > 0 && before == 0.0;

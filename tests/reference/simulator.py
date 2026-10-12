@@ -2228,8 +2228,8 @@ class Simulator:
                 continue                     # its OCO partner filled first
 
             if reference is None:
-                # unarmed, or the part of the bar it meets does not reach it, which
-                # is counted where the whole bar would have filled it here
+                # unarmed, or the part of the bar it meets does not reach it, counted
+                # where the whole bar reaches it at this turn
                 full = self.offer_whole(order, t)
                 if full is not None and not (hold_favourable
                                              and self.favourable(order, full[0], t)):
@@ -2312,7 +2312,7 @@ class Simulator:
 
             self.book(i, size, price, costs)
             cash = self.margin_cash
-            price, costs = self.bound(i, side, size, price, bar, rate, costs)
+            price, costs = self.bound(i, side, size, price, part, rate, costs)
             reason = order["leg"] or order["reason"]
             flat   = self.position[i] == 0.0
             self.apply(i, side, size, price, rate, taker, order, reason,
@@ -2520,8 +2520,8 @@ class Simulator:
     def bound(self, i, side, size, price, bar, rate, costs):
         """The margin bound: a reducing perpetual fill whose close-level equity at its
         price is below zero, with its own fee on the size it closes, is lifted toward
-        the price where that equity is zero, never outside its bar nor past the
-        position's average entry.
+        the price where that equity is zero, never outside the bar the fill met nor
+        past the position's average entry.
         The lift the bar holds is in the price and the part it cannot hold, net of the
         fee it moves, is paid into the wallet; both are a negative liquidation charge,
         and the fill log records the lift."""

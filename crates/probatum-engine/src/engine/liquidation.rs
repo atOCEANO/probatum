@@ -1767,6 +1767,39 @@ mod tests {
     }
 
     #[test]
+    fn the_margin_bound_lifts_a_sale_on_the_part_of_its_bar_no_higher_than_that_part() {
+        // a long of 1 from a buy at 95 inside a bar from 100, grown by a buy stop at
+        // 108 to 2 at 101.50, on a margin wallet of 5 with no cap: a reduce-only sale
+        // of 2 at 85 leaves the wallet short, and the bound would lift it to 99, but
+        // the part of the bar after the buy goes no higher than its close of 96, so
+        // the sale fills at 96 and the 6 the part cannot hold is paid in
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 110.0, 80.0, 96.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 5.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.limit_buy(1.0, 95.0);
+        e.stop(Side::Buy, 1.0, 108.0, false);
+        e.stop(Side::Sell, 2.0, 85.0, true);
+        let s = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![
+                (FillReason::Limit, 95.0),
+                (FillReason::Stop, 108.0),
+                (FillReason::Stop, 96.0)
+            ]
+        );
+        assert_eq!((s.position, s.margin_cash), (0.0, 0.0));
+    }
+
+    #[test]
     fn a_stop_above_where_its_long_started_fills_at_the_fill_that_opened_it() {
         // the buy at 95 opens a long inside a bar from 100, and a reduce-only stop at
         // 95.3 is through at that moment, so it fills there, at 95 less 50 bps,
