@@ -100,6 +100,7 @@ impl Account {
     /// (non-finite, or sized at or below the dust epsilon) moves no cash and pays no
     /// fee, so a wallet can never change without a position changing with it
     /// (ADR 0014).
+    #[inline]
     pub fn apply_fill(&mut self, i: usize, fill: &Fill, fee: f64) {
         if !moves_position(fill) {
             return;
