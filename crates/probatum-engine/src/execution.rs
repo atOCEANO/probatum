@@ -77,8 +77,14 @@ impl FillModel {
     /// dropped to zero or through it, the parts scaled down with it (ADR 0013).
     fn taker_slip(&self, size: f64, volume: f64) -> (f64, f64, f64) {
         let flat = self.slippage_bps.as_fraction().max(0.0);
+        let coefficient = self.impact.max(0.0);
+        // with no impact the slip is the flat rate under its cap, as the sums below
+        // would find it
+        if coefficient == 0.0 && flat <= MAX_SLIP {
+            return (flat, flat, 0.0);
+        }
         let impact = if positive(volume) {
-            self.impact.max(0.0) * (size / volume)
+            coefficient * (size / volume)
         } else {
             0.0
         };
