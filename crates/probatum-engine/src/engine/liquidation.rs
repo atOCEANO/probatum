@@ -1732,12 +1732,13 @@ mod tests {
     #[test]
     fn a_take_profit_below_the_open_on_a_long_the_bar_opened_lower_is_held_back() {
         // the buy at 95 opens a long on a bar from 100, and a reduce-only sale at 98,
-        // below the open, would close it above where it started: the bar reached 98
-        // after 95 only on a move back up, which it cannot show came before the
-        // trigger at 85, so the sale is held back and the long closed at 85
+        // below the open, would close it above where it started: after 95 the bar
+        // reached 98 only on its way back up to the close at 98.50, which it cannot
+        // show came before the trigger at 85, so the sale is held back and the long
+        // closed at 85
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
-            ohlc(100.0, 101.0, 80.0, 90.0, 1e6),
+            ohlc(100.0, 101.0, 80.0, 98.5, 1e6),
         ]);
         let config = EngineConfig {
             max_leverage: 10.0,

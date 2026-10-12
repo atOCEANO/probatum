@@ -199,7 +199,7 @@ mod tests {
     use crate::engine::fixtures::{ohlc, perp_cfg, report_cfg};
     use crate::engine::{Engine, EngineConfig, Intrabar};
     use crate::reporter::{EventKind, EventReason, FillReason, OrderEvent, Refusal};
-    use probatum_core::{Candle, OrderId, Side};
+    use probatum_core::{Candle, OrderId, OrderType, Side, TimeInForce};
 
     const FLAT: Candle = Candle {
         open: 100.0,
@@ -578,23 +578,82 @@ mod tests {
     #[test]
     fn a_stop_leg_of_a_breakout_long_fills_where_the_price_crossed_it_after_the_entry() {
         // the buy stop at 105 fills inside a bar that opens at 100, reaches 108 and 98,
-        // and closes at 103: the high came after the fill under either setting, and
-        // the low too under the pessimistic one, so the stop leg fills at 102, where
-        // the price crossed it, and not at the open; under the optimistic setting the
-        // low came first, and the long is held
+        // and closes at 103: the high came after the fill, which the price had not
+        // reached, and so did the low, which works against the long, under either
+        // setting, so the stop leg fills at 102, where the price crossed it, and not
+        // at the open
         let wide = ohlc(100.0, 108.0, 98.0, 103.0, 1e6);
-        for (intrabar, held) in [(Intrabar::Pessimistic, 0.0), (Intrabar::Optimistic, 1.0)] {
+        for intrabar in [Intrabar::Pessimistic, Intrabar::Optimistic] {
             let mut e = spot(&[wide], intrabar);
             let entry = e.stop(Side::Buy, 1.0, 105.0, false).expect("rests").0;
             let (stop, _) = e.bracket(0, Some(102.0), Some(110.0));
             let s = e.step();
-            let mut expected = vec![(entry, 1.0, 105.0, FillReason::Stop)];
-            if held == 0.0 {
-                expected.push((id(stop), 1.0, 102.0, FillReason::Stop));
-            }
-            assert_eq!(fills(&e), expected);
-            assert_eq!(s.position, held);
+            assert_eq!(
+                fills(&e),
+                vec![
+                    (entry, 1.0, 105.0, FillReason::Stop),
+                    (id(stop), 1.0, 102.0, FillReason::Stop),
+                ]
+            );
+            assert_eq!(s.position, 0.0);
         }
+    }
+
+    #[test]
+    fn the_optimistic_setting_keeps_the_stop_the_check_runs_a_breakout_long_past() {
+        // the same breakout on a margin wallet of 6 at 20x: the check runs the long
+        // from its fill at 105 down to 98, so its stop at 102 is reached after the
+        // fill under the optimistic setting as under the default, and the account
+        // keeps 3 where, without it, the long would be liquidated
+        for intrabar in [Intrabar::Pessimistic, Intrabar::Optimistic] {
+            let bars = Candles::new(vec![FLAT, ohlc(100.0, 108.0, 98.0, 103.0, 1e6)]);
+            let config = EngineConfig {
+                quote: 6.0,
+                max_leverage: 20.0,
+                report: true,
+                intrabar,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            e.stop(Side::Buy, 1.0, 105.0, false).expect("rests");
+            e.bracket(0, Some(102.0), Some(110.0));
+            let s = e.step();
+            assert_eq!((s.position, s.margin_cash), (0.0, 3.0), "{intrabar:?}");
+        }
+    }
+
+    #[test]
+    fn a_post_only_sale_a_part_of_its_first_bar_opens_through_is_cancelled_there() {
+        // the post-only sell at 104 survives the open at 100, and the buy stop at 105
+        // then buys the holding it could sell: the part of the bar after that fill
+        // opens at 105, through the sale, which would take liquidity there, so it is
+        // cancelled rather than filled as a taker
+        let mut e = spot(
+            &[ohlc(100.0, 108.0, 98.0, 103.0, 1e6)],
+            Intrabar::Pessimistic,
+        );
+        e.stop(Side::Buy, 1.0, 105.0, false).expect("rests");
+        let sale = e
+            .order(
+                Side::Sell,
+                1.0,
+                OrderType::Limit,
+                Some(104.0),
+                None,
+                false,
+                true,
+                TimeInForce::Gtc,
+            )
+            .expect("rests")
+            .0;
+        let s = e.step();
+        assert_eq!(fills(&e).len(), 1);
+        assert_eq!(s.position, 1.0);
+        assert_eq!(
+            events(&e).last().copied(),
+            Some((sale, EventKind::Cancelled, EventReason::OpenedThrough))
+        );
     }
 
     #[test]

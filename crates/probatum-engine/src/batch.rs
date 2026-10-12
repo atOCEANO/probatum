@@ -497,6 +497,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_random_batch_draws_where_each_envs_limit_entry_found_the_high() {
+        // a buy limit at 95 fills inside a bar from 100 that reaches 100.50 and closes
+        // at 95.50, with a take-profit at 97 placed after it: each env draws whether
+        // the high came after the fill, so some take the profit and others hold the
+        // long, each as the engine keyed for its env does alone
+        let bar = |open: f64, high: f64, low: f64, close: f64| Candle {
+            open,
+            high,
+            low,
+            close,
+            volume: 1000.0,
+        };
+        let candles = Candles::new(vec![
+            bar(100.0, 100.0, 100.0, 100.0),
+            bar(100.0, 100.5, 94.0, 95.5),
+        ]);
+        let config = EngineConfig {
+            intrabar: Intrabar::Random(7),
+            ..cfg()
+        };
+        let place = |e: &mut Engine| {
+            e.limit_buy(1.0, 95.0);
+            e.bracket(0, None, Some(97.0));
+        };
+        let mut batch = EnvBatch::new(32, candles.clone(), config);
+        batch.reset_all();
+        batch.engines_mut().iter_mut().for_each(place);
+        let batched = batch.step_all();
+        let looped: Vec<State> = (0..32)
+            .map(|env| {
+                let mut e = Engine::new(candles.clone(), config).for_env(env);
+                e.reset();
+                place(&mut e);
+                e.step()
+            })
+            .collect();
+        assert_eq!(batched, looped);
+        let held: Vec<f64> = batched.iter().map(|s| s.position).collect();
+        assert!(held.iter().all(|&q| q == 0.0 || q == 1.0));
+        assert!(held.contains(&0.0) && held.contains(&1.0), "{held:?}");
+    }
+
     fn long_series() -> Candles {
         let bars: Vec<Candle> = (0..8)
             .map(|i| {

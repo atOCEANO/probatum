@@ -87,8 +87,7 @@ struct Unseen {
     /// Each instrument's exits fill worst first.
     exits: Vec<bool>,
     /// The extreme on the open's side of a fill inside the bar that opens a position
-    /// on each instrument lies where it hurts that position: before the fill where it
-    /// favours it, after the fill where it does not.
+    /// on each instrument came before the fill, where it favours that position.
     opened: Vec<bool>,
     /// Each funding event the row owns counts its debits and not its credits, drawn
     /// by a random setting and empty under a fixed one.

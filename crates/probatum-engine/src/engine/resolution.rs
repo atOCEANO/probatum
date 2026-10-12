@@ -38,10 +38,12 @@ struct Offer {
     reduce_only: bool,
     tif: TimeInForce,
     /// Whether each turn makes the offer again: a bracket leg with no size of its own
-    /// asks for the position as the fills before it left it, one yet to arm can be
-    /// armed by them, and an order that can only reduce meets a position they opened
-    /// inside the bar from their fill on.
+    /// asks for the position as the fills before it left it, and one yet to arm can
+    /// be armed by them.
     again: bool,
+    /// Whether the order can only reduce, and so is made again when a fill opens,
+    /// flips or closes its position, which moves where that position started.
+    reduces: bool,
     made: Option<(Fill, FillCosts, f64)>,
 }
 
@@ -242,7 +244,8 @@ impl Engine {
     /// yet to arm, which has no side, and to a leg with no size of its own, the
     /// position on its instrument (ADR 0010). An order that can only reduce, a
     /// reduce-only one or a sale on spot, meets a position a fill inside the bar
-    /// opened on the part of the bar after that fill (ADR 0012).
+    /// opened on the part of the bar after that fill, where it would reduce it
+    /// (ADR 0012).
     fn offer(&self, order: &Order, bar: &Candle) -> Offer {
         let i = order.instrument;
         let (sizeless, armed) = order
@@ -250,7 +253,12 @@ impl Engine {
             .map_or((false, true), |leg| (leg.sizeless, leg.armed));
         let reduces = order.reduce_only
             || (self.account.markets[i] == Market::Spot && order.side == Side::Sell);
-        let bar = if reduces && self.inside[i] {
+        let held = self.account.positions[i].qty.get();
+        let against = match order.side {
+            Side::Sell => held > 0.0,
+            Side::Buy => held < 0.0,
+        };
+        let bar = if reduces && against && self.inside[i] {
             self.after_fill(i, bar)
         } else {
             *bar
@@ -278,7 +286,8 @@ impl Engine {
             kind: order.kind,
             reduce_only: order.reduce_only,
             tif: order.tif,
-            again: sizeless || !armed || reduces,
+            again: sizeless || !armed,
+            reduces,
             made: made.map(|(fill, costs)| (fill, costs, sized.remaining().get())),
         }
     }
@@ -286,17 +295,19 @@ impl Engine {
     /// The part of `bar` after the fill inside it that opened or flipped the position
     /// on instrument `i`: it opens at the fill's reference and closes at the close,
     /// reaches the extreme beyond the fill, and reaches the one on the open's side
-    /// where the setting places it after the fill, going no further that way than
-    /// the fill and the close otherwise (ADR 0012).
+    /// where that extreme came after the fill, going no further that way than the
+    /// fill and the close otherwise (ADR 0012).
     fn after_fill(&self, i: usize, bar: &Candle) -> Candle {
         let start = self.starts[i];
         let long = self.account.positions[i].qty.get() > 0.0;
         // the price came to the fill from the open, so the extreme beyond it came
-        // after it, and the one on the open's side favours a position a limit opened
-        // and hurts one a stop opened; the worse way places it where it hurts
+        // after it. The one on the open's side favours a position a limit opened,
+        // and the setting places it, before the fill the worse way; it works against
+        // one a stop opened, and came after the fill either way, as the check runs
+        // that position from its fill to it (The path)
         let down = start < bar.open;
         let favours = down == long;
-        let after = favours != self.unseen.opened[i];
+        let after = !favours || !self.unseen.opened[i];
         let mut part = Candle {
             open: start,
             ..*bar
@@ -458,19 +469,19 @@ impl Engine {
     /// where that position started. Returns whether any was held back.
     fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool) -> bool {
         let mut held = false;
-        // the instrument the last fill traded, whose offers alone it can have changed
-        let mut touched: Option<usize> = None;
+        // the instrument the last fill traded, whose offers alone it can have changed,
+        // and whether it moved where the position there started
+        let mut touched: Option<(usize, bool)> = None;
         let mut k = 0;
         while k < fills.len() {
             // a bracket leg with no size of its own asks for the position this turn
             // finds, which the fills before it may have grown or shrunk, one waiting
             // to arm may have been armed by them, and an order that can only reduce
             // meets a position they opened inside the bar from their fill on
-            if let Some(i) = touched.take() {
-                for offer in fills[k..]
-                    .iter_mut()
-                    .filter(|offer| offer.again && offer.instrument == i)
-                {
+            if let Some((i, moved)) = touched.take() {
+                for offer in fills[k..].iter_mut().filter(|offer| {
+                    offer.instrument == i && (offer.again || (moved && offer.reduces))
+                }) {
                     if let Some(order) = self.book.get(offer.id) {
                         *offer = self.offer(order, &self.bar_for(i));
                     }
@@ -498,13 +509,30 @@ impl Engine {
             // liquidity, and judged against the account as it stands when this
             // order is reached rather than the one its offer was made on, and left
             // for the expiry sweep that follows to cancel unfilled (ADR 0010).
+            let resting_order = self.book.get(id).copied();
+            // a post-only limit never takes liquidity: one that meets the part of its
+            // first bar after a fill inside it, opening at or through it, is cancelled
+            // there, as one the bar opens at or through is cancelled at the open
+            // (ADR 0010)
+            if fill.is_taker && resting_order.is_some_and(|order| order.post_only) {
+                self.book.cancel(id);
+                self.log_event(
+                    EventKind::Cancelled,
+                    Some(id),
+                    Some(i),
+                    None,
+                    None,
+                    EventReason::OpenedThrough,
+                );
+                continue;
+            }
             if kind == OrderType::Limit
                 && tif == TimeInForce::Fok
                 && self.clamp_fill(i, reduce_only, &fill).size.get() + CLOSE_EPS < requested
             {
                 continue;
             }
-            let leg = self.book.get(id).and_then(|order| order.leg);
+            let leg = resting_order.and_then(|order| order.leg);
             let reason = match kind {
                 OrderType::Stop => FillReason::Stop,
                 _ if leg.is_some() => FillReason::TakeProfit,
@@ -512,11 +540,13 @@ impl Engine {
             };
             let bar = self.bar_for(i);
             let resting = self.book.len();
-            let arming = self.book.legs() > 0 && self.account.positions[i].qty.get() == 0.0;
+            let before = self.account.positions[i].qty.get();
+            let arming = self.book.legs() > 0 && before == 0.0;
             let applied =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
             if applied > 0.0 {
-                touched = Some(i);
+                let after = self.account.positions[i].qty.get();
+                touched = Some((i, before == 0.0 || after == 0.0 || before * after < 0.0));
             }
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
@@ -1364,14 +1394,14 @@ mod tests {
     #[test]
     fn the_exits_of_a_position_its_own_bar_opened_are_ordered_worst_first() {
         // a flat account rests a buy at 95 and, reduce-only, a take-profit at 110 and
-        // a stop at 90, and a bar from 100 reaches all three. The buy opens a long
-        // whose two exits the bar reached in an order it cannot show, so the worse,
-        // the stop, fills first whichever was typed first, and the account ends 5
-        // down
+        // a stop at 90, and a bar from 100 reaches all three, the take-profit after
+        // the buy on its way to the close at 111. The buy opens a long whose two exits
+        // the bar reached in an order it cannot show, so the worse, the stop, fills
+        // first whichever was typed first, and the account ends 5 down
         for stop_first in [false, true] {
             let bars = Candles::new(vec![
                 ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
-                ohlc(100.0, 112.0, 85.0, 100.0, 1e6),
+                ohlc(100.0, 112.0, 85.0, 111.0, 1e6),
             ]);
             let config = EngineConfig {
                 report: true,
