@@ -140,6 +140,7 @@ impl Engine {
     /// What the check finds for the account as it stands, its path solved against
     /// the margin wallet less the charges stamped inside the bar it counts. One
     /// decision serves the check and the exits it holds back, so the two never part.
+    #[inline]
     fn check_point(&mut self) -> Found {
         if self.account.perps_held() == 0 {
             return Found::Nothing;
@@ -151,6 +152,14 @@ impl Engine {
         if !self.flipped && self.clear_of_trigger(wallet, |i, q| self.adverse(i, q)) {
             return Found::Clear;
         }
+        self.check_solved(wallet)
+    }
+
+    /// The check's path solved against `wallet`, for an account the corners could
+    /// not clear. Kept out of line, as `clip_carried` is, so the look that clears
+    /// most bars does not pay for the frame the solve needs.
+    #[inline(never)]
+    fn check_solved(&mut self, wallet: f64) -> Found {
         let mut checked = std::mem::take(&mut self.checked);
         let mut cuts = std::mem::take(&mut self.cuts);
         let mut spans = std::mem::take(&mut self.spans);

@@ -192,8 +192,17 @@ impl Engine {
             if self.maintains[i] {
                 maintenance += self.maintenance_of(i, q.abs() * (1.0 + 1e-12), q.abs() * price);
             }
+            // the largest of three, compared plainly: a printed bar holds no NaN for
+            // `f64::max` to skip, and it is the mark alone where the bar is NaN
             let bar = self.candles.bar(self.tick, i);
-            let span = self.marks[i].abs().max(bar.high.abs()).max(bar.low.abs());
+            let mut span = self.marks[i].abs();
+            if printed(&bar) {
+                for x in [bar.high.abs(), bar.low.abs()] {
+                    if x > span {
+                        span = x;
+                    }
+                }
+            }
             reach += q.abs() * (span + entry.abs());
         }
         equity - maintenance > 1e-12 * reach
