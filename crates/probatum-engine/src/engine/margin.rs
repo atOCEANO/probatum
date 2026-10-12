@@ -56,6 +56,12 @@ impl Engine {
             };
             equity -= pos.abs() * mark * rate;
         }
+        // an instrument neither a tier table nor the venue caps holds a fill back only
+        // where no equity backs it
+        let uncapped = self.config.max_leverage <= 0.0 && self.candles.tiers(i).rows().is_empty();
+        if uncapped && equity > 0.0 {
+            return;
+        }
         // No equity backs new notional, so an insolvent account may only shrink. It
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
