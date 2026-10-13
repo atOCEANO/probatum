@@ -674,6 +674,25 @@ mod tests {
     }
 
     #[test]
+    fn a_spot_sale_meets_a_holding_a_limit_grew_inside_the_bar_from_that_fill() {
+        // the same with 1 already held: the buy of 9 at 95 grows the holding, and
+        // what it adds traded only after it, so the sale of 10 at 97 rests where the
+        // whole bar sold all 10, 9 of them at a price that may have come before
+        let mut e = spot(
+            &[FLAT, ohlc(100.0, 100.5, 94.0, 95.5, 1e6)],
+            Intrabar::Pessimistic,
+        );
+        e.market_buy(1.0);
+        e.step();
+        e.limit_buy(9.0, 95.0).expect("rests");
+        let sale = e.limit_sell(10.0, 97.0).expect("rests");
+        let s = e.step();
+        assert_eq!(fills(&e).len(), 2);
+        assert_eq!(s.position, 10.0);
+        assert!(s.open_orders.iter().any(|order| order.id == sale));
+    }
+
+    #[test]
     fn a_leg_arming_is_its_placement_for_maker_and_taker() {
         // the take-profit at 99 rests through a bar while flat, then arms at the open
         // of 100 on the long a market buy opens there: it is through the price it arms

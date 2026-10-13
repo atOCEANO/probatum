@@ -113,15 +113,21 @@ impl Engine {
         }
         // where the position now stands started on the bar, and whether a fill inside
         // the bar opened it, a resting order's at a price the open had not reached,
-        // which the price came to from the open (ADR 0012)
+        // which the price came to from the open; one inside the bar that grew it
+        // moves both, since what it added traded only after it, where a fill at the
+        // open that grows it changes neither (ADR 0012)
         let (held, ..) = before;
         let after = self.account.positions[i].qty.get();
+        let began = held == 0.0 || held * after < 0.0;
+        let resting = matches!(
+            reason,
+            FillReason::Limit | FillReason::TakeProfit | FillReason::Stop
+        );
         if after == 0.0 {
             self.starts[i] = f64::NAN;
             self.inside[i] = false;
-        } else if held == 0.0 || held * after < 0.0 {
-            self.starts[i] = costs.reference;
-            self.inside[i] = match reason {
+        } else if began || (resting && after.abs() > held.abs()) {
+            let inside = match reason {
                 FillReason::Limit | FillReason::TakeProfit => !self.fill_model.limit_crosses(
                     fill.side,
                     Price(costs.reference),
@@ -130,6 +136,13 @@ impl Engine {
                 FillReason::Stop => costs.reference != candle.open,
                 _ => false,
             };
+            if began || inside {
+                self.starts[i] = costs.reference;
+                self.inside[i] = inside;
+            }
+            if began {
+                self.entered[i] = (costs.reference, inside);
+            }
         }
         self.book_fill(
             i,
@@ -266,7 +279,8 @@ impl Engine {
                         }
                     }
                 } else if moment == Moment::AtClose && printed(&bar) {
-                    let (low, high) = entry_part(&bar, self.starts[i], self.inside[i]);
+                    let (start, inside) = self.entered[i];
+                    let (low, high) = entry_part(&bar, start, inside);
                     trip.see(low);
                     trip.see(high);
                 }

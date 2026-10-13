@@ -364,7 +364,7 @@ class Trip:
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
            "legs", "next_id", "target_legs", "liquidations", "reached", "first",
-           "start", "inside", "reach")
+           "start", "inside", "entered", "reach")
 
 
 class Simulator:
@@ -409,9 +409,12 @@ class Simulator:
         self.entry    = [0.0] * n
 
         # where each position started on this bar's path (Liquidation, The rule, 4),
-        # and whether a fill inside the bar opened it (What a bar cannot show)
+        # and whether a fill inside the bar last opened, flipped or grew it (What a bar
+        # cannot show); and the fill that opened or flipped it, which the round trip it
+        # began counts its entry bar from (Round trips)
         self.start       = [None] * n
         self.inside      = [False] * n
+        self.entered     = [(None, False)] * n
         self.mark        = [None] * n
         self.history     = [[] for _ in range(n)]  # each instrument's own bars
         self.listed      = [False] * n
@@ -1803,10 +1806,9 @@ class Simulator:
         """Round trips: what a round trip's entry bar surely traded from its fill to
         the close, the whole bar after a fill at the open, and after a fill inside the
         bar the fill, the extreme beyond it and the close."""
-        start = self.start[i]
-        if not self.inside[i]:
+        start, inside = self.entered[i]
+        if not inside:
             return bar.high, bar.low
-
         if start < bar.open:
             return bar.low, max(start, bar.close)
         return min(start, bar.close), bar.high
@@ -2784,10 +2786,17 @@ class Simulator:
         if self.instruments[i].kind != "spot":
             self.track(i, before, after, price, opened)
 
+        # What a bar cannot show: what a fill inside the bar added traded only after
+        # it, where a fill at the open that grows a position changes nothing
+        began = before == 0.0 or before * after < 0.0
         if after == 0.0:
             self.start[i], self.inside[i] = None, False
-        elif before == 0.0 or before * after < 0.0:
-            self.start[i], self.inside[i] = reference, self.inside_fill(order, t)
+        elif began or abs(after) > abs(before):
+            inside = self.inside_fill(order, t)
+            if began or inside:
+                self.start[i], self.inside[i] = reference, inside
+            if began:
+                self.entered[i] = (reference, inside)
 
         self.position[i] = after
         self.fills.append(dict(

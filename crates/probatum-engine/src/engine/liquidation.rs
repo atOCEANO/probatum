@@ -1830,12 +1830,13 @@ mod tests {
     }
 
     #[test]
-    fn the_margin_bound_lifts_a_sale_on_the_part_of_its_bar_no_higher_than_that_part() {
+    fn the_margin_bound_lifts_a_sale_inside_the_part_of_its_bar_after_the_last_growth() {
         // a long of 1 from a buy at 95 inside a bar from 100, grown by a buy stop at
         // 108 to 2 at 101.50, on a margin wallet of 5 with no cap: a reduce-only sale
-        // of 2 at 85 leaves the wallet short, and the bound would lift it to 99, but
-        // the part of the bar after the buy goes no higher than its close of 96, so
-        // the sale fills at 96 and the 6 the part cannot hold is paid in
+        // of 2 at 85 leaves the wallet short, and the bound lifts it to 99. The part
+        // of the bar after the buy at 95 went no higher than its close of 96, and
+        // held the sale there with 6 paid in; the stop at 108 grew the long after it,
+        // and the part after that fill reaches both 110 and 80
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
             ohlc(100.0, 110.0, 80.0, 96.0, 1e6),
@@ -1856,7 +1857,7 @@ mod tests {
             vec![
                 (FillReason::Limit, 95.0),
                 (FillReason::Stop, 108.0),
-                (FillReason::Stop, 96.0)
+                (FillReason::Stop, 99.0)
             ]
         );
         assert_eq!((s.position, s.margin_cash), (0.0, 0.0));

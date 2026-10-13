@@ -230,13 +230,17 @@ pub struct Engine {
     capped: Vec<bool>,
     /// Where each perp's position started on this bar's path, which decides the
     /// exits a liquidating bar holds back: the open for one carried into the bar or
-    /// opened at it, the reference of the fill that opened or flipped it otherwise,
-    /// NaN while it is flat.
+    /// opened at it, the reference of the fill that opened or flipped it, or of a
+    /// later fill inside the bar that grew it, otherwise, NaN while it is flat.
     starts: Vec<f64>,
-    /// Whether a fill inside the bar opened or flipped each position, at a price the
-    /// open had not reached, which an order that can only reduce it then meets the
-    /// bar from (ADR 0012).
+    /// Whether a fill inside the bar opened, flipped or last grew each position, at
+    /// a price the open had not reached, which an order that can only reduce it then
+    /// meets the bar from (ADR 0012).
     inside: Vec<bool>,
+    /// The reference of the fill that opened or flipped each position on this bar,
+    /// and whether that fill came inside the bar, which the round trip it began
+    /// counts its entry bar from (ADR 0023).
+    entered: Vec<(f64, bool)>,
     /// The money the bar's perp fills have put at stake so far, for each the margin
     /// wallet before it, what the bound paid in and its notional, which the rounding a
     /// close can leave in a margin wallet it empties is measured against.
@@ -308,6 +312,7 @@ impl Engine {
             capped,
             starts: vec![f64::NAN; width],
             inside: vec![false; width],
+            entered: vec![(f64::NAN, false); width],
             reach: 0.0,
             unseen: {
                 let worse = config.intrabar != Intrabar::Optimistic;
@@ -559,8 +564,7 @@ impl Engine {
             self.notes.clear();
             self.flipped = false;
             self.clear_through = false;
-            // read by the resting orders, which no step adds to, and at the close for a
-            // round trip opened on the bar, whose opening fill set them
+            // read by the resting orders, which no step adds to
             if !self.book.is_empty() {
                 for (i, start) in self.starts.iter_mut().enumerate() {
                     let bar = self.candles.bar(self.tick, i);
@@ -619,7 +623,8 @@ impl Engine {
                 // printed before the fill (ADR 0023)
                 if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
                     let (low, high) = if trip.open_tick == self.tick {
-                        ledger::entry_part(&bar, self.starts[i], self.inside[i])
+                        let (start, inside) = self.entered[i];
+                        ledger::entry_part(&bar, start, inside)
                     } else {
                         (bar.low, bar.high)
                     };

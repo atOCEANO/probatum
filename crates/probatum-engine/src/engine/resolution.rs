@@ -400,6 +400,7 @@ impl Engine {
         let (account, book) = (self.account.clone(), self.book.clone());
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
         let (starts, inside, reach) = (self.starts.clone(), self.inside.clone(), self.reach);
+        let entered = self.entered.clone();
         let reporter = self.reporter.take();
         let held = self.fill_offers(fills.to_vec(), true);
         let liquidates = held && self.reaches_trigger();
@@ -407,6 +408,7 @@ impl Engine {
         self.book = book;
         self.starts = starts;
         self.inside = inside;
+        self.entered = entered;
         self.reach = reach;
         self.notes.truncate(notes);
         self.flipped = flipped;
@@ -561,8 +563,11 @@ impl Engine {
             let applied =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
             if applied > 0.0 {
+                // whether the fill moved where the position started: opened, closed,
+                // flipped or grew it
                 let after = self.account.positions[i].qty.get();
-                touched = Some((i, before == 0.0 || after == 0.0 || before * after < 0.0));
+                let began = before == 0.0 || before * after < 0.0;
+                touched = Some((i, began || after == 0.0 || after.abs() > before.abs()));
             }
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
@@ -1278,7 +1283,7 @@ mod tests {
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
-            ohlc(100.0, 120.0, 80.0, 100.0, 1e6),
+            ohlc(85.0, 120.0, 80.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
         ]);
         let mut e = Engine::new(
@@ -1294,7 +1299,8 @@ mod tests {
         e.limit_buy(1.0, 90.0); // slot 0, an increase
         e.limit_sell(1.0, 110.0); // slot 1, an exit
         let state = e.step();
-        // slot order: the buy is clamped to the 50 of cash on hand, then the sell
+        // slot order: the buy, a taker on a bar that opened through it, is clamped to
+        // the 50 of cash on hand, then the sell
         assert!(
             (state.position - 50.0 / 90.0).abs() < 1e-9,
             "{}",
