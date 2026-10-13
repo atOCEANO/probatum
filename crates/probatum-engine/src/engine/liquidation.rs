@@ -2322,6 +2322,51 @@ mod tests {
     }
 
     #[test]
+    fn a_second_flip_on_a_bar_leaves_no_earlier_than_the_side_it_closes_joined() {
+        // a long of 10 from 100 on 353 of margin, at 50x and 1% maintenance, is sold
+        // 20 by a stop at 90, where the short joins at 0.99 of the long's segment,
+        // and bought 20 back by a stop at 102. The second flip was placed at 0.2 of
+        // the short's segment from the open, before the short had joined, so both
+        // longs carried maintenance from there and closed the account near 90.32;
+        // the long of 10 from 102 on 133 it booked stays clear above 89.60
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 50.0,
+            rate: 0.01,
+            amount: 0.0,
+        };
+        let candles = Candles::new(vec![flat, flat, ohlc(100.0, 110.0, 89.9, 95.0, 1e6)])
+            .with_tiers(Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"));
+        let config = EngineConfig {
+            quote: 353.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.stop(Side::Sell, 20.0, 90.0, false);
+        e.stop(Side::Buy, 20.0, 102.0, false);
+        let last = e.step();
+        assert_eq!(
+            priced(&e),
+            vec![
+                (FillReason::Market, 100.0),
+                (FillReason::Stop, 90.0),
+                (FillReason::Stop, 102.0)
+            ]
+        );
+        assert_eq!(last.position, 10.0);
+        assert!(
+            (last.margin_cash - 133.0).abs() < 1e-9,
+            "kept {}",
+            last.margin_cash
+        );
+    }
+
+    #[test]
     fn a_reduce_onto_a_quantity_tiers_bound_is_read_in_the_tier_it_lies_in() {
         // 82 of margin behind a long of 3 from 100, the first 1.6 at 1% and above it
         // 5%; the bar falls to 50, which clips it for the 3 carried in at 76.49, and a

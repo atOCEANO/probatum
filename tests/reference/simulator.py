@@ -1613,7 +1613,11 @@ class Simulator:
             if bar is not None and (price < bar.low if before > 0.0
                                     else price > bar.high):
                 self.hit("a flip filled on the gap")
-            floor = self.fraction(i, before > 0.0, price, self.t)
+
+            # the old side leaves no earlier than it joined, so a second flip on the
+            # bar never sets its new side beside the first flip's old side
+            joined = max([leg.join for leg in held] + [floor])
+            floor  = max(self.fraction(i, before > 0.0, price, self.t), joined)
             left += [leg._replace(entry=price, leave=floor) for leg in held]
             held = []
         elif after == 0.0:

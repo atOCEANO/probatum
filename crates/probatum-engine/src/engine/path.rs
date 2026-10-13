@@ -416,7 +416,13 @@ impl Engine {
         let mut floor = legs.iter().filter_map(|leg| leg.leave).fold(0.0, f64::max);
         let flipped = before * after < 0.0;
         if flipped {
-            floor = self.fraction(i, before > 0.0, price);
+            // the old side leaves no earlier than it joined, so a second flip on the
+            // bar never sets its new side beside the first flip's old side
+            let joined = legs
+                .iter()
+                .filter(|leg| leg.leave.is_none())
+                .fold(floor, |at, leg| at.max(leg.join));
+            floor = self.fraction(i, before > 0.0, price).max(joined);
             for leg in legs.iter_mut().filter(|leg| leg.leave.is_none()) {
                 leg.entry = price;
                 leg.leave = Some(floor);
