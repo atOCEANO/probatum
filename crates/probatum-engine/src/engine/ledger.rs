@@ -202,6 +202,7 @@ impl Engine {
     /// forced close appeared in no trade, counted toward no fill, and left the dead
     /// position's entry fee standing to be charged against the NEXT trade.
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     pub(super) fn book_fill(
         &mut self,
         i: usize,
