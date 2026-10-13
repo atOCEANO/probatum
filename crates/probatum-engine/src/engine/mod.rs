@@ -225,6 +225,9 @@ pub struct Engine {
     /// Whether each instrument's tier table keeps any maintenance, which it does
     /// for the engine's whole life.
     maintains: Vec<bool>,
+    /// Whether each instrument's tier table or the venue's leverage caps its
+    /// positions, which holds for the engine's whole life.
+    capped: Vec<bool>,
     /// Where each perp's position started on this bar's path, which decides the
     /// exits a liquidating bar holds back: the open for one carried into the bar or
     /// opened at it, the reference of the fill that opened or flipped it otherwise,
@@ -264,6 +267,9 @@ impl Engine {
         let maintains = (0..width)
             .map(|i| candles.tiers(i).rows().iter().any(|tier| tier.rate > 0.0))
             .collect();
+        let capped = (0..width)
+            .map(|i| config.max_leverage > 0.0 || !candles.tiers(i).rows().is_empty())
+            .collect();
         let mut engine = Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
@@ -299,6 +305,7 @@ impl Engine {
             clear_through: false,
             notes: Vec::new(),
             maintains,
+            capped,
             starts: vec![f64::NAN; width],
             inside: vec![false; width],
             reach: 0.0,
