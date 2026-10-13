@@ -10,6 +10,19 @@ use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord, RoundTrip};
 
+/// What a round trip's entry bar surely traded from the fill at `start` to the
+/// close: the whole bar after a fill at the open, and after a fill `inside` the bar
+/// the fill, the extreme beyond it, which came after it, and the close (ADR 0023).
+pub(super) fn entry_part(bar: &Candle, start: f64, inside: bool) -> (f64, f64) {
+    if !inside {
+        (bar.low, bar.high)
+    } else if start < bar.open {
+        (bar.low, start.max(bar.close))
+    } else {
+        (start.min(bar.close), bar.high)
+    }
+}
+
 /// Where in its bar a fill sits, which decides how much of the bar a round trip it
 /// ends lived through (ADR 0023).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,7 +254,8 @@ impl Engine {
                 // the part of this bar a round trip carried into it lived through: up
                 // to the fill from the open, the whole bar when it closed at the
                 // close, and none of it when it closed before the bar opened or on a
-                // row its instrument printed no bar on
+                // row its instrument printed no bar on; one the bar opened and its
+                // close closed, what the bar surely traded after the fill
                 if trip.open_tick != tick && printed(&bar) {
                     match moment {
                         Moment::BeforeOpen => {}
@@ -251,6 +265,10 @@ impl Engine {
                             trip.see(bar.high);
                         }
                     }
+                } else if moment == Moment::AtClose && printed(&bar) {
+                    let (low, high) = entry_part(&bar, self.starts[i], self.inside[i]);
+                    trip.see(low);
+                    trip.see(high);
                 }
                 trip.shrink(closed, price, fee * closed / applied, realized);
             }
@@ -850,6 +868,35 @@ mod tests {
         assert_eq!((t.exit, t.reason), (90.0, Some(FillReason::Liquidation)));
         assert!((t.worst + 0.1).abs() < 1e-12, "worst {}", t.worst);
         assert_eq!(t.best, 0.0);
+    }
+
+    #[test]
+    fn a_close_out_at_the_close_of_the_entry_bar_counts_the_bar_after_the_fill() {
+        // a long of 10 bought at an open of 100 on 100 of margin outlives the bar's
+        // low of 96, and the 11% debit at its close takes it to its trigger there:
+        // closed at that close, the round trip lived through the whole bar after its
+        // fill at the open, 105 for it and 96 against it
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 105.0, 96.0, 100.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            report: true,
+            funding_rate: 0.11,
+            funding_interval: 1,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        let [t] = trips(&e) else {
+            panic!("one round trip");
+        };
+        assert_eq!((t.open_tick, t.close_tick), (1, Some(1)));
+        assert_eq!(t.reason, Some(FillReason::Liquidation));
+        assert!((t.best - 0.05).abs() < 1e-12, "best {}", t.best);
+        assert!((t.worst + 0.04).abs() < 1e-12, "worst {}", t.worst);
     }
 
     #[test]

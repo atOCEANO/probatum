@@ -610,19 +610,12 @@ impl Engine {
                     continue;
                 }
                 // the part of this bar a round trip still open surely lived through:
-                // from its fill to the close when it opened on this bar, which after a
-                // fill inside the bar is the fill, the extreme beyond it and the close,
-                // and after one at the open the whole bar, and the whole bar otherwise,
-                // so an excursion never counts a price that may have printed before
-                // the fill (ADR 0023)
+                // from its fill to the close when it opened on this bar, and the whole
+                // bar otherwise, so an excursion never counts a price that may have
+                // printed before the fill (ADR 0023)
                 if let Some(trip) = self.reporter.as_mut().and_then(|r| r.trip_mut(i)) {
-                    let (low, high) = if trip.open_tick == self.tick && self.inside[i] {
-                        let start = self.starts[i];
-                        if start < bar.open {
-                            (bar.low, start.max(bar.close))
-                        } else {
-                            (start.min(bar.close), bar.high)
-                        }
+                    let (low, high) = if trip.open_tick == self.tick {
+                        ledger::entry_part(&bar, self.starts[i], self.inside[i])
                     } else {
                         (bar.low, bar.high)
                     };

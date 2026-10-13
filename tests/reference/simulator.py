@@ -1790,13 +1790,23 @@ class Simulator:
             if trip is None or bar is None:
                 continue
 
-            start = self.start[i]
-            if trip.open_bar != t or not self.inside[i]:
+            if trip.open_bar != t:
                 trip.see(bar.high, bar.low)
-            elif start < bar.open:
-                trip.see(bar.low, max(start, bar.close))
             else:
-                trip.see(min(start, bar.close), bar.high)
+                trip.see(*self.entry_part(i, bar))
+
+
+    def entry_part(self, i, bar):
+        """Round trips: what a round trip's entry bar surely traded from its fill to
+        the close, the whole bar after a fill at the open, and after a fill inside the
+        bar the fill, the extreme beyond it and the close."""
+        start = self.start[i]
+        if not self.inside[i]:
+            return bar.high, bar.low
+
+        if start < bar.open:
+            return bar.low, max(start, bar.close)
+        return min(start, bar.close), bar.high
 
 
     def liquidate(self, closes, t, path=None, wallets=None, trigger=None, moment="bar"):
@@ -2724,13 +2734,16 @@ class Simulator:
             trip = self.trip[i]
             # Round trips: one carried into this bar lived through it up to the fill
             # from its open, all of it when the fill came at the close, and none of
-            # it when the fill came before the bar opened
+            # it when the fill came before the bar opened; one the bar opened and its
+            # close closed, what the bar surely traded after the fill
             bar = self.bars[t][i]
             if trip.open_bar != t and bar is not None:
                 if moment == "bar":
                     trip.see(bar.open)
                 elif moment == "close":
                     trip.see(bar.high, bar.low)
+            elif moment == "close" and bar is not None:
+                trip.see(*self.entry_part(i, bar))
 
             trip.close(closed, price)
             trip.realized += realized
