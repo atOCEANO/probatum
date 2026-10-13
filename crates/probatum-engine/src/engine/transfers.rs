@@ -31,8 +31,9 @@ impl Engine {
         for k in 0..self.transfers.len() {
             let (amount, to) = self.transfers[k];
             // the cash the margin wallet keeps: what still covers the requirement once
-            // its unrealized PnL is counted, floored at zero so a profit cannot move
-            let keep = match to {
+            // its unrealized PnL is counted, floored at zero so a profit cannot move;
+            // with nothing required, a wallet holding a loss keeps that loss alone
+            let (keep, to_zero) = match to {
                 Wallet::Spot => {
                     let unrealized: f64 = (0..self.marks.len())
                         .filter(|&i| self.account.markets[i] == Market::Perp)
@@ -42,9 +43,10 @@ impl Engine {
                     let required: f64 = (0..self.marks.len())
                         .map(|i| self.requirement(i, self.marks[i]))
                         .sum();
-                    (required - unrealized).max(0.0)
+                    let keep = (required - unrealized).max(0.0);
+                    (keep, required == 0.0 && keep > 0.0)
                 }
-                Wallet::Margin => 0.0,
+                Wallet::Margin => (0.0, false),
             };
             let allowed = (self.account.cash(to.other()) - keep).max(0.0);
             let moved = amount.min(allowed);
@@ -63,7 +65,14 @@ impl Engine {
                 // all it may give leaves exactly what it keeps, so with the cap off a
                 // wallet holding a loss lands on zero equity, its trigger, rather than
                 // on a rounding to either side of it
-                self.account.margin_cash = keep;
+                let mut cash = keep;
+                // the path adds each perp's loss to the wallet in turn, which can leave
+                // what their sum kept a hair above zero: the wallet is lowered by the
+                // least that reaches the trigger as the path reads it
+                while to_zero && self.margin_level(cash, |i, _| self.marks[i]) > 0.0 {
+                    cash = cash.next_down();
+                }
+                self.account.margin_cash = cash;
             }
         }
         self.transfers.clear();
@@ -73,10 +82,10 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use crate::candles::Candles;
-    use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, series};
+    use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, series, universe};
     use crate::engine::{Engine, EngineConfig};
     use crate::reporter::{EventKind, EventReason, FillReason};
-    use probatum_core::Wallet;
+    use probatum_core::{Market, OrderType, Side, TimeInForce, Wallet};
 
     #[test]
     fn a_transfer_lands_before_the_orders_decided_with_it() {
@@ -228,6 +237,44 @@ mod tests {
             .copied()
             .expect("a fill");
         assert_eq!((fill.reason, fill.price), (FillReason::Liquidation, 95.1));
+    }
+
+    #[test]
+    fn beside_two_perps_a_transfer_can_take_the_margin_wallet_to_its_trigger() {
+        // longs of 0.1 from 100 and 0.2 from 50, marked at 99 and 49: the losses
+        // kept, 0.30000000000000004, with each added back in turn left 2.8e-17,
+        // which is not the trigger, and the account traded on at zero equity
+        let flat = |a: f64, b: f64| vec![ohlc(a, a, a, a, 1e6), ohlc(b, b, b, b, 1e6)];
+        let rows = vec![
+            flat(100.0, 50.0),
+            flat(100.0, 50.0),
+            flat(99.0, 49.0),
+            flat(99.0, 49.0),
+        ];
+        let config = EngineConfig {
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(universe(&[Market::Perp, Market::Perp], rows), config);
+        e.reset();
+        for (i, size) in [(0, 0.1), (1, 0.2)] {
+            let (kind, ioc) = (OrderType::Market, TimeInForce::Ioc);
+            e.order_on(i, Side::Buy, size, kind, None, None, false, false, ioc);
+        }
+        e.step();
+        e.step();
+        e.transfer(1e9, Wallet::Spot);
+        let s = e.step();
+        let closes: Vec<f64> = e
+            .reporter()
+            .expect("reporting is on")
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .map(|fill| fill.price)
+            .collect();
+        assert_eq!(closes, [99.0, 49.0]);
+        assert_eq!(s.margin_cash, 0.0);
     }
 
     #[test]

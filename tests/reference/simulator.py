@@ -1870,12 +1870,15 @@ class Simulator:
         for transfer in self.transfers:
             amount = transfer["amount"]
             if transfer["to"] == "margin":
-                cash, keep = self.spot_cash, 0.0
+                cash, keep, to_zero = self.spot_cash, 0.0, False
             else:
                 # the margin wallet keeps what covers the cap's requirement once its
-                # unrealized PnL is counted, floored at zero so a profit cannot move
-                cash = self.margin_cash
-                keep = max(0.0, self.cap_requirement() - self.margin_unrealized())
+                # unrealized PnL is counted, floored at zero so a profit cannot move;
+                # with nothing required, a wallet holding a loss keeps that loss alone
+                cash     = self.margin_cash
+                required = self.cap_requirement()
+                keep     = max(0.0, required - self.margin_unrealized())
+                to_zero  = required == 0.0 and keep > 0.0
 
             allowed = max(0.0, cash - keep)
             moved   = min(amount, allowed)
@@ -1895,8 +1898,22 @@ class Simulator:
                     # all it may give leaves exactly what it keeps, so with the cap off
                     # a wallet holding a loss is left at zero equity, its trigger
                     self.margin_cash = keep
+                    # the path adds each perpetual's loss to the wallet in turn, which
+                    # can leave what their sum kept a hair above zero: the wallet is
+                    # lowered by the least that reaches the trigger as the path reads it
+                    while to_zero and self.level_at_marks() > 0.0:
+                        self.margin_cash = math.nextafter(self.margin_cash, -math.inf)
 
         self.transfers = []
+
+
+    def level_at_marks(self):
+        """Margin equity less the maintenance requirement with every perpetual held at
+        its last mark, summed as the path sums it."""
+        piece = [Leg(i, self.position[i], self.entry[i], self.mark[i], self.mark[i])
+                 for i in self.perps() if self.position[i] != 0.0]
+        equity, requirement, _ = self.state_at(piece, self.margin_cash, 0.0)
+        return equity - requirement
 
 
     def delist(self, t):
