@@ -1264,23 +1264,26 @@ class Simulator:
 
 
     def resolve_resting(self, t):
-        """The step, 5 to 7: the resting orders, then the check. Under the pessimistic
-        setting each perpetual fill that, when its turn comes, would reduce the
-        position it meets with its reference on the favourable side of where that
-        position started on the bar is first held back, and if the check then
-        liquidates, it never happened (Liquidation, The rule, 4)."""
+        """The step, 5 to 7: the resting orders, then the check, then the end of the
+        bar for the orders it left standing. Under the pessimistic setting each
+        perpetual fill that, when its turn comes, would reduce the position it meets
+        with its reference on the favourable side of where that position started on
+        the bar is first held back, and if the check then liquidates, it never
+        happened (Liquidation, The rule, 4)."""
         if self.venue.intrabar == "pessimistic" and self.may_hold(t):
             saved = self.snapshot()
             held  = self.fill_resting_orders(t, hold_favourable=True)
             if self.check(t):
                 if held:
                     self.hit("a favourable exit held back on a liquidating bar")
+                self.end_resting_bar(t)
                 return
 
             self.restore(saved)
 
         self.fill_resting_orders(t)
         self.check(t)
+        self.end_resting_bar(t)
 
 
     def may_hold(self, t):
@@ -2392,6 +2395,13 @@ class Simulator:
             if flat and self.position[i] != 0.0:
                 self.arm(i, order)
 
+        return held
+
+
+    def end_resting_bar(self, t):
+        """The step, 7: the resting orders the check left standing have rested through
+        the bar, and an ioc or fok limit among them has had its one bar, which a
+        liquidation inside the bar would have cancelled first."""
         for order in self.resting():
             if self.bars[t][order["instrument"]] is None:
                 if order["leg"]:
@@ -2405,8 +2415,6 @@ class Simulator:
                 order["status"] = "expired"
                 self.slots[self.slots.index(order)] = None
                 self.log("expired", order, f"{order['tif']}: one bar")
-
-        return held
 
 
     def order_exits(self, offers, k, before):

@@ -2322,6 +2322,54 @@ mod tests {
     }
 
     #[test]
+    fn an_ioc_sale_held_back_on_a_liquidating_bar_is_cancelled_by_the_liquidation() {
+        // a long of 40 from 100 on 100 of margin, at 50x and 1% maintenance, rests a
+        // reduce-only ioc sale at 101 into a bar that reaches 102 and falls to 80: the
+        // sale is held back and the account liquidated, and the liquidation cancels
+        // the sale where its one bar used to expire it first
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 50.0,
+            rate: 0.01,
+            amount: 0.0,
+        };
+        let candles = Candles::new(vec![flat, flat, ohlc(100.0, 102.0, 80.0, 85.0, 1e6)])
+            .with_tiers(Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"));
+        let config = EngineConfig {
+            quote: 100.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.market_buy(40.0);
+        e.step();
+        let (kind, ioc) = (OrderType::Limit, TimeInForce::Ioc);
+        let sale = e.order_on(
+            0,
+            Side::Sell,
+            10.0,
+            kind,
+            Some(101.0),
+            None,
+            true,
+            false,
+            ioc,
+        );
+        e.step();
+        let ended: Vec<(EventKind, EventReason)> = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .iter()
+            .filter(|event| event.order == sale && event.tick == 2)
+            .map(|event| (event.kind, event.reason))
+            .collect();
+        assert_eq!(ended, [(EventKind::Cancelled, EventReason::Liquidation)]);
+    }
+
+    #[test]
     fn a_second_flip_on_a_bar_leaves_no_earlier_than_the_side_it_closes_joined() {
         // a long of 10 from 100 on 353 of margin, at 50x and 1% maintenance, is sold
         // 20 by a stop at 90, where the short joins at 0.99 of the long's segment,

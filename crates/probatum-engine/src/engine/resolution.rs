@@ -191,10 +191,13 @@ impl Engine {
         let fills = self.offers();
         let hold = self.unseen.hold && self.may_hold(&fills) && self.liquidates_without(&fills);
         self.fill_offers(fills, hold);
+    }
 
-        // IOC and FOK limits get one bar of exposure, the first their instrument
-        // prints, then expire whether or not they filled: they never rest for a
-        // later bar (ADR 0010).
+    /// The end of the bar for the resting orders the check left standing, which a
+    /// liquidation inside the bar would have cancelled first. IOC and FOK limits get
+    /// one bar of exposure, the first their instrument prints, then expire whether
+    /// or not they filled: they never rest for a later bar (ADR 0010).
+    pub(super) fn end_resting_bar(&mut self) {
         let expiring: Vec<(OrderId, usize, TimeInForce)> = self
             .book
             .iter()

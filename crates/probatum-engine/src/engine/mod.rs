@@ -584,8 +584,12 @@ impl Engine {
             self.resolve_resting();
 
             // 3. the check: the path solved again for the account the fills left,
-            //    with the funding stamped inside the bar counted as the setting decides
+            //    with the funding stamped inside the bar counted as the setting decides;
+            //    an order it leaves standing that takes one bar has had it
             self.check();
+            if !self.book.is_empty() {
+                self.end_resting_bar();
+            }
 
             // 4. the funding the row owns, at its close and after the check, because
             //    a stamp at the bar's end comes after every price the bar printed:

@@ -97,7 +97,7 @@ From bar `t` to bar `t + 1`, in this order:
 4. Pending market orders fill at the open of the clipped bars, in the order they were placed.
 5. Resting limits and stops resolve against the clipped bars in slot order. The exits of the position each fill meets, as the fills before it left that position, are reordered by the PnL per unit each would realize at its fill price, a stop's slippage included, worst first under the pessimistic setting, among the slots those exits hold, so a position the bar's own fills open has its exits ordered as a carried one's are; exits on different instruments are never reordered. An order that can only reduce meets a position a fill inside the bar opened or flipped on the part of the bar after that fill ([What a bar cannot show](#what-a-bar-cannot-show)). Every reducing fill passes the margin bound.
 6. Under the pessimistic setting, the perpetual fills that would reduce the position they meet, with their reference on the favourable side of where that position started on the bar, are held back when the path without them still reaches the trigger.
-7. The liquidation check runs along the path for the account as it now stands.
+7. The liquidation check runs along the path for the account as it now stands, and a liquidation cancels every perpetual order still standing. An ioc or fok limit the check leaves standing then expires, its one bar over.
 8. Funding owned by the bar is charged at the closes on the positions still held.
 9. Every position is marked at its close, and the ledger row is written.
 
