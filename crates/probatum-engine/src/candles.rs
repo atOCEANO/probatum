@@ -26,6 +26,9 @@ pub struct Candles {
     // printed no bar on holds five NaNs for it
     bars: Arc<[Candle]>,
     width: usize,
+    // the rows the bars fill, kept so the length asked on every step is not a
+    // division
+    rows: usize,
     clock: Option<Clock>,
     funding: Option<Arc<Schedule>>,
     instruments: Arc<[Instrument]>,
@@ -53,16 +56,14 @@ impl Candles {
             width > 0 && bars.len() % width == 0,
             "the bars fill whole rows"
         );
+        let rows = bars.len() / width;
         if let Some(clock) = &clock {
-            assert_eq!(
-                clock.len(),
-                bars.len() / width,
-                "the clock needs one time per bar"
-            );
+            assert_eq!(clock.len(), rows, "the clock needs one time per bar");
         }
         Candles {
             bars,
             width,
+            rows,
             clock,
             funding: None,
             instruments: vec![Instrument::default(); width].into(),
@@ -126,7 +127,7 @@ impl Candles {
 
     /// Number of rows, fixed for the life of the series and shared by every clone.
     pub fn len(&self) -> usize {
-        self.bars.len() / self.width
+        self.rows
     }
 
     /// True when the series has no bars, which is what `Engine::new` refuses.
