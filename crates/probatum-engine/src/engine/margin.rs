@@ -312,12 +312,12 @@ impl Engine {
         let mut fill = *fill;
         // size is a positive magnitude; a non-positive or non-finite fill is not a
         // real trade, so it moves nothing and pays no fee. Neither is a price at or
-        // below zero, and that one is the input both risk clamps have to give up
-        // on: each divides by the mark, so each returns without clamping anything,
-        // and the fill that follows buys an unbounded position for nothing or for a
-        // credit. MAX_SLIP exists so a slipped fill cannot reach zero (ADR 0013);
-        // this is the same rule applied to the bar's own price, which the candle
-        // validator lets through because it checks only for finiteness (ADR 0007)
+        // below zero, and that one is the input both risk clamps cannot bound: each
+        // divides by the mark, so it is refused here, before them, where a fill let
+        // through would buy an unbounded position for nothing or for a credit.
+        // MAX_SLIP exists so a slipped fill cannot reach zero (ADR 0013); this is
+        // the same rule applied to the bar's own price, which the candle validator
+        // lets through because it checks only for finiteness (ADR 0007)
         let size = fill.size.get();
         let price = fill.price.get();
         if !positive(size) || !positive(price) {
@@ -668,10 +668,10 @@ mod tests {
 
     #[test]
     fn a_fill_priced_at_or_below_zero_is_refused_rather_than_booked() {
-        // both risk clamps divide by the mark, so each returns without clamping when
-        // it is zero or negative, and the fill behind them bought an unbounded
-        // position for nothing. The candle validator lets those prices through
-        // because it checks only finiteness (ADRs 0007, 0013)
+        // both risk clamps divide by the mark, so neither can bound a fill priced at
+        // zero or below, and one let through bought an unbounded position for
+        // nothing. The candle validator lets those prices through because it checks
+        // only finiteness (ADRs 0007, 0013)
         for price in [0.0, -100.0] {
             let bars = Candles::new(vec![
                 ohlc(100.0, 100.0, 100.0, 100.0, 1e6),

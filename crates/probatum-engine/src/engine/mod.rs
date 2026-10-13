@@ -225,7 +225,7 @@ pub struct Engine {
     /// Whether each instrument's tier table keeps any maintenance, which it does
     /// for the engine's whole life.
     maintains: Vec<bool>,
-    /// Whether each instrument's tier table or the venue's leverage caps its
+    /// Whether a tier table or the venue's leverage caps each instrument's perp
     /// positions, which holds for the engine's whole life.
     capped: Vec<bool>,
     /// Where each perp's position started on this bar's path, which decides the
