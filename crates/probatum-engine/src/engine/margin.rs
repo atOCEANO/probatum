@@ -27,10 +27,8 @@ impl Engine {
         if self.account.markets[i] != Market::Perp {
             return;
         }
+        // `clamp_fill`, the one caller, has refused a price that is not positive
         let mark = fill.price.get();
-        if !positive(mark) {
-            return;
-        }
         let pos = self.account.positions[i].qty.get();
         let own = usize::from(!self.account.positions[i].is_flat());
         let beside = self.account.perps_held() > own;
