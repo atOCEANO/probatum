@@ -310,6 +310,7 @@ impl Engine {
     /// all-or-nothing order can be judged against the real fillable size rather than
     /// the raw liquidity the fill model offered (ADR 0010). A refused fill comes
     /// back sized zero.
+    #[inline(always)]
     pub(super) fn clamp_fill(&self, i: usize, reduce_only: bool, fill: &Fill) -> Fill {
         let mut fill = *fill;
         // size is a positive magnitude; a non-positive or non-finite fill is not a
