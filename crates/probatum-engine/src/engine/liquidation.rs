@@ -73,11 +73,14 @@ impl Engine {
     fn clip_carried(&mut self, wallet: f64, inside: f64) {
         let mut path = std::mem::take(&mut self.path);
         self.carried_path(&mut path);
-        // the gap is one move for every path; inside the bars the optimistic way
-        // waits for every path to reach the trigger
+        // the gap is one move for every path, and every path starts the bar at the
+        // opens; inside the bars the optimistic way waits for every path to reach
+        // the trigger
         let found = self
             .solve(&path, |piece| if piece == 0 { wallet } else { inside })
-            .filter(|(trigger, _)| trigger.piece == 0 || self.every_path_reaches(inside));
+            .filter(|(trigger, _)| {
+                trigger.piece == 0 || trigger.at == 0.0 || self.every_path_reaches(inside)
+            });
         if let Some((_, clip)) = found {
             let (from, to) = path.pieces[clip.piece];
             let at = |leg: &PathLeg| leg.start + clip.at * (leg.end - leg.start);
@@ -171,10 +174,12 @@ impl Engine {
         self.check_legs(&mut checked);
         Engine::check_path(&checked, &mut cuts, &mut spans, &mut path);
         let held = checked.iter().any(|leg| leg.leave.is_none());
-        let found = match self
-            .solve(&path, |_| wallet)
-            .filter(|_| held && self.every_path_reaches(wallet))
-        {
+        // every path starts where the check's does, so an account past the trigger
+        // there is liquidated under either setting
+        let found = match self.solve(&path, |_| wallet).filter(|(trigger, _)| {
+            let start = (trigger.piece, trigger.at) == (0, 0.0);
+            held && (start || self.every_path_reaches(wallet))
+        }) {
             Some((_, clip)) => Found::Clip(clip),
             None => Found::Nothing,
         };
@@ -188,11 +193,12 @@ impl Engine {
     /// Whether every path inside the bars takes the account as it stands, against
     /// `wallet`, to its trigger, which the optimistic way asks before it liquidates
     /// an account of several perps; the pessimistic way and an account of one take
-    /// the synchronous path for every path. Every path passes each perp's adverse
+    /// the synchronous path for every path. Every path starts the bar where the
+    /// synchronous one does, which the callers ask first, passes each perp's adverse
     /// extreme at some moment, when the others are no better than their favourable
-    /// extremes, and ends at the closes, so it is enough that one such corner or the
-    /// closes reach the trigger; if none does, a path exists that never does
-    /// (Specification, The path).
+    /// extremes, and ends at the closes, so past that start it is enough that one
+    /// such corner or the closes reach the trigger; if none does, a path exists that
+    /// never does (Specification, The path).
     fn every_path_reaches(&self, wallet: f64) -> bool {
         if self.unseen.together || self.account.perps_held() < 2 {
             return true;
@@ -2178,6 +2184,57 @@ mod tests {
             (e.reporter().expect("reporting is on").ledger()[1].equity - 10_000.0).abs() < 1e-9
         );
         e
+    }
+
+    #[test]
+    fn an_account_past_its_trigger_at_the_opens_is_liquidated_there_under_either_setting() {
+        // 99 of margin buys 50 of each of two perps at opens of 100, at 1%
+        // maintenance and no cap: a requirement of 100 against equity of 99 where
+        // every path starts, though both bars rise to close at 105 and every corner
+        // stands clear. The optimistic way closes the account at the opens, as the
+        // pessimistic way does
+        let maintained = Instrument {
+            market: Some(Market::Perp),
+            tiers: Tiers::new(
+                TierBasis::Notional,
+                vec![Tier {
+                    up_to: 1e12,
+                    leverage: 0.0,
+                    rate: 0.01,
+                    amount: 0.0,
+                }],
+            )
+            .expect("a table"),
+        };
+        for intrabar in [Intrabar::Pessimistic, Intrabar::Optimistic] {
+            let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+            let rising = ohlc(100.0, 110.0, 99.9, 105.0, 1e6);
+            let bars = Candles::universe(vec![flat, flat, rising, rising], 2, None)
+                .with_instruments(vec![maintained.clone(), maintained.clone()]);
+            let config = EngineConfig {
+                quote: 99.0,
+                report: true,
+                intrabar,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            for i in 0..2 {
+                let (kind, ioc) = (OrderType::Market, TimeInForce::Ioc);
+                e.order_on(i, Side::Buy, 50.0, kind, None, None, false, false, ioc);
+            }
+            let last = e.step();
+            let closes: Vec<f64> = e
+                .reporter()
+                .expect("reporting is on")
+                .fills()
+                .iter()
+                .filter(|fill| fill.reason == FillReason::Liquidation)
+                .map(|fill| fill.price)
+                .collect();
+            assert_eq!(closes, [100.0, 100.0], "{intrabar:?}");
+            assert_eq!(last.margin_cash, 0.0, "{intrabar:?}");
+        }
     }
 
     #[test]

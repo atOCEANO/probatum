@@ -1530,9 +1530,11 @@ class Simulator:
             return
 
         trigger, (k, s) = result
-        # the gap is one move for every path; inside the bars, the optimistic setting
-        # waits for every path to reach the trigger
-        if trigger[0] == 1 and not self.reached_by_every_path(path[1], inside, t):
+        # the gap is one move for every path, and every path starts the bar at the
+        # opens; inside the bars, the optimistic setting waits for every path to reach
+        # the trigger
+        if trigger[0] == 1 and trigger[1] > 0.0 and not self.reached_by_every_path(
+                path[1], inside, t):
             return
 
         if k == 0:
@@ -1560,8 +1562,9 @@ class Simulator:
     def reached_by_every_path(self, legs, wallet, t):
         """The path: under the optimistic setting an account holding several
         perpetuals is liquidated on a bar only if every path inside the bars reaches
-        the trigger, which is so when a corner does, one perpetual at its adverse
-        extreme and every other at its favourable extreme, or the closes do."""
+        the trigger, which is so, past the start every path shares and the callers
+        ask first, when a corner does, one perpetual at its adverse extreme and every
+        other at its favourable extreme, or the closes do."""
         held = sorted({leg.instrument for leg in legs})
         if self.venue.intrabar == "pessimistic" or len(held) < 2:
             return True
@@ -1716,10 +1719,15 @@ class Simulator:
         path, spans = self.pieces(legs)
         wallets = [wallet] * len(path)
         result  = self.solve(path, wallets)
-        if result is None or not self.reached_by_every_path(held, wallet, t):
+        if result is None:
             return False
 
         trigger, (k, u) = result
+        # every path starts where the check's does, so an account past the trigger
+        # there is liquidated under either setting
+        if trigger != (0, 0.0) and not self.reached_by_every_path(held, wallet, t):
+            return False
+
         a, b = spans[k]
         self.hit("a liquidation by the check")
         if (k, u) == (0, 0.0):
