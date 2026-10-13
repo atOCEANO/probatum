@@ -602,16 +602,25 @@ impl Engine {
                     // will never trade, and every later placement is refused in
                     // silence, which is the harm ADR 0007 names (ADR 0010). A bracket
                     // leg whose fill closed its position goes with it, whatever it had
-                    // left to fill
+                    // left to fill, and one sized its own way logs what it had left as
+                    // cancelled with the position, as the position's other legs are
                     let closed = leg.is_some()
                         && applied > 0.0
                         && self.account.positions[i].qty.get() == 0.0;
-                    let done = closed
-                        || self
-                            .book
-                            .get(id)
-                            .is_some_and(|o| o.remaining().get() <= CLOSE_EPS);
+                    let left = self.book.get(id).map(|o| o.remaining().get());
+                    let done = closed || left.is_some_and(|left| left <= CLOSE_EPS);
                     if done {
+                        let sized = leg.is_some_and(|leg| !leg.sizeless);
+                        if closed && sized && left.is_some_and(|left| left > CLOSE_EPS) {
+                            self.log_event(
+                                EventKind::Cancelled,
+                                Some(id),
+                                Some(i),
+                                None,
+                                None,
+                                EventReason::PositionClosed,
+                            );
+                        }
                         self.book.cancel(id);
                     }
                     self.arm_if_opened(i, arming);

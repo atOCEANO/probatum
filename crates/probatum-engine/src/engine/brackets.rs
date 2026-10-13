@@ -761,6 +761,17 @@ mod tests {
         let s = e.step();
         assert_eq!(fills(&e)[1], (id(stop), 1.0, 95.0, FillReason::Stop));
         assert!(s.open_orders.is_empty());
+        // the 1 it had left to sell is cancelled with the position, so the order log
+        // ends its life as it ends every other order's
+        let last = events(&e)
+            .into_iter()
+            .rev()
+            .find(|&(order, ..)| order == id(stop))
+            .map(|(_, kind, reason)| (kind, reason));
+        assert_eq!(
+            last,
+            Some((EventKind::Cancelled, EventReason::PositionClosed))
+        );
         e.market_buy(3.0);
         e.step();
         assert_eq!(e.step().position, 3.0);

@@ -2372,12 +2372,14 @@ class Simulator:
                     self.hit("an OCO partner cancelled")
 
             # Order types: a bracket goes with the position it armed on, the leg whose
-            # fill closed it included, whatever that leg had left to fill
+            # fill closed it included, whatever that leg had left to fill, which a leg
+            # sized its own way logs as cancelled with the position
             if order["size"] is None or (order["leg"] and self.position[i] == 0.0):
                 if order["size"] is not None and not self.remainder_done(
                         i, order["size"] - order["filled"]):
                     self.hit("a sized leg gone with the position its fill closed")
-                done = self.position[i] == 0.0
+                    self.cancel(order["id"], "its position closed")
+                done = self.position[i] == 0.0 and order["status"] == "resting"
             else:
                 done = self.remainder_done(i, order["size"] - order["filled"])
             if done:
