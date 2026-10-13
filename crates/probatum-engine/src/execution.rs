@@ -46,11 +46,13 @@ pub struct FillCosts {
     pub adjustment: f64,
 }
 
-/// Whether `x` is a positive finite number, as a size, a price or a volume has to be.
-/// Two comparisons, where `is_finite` beside a sign test compiles to a classification
-/// of the float's bits some twenty instructions long, on every fill of the step loop.
+/// Whether `x` is a positive finite number, as a size, a price or a volume has to be:
+/// its bits run from the smallest subnormal's, 1, to the largest float's, so one
+/// unsigned comparison of them decides it. Written as float comparisons, the test
+/// compiles to a classification of those bits some twenty instructions long, on
+/// every fill of the step loop.
 pub(crate) fn positive(x: f64) -> bool {
-    x > 0.0 && x < f64::INFINITY
+    x.to_bits().wrapping_sub(1) < f64::MAX.to_bits()
 }
 
 impl FillModel {
@@ -234,8 +236,28 @@ fn taker(side: Side, size: f64, price: f64) -> Fill {
 
 #[cfg(test)]
 mod tests {
-    use super::{FillCosts, FillModel};
+    use super::{positive, FillCosts, FillModel};
     use probatum_core::{Bps, Candle, Order, OrderId, Price, Qty, Side, TimeInForce};
+
+    #[test]
+    fn positive_holds_for_a_positive_finite_number_alone() {
+        for x in [5e-324, f64::MIN_POSITIVE, 1.0, f64::MAX] {
+            assert!(positive(x), "{x}");
+        }
+        let refused = [
+            0.0,
+            -0.0,
+            -5e-324,
+            -1.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::NAN,
+        ];
+        for x in refused {
+            assert!(!positive(x), "{x}");
+        }
+    }
 
     fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
         Candle {
