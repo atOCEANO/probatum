@@ -75,6 +75,7 @@ impl Engine {
 
     /// Queue a market order for its instrument's next open, its placement logged
     /// for `reason`, or log why it cannot wait there.
+    #[inline(always)]
     pub(super) fn queue(
         &mut self,
         instrument: usize,
