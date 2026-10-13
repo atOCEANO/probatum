@@ -141,6 +141,7 @@ impl Engine {
 
     /// The margin wallet's equity with perp `i` at `price` and every other perp
     /// at fraction `s` of its own bar's adverse move.
+    #[inline(always)]
     fn margin_equity_with(&self, i: usize, price: f64, s: f64) -> f64 {
         let held = self.account.perps_held();
         let own = &self.account.positions[i];
