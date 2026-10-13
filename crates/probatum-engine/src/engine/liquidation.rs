@@ -278,7 +278,8 @@ impl Engine {
 
     /// Take the account over (The forced close): close every leg in `closes`, each an
     /// instrument, a signed size and a price, at that price, so a perp with a leg
-    /// carried into the bar and one opened during it closes in two fills. With no
+    /// carried into the bar and one opened during it closes in two fills, the second
+    /// taking what the position still holds. With no
     /// maintenance each close pays the liquidation fee on its notional, which at the
     /// close point leaves exactly nothing; with maintenance it pays none. Whatever
     /// the margin wallet then holds, positive or negative, is the liquidation charge.
@@ -289,7 +290,18 @@ impl Engine {
                 && self.has_maintenance(i)
         });
         let rate = if maintained { 0.0 } else { self.cost.fee_taker };
-        for &(i, q, price) in closes {
+        for (k, &(i, q, price)) in closes.iter().enumerate() {
+            // an instrument's last close takes what its position still holds, which
+            // the closes of its other legs can leave a hair off their own size
+            let last = closes[k + 1..].iter().all(|&(j, ..)| j != i);
+            let q = if last {
+                self.account.positions[i].qty.get()
+            } else {
+                q
+            };
+            if q == 0.0 {
+                continue;
+            }
             let size = q.abs();
             let fill = Fill {
                 side: if q > 0.0 { Side::Sell } else { Side::Buy },
@@ -692,6 +704,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_forced_close_of_a_position_held_in_two_legs_leaves_it_flat() {
+        // a long of 1e9 carried into a crash and grown by 0.3 at its open holds
+        // 1e9 + 0.29999995 in floating point, so closing the two legs at their own
+        // sizes left a short of 4.8e-8, above the dust threshold, open on its own
+        let deep = 1e13;
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, deep),
+            ohlc(100.0, 100.0, 100.0, 100.0, deep),
+            ohlc(100.0, 100.0, 50.0, 60.0, deep),
+        ]);
+        let config = EngineConfig {
+            quote: 1e9,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1e9);
+        e.step();
+        e.market_buy(0.3);
+        let s = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let closes = reporter
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .count();
+        assert_eq!(closes, 2);
+        assert_eq!(s.position, 0.0);
+        assert_eq!(reporter.open_trades().count(), 0);
     }
 
     // A first bar at 100, then a bar that opens at 50, far past where a 10x long

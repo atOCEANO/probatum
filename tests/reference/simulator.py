@@ -1839,7 +1839,13 @@ class Simulator:
 
         self.hit("a takeover")
         rate = 0.0 if maintained else self.venue.liquidation_fee
-        for i, q, price in closes:
+        for k, (i, q, price) in enumerate(closes):
+            # an instrument's last close takes what its position still holds, which
+            # the closes of its other legs can leave a hair off their own size
+            if all(j != i for j, _, _ in closes[k + 1:]):
+                q = self.position[i]
+            if q == 0.0:
+                continue
             self.apply(i, "sell" if q > 0.0 else "buy", abs(q), price, rate, False,
                        None, "liquidation", reference=price, moment=moment)
 
