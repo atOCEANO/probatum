@@ -50,13 +50,16 @@ impl Engine {
         // liquidate an account on a payment not yet due
         let wallet = self.account.margin_cash;
         let inside = wallet - self.counted_inside();
+        // the lower of the two, compared plainly: `inside` is NaN wherever `wallet`
+        // is, and where it alone is the comparison keeps `wallet` as `f64::min` does
+        let lower = if inside < wallet { inside } else { wallet };
         // equity less the requirement is concave on the gap and never rises inside
         // the bar, so a path clear of the trigger at the last marks and at the
         // adverse corner, read with the lower of the two wallets, never reaches it;
         // the last closes found the account clear at those marks unless a transfer
         // or a funding charge has moved it since
         if (self.cleared || self.clear_of_trigger(wallet, |i, _| self.marks[i]))
-            && self.clear_of_trigger(wallet.min(inside), |i, q| self.adverse(i, q))
+            && self.clear_of_trigger(lower, |i, q| self.adverse(i, q))
         {
             return;
         }
