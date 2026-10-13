@@ -58,6 +58,8 @@ impl Engine {
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
         let before = self.before_fill(i);
+        // read once, before the account moves: after it, every read loads it again
+        let perp = self.account.markets[i] == Market::Perp;
         // what the bar could not hold of the bound's lift is paid into the margin
         // wallet, and the close then realizes against it
         let cash = self.account.margin_cash;
@@ -69,7 +71,7 @@ impl Engine {
         // within the rounding of the money the bar's perp fills put at stake is set
         // to zero, as a takeover sets it, and the hair is the liquidation charge
         // (ADRs 0015, 0018)
-        if self.account.markets[i] == Market::Perp {
+        if perp {
             self.reach += cash.abs() + credit + applied * fill.price.get();
             if self.account.perps_held() == 0
                 && self.account.margin_cash.abs() <= 1e-12 * self.reach
@@ -79,8 +81,6 @@ impl Engine {
                 }
                 self.account.margin_cash = 0.0;
             }
-        }
-        if self.account.markets[i] == Market::Perp {
             let (held, entry, _) = before;
             let signed = fill.side.sign() * applied;
             let closed = if held * signed < 0.0 {
