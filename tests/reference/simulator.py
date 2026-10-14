@@ -370,7 +370,7 @@ MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
 class Simulator:
 
     def __init__(self, times, bars, instruments, venue=None, interval=None,
-                 funding=None):
+                 funding=None, start=0):
         self.times       = [int(time) for time in times]
         self.bars        = bars                   # bars[t][i]: a Bar, or None
         self.instruments = list(instruments)
@@ -446,8 +446,13 @@ class Simulator:
         self.reached         = collections.Counter()  # how often each rule applied
         self.first           = {}                     # and the bar it first applied on
 
-        self.see_row(0)
-        self.ledger = [self.row(0)]
+        # an account opened at row `start` of the series, as an env reset there is,
+        # knowing every row up to it
+        self.t = start
+        for t in range(start + 1):
+            self.see_row(t)
+
+        self.ledger = [self.row(start)]
 
 
     @staticmethod

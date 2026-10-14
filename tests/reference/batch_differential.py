@@ -18,6 +18,7 @@ at bar zero, which is what the batched tests do.
 """
 
 import collections
+import math
 import random
 import statistics
 import sys
@@ -25,8 +26,10 @@ import sys
 import numpy as np
 
 import probatum
-from .differential import (balance, clock, close_enough, config, engine_funding,
-                           make_reference, money, set_aside, setting, walk)
+from . import universe_differential
+from .differential import (balance, before, clock, close_enough, closed_before, config,
+                           cut, engine_funding, log_difference, make_reference, money,
+                           set_aside, setting, walk, worded)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -177,7 +180,7 @@ def compare(cases, seed):
     for case in range(cases):
         bars  = walk(rng, rng.randint(12, 40))
         times = clock(rng, len(bars))
-        # the batch takes no tier table until it runs universes
+        # tier tables are compared over universes, which `compare_universes` runs
         cfg      = dict(config(rng, times), tiers=None, intrabar=setting(seed, case))
         num_envs = rng.randint(2, 5)
         offsets  = offsets_for(rng, bars, num_envs)
@@ -233,6 +236,146 @@ def compare(cases, seed):
             disagreed.append((case, cfg, offsets, bars, where))
 
     return Outcome(agreed + len(disagreed), agreed, disagreed, aside, reached)
+
+
+def weights_for(rng, kinds, num_envs):
+    """A target for every env, each its own row over every instrument: a perpetual
+    long or short and spot held or not, at a gross of half to four times equity."""
+    rows = []
+    for _ in range(num_envs):
+        row   = [rng.uniform(0.0 if kind == "spot" else -1.0, 1.0) for kind in kinds]
+        total = sum(abs(w) for w in row) or 1.0
+        gross = rng.choice([0.5, 1.0, 2.0, 4.0])
+        rows.append([gross * w / total for w in row])
+
+    return rows
+
+
+def env_disagreement(records, sim, end, start):
+    """Where an env and its reference first part company on any record written
+    before bar `end`, as the comparison over universes reads them, the env's ledger
+    counting its rows from `start`, the row it was reset at."""
+    fields = universe_differential
+    return (log_difference("fill", fields.FILL_FIELDS, before(records["fills"], end),
+                           before(sim.fills, end))
+            or log_difference("event", fields.EVENT_FIELDS,
+                              worded(before(records["order_log"], end)),
+                              worded(before(sim.events, end)))
+            or log_difference("round trip", fields.TRIP_FIELDS,
+                              closed_before(records["trades"], end),
+                              closed_before(sim.round_trips(), end))
+            or fields.ledger_difference(records["ledger"], sim.ledger,
+                                        None if end is None else end - start))
+
+
+def compare_universes(cases, seed):
+    """`cases` random universes from `seed`, each a batch of two to four envs reset at
+    their own rows and driven now and then by a target per env, every env against a
+    reference opened at the same row of the same series, compared on everything it
+    recorded as far as the first rule the engine has yet to take up. An env opened
+    part way in marks each instrument at its last close by then, so one with a hole
+    on that row or listing after it is the case to reach."""
+    rng     = random.Random(f"universe batch {seed}")
+    reached = collections.Counter({
+        "traded":                                    0,
+        "liquidated":                                0,
+        "funded":                                    0,
+        "a hole on the row an env opened at":        0,
+        "an instrument listing after an env opened": 0,
+    })
+    aside = collections.Counter()
+    agreed, disagreed = 0, []
+
+    for case in range(cases):
+        times, kinds, columns = universe_differential.universe(rng)
+        cfg = universe_differential.config(rng, times, kinds, columns)
+        cfg["intrabar"] = setting(seed, case)
+        rows     = len(times)
+        num_envs = rng.randint(2, 4)
+        offsets  = offsets_for(rng, times, num_envs)
+        plan     = [weights_for(rng, kinds, num_envs) if rng.random() < 0.4 else None
+                    for _ in range(rows - min(offsets))]
+
+        where = None
+        try:
+            nan     = [math.nan] * 5
+            candles = np.array([[nan if column[t] is None else list(column[t])
+                                 for column in columns] for t in range(rows)],
+                               dtype=np.float64)
+            batch = probatum.Batch(
+                candles,
+                num_envs = num_envs,
+                report   = True,
+                times    = np.array(times, dtype=np.int64),
+                **universe_differential.venue(cfg),
+            )
+            batch.reset_at_each(np.array(offsets, dtype=np.int64))
+
+            refs = [universe_differential.make_reference(times, kinds, columns, cfg,
+                                                         start=start)
+                    for start in offsets]
+
+            for weights in plan:
+                if weights is not None:
+                    batch.target(np.array(weights, dtype=np.float64))
+                    for sim, row in zip(refs, weights):
+                        sim.target(row)
+                batch.advance()
+                for sim in refs:
+                    sim.step()
+
+            for env, (sim, start) in enumerate(zip(refs, offsets)):
+                records = batch.records(env)
+                end     = None
+                found   = cut(sim)
+                if found is not None:
+                    rule, end = found
+                    aside[rule] += 1
+
+                found = env_disagreement(records, sim, end, start)
+                if found is not None:
+                    where = f"env {env} opened at row {start}: {found[1]}"
+                    break
+
+                fills = records["fills"]
+                reached["traded"] += bool(fills)
+                reached["liquidated"] += any(fill["reason"] == "liquidation"
+                                             for fill in fills)
+                reached["funded"] += bool(np.any(records["ledger"]["funding"] != 0.0))
+                reached["a hole on the row an env opened at"] += any(
+                    column[start] is None and any(column[:start]) for column in columns)
+                reached["an instrument listing after an env opened"] += any(
+                    not any(column[:start + 1]) and any(column[start + 1:])
+                    for column in columns)
+        except Exception as exc:
+            where = f"raised: {type(exc).__name__}: {exc}"
+
+        if where is None:
+            agreed += 1
+        else:
+            disagreed.append((case, cfg, offsets, kinds, where))
+
+    return Outcome(agreed + len(disagreed), agreed, disagreed, aside, reached)
+
+
+def render_universes(out, cases):
+    lines = [f"\n{out.compared} of {cases} compared, {out.agreed} agreed, "
+             f"{len(out.disagreed)} disagreed",
+             "compared up to a rule the engine does not have yet: "
+             + (", ".join(f"{why} {n}" for why, n in
+                          sorted(out.set_aside.items())) or "none"),
+             "envs that reached: " + ", ".join(f"{what} {n}" for what, n in
+                                              sorted(out.reached.items())) + "\n"]
+
+    for case, cfg, offsets, kinds, why in out.disagreed[:8]:
+        lines.append(f"--- case {case} ({', '.join(kinds)}) {why}")
+        lines.append(f"    cfg     {cfg}")
+        lines.append(f"    offsets {offsets}\n")
+
+    if len(out.disagreed) > 8:
+        lines.append(f"... and {len(out.disagreed) - 8} more")
+
+    return "\n".join(lines)
 
 
 def render(out, cases):

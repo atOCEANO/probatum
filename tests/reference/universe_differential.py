@@ -653,7 +653,8 @@ def place(sim, action, t, theirs, script, reached):
             reached[on][kind] += 1
 
 
-def make_reference(times, kinds, columns, cfg):
+def make_reference(times, kinds, columns, cfg, start=0):
+    """The reference over the universe, its account opened at row `start`."""
     source = cfg["funding"]
     events = None
     if source[0] == "data":
@@ -678,8 +679,7 @@ def make_reference(times, kinds, columns, cfg):
                               tiers_by=cfg["tiers"][k][1])
                    for k, kind in enumerate(kinds)]
     rows = [[column[t] for column in columns] for t in range(len(times))]
-
-    return Simulator(times, rows, instruments, venue, funding=events)
+    return Simulator(times, rows, instruments, venue, funding=events, start=start)
 
 
 def venue(cfg):
