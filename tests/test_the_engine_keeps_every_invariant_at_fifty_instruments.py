@@ -14,6 +14,7 @@ and only a calm one ends flat often enough to reach the last.
 """
 
 import collections
+import functools
 import math
 import random
 
@@ -197,11 +198,22 @@ def broken(run, kinds, columns, prices):
         if not np.isfinite(ledger[name]).all():
             return f"the ledger's {name} not a number"
 
+    position, mark = ledger["position"], ledger["mark"]
+    # every number the identity reads, where a NaN would make each comparison with
+    # it false and pass: an instrument yet to print is marked NaN, but none is held
+    if not np.isfinite(position).all():
+        return "a position not a number"
+
+    carried = position[:-1] != 0.0
+    if not (np.isfinite(mark[:-1][carried]).all() and np.isfinite(mark[1:][carried]).all()):
+        return "a position held across a mark that is not a number"
+
     for fill in fills:
-        if not all(math.isfinite(fill[key]) for key in ("size", "price", "fee")):
+        numbers = [fill[key] for key in ("size", "price", "fee", "reference")]
+        numbers.append(mark[fill["bar"], fill["instrument"]])
+        if not all(math.isfinite(x) for x in numbers):
             return f"a fill not a number, on bar {fill['bar']}"
 
-    position, mark = ledger["position"], ledger["mark"]
     equity = ledger["equity"]
     for t in range(1, len(equity)):
         pnl = sum(position[t - 1, i] * (mark[t, i] - mark[t - 1, i])
@@ -357,12 +369,14 @@ def play(times, columns, venue, script):
                                   times=np.array(times, dtype=np.int64))
 
 
-@pytest.mark.parametrize("calm", [False, True])
-@pytest.mark.parametrize("n", [10, 25, 50])
-@pytest.mark.parametrize("seed", range(10))
-def test_every_invariant_holds_at_up_to_fifty_instruments(n, seed, calm):
+@functools.lru_cache(maxsize=None)
+def played(n, seed, calm):
+    """Universe `seed` of `n` instruments through the engine, calm or not: the run,
+    its instruments' kinds and columns, their limit and take-profit prices, and its
+    configuration."""
     rng = random.Random(1_000 * n + seed)
     times, kinds, columns = universe(rng, n)
+
     cfg = universe_differential.config(rng, times, kinds, columns)
     cfg["intrabar"] = rng.choice(["pessimistic", "optimistic"])
     if calm:
@@ -375,6 +389,15 @@ def test_every_invariant_holds_at_up_to_fifty_instruments(n, seed, calm):
 
     run = play(times, columns, universe_differential.venue(cfg), script)
 
+    return run, kinds, columns, prices, cfg
+
+
+@pytest.mark.parametrize("calm", [False, True])
+@pytest.mark.parametrize("n", [10, 25, 50])
+@pytest.mark.parametrize("seed", range(10))
+def test_every_invariant_holds_at_up_to_fifty_instruments(n, seed, calm):
+    run, kinds, columns, prices, cfg = played(n, seed, calm)
+
     assert run["fills"]
 
     if calm:
@@ -386,6 +409,37 @@ def test_every_invariant_holds_at_up_to_fifty_instruments(n, seed, calm):
     assert broken(run, kinds, columns, prices) is None
     assert booked(run, kinds, cfg["slippage_bps"] == 0.0) is None
     assert outlived(run, kinds) is None
+
+
+def test_random_universes_reach_what_the_invariants_watch():
+    """Each check that acts only on a liquidation, an order a liquidation cancels, a
+    margin wallet left empty before a bar that fills, or a fill on a row its market
+    left empty meets one in the runs that are not calm, so none passes for want of a
+    case."""
+    reached = collections.Counter()
+    for n in (10, 25, 50):
+        for seed in range(10):
+            run, kinds, columns, _, _ = played(n, seed, False)
+            ledger, fills = run["ledger"], run["fills"]
+            perps  = np.array([kind == "linear" for kind in kinds])
+            filled = {fill["bar"] for fill in fills}
+
+            reached["a liquidation"] += any(fill["reason"] == "liquidation"
+                                            for fill in fills)
+            reached["an order a liquidation cancelled"] += any(
+                event["kind"] == "cancelled" and event["reason"] == "liquidation"
+                for event in run["order_log"])
+            reached["an empty margin wallet before a bar that fills"] += any(
+                ledger["margin_cash"][t - 1] <= 0.0
+                and not ledger["position"][t - 1][perps].any()
+                for t in filled if t > 0)
+            reached["a fill on a row its market left empty"] += any(
+                columns[fill["instrument"]][fill["bar"]] is None for fill in fills)
+
+    watched = ["a liquidation", "an order a liquidation cancelled",
+               "an empty margin wallet before a bar that fills",
+               "a fill on a row its market left empty"]
+    assert all(reached[name] for name in watched), reached
 
 
 @pytest.mark.parametrize("n", [10, 25, 50])
