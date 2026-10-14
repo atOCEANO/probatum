@@ -47,6 +47,27 @@ impl Engine {
         )
     }
 
+    /// Whether a fill for `reason` at `reference` came inside `candle`: a resting
+    /// order's at a price the open had not reached, which the price came to from the
+    /// open (ADR 0012).
+    fn filled_inside(
+        &self,
+        reason: FillReason,
+        side: Side,
+        reference: f64,
+        candle: &Candle,
+    ) -> bool {
+        match reason {
+            FillReason::Limit | FillReason::TakeProfit => {
+                !self
+                    .fill_model
+                    .limit_crosses(side, Price(reference), Price(candle.open))
+            }
+            FillReason::Stop => reference != candle.open,
+            _ => false,
+        }
+    }
+
     /// Clamp `fill` on instrument `i`, bound it by the margin inside `candle`, the bar it
     /// filled on, book it and log it as `order`'s, with `costs` the fill model measured
     /// and `requested` what the order still asked for. Returns the size that landed.
@@ -118,31 +139,20 @@ impl Engine {
         // open that grows it changes neither (ADR 0012)
         let (held, ..) = before;
         let after = self.account.positions[i].qty.get();
-        let began = held == 0.0 || held * after < 0.0;
-        let resting = matches!(
-            reason,
-            FillReason::Limit | FillReason::TakeProfit | FillReason::Stop
-        );
         if after == 0.0 {
             self.starts[i] = f64::NAN;
             self.inside[i] = false;
-        } else if began || (resting && after.abs() > held.abs()) {
-            let inside = match reason {
-                FillReason::Limit | FillReason::TakeProfit => !self.fill_model.limit_crosses(
-                    fill.side,
-                    Price(costs.reference),
-                    Price(candle.open),
-                ),
-                FillReason::Stop => costs.reference != candle.open,
-                _ => false,
-            };
-            if began || inside {
-                self.starts[i] = costs.reference;
-                self.inside[i] = inside;
-            }
-            if began {
-                self.entered[i] = (costs.reference, inside);
-            }
+        } else if held == 0.0 || held * after < 0.0 {
+            let inside = self.filled_inside(reason, fill.side, costs.reference, candle);
+            self.starts[i] = costs.reference;
+            self.inside[i] = inside;
+            self.entered[i] = (costs.reference, inside);
+        } else if reason != FillReason::Market
+            && after.abs() > held.abs()
+            && self.filled_inside(reason, fill.side, costs.reference, candle)
+        {
+            self.starts[i] = costs.reference;
+            self.inside[i] = true;
         }
         self.book_fill(
             i,
