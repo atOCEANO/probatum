@@ -257,6 +257,7 @@ def test_a_tier_table_holds_a_perp_where_its_margin_stops_carrying_it():
     ([(10.0, 20.0, -0.01, 0.0)], "quantity", "rate -0.01 is negative"),
     ([(10.0, 20.0, 0.0)], "notional", "3 numbers"),
     ([(10.0, 20.0, 0.0, 0.0)], "contracts", "is not a basis"),
+    (None, "contracts", 'tiers_by: "contracts" is not a basis; use notional'),
 ])
 def test_a_tier_table_the_loader_cannot_trust_is_refused(tiers, tiers_by, says):
     with pytest.raises(ValueError, match=re.escape(says)):
@@ -279,6 +280,14 @@ def test_a_random_setting_without_a_seed_is_refused():
 
     with pytest.raises(ValueError, match=re.escape(says)):
         probatum._probatum.run(series()[:, None, :], {"intrabar": "random"}, {})
+
+
+def test_a_seed_that_is_not_a_whole_number_from_0_is_refused():
+    for build in (probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
+        for seed, shown in ((-1, "-1"), (1.5, "1.5"), ("7", "'7'")):
+            says = f"seed: {shown}; give a whole number from 0"
+            with pytest.raises(ValueError, match=re.escape(says)):
+                build(series(), intrabar="random", seed=seed)
 
 
 def test_a_random_bar_draws_one_way_for_a_seed_and_both_ways_over_seeds():
@@ -548,6 +557,8 @@ def test_a_universe_of_one_keeps_an_instrument_column_per_instrument():
      "instruments[0]: market 1 is not a string"),
     (None, {"instruments": [{}, {"tiers": 3.0}]}, {},
      "instruments[1]: tiers 3.0 is not a list of rows"),
+    (None, {"instruments": [{"tiers_by": "contracts"}, {}]}, {},
+     'instruments[0]: tiers_by "contracts" is not a basis; use notional or quantity'),
     (None, {"funding_instruments": [None]}, {}, "given without funding_times"),
     (None, {"funding_instruments": [-1]}, {}, "row 0 names instrument -1, of 2"),
     (None, {"fee": 0.001}, {}, "Engine.__new__() got an unexpected keyword argument 'fee'"),
@@ -624,8 +635,9 @@ def test_a_universe_batch_records_for_each_env_what_its_own_run_does():
         np.testing.assert_array_equal(snap["positions"][env],
                                       played["ledger"]["position"][-1])
 
-    with pytest.raises(ValueError, match="env: 2 of 2; name one counted from 0"):
-        batch.records(2)
+    for env in (2, -1):
+        with pytest.raises(ValueError, match=f"env: {env} of 2; name one counted"):
+            batch.records(env)
 
 
 @pytest.mark.parametrize("market, weights, says", [
@@ -664,6 +676,11 @@ def test_a_batch_refuses_weights_it_cannot_place_before_any_env_trades(market, w
      "candles: a list; pass a float64 array, (T, 5) for one instrument"),
     (series().astype(np.int64), {},
      "candles: an array of int64; pass float64 values"),
+    (np.zeros((0, 5)), {}, "candles: no rows; give at least one bar"),
+    (np.zeros((3, 2, 4)), {},
+     "candles: 4 values to a bar; give 5, open, high, low, close and volume"),
+    (np.zeros((0, 2, 5)), {},
+     "candles: 0 rows of 2 instruments; give at least one of each"),
 ])
 def test_candles_the_engine_cannot_read_are_refused(candles, settings, says):
     with pytest.raises(ValueError, match=re.escape(says)):
@@ -791,6 +808,19 @@ def test_batch_rejects_mismatched_action_length():
 
     with pytest.raises(ValueError):
         b.step_all(np.array([1.0, 2.0], dtype=np.float64))  # length 2 != 3 envs
+
+
+def test_batch_refuses_offsets_it_cannot_start_from():
+    b = probatum.Batch(series(), num_envs=2)
+
+    with pytest.raises(ValueError, match="offsets: -1 for env 1; give a row from 0"):
+        b.reset_at_each(np.array([0, -1]))
+
+    with pytest.raises(ValueError, match="offsets: 3 for 2 envs; give one row per env"):
+        b.reset_at_each(np.array([0, 1, 2]))
+
+    with pytest.raises(ValueError, match="offsets: a strided array; give a contiguous"):
+        b.reset_at_each(np.array([0, 9, 1, 9])[::2])
 
 
 def test_batch_set_features_rejects_a_short_matrix():
@@ -1090,12 +1120,15 @@ def test_data_is_a_full_series_readonly_view():
 
 
 def test_bad_market_raises():
-    with pytest.raises(ValueError):
-        probatum.Engine(series(), market="options")
+    says = 'market: "Options" is not a market; use spot or perp'
+
+    for candles in (series(), universe_pair()):
+        with pytest.raises(ValueError, match=re.escape(says)):
+            probatum.Engine(candles, market="Options")
 
 
 def test_candles_must_have_five_columns():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="candles: 4 columns; give 5, open, high, low"):
         probatum.Engine(np.zeros((3, 4), dtype=np.float64))
 
 
@@ -1103,7 +1136,7 @@ def test_non_finite_candles_are_rejected():
     bad = series()
     bad[1, 2] = np.nan  # a NaN low on bar 1
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="candles: NaN at row 1; clean NaN"):
         probatum.Engine(bad)
 
 
@@ -1359,6 +1392,15 @@ def test_a_wallet_or_a_transfer_the_engine_cannot_use_is_refused():
 
     with pytest.raises(ValueError, match=r'quote\["margin"\] must be at least 0'):
         engine(market="perp", quote={"margin": -1.0})
+
+    with pytest.raises(ValueError, match="quote: 'all'; give the opening cash"):
+        engine(quote="all")
+
+    with pytest.raises(ValueError, match="quote: a wallet named 1; name spot"):
+        engine(quote={1: 5.0})
+
+    with pytest.raises(ValueError, match="quote: '5' for the spot wallet; give"):
+        engine(quote={"spot": "5"})
 
     e = engine()
 

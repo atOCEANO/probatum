@@ -49,13 +49,27 @@ fn parse_intrabar(intrabar: &str, seed: Option<u128>) -> PyResult<Intrabar> {
     }
 }
 
+/// A run's seed, refused here as a whole number from 0 rather than left to pyo3, whose
+/// own refusal of a negative is an OverflowError.
+fn seed_of(seed: Option<Bound<'_, PyAny>>) -> PyResult<Option<u128>> {
+    seed.map(|seed| {
+        seed.extract().map_err(|_| {
+            PyValueError::new_err(format!(
+                "seed: {}; give a whole number from 0",
+                shown(&seed)
+            ))
+        })
+    })
+    .transpose()
+}
+
 /// Parse a market string into the core enum, case-insensitively.
 fn parse_market(market: &str) -> PyResult<Market> {
     match market.to_ascii_lowercase().as_str() {
         "spot" => Ok(Market::Spot),
         "perp" => Ok(Market::Perp),
-        other => Err(PyValueError::new_err(format!(
-            "market must be 'spot' or 'perp', got '{other}'"
+        _ => Err(PyValueError::new_err(format!(
+            "market: {market:?} is not a market; use spot or perp"
         ))),
     }
 }
@@ -121,7 +135,7 @@ fn candles_from_array(
     let cols = view.ncols();
     if cols != 5 {
         return Err(PyValueError::new_err(format!(
-            "candles must have 5 columns (open, high, low, close, volume), got {cols}"
+            "candles: {cols} columns; give 5, open, high, low, close and volume"
         )));
     }
     let bars: Vec<Candle> = view
@@ -135,7 +149,9 @@ fn candles_from_array(
         })
         .collect();
     if bars.is_empty() {
-        return Err(PyValueError::new_err("candles must have at least one row"));
+        return Err(PyValueError::new_err(
+            "candles: no rows; give at least one bar",
+        ));
     }
     for (i, bar) in bars.iter().enumerate() {
         check_bar(bar, &format!("row {i}"))?;
@@ -154,14 +170,10 @@ fn candles_from_array(
 fn check_bar(bar: &Candle, at: &str) -> PyResult<()> {
     // A bar's values are finite: a non-finite candle would silently poison every mark
     // and equity downstream, and a series of one instrument has no row without a bar.
-    if !(bar.open.is_finite()
-        && bar.high.is_finite()
-        && bar.low.is_finite()
-        && bar.close.is_finite()
-        && bar.volume.is_finite())
-    {
+    let values = [bar.open, bar.high, bar.low, bar.close, bar.volume];
+    if let Some(value) = values.into_iter().find(|value| !value.is_finite()) {
         return Err(PyValueError::new_err(format!(
-            "candles contain a non-finite value at {at}; clean NaN and inf rows first"
+            "candles: {value} at {at}; clean NaN and inf rows first"
         )));
     }
     // and that the four prices are a bar. The taker clamp bounds a fill to what
@@ -199,13 +211,13 @@ fn candles_from_universe(
     let (rows, width, cols) = view.dim();
     if cols != 5 {
         return Err(PyValueError::new_err(format!(
-            "candles must have 5 columns (open, high, low, close, volume), got {cols}"
+            "candles: {cols} values to a bar; give 5, open, high, low, close and volume"
         )));
     }
     if rows == 0 || width == 0 {
-        return Err(PyValueError::new_err(
-            "candles must have at least one row and one instrument",
-        ));
+        return Err(PyValueError::new_err(format!(
+            "candles: {rows} rows of {width} instruments; give at least one of each"
+        )));
     }
     let mut bars = Vec::with_capacity(rows * width);
     for t in 0..rows {
@@ -462,14 +474,32 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Opening> {
         let Ok(wallets) = obj.cast::<PyDict>() else {
-            return Ok(Opening::Cash(obj.extract()?));
+            return obj.extract().map(Opening::Cash).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "quote: {}; give the opening cash, or a dict of spot and margin",
+                    shown(&obj)
+                ))
+            });
         };
         let (mut spot, mut margin) = (0.0, 0.0);
         for (name, cash) in wallets.iter() {
-            let name: String = name.extract()?;
+            let name: String = name.extract().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "quote: a wallet named {}; name spot and margin",
+                    shown(&name)
+                ))
+            })?;
+            let amount = |cash: &Bound<'_, PyAny>| {
+                cash.extract::<f64>().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "quote: {} for the {name} wallet; give its cash as a number",
+                        shown(cash)
+                    ))
+                })
+            };
             match name.as_str() {
-                "spot" => spot = cash.extract()?,
-                "margin" => margin = cash.extract()?,
+                "spot" => spot = amount(&cash)?,
+                "margin" => margin = amount(&cash)?,
                 _ => {
                     return Err(PyValueError::new_err(format!(
                         "quote: a wallet named {name:?}; name spot and margin"
@@ -635,6 +665,14 @@ fn instruments_from(
             None => market,
         };
         let by = text("tiers_by", "notional or quantity")?;
+        if let Some(by) = &by {
+            tier_basis(by).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "instruments[{i}]: tiers_by {by:?} is not a basis; use notional or \
+                     quantity"
+                ))
+            })?;
+        }
         let tiers = match spec.get_item("tiers")?.filter(|rows| !rows.is_none()) {
             Some(rows) => {
                 let rows = rows.extract().map_err(|_| {
@@ -1313,7 +1351,7 @@ impl Engine {
         tiers_by: &str,
         instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
-        seed: Option<u128>,
+        seed: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Engine> {
         let (series, config, universe) = build_series(
             &candles,
@@ -1914,7 +1952,7 @@ impl Batch {
         tiers_by: &str,
         instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
-        seed: Option<u128>,
+        seed: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Batch> {
         let (series, config, universe) = build_series(
             &candles,
@@ -2197,9 +2235,12 @@ impl Batch {
 
     /// What env `env` recorded, as `run` returns it: its ledger, fill log, order log
     /// and round trips, each None when the batch was built without `report`.
-    fn records<'py>(&self, py: Python<'py>, env: usize) -> PyResult<Bound<'py, PyDict>> {
+    fn records<'py>(&self, py: Python<'py>, env: i64) -> PyResult<Bound<'py, PyDict>> {
         let n = self.inner.len();
-        let Some(engine) = self.inner.engines().get(env) else {
+        let found = usize::try_from(env)
+            .ok()
+            .and_then(|env| self.inner.engines().get(env));
+        let Some(engine) = found else {
             return Err(PyValueError::new_err(format!(
                 "env: {env} of {n}; name one counted from 0"
             )));
@@ -2302,19 +2343,24 @@ impl Batch {
 }
 
 impl Batch {
-    /// Validate and convert a per-env `i64` offset array into clamped `usize`.
+    /// Validate and convert a per-env `i64` offset array into `usize`.
     fn offsets_vec(&self, offsets: PyReadonlyArray1<'_, i64>) -> PyResult<Vec<usize>> {
-        let slice = offsets
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("offsets must be a contiguous 1-D int64 array"))?;
+        let slice = offsets.as_slice().map_err(|_| {
+            PyValueError::new_err("offsets: a strided array; give a contiguous 1-D int64 array")
+        })?;
         if slice.len() != self.inner.len() {
             return Err(PyValueError::new_err(format!(
-                "offsets length {} must equal num_envs {}",
+                "offsets: {} for {} envs; give one row per env",
                 slice.len(),
                 self.inner.len()
             )));
         }
-        Ok(slice.iter().map(|&x| x.max(0) as usize).collect())
+        if let Some((env, offset)) = slice.iter().enumerate().find(|(_, &x)| x < 0) {
+            return Err(PyValueError::new_err(format!(
+                "offsets: {offset} for env {env}; give a row from 0"
+            )));
+        }
+        Ok(slice.iter().map(|&x| x as usize).collect())
     }
 
     /// Validate and copy an optional per-env signed-size action array.
@@ -2792,8 +2838,9 @@ fn build_series(
     tiers_by: &str,
     instruments: Option<Vec<Bound<'_, PyDict>>>,
     intrabar: &str,
-    seed: Option<u128>,
+    seed: Option<Bound<'_, PyAny>>,
 ) -> PyResult<(Candles, EngineConfig, bool)> {
+    let seed = seed_of(seed)?;
     let Ok(array) = candles.cast::<PyUntypedArray>() else {
         return Err(PyValueError::new_err(format!(
             "candles: a {}; pass a float64 array, (T, 5) for one instrument, or (T, N, 5) \
@@ -2850,6 +2897,7 @@ fn build_series(
             funding_rates,
             funding_instruments_of(funding_instruments, 1)?,
         )?;
+        tier_basis(tiers_by)?;
         let series = match tiers {
             Some(rows) => series.with_tiers(tiers_from(rows, tiers_by)?),
             None => series,
