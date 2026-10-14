@@ -1479,7 +1479,6 @@ class Simulator:
             return None
 
         if maintained:
-            self.hit("a liquidation at the maintenance trigger")
             return trigger, trigger
 
         # with no maintenance the account leaves where it stays at or past the close
@@ -1827,8 +1826,6 @@ class Simulator:
 
         if equity - requirement <= 0.0:
             self.hit("a liquidation at the closes")
-            if self.account_maintained():
-                self.hit("a liquidation at the maintenance trigger")
             self.liquidate([(i, self.position[i], prices[i]) for i in held], t,
                            moment="close")
 
@@ -1871,7 +1868,12 @@ class Simulator:
             self.hit("a liquidation of several perpetuals")
 
         maintained = self.account_maintained()
-        model      = self.venue.liquidation
+        # counted where an account with maintenance is closed out, not where a solve
+        # finds its trigger, which the optimistic setting or a stop can still spare
+        if maintained:
+            self.hit("a liquidation at the maintenance trigger")
+
+        model = self.venue.liquidation
 
         if model != "takeover" and path is not None and maintained:
             share = model[1]
