@@ -40,16 +40,19 @@ def half_a_bitcoin(*later, **settings):
     return e
 
 
-@pytest.mark.parametrize("settings, fee, kept, charge", [
-    (BOOKED, 10.05, 90.45, 0.0),
-    (dict(), 0.0, 0.0, 100.50),
+@pytest.mark.parametrize("settings, low, fee, kept, charge", [
+    (BOOKED, 40_150.0, 10.05, 90.45, 0.0),
+    (dict(), 40_150.0, 0.0, 0.0, 100.50),
+    # a low past the backstop level hands the account to the backstop, unless the
+    # optimistic setting has the sale finish first
+    (BOOKED, 40_130.0, 0.0, 0.0, 100.50),
+    (dict(BOOKED, intrabar="optimistic"), 40_130.0, 10.05, 90.45, 0.0),
 ])
 def test_the_long_sold_at_40_201_01_keeps_90_45_where_takeover_charges_it(
-        settings, fee, kept, charge):
-    # the trigger is where 0.5p - 20,000 falls to 0.0025p, and the backstop level, two
-    # thirds of the requirement, at 40,133.78, lies below the bar's low of 40,150
-    e = half_a_bitcoin((41_000.0, 41_200.0, 40_150.0, 40_500.0), **settings)
-
+        settings, low, fee, kept, charge):
+    # the trigger is where 0.5p - 20,000 falls to 0.0025p, and the backstop level is
+    # two thirds of the requirement, at 40,133.78
+    e     = half_a_bitcoin((41_000.0, 41_200.0, low, 40_500.0), **settings)
     state = e.step()
     sale  = e.fills()[-1]
 
@@ -83,8 +86,8 @@ def test_a_debit_at_the_close_that_reaches_the_trigger_sells_the_long_there(
 
 
 @pytest.mark.parametrize("settings, says", [
-    (dict(liquidation="backstop_then_book"),
-     'liquidation: "backstop_then_book" is not a model; use takeover or'),
+    (dict(liquidation="Backstop_Then_Book"),
+     'liquidation: "Backstop_Then_Book" is not a model; use takeover or'),
     (dict(liquidation="book_then_backstop"),
      "backstop: none, and book_then_backstop takes over where equity falls to a "
      "share of the requirement; pass backstop="),
@@ -92,7 +95,7 @@ def test_a_debit_at_the_close_that_reaches_the_trigger_sells_the_long_there(
      "backstop: 1; give the share of the requirement its level sits at, above 0"),
     (dict(backstop=0.5), 'backstop: 0.5 for takeover; give it with liquidation='),
     (dict(BOOKED, tiers=None),
-     "liquidation: book_then_backstop with no maintenance in any tier table"),
+     "liquidation: book_then_backstop with no maintenance in any perp's tier table"),
 ])
 def test_a_liquidation_the_venue_cannot_hold_is_refused(settings, says):
     venue = dict(market="perp", tiers=MAINTAINED)
@@ -102,10 +105,15 @@ def test_a_liquidation_the_venue_cannot_hold_is_refused(settings, says):
         probatum.Engine(bars((100.0,) * 4), **venue)
 
 
-def test_a_universe_and_a_batch_with_no_maintenance_are_refused_too():
-    flat = [dict(market="perp", tiers=[(1e12, 20.0, 0.0, 0.0)])] * 2
+def test_a_universe_a_batch_and_a_spot_table_with_no_perp_maintenance_are_refused():
+    flat = dict(instruments=[dict(market="perp", tiers=[(1e12, 20.0, 0.0, 0.0)])] * 2)
+    spot = dict(quote={"spot": 1_000.0, "margin": 1_000.0},
+                instruments=[dict(market="spot", tiers=MAINTAINED),
+                             dict(market="perp")])
 
-    with pytest.raises(ValueError, match="liquidation: book_then_backstop with no"):
-        probatum.Engine(np.full((2, 2, 5), 100.0), instruments=flat, **BOOKED)
+    for universe in (flat, spot):
+        with pytest.raises(ValueError, match="liquidation: book_then_backstop with no"):
+            probatum.Engine(np.full((2, 2, 5), 100.0), **universe, **BOOKED)
+
     with pytest.raises(ValueError, match="liquidation: book_then_backstop with no"):
         probatum.Batch(bars((100.0,) * 4), 2, market="perp", **BOOKED)

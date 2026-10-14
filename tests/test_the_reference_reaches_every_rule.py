@@ -71,6 +71,7 @@ RULES = [
     "a reducing fill bounded at a fee of its own",
     "a replace",
     "a round trip closed",
+    "a sale on the book and its backstop level both reached",
     "a size rounded down to the lot",
     "a sized leg gone with the position its fill closed",
     "a sizeless leg sized at a position the bar's fills moved",

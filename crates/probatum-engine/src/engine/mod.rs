@@ -105,13 +105,15 @@ struct Unseen {
     /// Each funding event the row owns counts its debits and not its credits, drawn
     /// by a random setting and empty under a fixed one.
     funding: Vec<bool>,
+    /// The backstop takes over a sale on the book whose path reaches its level.
+    backstop: bool,
 }
 
 impl Unseen {
     /// Draw this bar's way for each event from `stream`, in a fixed order: the
     /// perps together, the exits held back, each instrument's exits, each
-    /// instrument's fill inside the bar, and each of the `events` funding events the
-    /// row owns.
+    /// instrument's fill inside the bar, each of the `events` funding events the row
+    /// owns, then the backstop.
     fn draw(&mut self, stream: &mut ChaCha20Rng, events: usize) {
         let mut worse = || stream.next_u32() >> 31 == 1;
         self.together = worse();
@@ -124,6 +126,7 @@ impl Unseen {
         }
         self.funding.clear();
         self.funding.extend((0..events).map(|_| worse()));
+        self.backstop = worse();
     }
 }
 
@@ -214,8 +217,8 @@ pub struct Engine {
     /// account returned each payment and this is what keeps it (ADR 0020).
     funding_paid: f64,
     /// Set when the account is dead: its equity, both wallets together, marked at
-    /// or below zero, where a perp liquidation leaves it unless the spot wallet
-    /// holds cash (ADR 0008). A terminal event for the RL env. Cleared on reset.
+    /// or below zero, where a takeover leaves it unless the spot wallet holds
+    /// cash (ADR 0008). A terminal event for the RL env. Cleared on reset.
     bust: bool,
     /// Each instrument's last close, the mark it keeps on a row it printed no bar
     /// on, NaN until its first bar.
@@ -339,6 +342,7 @@ impl Engine {
                     exits: vec![worse; width],
                     opened: vec![worse; width],
                     funding: Vec::new(),
+                    backstop: worse,
                 }
             },
             stream: match config.intrabar {
@@ -452,8 +456,8 @@ impl Engine {
     }
 
     /// True when the account died since the last reset: its equity, both wallets
-    /// together, reached zero, on either market. A perp liquidation does that
-    /// unless the spot wallet holds cash. The RL env's terminal signal (ADR 0008).
+    /// together, reached zero, on either market. A takeover does that unless the
+    /// spot wallet holds cash. The RL env's terminal signal (ADR 0008).
     /// The engine does not stop on it; a driver that wants to halt checks it.
     pub fn is_bust(&self) -> bool {
         self.bust
@@ -662,8 +666,8 @@ impl Engine {
 
         let state = self.state();
         // A dead account is terminal, marked at the close, for both markets: its
-        // equity, both wallets together, at or below zero. A perp liquidation leaves
-        // it there unless the spot wallet holds cash, and a spot account or a perp
+        // equity, both wallets together, at or below zero. A takeover leaves it
+        // there unless the spot wallet holds cash, and a spot account or a perp
         // drained by fees or funding can reach it without a forced close; either way
         // it is a true terminal, not a truncation (ADR 0008).
         if state.equity <= 0.0 {

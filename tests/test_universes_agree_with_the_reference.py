@@ -59,6 +59,7 @@ SHARED = [
     "a reducing fill bounded at a fee of its own",
     "a replace",
     "a round trip closed",
+    "a sale on the book and its backstop level both reached",
     "a spot buy held to its cash",
     "a spot sale held to the holding",
     "a stop triggered",

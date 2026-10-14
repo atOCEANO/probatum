@@ -43,8 +43,8 @@ fn parse_intrabar(intrabar: &str, seed: Option<u128>) -> PyResult<Intrabar> {
             "seed: none, and intrabar=\"random\" draws from a stream named from it; \
              pass seed=",
         )),
-        (other, _) => Err(PyValueError::new_err(format!(
-            "intrabar: {other:?} is not a setting; use pessimistic, optimistic or random"
+        _ => Err(PyValueError::new_err(format!(
+            "intrabar: {intrabar:?} is not a setting; use pessimistic, optimistic or random"
         ))),
     }
 }
@@ -68,8 +68,8 @@ fn parse_liquidation(liquidation: &str, backstop: Option<f64>) -> PyResult<Liqui
             "backstop: none, and book_then_backstop takes over where equity falls to a \
              share of the requirement; pass backstop=",
         )),
-        (other, _) => Err(PyValueError::new_err(format!(
-            "liquidation: {other:?} is not a model; use takeover or book_then_backstop"
+        _ => Err(PyValueError::new_err(format!(
+            "liquidation: {liquidation:?} is not a model; use takeover or book_then_backstop"
         ))),
     }
 }
@@ -1798,8 +1798,8 @@ impl Engine {
     }
 
     /// True when the account died since the last reset: its equity, both wallets
-    /// together, reached zero, on either market. A perp liquidation does that unless
-    /// the spot wallet holds cash (ADR 0008). The engine does not stop on it, so a
+    /// together, reached zero, on either market. A takeover does that unless the
+    /// spot wallet holds cash (ADR 0008). The engine does not stop on it, so a
     /// backtest that wants to halt has to read it.
     fn is_bust(&self) -> bool {
         self.inner.is_bust()
@@ -3280,15 +3280,18 @@ fn build_series(
     Ok((series, config, true, Units::Linear))
 }
 
-/// Refuse book then backstop where no instrument's tier table keeps maintenance,
-/// since with none its backstop level is the trigger itself.
+/// Refuse book then backstop where no perp's tier table keeps maintenance, since
+/// with none its backstop level is the trigger itself.
 fn backstopped(series: &Candles, config: &EngineConfig) -> PyResult<()> {
-    let maintained =
-        (0..series.width()).any(|i| series.tiers(i).rows().iter().any(|tier| tier.rate > 0.0));
+    let maintained = (0..series.width()).any(|i| {
+        series.market(i).unwrap_or(config.market) == Market::Perp
+            && series.tiers(i).rows().iter().any(|tier| tier.rate > 0.0)
+    });
     if matches!(config.liquidation, Liquidation::BookThenBackstop(_)) && !maintained {
         return Err(PyValueError::new_err(
-            "liquidation: book_then_backstop with no maintenance in any tier table, where \
-             its backstop level is the trigger itself; give tiers a maintenance rate",
+            "liquidation: book_then_backstop with no maintenance in any perp's tier \
+             table, where its backstop level is the trigger itself; give tiers a \
+             maintenance rate",
         ));
     }
     Ok(())

@@ -571,10 +571,11 @@ def test_an_event_during_a_closure_is_charged_at_the_next_open_at_the_last_mark(
     assert sim.ledger[2]["funding"] == pytest.approx(10.25)
 
 
-def seven_oclock(rate, stamp=8 * HOUR, intrabar="pessimistic"):
+def seven_oclock(rate, stamp=8 * HOUR, intrabar="pessimistic", liquidation="takeover"):
     return half_a_bitcoin([Bar(60_000.0, 60_000.0, 40_210.0, 41_000.0, 1_000.0)],
                           tiers=MAINTAINED, times=[5 * HOUR, 6 * HOUR, 7 * HOUR],
-                          events=[(stamp, 0, rate)], funding="data", intrabar=intrabar)
+                          events=[(stamp, 0, rate)], funding="data", intrabar=intrabar,
+                          liquidation=liquidation)
 
 
 def test_a_debit_charged_after_the_check_leaves_489_75_against_102_50():
@@ -587,15 +588,20 @@ def test_a_debit_charged_after_the_check_leaves_489_75_against_102_50():
     assert row["liquidation"] == 0.0
 
 
-def test_a_debit_of_410_closes_the_account_at_the_close_and_charges_its_90_00():
-    sim   = seven_oclock(0.02)
+@pytest.mark.parametrize("liquidation, fee, kept, charge", [
+    ("takeover", 0.0, 0.0, 90.00),
+    (("book_then_backstop", 2.0 / 3.0), 10.25, 79.75, 0.0),
+])
+def test_a_debit_of_410_closes_the_account_at_the_close_charging_90_or_keeping_79_75(
+        liquidation, fee, kept, charge):
+    sim   = seven_oclock(0.02, liquidation=liquidation)
     close = sim.fills[-1]
 
-    assert (close["reason"], close["price"], close["fee"]) == ("liquidation",
-                                                              41_000.0, 0.0)
+    assert (close["reason"], close["price"]) == ("liquidation", 41_000.0)
+    assert close["fee"]                  == pytest.approx(fee)
     assert sim.ledger[-1]["funding"]     == pytest.approx(410.0)
-    assert sim.ledger[-1]["liquidation"] == pytest.approx(90.00)
-    assert sim.margin_cash               == 0.0
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(charge)
+    assert sim.margin_cash               == pytest.approx(kept)
 
 
 @pytest.mark.parametrize("intrabar, liquidated", [("pessimistic", True),
@@ -773,6 +779,7 @@ def test_takeover_at_half_a_percent_maintenance_charges_the_100_50_left():
     (40_130.0, 0.0, 0.0, 100.50),
     (40_150.0, 10.0, 70.36, 0.0),
     (40_150.0, 20.0, 0.0, 100.50),
+    (40_170.0, 20.0, 74.96, 0.0),
 ])
 def test_book_then_backstop_sells_at_the_trigger_unless_it_would_reach_the_backstop(
         low, slippage, kept, charge):
@@ -782,6 +789,19 @@ def test_book_then_backstop_sells_at_the_trigger_unless_it_would_reach_the_backs
 
     assert sim.fills[-1]["reason"]       == "liquidation"
     assert sim.margin_cash               == pytest.approx(kept, abs=0.005)
+    assert sim.ledger[-1]["liquidation"] == pytest.approx(charge, abs=0.005)
+
+
+@pytest.mark.parametrize("intrabar, kept, charge", [("pessimistic", 0.0, 100.50),
+                                                    ("optimistic", 90.45, 0.0)])
+def test_a_low_past_the_backstop_level_takes_the_account_over_unless_optimistic(
+        intrabar, kept, charge):
+    bar = Bar(41_000.0, 41_200.0, 40_130.0, 40_500.0, 1_000.0)
+    sim = half_a_bitcoin([bar], tiers=MAINTAINED, intrabar=intrabar,
+                         liquidation=("book_then_backstop", 2.0 / 3.0))
+
+    assert sim.reached["a sale on the book and its backstop level both reached"]
+    assert sim.margin_cash == pytest.approx(kept, abs=0.005)
     assert sim.ledger[-1]["liquidation"] == pytest.approx(charge, abs=0.005)
 
 

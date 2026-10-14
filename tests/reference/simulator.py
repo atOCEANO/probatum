@@ -235,7 +235,8 @@ class Venue:
                 and liquidation[0] == "book_then_backstop"
                 and 0.0 < liquidation[1] < 1.0):
             raise ValueError(f"liquidation: {liquidation!r}; use takeover or "
-                             f"('book_then_backstop', share) with a share below one")
+                             "('book_then_backstop', share) with a share above 0 and "
+                             "below 1")
 
         self.liquidation     = liquidation  # "takeover" or ("book_then_backstop", share)
         self.liquidation_fee = (self.taker if liquidation_fee is None
@@ -381,9 +382,10 @@ class Simulator:
         self.schedule_funding(funding)
 
         if self.venue.liquidation != "takeover" and not any(
-                self.has_maintenance(i) for i in range(n)):
-            raise ValueError("liquidation: book_then_backstop needs a maintenance "
-                             "table, since with none its backstop level is the trigger")
+                self.has_maintenance(i) for i in self.perps()):
+            raise ValueError("liquidation: book_then_backstop with no maintenance in any "
+                             "perpetual's tier table, where its backstop level is the "
+                             "trigger itself; give one a maintenance rate")
 
         # Wallets: a number funds the one wallet a universe of one kind uses, and
         # a universe holding both kinds names each
@@ -1587,7 +1589,10 @@ class Simulator:
             closes = [(leg.instrument, leg.q,
                        self.along(leg.instrument, leg.start, leg.end, s))
                       for leg in path[0]]
-            self.liquidate(closes, t, path, wallets, trigger, moment="before")
+            # an account closed out before the bar opened never pays the funding
+            # stamped inside it, so the backstop reads the bar without it
+            self.liquidate(closes, t, path, [self.margin_cash] * 2, trigger,
+                           moment="before")
             return
 
         self.hit("a bar clipped")
@@ -1914,26 +1919,45 @@ class Simulator:
         model = self.venue.liquidation
         if model != "takeover" and maintained:
             share = model[1]
+
+            # each instrument's impact is sized on all it sells, and a sale before the
+            # bar opened, priced off its trigger on the gap, is held inside what
+            # traded from the last close through the bar, which holds that trigger
+            sizes = collections.defaultdict(float)
+            for i, q, _ in closes:
+                sizes[i] += abs(q)
+
             sales = []
             for i, q, price in closes:
                 side = "sell" if q > 0.0 else "buy"
-                sold, costs = self.taker_price(i, side, price, abs(q), self.bars[t][i])
+                bar  = self.bars[t][i]
+                if moment == "before" and bar is not None:
+                    bar = bar._replace(low=min(bar.low, self.mark[i]),
+                                       high=max(bar.high, self.mark[i]))
+                sold, costs = self.taker_price(i, side, price, sizes[i], bar)
                 sales.append((i, q, sold, costs))
 
-            paid = 0.0
-            for (i, q, price), (_, _, sold, _) in zip(closes, sales):
-                inst = self.instruments[i]
-                paid += abs(inst.profit(q, price, sold))
-                paid += abs(inst.notional(q, sold)) * self.venue.taker
-
             k, s = trigger
-            equity, requirement, _ = self.state_at(path[k], wallets[k], s)
-            reached = self.solve(path, wallets, share=share) is not None
-            if not reached and equity - paid >= share * requirement:
+            kept = wallets[k]
+            for i, q, sold, _ in sales:
+                inst = self.instruments[i]
+                kept += inst.profit(q, self.entry[i], sold)
+                kept -= abs(inst.notional(q, sold)) * self.venue.taker
+
+            _, requirement, _ = self.state_at(path[k], wallets[k], s)
+            holds = kept >= share * requirement
+            if holds and self.solve(path, wallets, share=share) is not None:
+                # the bar cannot show that the sale finished before the path reached
+                # the backstop level, which the setting decides
+                self.hit("a sale on the book and its backstop level both reached")
+                holds = self.venue.intrabar == "optimistic"
+
+            if holds:
                 self.hit("book then backstop selling on the book")
                 for k, (i, q, sold, costs) in enumerate(sales):
                     # an instrument's last sale takes what its position still holds,
-                    # at the price its own size was sold at
+                    # which the sales of its other legs can leave a hair off their own
+                    # size
                     if all(j != i for j, *_ in sales[k + 1:]):
                         q = self.position[i]
                     if q == 0.0:

@@ -77,10 +77,11 @@ impl Engine {
         // the gap is one move for every path, and every path starts the bar at the
         // opens; inside the bars the optimistic way waits for every path to reach
         // the trigger
-        let wallets = |piece| if piece == 0 { wallet } else { inside };
-        let found = self.solve(&path, wallets).filter(|(trigger, _)| {
-            trigger.piece == 0 || trigger.at == 0.0 || self.every_path_reaches(inside)
-        });
+        let found = self
+            .solve(&path, |piece| if piece == 0 { wallet } else { inside })
+            .filter(|(trigger, _)| {
+                trigger.piece == 0 || trigger.at == 0.0 || self.every_path_reaches(inside)
+            });
         if let Some((_, clip)) = found {
             let (from, to) = path.pieces[clip.piece];
             let at = |leg: &PathLeg| leg.start + clip.at * (leg.end - leg.start);
@@ -92,7 +93,9 @@ impl Engine {
                         .iter()
                         .map(|leg| (leg.i, leg.q, at(leg))),
                 );
-                self.liquidate(&closes, Moment::BeforeOpen, &path, wallets, clip);
+                // an account closed out before the bar opened never pays the funding
+                // stamped inside it, so the backstop reads the bar without it
+                self.liquidate(&closes, Moment::BeforeOpen, &path, |_| wallet, clip);
                 self.closes = closes;
             } else {
                 for leg in &path.legs[from..to] {
@@ -110,7 +113,7 @@ impl Engine {
     /// The rule, 5: the path solved again against the raw bars for the account the
     /// fills left, every carried leg from its open and every leg opened during the
     /// bar from its fill price, with the funding stamped inside the bar counted as the
-    /// setting decides. On the trigger the account is taken over at the clip point
+    /// setting decides. On the trigger the account is closed out at the clip point
     /// recomputed for it, a leg yet to join at its fill price, and the charges it
     /// counted are paid.
     pub(super) fn check(&mut self) {
@@ -347,7 +350,7 @@ impl Engine {
     ) {
         if let Liquidation::BookThenBackstop(share) = self.config.liquidation {
             if closes.iter().any(|&(i, ..)| self.maintains[i])
-                && self.book_holds(closes, path, wallet, clip, share)
+                && self.book_holds(closes, moment, path, wallet, clip, share)
             {
                 self.sell_on_book(closes, moment);
                 return;
@@ -356,42 +359,64 @@ impl Engine {
         self.take_over(closes, moment);
     }
 
-    /// Whether a sale on the book holds (The forced close): `path` never reaches the
-    /// backstop level, equity at `share` of the requirement, and every leg in
-    /// `closes` sold as a taker from its price at the trigger `trigger`, inside its
-    /// raw bar and paying the taker fee, leaves equity there at or above that level.
-    /// The bar cannot show that a sale finished before a path that reaches the level
-    /// got there.
+    /// Whether a sale on the book holds (The forced close): every leg in `closes`
+    /// sold as a taker from its price at the trigger `trigger` leaves the margin
+    /// wallet at or above the backstop level, `share` of the requirement there, and
+    /// `path` does not also reach that level. The bar cannot show that a sale
+    /// finished before a path that reaches the level got there, which the setting
+    /// decides.
     fn book_holds(
         &self,
         closes: &[(usize, f64, f64)],
+        moment: Moment,
         path: &Path,
         wallet: impl Fn(usize) -> f64,
         trigger: Point,
         share: f64,
     ) -> bool {
-        if self.reaches(path, &wallet, share) {
-            return false;
-        }
         let fee = self.cost.fee_taker;
-        let mut paid = 0.0;
+        let mut kept = wallet(trigger.piece);
         for &(i, q, price) in closes {
-            let side = if q > 0.0 { Side::Sell } else { Side::Buy };
-            let bar = self.candles.bar(self.tick, i);
-            let (fill, _) = self.fill_model.taker_fill(side, q.abs(), price, &bar);
+            let (fill, _) = self.sale(closes, i, q, price, moment);
             let sold = fill.price.get();
-            paid += (q * (sold - price)).abs();
-            paid += (q * sold).abs() * fee;
+            kept += q * (sold - self.account.positions[i].avg_entry.get());
+            kept -= (q * sold).abs() * fee;
         }
-        let (equity, requirement) = self.level_at(path, trigger, wallet(trigger.piece));
-        equity - paid >= share * requirement
+        let (_, requirement) = self.level_at(path, trigger, wallet(trigger.piece));
+        kept >= share * requirement && !(self.unseen.backstop && self.reaches(path, &wallet, share))
+    }
+
+    /// A taker's sale of the leg `q` of instrument `i` from `price`, its impact sized
+    /// on all of the instrument `closes` sells, held inside its raw bar as any taker's
+    /// is. A sale before the bar opened is priced off its trigger on the gap, so it is
+    /// held inside what traded from the last close through the bar, which holds that
+    /// trigger: the hold can take its costs back but never lift it past its trigger.
+    fn sale(
+        &self,
+        closes: &[(usize, f64, f64)],
+        i: usize,
+        q: f64,
+        price: f64,
+        moment: Moment,
+    ) -> (Fill, FillCosts) {
+        let size = closes
+            .iter()
+            .filter(|&&(j, ..)| j == i)
+            .map(|&(_, q, _)| q.abs())
+            .sum();
+        let mut bar = self.candles.bar(self.tick, i);
+        if moment == Moment::BeforeOpen && printed(&bar) {
+            let mark = self.marks[i];
+            (bar.low, bar.high) = (bar.low.min(mark), bar.high.max(mark));
+        }
+        let side = if q > 0.0 { Side::Sell } else { Side::Buy };
+        self.fill_model.taker_fill(side, size, price, &bar)
     }
 
     /// Book then backstop's sale (The forced close): every leg in `closes` sold as a
-    /// taker from its price, inside its raw bar and not limited by its volume, paying
-    /// the taker fee, and the trader keeps what the margin wallet then holds. An
-    /// instrument's last leg takes what its position still holds, at the price its
-    /// own size was sold at, as `book_holds` priced it.
+    /// taker from its price, not limited by the bar's volume, paying the taker fee,
+    /// and the trader keeps what the margin wallet then holds. An instrument's last
+    /// leg takes what its position still holds, at the price `book_holds` read.
     fn sell_on_book(&mut self, closes: &[(usize, f64, f64)], moment: Moment) {
         for (k, &(i, q, price)) in closes.iter().enumerate() {
             let last = closes[k + 1..].iter().all(|&(j, ..)| j != i);
@@ -404,11 +429,11 @@ impl Engine {
                 continue;
             }
             let side = if held > 0.0 { Side::Sell } else { Side::Buy };
-            let bar = self.candles.bar(self.tick, i);
-            let (fill, costs) = self.fill_model.taker_fill(side, q.abs(), price, &bar);
+            let (fill, costs) = self.sale(closes, i, q, price, moment);
             let size = held.abs();
             let sold = fill.price.get();
             let fill = Fill {
+                side,
                 size: Qty(size),
                 ..fill
             };
@@ -909,6 +934,43 @@ mod tests {
             .count();
         assert_eq!(closes, 2);
         assert_eq!(s.position, 0.0);
+        assert_eq!(reporter.open_trades().count(), 0);
+    }
+
+    #[test]
+    fn a_sale_on_the_book_of_a_position_held_in_two_legs_leaves_it_flat() {
+        // the same two legs sold on the book from the trigger, where 1e9p - 9e10 falls
+        // to 5e6p at 90.45, short of the backstop level at half the requirement,
+        // 90.23: the second sale takes what the position still holds
+        let deep = 1e13;
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, deep),
+            ohlc(100.0, 100.0, 100.0, 100.0, deep),
+            ohlc(100.0, 100.0, 90.3, 95.0, deep),
+        ])
+        .with_tiers(maintained());
+        let config = EngineConfig {
+            quote: 1e10,
+            report: true,
+            liquidation: Liquidation::BookThenBackstop(0.5),
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1e9);
+        e.step();
+        e.market_buy(0.3);
+        let s = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let sales: Vec<_> = reporter
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .collect();
+        assert_eq!(sales.len(), 2);
+        assert!(sales.iter().all(|fill| fill.taker));
+        assert_eq!(s.position, 0.0);
+        assert!(s.margin_cash > 0.0, "kept {}", s.margin_cash);
         assert_eq!(reporter.open_trades().count(), 0);
     }
 
@@ -2139,14 +2201,17 @@ mod tests {
         // sold at 40,201.01 as a taker, the long pays the fee of 10.05 and keeps 90.45
         // of the 100.50. The backstop level, two thirds of the requirement, is where
         // 0.5p - 20,000 falls to 0.0016667p, 40,133.78: a low of 40,130 reaches it,
-        // and a slip of 20 bps, held at the low of 40,150, costs 25.51 with the fee
-        // of 10.04, past the 33.50 between the two levels, so both are taken over
+        // and a slip of 20 bps, held at the low of 40,150, costs 25.50 with the fee
+        // of 10.04, past the 33.50 between the two levels, so both are taken over.
+        // Held at a low of 40,170 instead, the same slip costs 15.50 and the fee
+        // 10.04, and the long keeps 74.96
         for (low, slippage_bps, kept, charge) in [
             (40_150.0, 0.0, 90.45, 0.0),
             (40_140.0, 0.0, 90.45, 0.0),
             (40_130.0, 0.0, 0.0, 100.50),
             (40_150.0, 10.0, 70.36, 0.0),
             (40_150.0, 20.0, 0.0, 100.50),
+            (40_170.0, 20.0, 74.96, 0.0),
         ] {
             let slide = ohlc(41_000.0, 41_200.0, low, 40_500.0, 1e6);
             let config = EngineConfig {
@@ -2169,6 +2234,29 @@ mod tests {
             let booked = reporter.ledger()[2].costs.liquidation;
             assert!((booked - charge).abs() < 0.005, "charged {booked}");
             assert_eq!(last.position, 0.0);
+        }
+    }
+
+    #[test]
+    fn under_the_optimistic_setting_a_sale_finishes_before_the_backstop() {
+        // a low of 40,130 passes the backstop level of 40,133.78, which hands the
+        // account to the backstop under the pessimistic setting; under the optimistic
+        // one the sale finishes first and the long keeps its 90.45
+        let slide = ohlc(41_000.0, 41_200.0, 40_130.0, 40_500.0, 1e6);
+        for (intrabar, kept) in [(Intrabar::Pessimistic, 0.0), (Intrabar::Optimistic, 90.45)] {
+            let config = EngineConfig {
+                intrabar,
+                liquidation: Liquidation::BookThenBackstop(2.0 / 3.0),
+                ..specification()
+            };
+            let candles = Candles::new(bitcoin(&[slide])).with_tiers(maintained());
+            let mut e = half_a_bitcoin_on(candles, config);
+            let last = e.step();
+            assert!(
+                (last.margin_cash - kept).abs() < 0.005,
+                "kept {} under {intrabar:?}",
+                last.margin_cash
+            );
         }
     }
 
