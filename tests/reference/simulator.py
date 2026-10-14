@@ -746,7 +746,14 @@ class Simulator:
         lot = self.instruments[i].lot
         if self.venue.sizes and lot > 0.0:
             return remaining < lot - DUST
-        return remaining <= DUST
+        return remaining <= self.dust(i)
+
+
+    def dust(self, i):
+        """Fills, Sizes and dust: with sizes off, a size this small moves nothing, in
+        base units, or in dollars of contracts on an inverse contract."""
+        inst = self.instruments[i]
+        return DUST / inst.contract if inst.kind == "inverse" else DUST
 
 
     def new_order(self, instrument, side, kind, size=None, value=None, price=None,
@@ -1174,8 +1181,10 @@ class Simulator:
             leg  = weight * equity / unit - self.position[i]
             if self.venue.sizes and inst.lot > 0.0:
                 leg = math.trunc(round(leg / inst.lot, 9)) * inst.lot
-            if abs(leg) <= DUST:
+
+            if abs(leg) <= self.dust(i):
                 continue
+
             # the tolerance reads the whole leg, before a flip splits it
             if abs(leg) * unit < tolerance * equity:
                 self.hit("a target leg skipped below the tolerance")
@@ -1199,7 +1208,7 @@ class Simulator:
 
             if reduce != 0.0 and not small(reduce, True):
                 reducing.append((i, reduce))
-            if abs(grow) > DUST and not small(grow, False):
+            if abs(grow) > self.dust(i) and not small(grow, False):
                 growing.append((i, grow))
 
         placed = []
@@ -1714,7 +1723,7 @@ class Simulator:
             if held:
                 held[-1] = held[-1]._replace(size=held[-1].size + rest)
 
-        if opened > DUST and after != 0.0:
+        if opened > self.dust(i) and after != 0.0:
             join = floor if flipped else max(
                 self.fraction(i, after > 0.0, price, self.t), floor)
             held.append(Held(opened, price, price, join, None, after > 0.0))
@@ -2135,9 +2144,9 @@ class Simulator:
 
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
                                                order["reduce_only"], self.venue.taker))
-            whole         = size >= self.lot_down(i, wanted) - DUST
+            whole         = size >= self.lot_down(i, wanted) - self.dust(i)
             refused_whole = order["tif"] == "fok" and not whole
-            if size <= DUST or refused_whole:
+            if size <= self.dust(i) or refused_whole:
                 self.hit("a fok order filling nothing" if refused_whole
                          else "a market order filling nothing")
                 order["status"] = "expired"
@@ -2414,8 +2423,8 @@ class Simulator:
             rate = self.venue.taker if taker else self.venue.maker
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
                                                order["reduce_only"], rate))
-            whole = size >= self.lot_down(i, remaining) - DUST
-            if size <= DUST or (order["tif"] == "fok" and not whole):
+            whole = size >= self.lot_down(i, remaining) - self.dust(i)
+            if size <= self.dust(i) or (order["tif"] == "fok" and not whole):
                 continue
 
             full = self.offer_whole(order, t)
@@ -2602,7 +2611,7 @@ class Simulator:
         signed   = size if side == "buy" else -size
         reducing = min(size, abs(q)) if q * signed < 0.0 else 0.0
         growing  = size - reducing
-        if growing <= DUST:
+        if growing <= self.dust(i):
             return size
 
         # the other legs sit where the fill sits on the path of the position it
@@ -2831,7 +2840,7 @@ class Simulator:
             self.margin_cash += realized - fee
 
         after = before + signed
-        if abs(after) <= DUST:
+        if abs(after) <= self.dust(i):
             after = 0.0
 
         if inst.kind == "inverse":
@@ -2870,7 +2879,7 @@ class Simulator:
         elif opened > 0.0:
             self.entry[i] = inst.average(abs(before), self.entry[i], opened, price)
 
-        if opened > DUST and after != 0.0:
+        if opened > self.dust(i) and after != 0.0:
             if self.trip[i] is None:
                 self.trip[i] = Trip(i, inst, "long" if after > 0.0 else "short", t,
                                     self.times[t])

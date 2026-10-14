@@ -210,7 +210,7 @@ For a fill on bar `t`, the window is the instrument's last `W` bars before `t`, 
 price = ref * (1 + side * (s / 2 + slip + imp)), held inside [low, high]
 ```
 
-`ref` is the open, or for a stop the worse of its trigger and the open; `side` is +1 for a buy and -1 for a sell; `s` is the spread as a fraction of the price; `slip` the slippage; `imp` the impact; and `low` and `high` are the bar's range, clipped where the bar is clipped. `slip` and `imp` are floored at zero, and `s / 2 + slip + imp` is held at 0.99 at most. A buy never fills above the high and a sell never below the low. On an inverse contract the rates move the reciprocal of the price, `1 / price = (1 / ref) * (1 - side * (s / 2 + slip + imp))`, so each costs its rate of the coin notional, as a fee does ([Inverse contracts](#inverse-contracts)).
+`ref` is the open, or for a stop the worse of its trigger and the open; `side` is +1 for a buy and -1 for a sell; `s` is the spread as a fraction of the price; `slip` the slippage; `imp` the impact; and `low` and `high` are the bar's range, clipped where the bar is clipped. `slip` and `imp` are floored at zero, and `s / 2 + slip + imp` is held at 0.99 at most. A buy never fills above the high and a sell never below the low. On an inverse contract the rates move the reciprocal of the price, `1 / price = (1 / ref) * (1 - side * (s / 2 + slip + imp))`, so each costs its rate of the coin notional at the reference, as a fee costs its rate of the notional at the fill ([Inverse contracts](#inverse-contracts)).
 
 `imp = k * sigma * sqrt(q / V)` under `sqrt(k)` and `k * sigma * q / V` under `linear(k)`, where `q` is the size the liquidity budget allows the fill, before the wallet's clamps, which then apply at the price that size set.
 
@@ -272,7 +272,7 @@ give `s2 = 1.0553e-6`, a spread of 0.1027% of the price. A buy whose reference i
 
 ### Sizes and dust
 
-With sizes on, an order's size is rounded down to the lot when it is placed, and so is every fill's size after its clamps, and a limit or a trigger is rounded to the nearest tick, or to Hyperliquid's five significant figures within its decimal cap. An order below the minimum notional at the last close is refused, a reducing one exempt where the venue exempts it; one above the maximum order quantity is clamped to it; and an order retires when what remains of it is less than a lot. A position that floating-point sums leave below half a lot is zeroed at the bar's close with no fee, and its value there is recorded as a dust adjustment. With sizes off, a fill of 1e-9 base units or less moves nothing, and an order retires at that remainder.
+With sizes on, an order's size is rounded down to the lot when it is placed, and so is every fill's size after its clamps, and a limit or a trigger is rounded to the nearest tick, or to Hyperliquid's five significant figures within its decimal cap. An order below the minimum notional at the last close is refused, a reducing one exempt where the venue exempts it; one above the maximum order quantity is clamped to it; and an order retires when what remains of it is less than a lot. A position that floating-point sums leave below half a lot is zeroed at the bar's close with no fee, and its value there is recorded as a dust adjustment. With sizes off, a fill of 1e-9 base units or less, or of 1e-9 dollars of contracts on an inverse contract, moves nothing, and an order retires at that remainder.
 
 **Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0754 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0004 is refused when it is placed, since it rounds to nothing.
 
@@ -503,12 +503,13 @@ An inverse perpetual is quoted in dollars and settled in its coin. A contract is
 | :--- | :--- | :--- |
 | profit from `e` to `p` | `q * (p - e)` | `u * (1 / e - 1 / p)` |
 | notional | `abs(q) * p` | `abs(u) / p` |
-| a fee, or a taker's cost, at rate `f` | `abs(q) * p * f` | `abs(u) / p * f` |
+| a fee at rate `f`, filled at `p` | `abs(q) * p * f` | `abs(u) / p * f` |
+| a taker's cost at rate `c`, from its reference `r` | `abs(q) * r * c` | `abs(u) / r * c` |
 | a funding charge at rate `r` | `q * p * r` | `u / p * r` |
 | the average entry of fills `k` | `sum(q_k * p_k) / sum(q_k)` | `sum(n_k) / sum(n_k / p_k)` |
 | the size a value order of `A` fills | `A / p` | `A / V` contracts |
 
-- Every inverse quantity is linear in `1 / p`, so the tiers, the three points and the margin bound are solved as for linear contracts, in the reciprocal of the price, and each crossing is read back as a price. The tiers are by notional in the coin.
+- Every inverse quantity is linear in `1 / p`, so the tiers, the three points and the margin bound are solved as for linear contracts, in the reciprocal of the price, and each crossing is read back as a price. The tiers are by notional in the coin, or by size in contracts on a quantity table.
 - The average entry is the harmonic mean of the fill prices, weighted by contracts, which keeps a position's profit `u * (1 / e - 1 / p)` equal to the sum of its fills' profits.
 - What a fill paid beyond its reference is counted in the coin, `abs(u * (1 / ref - 1 / price))`, and its spread, slippage and impact share it in proportion to their rates.
 - An inverse account holds one perpetual, its margin wallet holds the coin, it has no spot wallet to transfer to, and its path has one leg.
