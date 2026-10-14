@@ -400,7 +400,7 @@ impl Engine {
         let (account, book) = (self.account.clone(), self.book.clone());
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
         let (starts, inside, reach) = (self.starts.clone(), self.inside.clone(), self.reach);
-        let entered = self.entered.clone();
+        let (entered, clips, clipped) = (self.entered.clone(), self.clips.clone(), self.clipped);
         let reporter = self.reporter.take();
         let held = self.fill_offers(fills.to_vec(), true);
         let liquidates = held && self.reaches_trigger();
@@ -409,6 +409,8 @@ impl Engine {
         self.starts = starts;
         self.inside = inside;
         self.entered = entered;
+        self.clips = clips;
+        self.clipped = clipped;
         self.reach = reach;
         self.notes.truncate(notes);
         self.flipped = flipped;
@@ -562,12 +564,14 @@ impl Engine {
             let arming = self.book.legs() > 0 && before == 0.0;
             let applied =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
+            let mut joined = false;
             if applied > 0.0 {
                 // whether the fill moved where the position started: opened, closed,
                 // flipped or grew it
                 let after = self.account.positions[i].qty.get();
-                let began = before == 0.0 || before * after < 0.0;
-                touched = Some((i, began || after == 0.0 || after.abs() > before.abs()));
+                let grew = before == 0.0 || before * after < 0.0 || after.abs() > before.abs();
+                touched = Some((i, grew || after == 0.0));
+                joined = grew && self.account.markets[i] == Market::Perp;
             }
             match kind {
                 // A stop is consumed by filling and by nothing else, which is what
@@ -646,6 +650,15 @@ impl Engine {
                     }
                 }
                 OrderType::Market => {}
+            }
+            // a perp the fill opened, grew or flipped has its path solved, and where
+            // it reaches the trigger the orders left meet their bars clipped there
+            if joined && k < fills.len() && self.clip_joined() {
+                for offer in fills[k..].iter_mut() {
+                    if let Some(order) = self.book.get(offer.id) {
+                        *offer = self.offer(order, &self.bar_for(offer.instrument));
+                    }
+                }
             }
         }
         held

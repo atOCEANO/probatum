@@ -364,7 +364,7 @@ class Trip:
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
            "legs", "next_id", "target_legs", "liquidations", "reached", "first",
-           "start", "inside", "entered", "reach")
+           "start", "inside", "entered", "reach", "clipped")
 
 
 class Simulator:
@@ -1246,6 +1246,10 @@ class Simulator:
 
         self.delist(t)
         self.fill_market_orders(t)                                  # 4
+        if self.resting() and any(leg.start is not None
+                                  for legs in self.legs.values() for leg in legs):
+            self.clip_joined(t)
+
         self.resolve_resting(t)                                     # 5, 6 and 7
         self.charge_funding(self.owned[t], t, at_close=True)        # 8
         self.check_closes(t)
@@ -1563,6 +1567,49 @@ class Simulator:
             self.clipped[leg.instrument] = Bar(
                 hold(bar.open, clip), hold(bar.high, clip), hold(bar.low, clip),
                 hold(bar.close, clip), bar.volume)
+
+
+    def clip_joined(self, t):
+        """Liquidation, The rule, 3, for a leg that joined during the bar: once a fill
+        has opened, grown or flipped a perpetual with orders still to resolve, the
+        check's path is solved for the account as it then stands, and where it reaches
+        the trigger every held perpetual's bar is clipped there. Without maintenance
+        the trigger is the close point, past which the margin bound already holds every
+        reducing fill, so only an account with maintenance is clipped. A clip only
+        tightens. Returns whether it clipped."""
+        if not self.account_maintained():
+            return False
+
+        legs = self.check_legs(t)
+        held = [leg for leg in legs if leg.leave is None]
+        if not held:
+            return False
+
+        wallet = self.margin_cash - sum(charge for _, charge in self.counted_inside(t))
+        path, spans = self.pieces(legs)
+        result = self.solve(path, [wallet] * len(path))
+        if result is None:
+            return False
+
+        trigger, (k, u) = result
+        if trigger != (0, 0.0) and not self.reached_by_every_path(held, wallet, t):
+            return False
+
+        a, b = spans[k]
+        for leg in held:
+            bar = self.bar_for(t, leg.instrument)
+            if bar is None:
+                continue
+
+            start, end = self.ends(leg, a, b)
+            clip = start + u * (end - start)
+            hold = max if leg.q > 0.0 else min
+            self.clipped[leg.instrument] = Bar(
+                hold(bar.open, clip), hold(bar.high, clip), hold(bar.low, clip),
+                hold(bar.close, clip), bar.volume)
+
+        self.hit("a bar clipped for a leg that joined it")
+        return True
 
 
     def reached_by_every_path(self, legs, wallet, t):
@@ -2366,7 +2413,8 @@ class Simulator:
             cash = self.margin_cash
             price, costs = self.bound(i, side, size, price, part, rate, costs)
             reason = order["leg"] or order["reason"]
-            flat   = self.position[i] == 0.0
+            was    = self.position[i]
+            flat   = was == 0.0
             self.apply(i, side, size, price, rate, taker, order, reason,
                        reference=reference, costs=costs)
             self.zero_rounding(i, cash, self.paid_in, size, price)
@@ -2396,6 +2444,18 @@ class Simulator:
             # resting order (Maker, taker and the book)
             if flat and self.position[i] != 0.0:
                 self.arm(i, order)
+
+            # Liquidation, The rule, 3: a perpetual the fill opened, grew or flipped
+            # has its path solved, and where it reaches the trigger the orders left
+            # meet their bars clipped there
+            now  = self.position[i]
+            grew = was == 0.0 or was * now < 0.0 or abs(now) > abs(was)
+            if self.instruments[i].kind != "spot" and grew and k + 1 < len(offers) \
+                    and self.clip_joined(t):
+                for j in range(k + 1, len(offers)):
+                    slot_j, order_j = offers[j][0], offers[j][1]
+                    found = self.offered(order_j, self.bar_for(t, order_j["instrument"]))
+                    offers[j] = (slot_j, order_j) + (found or (None, None))
 
         return held
 

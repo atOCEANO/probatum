@@ -134,6 +134,18 @@ def flipped_at_the_low():
     return bars, times, cfg, actions
 
 
+def joined_past_its_trigger():
+    """55 of margin at 50x and 1% maintenance, a buy limit of 10 at 95 placed at the
+    second bar's close and a reduce-only stop at 90 at the third's, on a bar from 100
+    down to 85: the long the limit opens passes its trigger, 90.40, before the stop
+    could close it."""
+    bars, times, cfg, actions = built(None, at("limit", "buy", 10.0, 95.0),
+                                      at("stop", "sell", 10.0, 90.0),
+                                      shaped=(100.0, 100.0, 85.0, 92.0))
+    cfg.update(quote=55.0, leverage=0.0, tiers=[(1e12, 50.0, 0.01, 0.0)])
+    return bars, times, cfg, actions
+
+
 def changed(case, **settings):
     """`case` with `settings` in place of its own."""
     bars, times, cfg, actions = case
@@ -251,6 +263,10 @@ BUILT = {
     # a sale the bound pays into, which leaves the account flat at zero
     "a sale the bound pays into that leaves the account flat": (
         "a wallet a fill left within rounding of zero set to zero", bounded_flat()),
+    # a long a limit opens inside the bar is liquidated at its trigger, which the bar
+    # reaches before the reduce-only stop beyond it
+    "a long opened inside the bar past its trigger before its stop": (
+        "a bar clipped for a leg that joined it", joined_past_its_trigger()),
 }
 
 

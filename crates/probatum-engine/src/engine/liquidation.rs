@@ -143,6 +143,41 @@ impl Engine {
         matches!(self.check_point(), Found::Clip(_))
     }
 
+    /// The rule, 3, for a leg that joined during the bar: once a fill has opened,
+    /// grown or flipped a perp with orders still to resolve, the check's path is
+    /// solved for the account as it then stands, and where it reaches the trigger
+    /// every held perp's bar is clipped there, so no order left fills past the point
+    /// the account leaves the market. Without maintenance the trigger is the close
+    /// point, past which the margin bound already holds every reducing fill, so only
+    /// an account with maintenance, whose trigger comes first, is clipped. A clip
+    /// only tightens: fenced again, a bar keeps the tighter of its fences. Returns
+    /// whether it clipped.
+    pub(super) fn clip_joined(&mut self) -> bool {
+        let maintained = (0..self.account.positions.len()).any(|i| {
+            self.account.markets[i] == Market::Perp
+                && self.account.positions[i].qty.get() != 0.0
+                && self.maintains[i]
+        });
+        if !maintained {
+            return false;
+        }
+        let Found::Clip(clip) = self.check_point() else {
+            return false;
+        };
+        let (a, b) = self.spans[clip.piece];
+        for k in 0..self.checked.len() {
+            let leg = self.checked[k];
+            if leg.leave.is_some() || !printed(&self.candles.bar(self.tick, leg.i)) {
+                continue;
+            }
+            let (start, end) = leg.ends(a, b);
+            let fence = start + clip.at * (end - start);
+            self.clips[leg.i] = Some(Engine::fenced(&self.bar_for(leg.i), fence, leg.q > 0.0));
+        }
+        self.clipped = true;
+        true
+    }
+
     /// What the check finds for the account as it stands, its path solved against
     /// the margin wallet less the charges stamped inside the bar it counts. One
     /// decision serves the check and the exits it holds back, so the two never part.
@@ -2319,6 +2354,59 @@ mod tests {
             (last.margin_cash - 380.0).abs() < 1e-9,
             "kept {}",
             last.margin_cash
+        );
+    }
+
+    #[test]
+    fn a_long_opened_inside_the_bar_is_liquidated_at_its_trigger_before_its_stop() {
+        // 55 of margin, at 50x and 1% maintenance, buys 10 at 95 inside a bar from
+        // 100 that falls to 85, its bracket's stop at 90: the trigger, 895 / 9.9, comes
+        // before the stop on every path, where the stop used to close the long and
+        // leave 5 standing; the long is closed at the trigger and charged what it left
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 50.0,
+            rate: 0.01,
+            amount: 0.0,
+        };
+        let candles = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 85.0, 92.0, 1e6),
+        ])
+        .with_tiers(Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"));
+        let config = EngineConfig {
+            quote: 55.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.limit_buy(10.0, 95.0);
+        let (stop, _) = e.bracket(0, Some(90.0), Some(110.0));
+        let s = e.step();
+        let trigger = 895.0 / 9.9;
+        let fills = priced(&e);
+        assert_eq!(fills.len(), 2, "{fills:?}");
+        assert_eq!(fills[0], (FillReason::Limit, 95.0));
+        assert_eq!(fills[1].0, FillReason::Liquidation);
+        assert!(
+            (fills[1].1 - trigger).abs() < 1e-9,
+            "closed at {}",
+            fills[1].1
+        );
+        assert_eq!(s.margin_cash, 0.0);
+        let reporter = e.reporter().expect("reporting is on");
+        let charge = reporter.ledger()[1].costs.liquidation;
+        let left = 55.0 - 10.0 * (95.0 - trigger);
+        assert!((charge - left).abs() < 1e-9, "charged {charge}");
+        let ended = reporter
+            .events()
+            .iter()
+            .rev()
+            .find(|event| event.order == stop);
+        assert_eq!(
+            ended.map(|event| (event.kind, event.reason)),
+            Some((EventKind::Cancelled, EventReason::Liquidation))
         );
     }
 

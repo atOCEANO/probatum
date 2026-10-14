@@ -19,6 +19,7 @@ from reference.simulator import Bar
 SHARED = [
     "a bar clipped",
     "a bar clipped across several perpetuals",
+    "a bar clipped for a leg that joined it",
     "a bracket armed",
     "a bracket armed by a resting fill",
     "a bracket armed on a short",

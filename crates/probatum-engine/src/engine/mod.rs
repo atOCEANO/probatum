@@ -579,8 +579,14 @@ impl Engine {
             }
             self.reach = 0.0;
 
-            // 1. pending market orders fill at the open
+            // 1. pending market orders fill at the open, and a perp they opened, grew
+            //    or flipped has its path solved before the resting orders meet the
+            //    bar, so none of them fills past where the account leaves it
             self.resolve_pending();
+            let joined = |note: &FillNote| note.opened > path::DUST && note.after != 0.0;
+            if !self.book.is_empty() && self.notes.iter().any(joined) {
+                self.clip_joined();
+            }
 
             // 2. resting limit and stop orders fill against the bar range, and a
             //    take-profit is held back where the check would find the trigger

@@ -22,6 +22,7 @@ SHORT, LONG = 600, 6_000
 RULES = [
     "a bar clipped",
     "a bar clipped across several perpetuals",
+    "a bar clipped for a leg that joined it",
     "a bracket armed",
     "a bracket armed by a resting fill",
     "a bracket armed on a short",
@@ -128,6 +129,7 @@ RULES = [
 # inverse contract settles alone
 SEVERAL_ONLY = {
     "a bar clipped across several perpetuals",
+    "a bar clipped for a leg that joined it",
     "a bracket waiting through a row without its bar",
     "a liquidation of several perpetuals",
     "a waiting market order cancelled",
