@@ -593,12 +593,25 @@ class Simulator:
         if bar is None:
             return 0.0
 
-        move = (bar.low if long else bar.high) - bar.open
-        if move == 0.0:
-            return 0.0
+        adverse = bar.low if long else bar.high
+        if self.instruments[i].kind == "inverse":
+            move = 1.0 / adverse - 1.0 / bar.open
+            s    = (1.0 / price - 1.0 / bar.open) / move if move != 0.0 else 0.0
+        else:
+            move = adverse - bar.open
+            s    = (price - bar.open) / move if move != 0.0 else 0.0
 
-        s = (price - bar.open) / move
         return 0.0 if s > 1.0 else max(s, 0.0)
+
+
+    def along(self, i, a, b, s):
+        """The path: instrument `i`'s price a fraction `s` of the way from `a` to `b`,
+        the way running in the reciprocal of the price on an inverse contract, which
+        keeps its equity linear in `s` as a linear contract's is (Inverse
+        contracts)."""
+        if self.instruments[i].kind == "inverse":
+            return 1.0 / (1.0 / a + s * (1.0 / b - 1.0 / a))
+        return a + s * (b - a)
 
 
     def others_at(self, s, t, skip):
@@ -618,7 +631,7 @@ class Simulator:
                 prices[j] = bar.high if q > 0.0 else bar.low
             else:
                 adverse = bar.low if q > 0.0 else bar.high
-                prices[j] = bar.open + s * (adverse - bar.open)
+                prices[j] = self.along(j, bar.open, adverse, s)
 
         return prices
 
@@ -1452,7 +1465,7 @@ class Simulator:
 
         for leg in piece:
             inst  = self.instruments[leg.instrument]
-            price = leg.start + s * (leg.end - leg.start)
+            price = self.along(leg.instrument, leg.start, leg.end, s)
             equity += inst.profit(leg.q, leg.entry, price)
             sizes[leg.instrument] += abs(leg.q)
             notionals[leg.instrument] += abs(inst.notional(leg.q, price))
@@ -1562,7 +1575,8 @@ class Simulator:
 
         if k == 0:
             self.hit("a liquidation before the bar opens")
-            closes = [(leg.instrument, leg.q, leg.start + s * (leg.end - leg.start))
+            closes = [(leg.instrument, leg.q,
+                       self.along(leg.instrument, leg.start, leg.end, s))
                       for leg in path[0]]
             self.liquidate(closes, t, path, wallets, trigger, moment="before")
             return
@@ -1575,7 +1589,8 @@ class Simulator:
             bar = self.bars[t][leg.instrument]
             if bar is None:
                 continue
-            clip = leg.start + s * (leg.end - leg.start)
+
+            clip = self.along(leg.instrument, leg.start, leg.end, s)
             hold = max if leg.q > 0.0 else min
             self.clipped[leg.instrument] = Bar(
                 hold(bar.open, clip), hold(bar.high, clip), hold(bar.low, clip),
@@ -1615,7 +1630,7 @@ class Simulator:
                 continue
 
             start, end = self.ends(leg, a, b)
-            clip = start + u * (end - start)
+            clip = self.along(leg.instrument, start, end, u)
             hold = max if leg.q > 0.0 else min
             self.clipped[leg.instrument] = Bar(
                 hold(bar.open, clip), hold(bar.high, clip), hold(bar.low, clip),
@@ -1729,23 +1744,22 @@ class Simulator:
         return legs
 
 
-    @staticmethod
-    def price_at(leg, s):
+    def price_at(self, leg, s):
         """A check leg's price at fraction s; before it joins, its fill price."""
         if s <= leg.frac or leg.frac >= 1.0:
             return leg.start
-        return leg.start + (s - leg.frac) / (1.0 - leg.frac) * (leg.end - leg.start)
+        return self.along(leg.instrument, leg.start, leg.end,
+                          (s - leg.frac) / (1.0 - leg.frac))
 
 
-    @classmethod
-    def ends(cls, leg, a, b):
+    def ends(self, leg, a, b):
         """A check leg's prices at the two ends of the piece from a to b. On the last
         piece, which has no length, a leg that joined at the path's end runs its whole
         adverse move, so the new side of a flip filled at the old side's extreme still
         goes to its own adverse extreme (The path)."""
         if a == b == 1.0 and leg.frac >= 1.0:
             return leg.start, leg.end
-        return cls.price_at(leg, a), cls.price_at(leg, b)
+        return self.price_at(leg, a), self.price_at(leg, b)
 
 
     def pieces(self, legs):
@@ -1810,7 +1824,7 @@ class Simulator:
         # in instrument order, a fixed order, each instrument's legs in their own
         for leg in sorted(held, key=lambda leg: leg.instrument):
             start, end = self.ends(leg, a, b)
-            price = start + u * (end - start)
+            price = self.along(leg.instrument, start, end, u)
             if leg.frac > 0.0 and price == leg.start:
                 # closed where it joined, at its fill price
                 self.hit("a forced close of a leg that joined during the bar")
@@ -2045,16 +2059,23 @@ class Simulator:
         total = min(s / 2.0 + slip + imp, MAX_COST)
         scale = total / (s / 2.0 + slip + imp) if s / 2.0 + slip + imp > 0.0 else 1.0
         sign  = 1.0 if side == "buy" else -1.0
-        raw   = reference * (1.0 + sign * total)
+
+        # Inverse contracts: the rates move the reciprocal of the price, so each costs
+        # its rate of the coin notional, and its part of the price, its rate of the
+        # raw price, is its share of the move
+        if self.instruments[i].kind == "inverse":
+            raw  = reference / (1.0 - sign * total)
+            unit = raw
+        else:
+            raw, unit = reference * (1.0 + sign * total), reference
 
         if bar is None:
             price = raw         # a liquidation sale where the instrument has no bar
         else:
             price = min(raw, bar.high) if side == "buy" else max(raw, bar.low)
 
-        costs = dict(spread=reference * s / 2.0 * scale,
-                     slippage=reference * slip * scale,
-                     impact=reference * imp * scale, adjustment=price - raw,
+        costs = dict(spread=unit * s / 2.0 * scale, slippage=unit * slip * scale,
+                     impact=unit * imp * scale, adjustment=price - raw,
                      reference=reference)
         return price, costs
 
