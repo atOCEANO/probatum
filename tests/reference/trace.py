@@ -22,18 +22,18 @@ from . import differential as D
 
 
 def diverges(bars, times, cfg, actions):
-    """The first bar the two disagree on, on any record, or None. A case outside what
-    both model is not a disagreement, so a shrink that wanders out of it is not one
-    either."""
+    """The first bar the two disagree on, on any record written before the first
+    rule the engine has yet to take up, as the comparison reads it, or None. A
+    shrink that makes the run raise has wandered out of the case, so it is not a
+    disagreement either."""
     try:
         rows, records, sim = D.run(bars, times, cfg, actions)
     except Exception:
         return None
 
-    if D.set_aside(sim) is not None:
-        return None
-
-    found = D.disagreement(rows, records, sim, cfg)
+    found = D.cut(sim)
+    end   = None if found is None else found[1]
+    found = D.disagreement(rows, records, sim, cfg, end)
     return None if found is None else found[0]
 
 
@@ -120,9 +120,10 @@ def main():
     rng   = random.Random(seed)
 
     for case in range(cases):
-        bars    = D.walk(rng, rng.randint(8, 40))
-        times   = D.clock(rng, len(bars))
-        cfg     = D.config(rng, times)
+        bars  = D.walk(rng, rng.randint(8, 40))
+        times = D.clock(rng, len(bars))
+        cfg   = D.config(rng, times)
+        cfg["intrabar"] = D.setting(seed, case)
         actions = D.plan(rng, bars, cfg)
         if diverges(bars, times, cfg, actions) is None:
             continue
