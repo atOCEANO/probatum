@@ -1,8 +1,8 @@
 """Every worked example on the Specification page, held to the cent.
 
 Each test is one example, named for what it shows, and runs it through the
-reference simulator written from that page. The engine joins each test once it
-models the rule; until then the reference is held to the page on its own.
+reference simulator written from that page. The engine is held to the examples it
+models by its own tests, which name the same numbers.
 """
 
 import math

@@ -573,4 +573,4 @@ Each bar, the change in equity equals the price PnL less spread, slippage, impac
 
 ## The low-level binding
 
-Below the Python surface, one binding drives the engine directly: it takes the candles, a venue record and a per-bar action script, and returns the ledger, the fill log and the order log. A cancel or a replacement names its order by a reference resolved at run time, an earlier placement in the script or the oldest order still live, so a refused placement leaves the script meaningful. The reference simulator and the tests drive the engine through it.
+Below the Python surface, one binding drives the engine directly: it takes the candles, a venue record and a per-bar action script, and returns the ledger, the fill log, the order log and the round trips. A cancel or a replacement names its order by a reference resolved at run time, an earlier placement in the script or the oldest order still live, so a refused placement leaves the script meaningful. The reference simulator and the tests drive the engine through it.

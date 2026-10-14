@@ -169,7 +169,7 @@ eng = Engine(
 )
 ```
 
-**A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound. The table is refused where the Specification's loader refuses it: a maintenance rate not below one, one reaching its tier's initial rate, one over the leverage, or a notional table whose amounts break continuity ([Specification](Specification.md#the-cap)).
+**A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound. The table is refused where the Specification's loader refuses it: bounds that do not rise, a leverage that rises or a maintenance rate that falls from one tier to the next, a maintenance rate not below one or reaching its tier's initial rate, one over the leverage, a notional table whose first amount is not zero or whose amounts break continuity, and any value that is not finite or is below zero ([Specification](Specification.md#maintenance)).
 
 **A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers` and `tiers_by`, or `market` and `tiers` for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
 
@@ -312,7 +312,7 @@ from probatum import Batch
 
 b = Batch(candles, num_envs=512, market="spot", quote=10_000.0)  # same engine knobs
 b.reset_all()                                # list of per-env states
-actions = np.array([...], dtype=np.float64)  # length num_envs, signed size
+actions = np.zeros(b.num_envs)               # one signed size per env
 states = b.step_all(actions)                 # positive buys, negative sells, zero holds
 ```
 
@@ -325,7 +325,7 @@ states = b.step_all(actions)                 # positive buys, negative sells, ze
 | `done()` | bool | True when the envs have reached the last bar (they step in lockstep here). |
 | `num_envs` | int | Number of envs (also `len(batch)`). |
 
-Because the envs are independent, batched stepping is bit-identical to stepping each in a loop. The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`probatum.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
+Because the envs are independent, batched stepping is bit-identical to stepping each in a loop, but under `intrabar="random"`, where env k draws from a stream named with its index as well, which an `Engine` built on its own does not ([Specification](Specification.md#what-a-bar-cannot-show)). The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`probatum.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
 
 Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
 
@@ -466,7 +466,7 @@ Each entry in `trades()` is one round trip: a maximal run of one sign, from the 
 | `pnl` | Its net PnL: `realized` less `fees` and `funding`, and for one still open what it holds at the last close as well. The trade statistics are built from it, so they reproduce from the log. |
 | `ret` | `pnl` over `size * entry`. |
 | `best`, `worst` | How far its side's price went for it and against it, as a fraction of `entry`, over the part of each bar it was in: its entry bar from the fill to the close, its exit bar from the open to the fill, and every bar between whole. They are bounds that never overstate, since nothing inside a bar says when its high and its low came ([ADR 0023](Decisions.md)). |
-| `reason` | What closed it, `market`, `limit`, `stop`, `rebalance` or `liquidation`, and `None` while it is open. A forced close is priced where the margin ran out, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
+| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance` or `liquidation`, and `None` while it is open. A forced close is priced where the margin ran out, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
 | `open` | True for the round trip still open at the end. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.

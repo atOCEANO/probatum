@@ -78,7 +78,7 @@ Steps 1 and 2 read the clipped bars, which is what makes the clip a rule about t
 
 <br>
 
-Equity is the authoritative account value, both wallets together: `quote + base * price` on spot and `quote + unrealized` on a perp, with `quote` the cash in both. The `realized_pnl` field is cumulative realized trading PnL and is never added on top of equity.
+Equity is the authoritative account value, both wallets together: the cash in both, with every spot holding at its close and every perpetual's unrealized PnL at its close beside it. The `realized_pnl` field is cumulative realized trading PnL and is never added on top of equity.
 
 <br>
 
@@ -86,8 +86,8 @@ Equity is the authoritative account value, both wallets together: `quote + base 
 
 The candle series lives once behind an `Arc<[Candle]>`, so thousands of envs share it with no duplication; each env is an independent cursor with its own account and orders. Two consequences follow:
 
-- **Observations are views.** A single env's observation is a read-only numpy view straight onto the shared candle buffer, no copy. `Candle` is `repr(C)`, so a window of candles reinterprets directly as a `(window, 5)` float array; the view is read-only because the buffer is shared, and it keeps the engine alive so the data outlives it. The batched observation gathers each env's window into a fresh `(N, window, 5)` array, since the windows differ once envs start at different offsets. See [ADR 0040](Decisions.md).
-- **The batched step is GIL-free.** `Batch.step_all` applies a batched action array and steps every env in parallel on the Rayon pool with the Python GIL released. Because the envs are independent and there is no cross-env reduction, batched stepping is bit-identical to stepping each env in a loop, an invariant asserted by a test.
+- **Observations are views.** A single env's observation is a read-only numpy view straight onto the shared candle buffer, no copy. `Candle` is `repr(C)`, so a window of candles reinterprets directly as a `(window, 5)` float array; the view is read-only because the buffer is shared, and it keeps the engine alive so the data outlives it. The batched observation gathers each env's window into a fresh `(num_envs, window, 5)` array, or `(num_envs, window, N, 5)` for a universe of N, since the windows differ once envs start at different offsets. See [ADR 0040](Decisions.md).
+- **The batched step is GIL-free.** `Batch.step_all` applies a batched action array and steps every env in parallel on the Rayon pool with the Python GIL released. Because the envs are independent and there is no cross-env reduction, batched stepping is bit-identical to stepping each env in a loop, an invariant asserted by a test, but under `intrabar="random"`, where each env draws from a stream named with its index as well.
 
 <br>
 

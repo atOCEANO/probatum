@@ -2950,7 +2950,8 @@ fn build_series(
 /// `instrument` they trade, counted from 0, which one instrument leaves out, and
 /// `cancel_all` cancels one instrument's orders when it names one and every order
 /// when it does not. An order is named by an earlier placement in the script,
-/// counting its buys, sells and closes from 0, which names nothing once the engine
+/// counting its buys, sells and closes from 0, and a bracket as two, its stop's and
+/// then its take-profit's, which names nothing once the engine
 /// refused that placement or a close found nothing to close, or as `"oldest"`, the
 /// oldest order still resting. The ledger gives each instrument's columns a value a
 /// bar at one instrument and a row of N a bar for a universe. The comparison with
