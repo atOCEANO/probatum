@@ -57,19 +57,24 @@ pub(crate) fn positive(x: f64) -> bool {
 
 impl FillModel {
     /// The fillable size: the order's remaining, capped at the volume fraction.
-    /// `f64::min` keeps the other operand when one side is NaN, so BOTH sides
-    /// carry the guard: a non-finite remaining would launder a NaN size into a
-    /// full-cap fill (ADR 0014), and a non-finite fraction would delete the cap
-    /// altogether and let one order take more than the bar traded (ADR 0013).
-    /// The available side must be finite as well as positive: an infinite fraction
-    /// leaves `min` with a real operand and would hand back the whole remaining.
+    /// BOTH sides carry a guard, since a minimum keeps a real operand over a NaN: a
+    /// non-finite remaining would launder a NaN size into a full-cap fill (ADR
+    /// 0014), and a non-finite fraction would delete the cap altogether and let one
+    /// order take more than the bar traded (ADR 0013). The available side must be
+    /// finite as well as positive: an infinite fraction would hand back the whole
+    /// remaining. Guarded so, the smaller is taken with one comparison, where
+    /// `f64::min` would pay to skip a NaN neither side can be.
     fn cap(&self, order: &Order, bar: &Candle) -> f64 {
         let remaining = order.remaining().get();
         let available = self.max_fill_fraction * bar.volume;
         if !remaining.is_finite() || !positive(available) {
             return 0.0;
         }
-        remaining.min(available)
+        if available < remaining {
+            available
+        } else {
+            remaining
+        }
     }
 
     /// The adverse slip on a taker fill, as its total and its two parts, the flat
