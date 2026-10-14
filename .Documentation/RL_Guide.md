@@ -162,8 +162,8 @@ Only `data` has no default.
 | `quote` | `10_000.0` | Starting quote balance per env. |
 | `fee_taker`, `fee_maker` | `0.0006`, `0.0002` | Fees, fraction of notional. Scalar, or `(low, high)` sampled per env. |
 | `slippage_bps` | `0.0` | Slippage on market fills, basis points. Scalar, or `(low, high)` per env. |
-| `impact` | `0.0` | Market-impact coefficient (ADR 0013): extra slippage per unit of the bar's volume filled. Scalar, or `(low, high)` per env. |
-| `max_fill_fraction` | `1.0` | Cap on the fraction of a bar's volume one order takes. |
+| `impact` | `0.0` | Market-impact coefficient (ADR 0013), scaled by the volatility of the bars before the fill and its share of their mean volume. Scalar, or `(low, high)` per env. |
+| `budget` | `1.0` | The share of the trailing volume a bar's fills may take, shared by every order on it. |
 | `max_open_orders` | `8` | Resting-order slots per env. |
 | `leverage` | `10.0` | Perp margin cap on notional; the 10x default bounds a fresh perp, `0.0` disables it. |
 | `funding_rate` | `0.0` | Perp funding per event on the position notional; a long pays, a short receives. |

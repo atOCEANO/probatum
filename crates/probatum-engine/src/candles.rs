@@ -9,6 +9,7 @@ use probatum_core::{Candle, Market, Tiers};
 use crate::clock::Clock;
 use crate::inverse::Units;
 use crate::schedule::Schedule;
+use crate::window::{Trailing, Windows};
 
 /// What the venue says about one instrument of a universe.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -34,6 +35,9 @@ pub struct Candles {
     clock: Option<Clock>,
     funding: Option<Arc<Schedule>>,
     instruments: Arc<[Instrument]>,
+    // each row's window for every instrument, read once for every env that shares
+    // the series, or none yet
+    windows: Option<Windows>,
 }
 
 impl Candles {
@@ -69,6 +73,7 @@ impl Candles {
             clock,
             funding: None,
             instruments: vec![Instrument::default(); width].into(),
+            windows: None,
         }
     }
 
@@ -112,6 +117,7 @@ impl Candles {
             .map(|&bar| units.bar(bar))
             .chain(printed.iter().copied())
             .collect();
+        self.windows = None;
         self
     }
 
@@ -132,6 +138,34 @@ impl Candles {
     /// Instrument `i`'s tier table, empty when the venue sets none.
     pub fn tiers(&self, i: usize) -> &Tiers {
         &self.instruments[i].tiers
+    }
+
+    /// The same series with each row's window of the last `bars` bars read for every
+    /// instrument, its spread estimated where `estimated`, once for every env that
+    /// shares it (Specification, The window).
+    pub fn with_window(mut self, bars: usize, estimated: bool) -> Candles {
+        let engine = &self.bars[..self.rows * self.width];
+        self.windows = Some(Windows::read(
+            engine, self.rows, self.width, bars, estimated,
+        ));
+        self
+    }
+
+    /// Whether the series holds each row's window of `bars` bars, its spread estimated
+    /// where `estimated`.
+    pub fn windowed(&self, bars: usize, estimated: bool) -> bool {
+        self.windows
+            .as_ref()
+            .is_some_and(|w| w.bars == bars && w.estimated == estimated)
+    }
+
+    /// What the window before row `t` shows of instrument `i`, nothing where the
+    /// series has read no window.
+    #[inline]
+    pub fn trailing(&self, t: usize, i: usize) -> Trailing {
+        self.windows
+            .as_ref()
+            .map_or(Trailing::default(), |w| w.read[t * self.width + i])
     }
 
     /// The market instrument `i` trades in, or `None` for the engine's own.

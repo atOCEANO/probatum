@@ -1,33 +1,51 @@
 //! The next-bar fill model. An order decided at the close of one bar fills on the
 //! NEXT bar, so a fill is never priced off information the decision could not have
 //! seen. Market fills are takers, a limit is a taker only on a first bar that opens
-//! at or through it, and a stop triggers and then fills as a taker. See ADR 0013
-//! (slippage and the volume cap) and ADR 0011 (maker and taker).
+//! at or through it, and a stop triggers and then fills as a taker. What a fill may
+//! take and what it pays read the window before its bar (Specification, Fills; ADRs
+//! 0011, 0013).
 
 use probatum_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
+
+use crate::window::Trailing;
 
 /// The most a taker fill may be moved against itself, as a fraction of the
 /// reference price. A slip of 1.0 would price a sell at zero and anything beyond
 /// it below zero, which is not a trade, so the total is held just under 1 (ADR 0013).
 const MAX_SLIP: f64 = 0.99;
 
-/// The cost side of execution: how far a market order slips and how much of a bar
-/// one order may consume.
+/// How a taker's impact grows with its share of the trailing volume.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Impact {
+    /// `k * sigma * q / V`.
+    #[default]
+    Linear,
+    /// `k * sigma * sqrt(q / V)`.
+    Sqrt,
+}
+
+/// The spread a taker crosses half of.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Spread {
+    #[default]
+    None,
+    /// A fixed spread, in basis points of the price.
+    Fixed(f64),
+    /// Ardia, Guidotti and Kroencke's estimate over the window.
+    Estimated,
+}
+
+/// The cost side of execution: what a taker pays beyond its reference. What a fill
+/// may take of a bar is the engine's budget, which every order on the bar shares.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FillModel {
     /// Adverse slippage on a taker fill, in basis points off the reference price.
     pub slippage_bps: Bps,
-    /// The most of a bar's volume ONE order may take, as a fraction (1.0 is the
-    /// whole bar), so no single fill exceeds that slice of what the bar traded.
-    /// Volume is in base units, as an order's size is (ADR 0013). The cap is per
-    /// order, not a shared per-bar budget: several orders resolving against the
-    /// same bar each get it, which is why the queue of pending market orders is
-    /// bounded rather than unlimited (ADR 0010).
-    pub max_fill_fraction: f64,
-    /// Market-impact coefficient: extra adverse slippage equal to `impact` times
-    /// the fill's fraction of the bar volume, so a larger order pays more. Zero
-    /// disables it. See ADR 0013.
+    /// The impact coefficient `k`, scaled by the window's volatility and the fill's
+    /// share of its trailing volume. Zero disables it.
     pub impact: f64,
+    pub impact_model: Impact,
+    pub spread: Spread,
 }
 
 /// What a fill is measured against and what it paid beyond that, each per unit of
@@ -35,9 +53,10 @@ pub struct FillModel {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FillCosts {
     /// The price the fill is measured from: the open for a market order, the worse
-    /// of the open and the trigger for a stop, and a limit's own price.
+    /// of the open and the trigger for a stop, and a limit's own price, or the
+    /// price the market reached for it since the last close.
     pub reference: f64,
-    /// Half the spread, which nothing charges until the spread is modelled.
+    /// Half the spread.
     pub spread: f64,
     pub slippage: f64,
     pub impact: f64,
@@ -56,18 +75,17 @@ pub(crate) fn positive(x: f64) -> bool {
 }
 
 impl FillModel {
-    /// The fillable size: the order's remaining, capped at the volume fraction.
-    /// BOTH sides carry a guard, since a minimum keeps a real operand over a NaN: a
-    /// non-finite remaining would launder a NaN size into a full-cap fill (ADR
-    /// 0014), and a non-finite fraction would delete the cap altogether and let one
-    /// order take more than the bar traded (ADR 0013). The available side must be
-    /// finite as well as positive: an infinite fraction would hand back the whole
-    /// remaining. Guarded so, the smaller is taken with one comparison, where
-    /// `f64::min` would pay to skip a NaN neither side can be.
-    fn cap(&self, order: &Order, bar: &Candle) -> f64 {
+    /// The fillable size: the order's remaining, held to `available`, what the bar's
+    /// budget still allows its instrument. A bar that printed no volume fills
+    /// nothing. A non-finite remaining would launder a NaN size into a fill of the
+    /// whole budget (ADR 0014), so it fills nothing too; guarded so, the smaller is
+    /// taken with one comparison, where `f64::min` would pay to skip a NaN neither
+    /// side can be.
+    fn cap(&self, order: &Order, bar: &Candle, available: f64) -> f64 {
         let remaining = order.remaining().get();
-        let available = self.max_fill_fraction * bar.volume;
-        if !remaining.is_finite() || !positive(available) {
+        // a NaN budget, which no bar can hold, is no budget either
+        let left = available > 0.0;
+        if !remaining.is_finite() || !positive(bar.volume) || !left {
             return 0.0;
         }
         if available < remaining {
@@ -77,45 +95,63 @@ impl FillModel {
         }
     }
 
-    /// The adverse slip on a taker fill, as its total and its two parts, the flat
-    /// rate and the impact term. Both are floored at zero, since slippage is adverse
-    /// by definition (ADR 0013) and a negative rate would fill better than the
-    /// market, and the total is capped below 1 so the reference price can never be
-    /// dropped to zero or through it, the parts scaled down with it (ADR 0013).
-    fn taker_slip(&self, size: f64, volume: f64) -> (f64, f64, f64) {
+    /// The adverse move on a taker fill of `size`, as its total and its three parts:
+    /// half the spread, the flat slippage and the impact on the window `trailing`
+    /// gives, which is read only where the impact or an estimated spread asks for it.
+    /// The slippage and the impact are floored at zero, since a cost is adverse by
+    /// definition (ADR 0013) and a negative one would fill better than the market,
+    /// and the total is capped below 1 so the reference price can never be dropped to
+    /// zero or through it, the parts scaled down with it (ADR 0013).
+    fn taker_slip(&self, size: f64, trailing: impl Fn() -> Trailing) -> (f64, f64, f64, f64) {
         let flat = self.slippage_bps.as_fraction().max(0.0);
         let coefficient = self.impact.max(0.0);
-        // with no impact the slip is the flat rate under its cap, as the sums below
-        // would find it
-        if coefficient == 0.0 && flat <= MAX_SLIP {
-            return (flat, flat, 0.0);
+        // with no spread and no impact the slip is the flat rate under its cap, as
+        // the sums below would find it
+        if coefficient == 0.0 && matches!(self.spread, Spread::None) && flat <= MAX_SLIP {
+            return (flat, 0.0, flat, 0.0);
         }
-        let impact = if positive(volume) {
-            coefficient * (size / volume)
+        let window = if coefficient > 0.0 || matches!(self.spread, Spread::Estimated) {
+            trailing()
+        } else {
+            Trailing::default()
+        };
+        let half = match self.spread {
+            Spread::None => 0.0,
+            Spread::Fixed(bps) => bps / 10_000.0 / 2.0,
+            Spread::Estimated => window.spread / 2.0,
+        };
+        let impact = if coefficient > 0.0 && positive(window.volume) {
+            let share = size / window.volume;
+            coefficient
+                * window.sigma
+                * match self.impact_model {
+                    Impact::Linear => share,
+                    Impact::Sqrt => share.sqrt(),
+                }
         } else {
             0.0
         };
-        let slip = flat + impact;
+        let slip = half + flat + impact;
         if !slip.is_finite() {
-            // an impact past every float, from a bar that traded almost nothing
-            return (MAX_SLIP, 0.0, MAX_SLIP);
+            // an impact past every float, from a window that traded almost nothing
+            return (MAX_SLIP, 0.0, 0.0, MAX_SLIP);
         }
         let total = slip.min(MAX_SLIP);
         let scale = if slip > 0.0 { total / slip } else { 1.0 };
-        (total, flat * scale, impact * scale)
+        (total, half * scale, flat * scale, impact * scale)
     }
 
     /// A taker price held inside the bar that produced it.
     ///
     /// Slippage and impact are adverse by construction, and impact is bounded above
-    /// by nothing the bar shows: it is `impact` times the fraction of the bar's
-    /// volume taken (ADR 0013), and the total is capped only at `MAX_SLIP`, which is
-    /// a rule about not reaching zero rather than about the market. So an order
-    /// taking a whole bar at a coefficient of 0.5 was priced 50% away from anything
-    /// the bar traded near. A venue cannot fill outside what traded, and a loss
-    /// booked against a price the bar does not show is bounded by nothing at all,
-    /// which defeats the liquidation's own guarantee from outside the liquidation
-    /// (ADRs 0017, 0018). The bound is the bar's own range (ADR 0013).
+    /// by nothing the bar shows: it grows with the share of the trailing volume
+    /// taken (ADR 0013), and the total is capped only at `MAX_SLIP`, which is a rule
+    /// about not reaching zero rather than about the market. So an order taking a
+    /// whole bar was priced far from anything the bar traded near. A venue cannot
+    /// fill outside what traded, and a loss booked against a price the bar does not
+    /// show is bounded by nothing at all, which defeats the liquidation's own
+    /// guarantee from outside the liquidation (ADRs 0017, 0018). The bound is the
+    /// bar's own range (ADR 0013).
     fn within(side: Side, price: f64, bar: &Candle) -> f64 {
         match side {
             Side::Buy => price.min(bar.high),
@@ -124,15 +160,17 @@ impl FillModel {
     }
 
     /// A taker's fill of `size` off `reference`: lifted on a buy and dropped on a
-    /// sell by the slip, then held inside the bar, with what it paid.
+    /// sell by its costs on the window `trailing`, then held inside the bar, with
+    /// what it paid.
     pub(crate) fn taker_fill(
         &self,
         side: Side,
         size: f64,
         reference: f64,
         bar: &Candle,
+        trailing: impl Fn() -> Trailing,
     ) -> (Fill, FillCosts) {
-        let (total, slippage, impact) = self.taker_slip(size, bar.volume);
+        let (total, spread, slippage, impact) = self.taker_slip(size, trailing);
         let raw = match side {
             Side::Buy => reference * (1.0 + total),
             Side::Sell => reference * (1.0 - total),
@@ -140,7 +178,7 @@ impl FillModel {
         let price = Self::within(side, raw, bar);
         let costs = FillCosts {
             reference,
-            spread: 0.0,
+            spread: reference * spread,
             slippage: reference * slippage,
             impact: reference * impact,
             adjustment: price - raw,
@@ -149,29 +187,43 @@ impl FillModel {
     }
 
     /// Fill a market order against `bar` (the bar after the decision). Priced off
-    /// the bar open, lifted on a buy and dropped on a sell by the slippage, sized
-    /// at the remaining capped to the volume fraction. `None` if the bar gives no
-    /// volume.
-    pub fn fill_market(&self, order: &Order, bar: &Candle) -> Option<(Fill, FillCosts)> {
-        let size = self.cap(order, bar);
+    /// the bar open, lifted on a buy and dropped on a sell by its costs, sized at
+    /// the remaining held to `available`. `None` if the bar gives no volume or the
+    /// budget is spent.
+    pub fn fill_market(
+        &self,
+        order: &Order,
+        bar: &Candle,
+        available: f64,
+        trailing: impl Fn() -> Trailing,
+    ) -> Option<(Fill, FillCosts)> {
+        let size = self.cap(order, bar, available);
         if size <= 0.0 {
             return None;
         }
-        Some(self.taker_fill(order.side, size, bar.open, bar))
+        Some(self.taker_fill(order.side, size, bar.open, bar, trailing))
     }
 
     /// Fill a resting limit against `bar`. A buy fills if the bar trades at or
-    /// below its price, a sell if at or above. It fills AT the limit price, never
-    /// better (a bar that gaps through still fills at the limit), pays no
-    /// slippage, and is capped at the volume fraction. `None` if untouched or the
-    /// bar gives no volume.
+    /// below its price, a sell if at or above, sized at the remaining held to
+    /// `available`, and pays no slippage. It fills at its own price, or, where no
+    /// trade from `close`, the last close, through the bar reached that price, at
+    /// the best of those trades: a buy placed through the market fills where the
+    /// market was, not where it was asked to. `None` if untouched, the bar gives no
+    /// volume or the budget is spent.
     ///
     /// It pays the taker rate only on its first bar, when that bar opens at or
     /// through it, since it is then lifted on arrival; one that has rested through
     /// a bar is on the book and pays the maker rate whatever later bars do. The
     /// straddle a maker rebate would pay, a buy and a sell at one price both filled
     /// on a wide bar, is refused at placement instead (ADR 0011).
-    pub fn fill_limit(&self, order: &Order, bar: &Candle) -> Option<(Fill, FillCosts)> {
+    pub fn fill_limit(
+        &self,
+        order: &Order,
+        bar: &Candle,
+        available: f64,
+        close: f64,
+    ) -> Option<(Fill, FillCosts)> {
         let limit = order.price?.get();
         let touched = match order.side {
             Side::Buy => bar.low <= limit,
@@ -180,19 +232,23 @@ impl FillModel {
         if !touched {
             return None;
         }
-        let size = self.cap(order, bar);
+        let size = self.cap(order, bar, available);
         if size <= 0.0 {
             return None;
         }
+        let price = match order.side {
+            Side::Buy => limit.min(close.max(bar.high)),
+            Side::Sell => limit.max(close.min(bar.low)),
+        };
         let fill = Fill {
             side: order.side,
             size: Qty(size),
-            price: Price(limit),
+            price: Price(price),
             is_taker: !order.on_book
                 && self.limit_crosses(order.side, Price(limit), Price(bar.open)),
         };
         let costs = FillCosts {
-            reference: limit,
+            reference: price,
             ..FillCosts::default()
         };
         Some((fill, costs))
@@ -201,9 +257,16 @@ impl FillModel {
     /// Trigger a stop against `bar`. A buy stop triggers when the bar reaches its
     /// trigger from below, a sell stop from above. Once triggered it fills as a
     /// taker at the worse of the trigger and the bar open (so a gap through the
-    /// stop fills at the gap), then takes slippage. `None` if not triggered or the
-    /// bar gives no volume.
-    pub fn fill_stop(&self, order: &Order, bar: &Candle) -> Option<(Fill, FillCosts)> {
+    /// stop fills at the gap), then pays its costs on the window `trailing`, sized
+    /// at the remaining held to `available`. `None` if not triggered, the bar gives
+    /// no volume or the budget is spent.
+    pub fn fill_stop(
+        &self,
+        order: &Order,
+        bar: &Candle,
+        available: f64,
+        trailing: impl Fn() -> Trailing,
+    ) -> Option<(Fill, FillCosts)> {
         let trigger = order.trigger?.get();
         let triggered = match order.side {
             Side::Buy => bar.high >= trigger,
@@ -212,7 +275,7 @@ impl FillModel {
         if !triggered {
             return None;
         }
-        let size = self.cap(order, bar);
+        let size = self.cap(order, bar, available);
         if size <= 0.0 {
             return None;
         }
@@ -220,7 +283,7 @@ impl FillModel {
             Side::Buy => bar.open.max(trigger),
             Side::Sell => bar.open.min(trigger),
         };
-        Some(self.taker_fill(order.side, size, reference, bar))
+        Some(self.taker_fill(order.side, size, reference, bar, trailing))
     }
 
     /// Would a limit at `price` on `side` cross immediately against `reference`,
@@ -247,8 +310,12 @@ fn taker(side: Side, size: f64, price: f64) -> Fill {
 
 #[cfg(test)]
 mod tests {
-    use super::{positive, FillCosts, FillModel};
+    use super::{positive, FillCosts, FillModel, Impact, Spread};
+    use crate::window::Trailing;
     use probatum_core::{Bps, Candle, Order, OrderId, Price, Qty, Side, TimeInForce};
+
+    /// No budget spent yet: an order takes all it asks.
+    const ALL: f64 = f64::INFINITY;
 
     #[test]
     fn positive_holds_for_a_positive_finite_number_alone() {
@@ -285,12 +352,35 @@ mod tests {
         ohlc(open, open + 50.0, open - 50.0, open + 30.0, volume)
     }
 
-    fn model(slip_bps: f64, cap: f64) -> FillModel {
+    fn model(slip_bps: f64) -> FillModel {
         FillModel {
             slippage_bps: Bps(slip_bps),
-            max_fill_fraction: cap,
             impact: 0.0,
+            impact_model: Impact::Linear,
+            spread: Spread::None,
         }
+    }
+
+    /// A model with impact `k` under `impact_model` and nothing else.
+    fn impacted(k: f64, impact_model: Impact) -> FillModel {
+        FillModel {
+            impact: k,
+            impact_model,
+            ..model(0.0)
+        }
+    }
+
+    /// A window that traded `volume` a bar with log returns of deviation `sigma`.
+    fn window(volume: f64, sigma: f64) -> Trailing {
+        Trailing {
+            volume,
+            sigma,
+            spread: 0.0,
+        }
+    }
+
+    fn quiet() -> Trailing {
+        window(1000.0, 0.0)
     }
 
     fn market(side: Side, size: f64) -> Order {
@@ -321,8 +411,8 @@ mod tests {
 
     #[test]
     fn buy_market_fills_at_open_plus_slippage() {
-        let f = model(10.0, 1.0)
-            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0))
+        let f = model(10.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0), ALL, quiet)
             .unwrap()
             .0;
         assert!(approx(f.price.get(), 100.1));
@@ -331,8 +421,8 @@ mod tests {
 
     #[test]
     fn sell_market_fills_at_open_minus_slippage() {
-        let f = model(10.0, 1.0)
-            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0))
+        let f = model(10.0)
+            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0), ALL, quiet)
             .unwrap()
             .0;
         assert!(approx(f.price.get(), 99.9));
@@ -341,12 +431,12 @@ mod tests {
     #[test]
     fn market_uses_open_not_intrabar_extremes() {
         let b = bar(100.0, 1000.0); // high 150, low 50, close 130
-        let buy = model(0.0, 1.0)
-            .fill_market(&market(Side::Buy, 1.0), &b)
+        let buy = model(0.0)
+            .fill_market(&market(Side::Buy, 1.0), &b, ALL, quiet)
             .unwrap()
             .0;
-        let sell = model(0.0, 1.0)
-            .fill_market(&market(Side::Sell, 1.0), &b)
+        let sell = model(0.0)
+            .fill_market(&market(Side::Sell, 1.0), &b, ALL, quiet)
             .unwrap()
             .0;
         assert_eq!(buy.price.get(), 100.0);
@@ -354,56 +444,92 @@ mod tests {
     }
 
     #[test]
-    fn volume_cap_limits_market_size() {
-        let f = model(0.0, 0.1)
-            .fill_market(&market(Side::Buy, 250.0), &bar(100.0, 1000.0))
+    fn the_budget_left_limits_a_market_order() {
+        let f = model(0.0)
+            .fill_market(&market(Side::Buy, 250.0), &bar(100.0, 1000.0), 100.0, quiet)
             .unwrap()
             .0;
         assert_eq!(f.size, Qty(100.0));
     }
 
     #[test]
-    fn market_impact_scales_slippage_with_the_volume_fraction() {
-        // impact 0.5, no flat slippage: a buy of 100 into a 1000-volume bar takes
-        // 10% of it, so slip = 0.5 * 0.1 = 0.05; price = 100 * 1.05 = 105.
-        let f = FillModel {
-            slippage_bps: Bps(0.0),
-            max_fill_fraction: 1.0,
-            impact: 0.5,
-        };
-        let fill = f
-            .fill_market(&market(Side::Buy, 100.0), &bar(100.0, 1000.0))
-            .unwrap()
-            .0;
-        assert!(approx(fill.price.get(), 105.0));
+    fn a_spent_budget_fills_nothing() {
+        for available in [0.0, -1.0, f64::NAN] {
+            let f = model(0.0).fill_market(
+                &market(Side::Buy, 1.0),
+                &bar(100.0, 1000.0),
+                available,
+                quiet,
+            );
+            assert!(f.is_none(), "{available} left filled");
+        }
     }
 
     #[test]
-    fn zero_volume_bar_fills_nothing() {
-        assert!(model(0.0, 1.0)
-            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 0.0))
-            .is_none());
-    }
-
-    #[test]
-    fn a_non_finite_fill_fraction_does_not_remove_the_cap() {
-        // f64::min keeps the other operand when one side is NaN, so an unguarded
-        // NaN or inf fraction would let one order take the whole order size
-        // regardless of what the bar traded (ADR 0013)
-        for fraction in [f64::NAN, f64::INFINITY] {
-            let f =
-                model(0.0, fraction).fill_market(&market(Side::Buy, 10_000.0), &bar(100.0, 5.0));
+    fn impact_grows_with_the_share_of_the_trailing_volume_and_its_volatility() {
+        // a buy of 100 against a trailing volume of 1000 takes a share of 0.1, which
+        // at k of 0.5 and a deviation of 0.02 moves it 0.1% linearly and 0.316% under
+        // the square root
+        let trailing = window(1000.0, 0.02);
+        for (impact_model, moved) in [
+            (Impact::Linear, 0.001),
+            (Impact::Sqrt, 0.01 * 0.1f64.sqrt()),
+        ] {
+            let fill = impacted(0.5, impact_model)
+                .fill_market(&market(Side::Buy, 100.0), &bar(100.0, 1000.0), ALL, || {
+                    trailing
+                })
+                .unwrap()
+                .0;
             assert!(
-                f.is_none(),
-                "fraction {fraction} filled against a 5-volume bar"
+                approx(fill.price.get(), 100.0 * (1.0 + moved)),
+                "{impact_model:?}"
             );
         }
     }
 
     #[test]
+    fn a_taker_pays_half_the_spread_the_slippage_and_the_impact() {
+        // the Specification's example: a buy of 0.141 BTC on a bar that opens at
+        // 21,012.00, an estimated spread of 0.6 bps, a slippage of 1 bp and impact
+        // under sqrt(0.1) with a deviation of 0.004 and a trailing volume of 24,800,
+        // which add 0.63, 2.10 and 0.02 and fill it at 21,014.75
+        let m = FillModel {
+            slippage_bps: Bps(1.0),
+            impact: 0.1,
+            impact_model: Impact::Sqrt,
+            spread: Spread::Estimated,
+        };
+        let trailing = Trailing {
+            volume: 24_800.0,
+            sigma: 0.004,
+            spread: 0.6e-4,
+        };
+        let bar = ohlc(21_012.0, 21_030.0, 21_000.0, 21_020.0, 30_000.0);
+        let (fill, costs) = m
+            .fill_market(&market(Side::Buy, 0.141), &bar, ALL, || trailing)
+            .unwrap();
+        assert!((costs.spread - 0.63).abs() < 0.005, "{}", costs.spread);
+        assert!((costs.slippage - 2.10).abs() < 0.005, "{}", costs.slippage);
+        assert!((costs.impact - 0.02).abs() < 0.005, "{}", costs.impact);
+        assert!(
+            (fill.price.get() - 21_014.75).abs() < 0.005,
+            "{}",
+            fill.price.get()
+        );
+    }
+
+    #[test]
+    fn zero_volume_bar_fills_nothing() {
+        assert!(model(0.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 0.0), ALL, quiet)
+            .is_none());
+    }
+
+    #[test]
     fn a_negative_volume_bar_fills_nothing() {
-        assert!(model(0.0, 1.0)
-            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, -5.0))
+        assert!(model(0.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, -5.0), ALL, quiet)
             .is_none());
     }
 
@@ -411,13 +537,13 @@ mod tests {
     fn a_negative_slippage_cannot_improve_a_fill() {
         // slippage is adverse by definition (ADR 0013); a negative rate would fill
         // a buy below the open and mint equity out of the cost model
-        let f = model(-20_000.0, 1.0)
-            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0))
+        let f = model(-20_000.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0), ALL, quiet)
             .unwrap()
             .0;
         assert_eq!(f.price.get(), 100.0);
-        let s = model(-20_000.0, 1.0)
-            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0))
+        let s = model(-20_000.0)
+            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0), ALL, quiet)
             .unwrap()
             .0;
         assert_eq!(s.price.get(), 100.0);
@@ -427,19 +553,18 @@ mod tests {
     fn a_sell_is_never_priced_at_or_below_zero() {
         // a huge flat slip or a huge impact would otherwise reach 1.0 and price the
         // fill at zero, or beyond it and price it negative (ADR 0013)
-        let flat = model(50_000.0, 1.0)
-            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0))
+        let flat = model(50_000.0)
+            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0), ALL, quiet)
             .unwrap()
             .0;
         assert!(flat.price.get() > 0.0);
-
-        let heavy = FillModel {
-            slippage_bps: Bps(0.0),
-            max_fill_fraction: 1.0,
-            impact: 5.0,
-        };
-        let f = heavy
-            .fill_market(&market(Side::Sell, 1000.0), &bar(100.0, 1000.0))
+        let f = impacted(5.0, Impact::Linear)
+            .fill_market(
+                &market(Side::Sell, 1000.0),
+                &bar(100.0, 1000.0),
+                ALL,
+                || window(1000.0, 1.0),
+            )
             .unwrap()
             .0;
         assert!(f.price.get() > 0.0, "priced at {}", f.price.get());
@@ -449,10 +574,12 @@ mod tests {
 
     #[test]
     fn buy_limit_fills_when_bar_dips_to_it() {
-        let f = model(50.0, 1.0)
+        let f = model(50.0)
             .fill_limit(
                 &limit(Side::Buy, 1.0, 100.0),
                 &ohlc(101.0, 102.0, 98.0, 101.0, 1000.0),
+                ALL,
+                101.0,
             )
             .unwrap()
             .0;
@@ -462,20 +589,24 @@ mod tests {
 
     #[test]
     fn buy_limit_untouched_does_not_fill() {
-        assert!(model(0.0, 1.0)
+        assert!(model(0.0)
             .fill_limit(
                 &limit(Side::Buy, 1.0, 100.0),
-                &ohlc(102.0, 103.0, 101.0, 102.0, 1000.0)
+                &ohlc(102.0, 103.0, 101.0, 102.0, 1000.0),
+                ALL,
+                102.0,
             )
             .is_none());
     }
 
     #[test]
     fn sell_limit_fills_when_bar_rises_to_it() {
-        let f = model(0.0, 1.0)
+        let f = model(0.0)
             .fill_limit(
                 &limit(Side::Sell, 1.0, 100.0),
                 &ohlc(99.0, 101.0, 98.0, 100.0, 1000.0),
+                ALL,
+                99.0,
             )
             .unwrap()
             .0;
@@ -484,11 +615,14 @@ mod tests {
 
     #[test]
     fn buy_limit_gap_through_still_fills_at_limit_never_better() {
-        // limit 100; bar gaps down, opens 95 (low 90). Fills at 100, not 95.
-        let f = model(0.0, 1.0)
+        // limit 100 placed at a close of 101; the bar gaps down, opens 95 (low 90).
+        // The close traded through the limit, so it fills at 100, not at 95
+        let f = model(0.0)
             .fill_limit(
                 &limit(Side::Buy, 1.0, 100.0),
                 &ohlc(95.0, 96.0, 90.0, 95.0, 1000.0),
+                ALL,
+                101.0,
             )
             .unwrap()
             .0;
@@ -498,22 +632,55 @@ mod tests {
     }
 
     #[test]
+    fn a_limit_placed_through_the_market_fills_where_the_market_traded() {
+        // the Specification's example: a buy limit at 110 placed at a close of 100
+        // meets a bar that opens at 96 with a high of 98, and since no trade from
+        // that close through the bar reached 110 it fills at 100, the highest of
+        // them; a sell at 90 on a bar from 104 to a low of 102 fills at 100 too
+        let (bought, costs) = model(0.0)
+            .fill_limit(
+                &limit(Side::Buy, 1.0, 110.0),
+                &ohlc(96.0, 98.0, 95.0, 97.0, 1000.0),
+                ALL,
+                100.0,
+            )
+            .unwrap();
+        assert_eq!((bought.price.get(), costs.reference), (100.0, 100.0));
+        assert!(bought.is_taker);
+        let sold = model(0.0)
+            .fill_limit(
+                &limit(Side::Sell, 1.0, 90.0),
+                &ohlc(104.0, 106.0, 102.0, 103.0, 1000.0),
+                ALL,
+                100.0,
+            )
+            .unwrap()
+            .0;
+        assert_eq!(sold.price.get(), 100.0);
+    }
+
+    #[test]
     fn a_limit_is_a_taker_only_on_a_first_bar_that_opens_through_it() {
-        let m = model(0.0, 1.0);
+        let m = model(0.0);
         // the bar opens away from the limit and has to come to it: a maker
         let made = m
             .fill_limit(
                 &limit(Side::Buy, 1.0, 100.0),
                 &ohlc(101.0, 102.0, 98.0, 101.0, 1000.0),
+                ALL,
+                101.0,
             )
             .unwrap()
             .0;
         assert!(!made.is_taker);
         // its first bar opens at the limit, so it is lifted on arrival: a taker
         let bar = ohlc(100.0, 101.0, 99.0, 100.0, 1000.0);
-        let bought = m.fill_limit(&limit(Side::Buy, 1.0, 100.0), &bar).unwrap().0;
+        let bought = m
+            .fill_limit(&limit(Side::Buy, 1.0, 100.0), &bar, ALL, 100.0)
+            .unwrap()
+            .0;
         let sold = m
-            .fill_limit(&limit(Side::Sell, 1.0, 100.0), &bar)
+            .fill_limit(&limit(Side::Sell, 1.0, 100.0), &bar, ALL, 100.0)
             .unwrap()
             .0;
         assert!(bought.is_taker);
@@ -523,15 +690,17 @@ mod tests {
             on_book: true,
             ..limit(Side::Buy, 1.0, 100.0)
         };
-        assert!(!m.fill_limit(&rested, &bar).unwrap().0.is_taker);
+        assert!(!m.fill_limit(&rested, &bar, ALL, 100.0).unwrap().0.is_taker);
     }
 
     #[test]
-    fn volume_cap_limits_limit_size() {
-        let f = model(0.0, 0.1)
+    fn the_budget_left_limits_a_limit() {
+        let f = model(0.0)
             .fill_limit(
                 &limit(Side::Buy, 250.0, 100.0),
                 &ohlc(101.0, 102.0, 98.0, 101.0, 1000.0),
+                100.0,
+                101.0,
             )
             .unwrap()
             .0;
@@ -543,10 +712,12 @@ mod tests {
     #[test]
     fn sell_stop_triggers_and_fills_at_trigger_with_slippage() {
         // sell stop 90; bar low 88 triggers, no gap (open 95). Fill at 90 - slip.
-        let f = model(10.0, 1.0)
+        let f = model(10.0)
             .fill_stop(
                 &stop(Side::Sell, 1.0, 90.0),
                 &ohlc(95.0, 96.0, 88.0, 92.0, 1000.0),
+                ALL,
+                quiet,
             )
             .unwrap()
             .0;
@@ -557,10 +728,12 @@ mod tests {
     #[test]
     fn sell_stop_gap_fills_at_the_worse_open() {
         // sell stop 90; bar gaps down, opens 85 (worse). Fill at 85 - slip.
-        let f = model(10.0, 1.0)
+        let f = model(10.0)
             .fill_stop(
                 &stop(Side::Sell, 1.0, 90.0),
                 &ohlc(85.0, 86.0, 84.0, 85.0, 1000.0),
+                ALL,
+                quiet,
             )
             .unwrap()
             .0;
@@ -570,10 +743,12 @@ mod tests {
     #[test]
     fn buy_stop_triggers_at_trigger_with_slippage() {
         // buy stop 110; bar high 112 triggers, no gap (open 105). Fill at 110 + slip.
-        let f = model(10.0, 1.0)
+        let f = model(10.0)
             .fill_stop(
                 &stop(Side::Buy, 1.0, 110.0),
                 &ohlc(105.0, 112.0, 104.0, 111.0, 1000.0),
+                ALL,
+                quiet,
             )
             .unwrap()
             .0;
@@ -583,10 +758,12 @@ mod tests {
     #[test]
     fn buy_stop_gap_fills_at_the_worse_open() {
         // buy stop 110; bar gaps up, opens 115. Fill at 115 + slip.
-        let f = model(10.0, 1.0)
+        let f = model(10.0)
             .fill_stop(
                 &stop(Side::Buy, 1.0, 110.0),
                 &ohlc(115.0, 116.0, 114.0, 115.0, 1000.0),
+                ALL,
+                quiet,
             )
             .unwrap()
             .0;
@@ -595,10 +772,12 @@ mod tests {
 
     #[test]
     fn untriggered_stop_does_not_fill() {
-        assert!(model(0.0, 1.0)
+        assert!(model(0.0)
             .fill_stop(
                 &stop(Side::Sell, 1.0, 90.0),
-                &ohlc(95.0, 96.0, 92.0, 94.0, 1000.0)
+                &ohlc(95.0, 96.0, 92.0, 94.0, 1000.0),
+                ALL,
+                quiet,
             )
             .is_none());
     }
@@ -607,7 +786,7 @@ mod tests {
 
     #[test]
     fn limit_crosses_detects_marketable_orders() {
-        let m = model(0.0, 1.0);
+        let m = model(0.0);
         assert!(m.limit_crosses(Side::Buy, Price(105.0), Price(100.0))); // buy above market
         assert!(!m.limit_crosses(Side::Buy, Price(95.0), Price(100.0))); // buy below: maker
         assert!(m.limit_crosses(Side::Sell, Price(95.0), Price(100.0))); // sell below market
@@ -618,23 +797,20 @@ mod tests {
 
     #[test]
     fn impact_cannot_price_a_market_fill_outside_the_bar() {
-        // impact is a coefficient times the fraction of the bar's volume taken, and
-        // the total slip is bounded only by MAX_SLIP, which is a rule about not
-        // reaching zero. Taking a whole bar at 0.5 priced a buy 50% above anything
-        // that traded, and the loss booked against it was bounded by nothing
-        let m = FillModel {
-            slippage_bps: Bps(0.0),
-            max_fill_fraction: 1.0,
-            impact: 0.5,
-        };
+        // impact grows with the share of the trailing volume taken, and the total is
+        // bounded only by MAX_SLIP, which is a rule about not reaching zero. Taking
+        // the whole window at 0.5 asked a buy 50% above anything that traded, and
+        // the loss booked against it was bounded by nothing
+        let m = impacted(0.5, Impact::Linear);
         let bar = ohlc(100.0, 101.0, 99.0, 100.0, 10.0);
+        let trailing = window(10.0, 1.0);
         let bought = m
-            .fill_market(&market(Side::Buy, 10.0), &bar)
+            .fill_market(&market(Side::Buy, 10.0), &bar, ALL, || trailing)
             .expect("fills")
             .0;
         assert_eq!(bought.price.get(), 101.0);
         let sold = m
-            .fill_market(&market(Side::Sell, 10.0), &bar)
+            .fill_market(&market(Side::Sell, 10.0), &bar, ALL, || trailing)
             .expect("fills")
             .0;
         assert_eq!(sold.price.get(), 99.0);
@@ -642,14 +818,10 @@ mod tests {
 
     #[test]
     fn a_slipped_stop_stays_inside_its_bar() {
-        let m = FillModel {
-            slippage_bps: Bps(5_000.0), // 50%, far past the bar
-            max_fill_fraction: 1.0,
-            impact: 0.0,
-        };
+        let m = model(5_000.0); // 50%, far past the bar
         let bar = ohlc(100.0, 101.0, 90.0, 95.0, 1000.0);
         let fill = m
-            .fill_stop(&stop(Side::Sell, 1.0, 97.0), &bar)
+            .fill_stop(&stop(Side::Sell, 1.0, 97.0), &bar, ALL, quiet)
             .expect("triggered")
             .0;
         assert_eq!(fill.price.get(), 90.0);
@@ -660,8 +832,8 @@ mod tests {
         // the bound is a bound, not a behaviour change: a normal slip off the open
         // lands well inside the bar and comes through exactly as before
         let bar = ohlc(100.0, 105.0, 95.0, 102.0, 1000.0);
-        let fill = model(10.0, 1.0)
-            .fill_market(&market(Side::Buy, 1.0), &bar)
+        let fill = model(10.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar, ALL, quiet)
             .expect("fills")
             .0;
         assert!(
@@ -675,8 +847,8 @@ mod tests {
 
     #[test]
     fn a_market_fill_is_measured_from_the_open_and_pays_its_slippage_beyond_it() {
-        let (fill, costs) = model(10.0, 1.0)
-            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0))
+        let (fill, costs) = model(10.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0), ALL, quiet)
             .unwrap();
         assert_eq!(costs.reference, 100.0);
         assert!(approx(costs.slippage, 0.1));
@@ -686,24 +858,26 @@ mod tests {
 
     #[test]
     fn a_stop_is_measured_from_the_worse_of_the_open_and_its_trigger() {
-        let m = model(10.0, 1.0);
+        let m = model(10.0);
         let stopped = stop(Side::Sell, 1.0, 90.0);
         let (_, reached) = m
-            .fill_stop(&stopped, &ohlc(95.0, 96.0, 88.0, 92.0, 1000.0))
+            .fill_stop(&stopped, &ohlc(95.0, 96.0, 88.0, 92.0, 1000.0), ALL, quiet)
             .unwrap();
         assert_eq!(reached.reference, 90.0);
         let (_, gapped) = m
-            .fill_stop(&stopped, &ohlc(85.0, 86.0, 84.0, 85.0, 1000.0))
+            .fill_stop(&stopped, &ohlc(85.0, 86.0, 84.0, 85.0, 1000.0), ALL, quiet)
             .unwrap();
         assert_eq!(gapped.reference, 85.0);
     }
 
     #[test]
     fn a_limit_is_measured_from_its_own_price_and_pays_nothing_beyond_it() {
-        let (_, costs) = model(50.0, 1.0)
+        let (_, costs) = model(50.0)
             .fill_limit(
                 &limit(Side::Buy, 1.0, 100.0),
                 &ohlc(101.0, 102.0, 98.0, 101.0, 1000.0),
+                ALL,
+                101.0,
             )
             .unwrap();
         let measured = FillCosts {
@@ -717,15 +891,12 @@ mod tests {
     fn a_price_the_bar_held_back_records_how_far() {
         // impact asks 50% over the open and the bar's high of 101 holds the buy, so
         // the costs say what it was asked and the adjustment what the bar took back
-        let m = FillModel {
-            slippage_bps: Bps(0.0),
-            max_fill_fraction: 1.0,
-            impact: 0.5,
-        };
-        let (fill, costs) = m
+        let (fill, costs) = impacted(0.5, Impact::Linear)
             .fill_market(
                 &market(Side::Buy, 10.0),
                 &ohlc(100.0, 101.0, 99.0, 100.0, 10.0),
+                ALL,
+                || window(10.0, 1.0),
             )
             .unwrap();
         assert_eq!(fill.price.get(), 101.0);
@@ -738,11 +909,15 @@ mod tests {
         // a flat 60% and an impact of 60% come to 120%, held to 99%
         let m = FillModel {
             slippage_bps: Bps(6_000.0),
-            max_fill_fraction: 1.0,
-            impact: 0.6,
+            ..impacted(0.6, Impact::Linear)
         };
         let (_, costs) = m
-            .fill_market(&market(Side::Sell, 1000.0), &bar(100.0, 1000.0))
+            .fill_market(
+                &market(Side::Sell, 1000.0),
+                &bar(100.0, 1000.0),
+                ALL,
+                || window(1000.0, 1.0),
+            )
             .unwrap();
         assert!(approx(costs.slippage + costs.impact, 99.0));
         assert!(approx(costs.slippage, costs.impact));

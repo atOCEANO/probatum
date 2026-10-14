@@ -12,7 +12,7 @@ use probatum_core::{
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
-use crate::execution::FillCosts;
+use crate::execution::{positive, FillCosts};
 use crate::reporter::{EventKind, EventReason, FillReason};
 
 /// How badly a fill on `side` at `price` ends for the position currently held: the
@@ -70,15 +70,13 @@ impl Engine {
                 continue;
             }
             let requested = order.remaining().get();
-            let Some((fill, costs)) = self.fill_model.fill_market(order, &bar) else {
-                self.log_event(
-                    EventKind::NotFilled,
-                    Some(order.id),
-                    Some(i),
-                    None,
-                    None,
-                    EventReason::NothingFilled,
-                );
+            let available = self.available(i);
+            let trailing = || self.candles.trailing(self.tick, i);
+            let made = self
+                .fill_model
+                .fill_market(order, &bar, available, trailing);
+            let Some((fill, costs)) = made else {
+                self.market_not_filled(order, &bar);
                 continue;
             };
             // FOK is all or nothing against everything that can shrink the fill,
@@ -114,6 +112,7 @@ impl Engine {
                 costs,
                 &bar,
             );
+            self.spend_budget(i, applied);
             // a market order lives one bar, and what it did not fill is gone
             if applied <= 0.0 {
                 self.log_event(
@@ -139,6 +138,19 @@ impl Engine {
         pending.clear();
         self.spare = pending;
         self.targets.keep_waiting(&self.pending);
+    }
+
+    /// Log a market order its bar filled nothing of. A bar that traded, whose budget
+    /// left nothing, refuses an all-or-nothing order for its whole size.
+    #[cold]
+    fn market_not_filled(&mut self, order: &Order, bar: &Candle) {
+        let why = if order.tif == TimeInForce::Fok && positive(bar.volume) {
+            EventReason::Fok
+        } else {
+            EventReason::NothingFilled
+        };
+        let (id, i) = (order.id, order.instrument);
+        self.log_event(EventKind::NotFilled, Some(id), Some(i), None, None, why);
     }
 
     /// Resolve the resting book against each order's instrument's bar, as the path
@@ -285,8 +297,24 @@ impl Engine {
         };
         let made = match order.kind {
             _ if !armed => None,
-            OrderType::Limit => self.fill_model.fill_limit(&sized, bar),
-            OrderType::Stop => self.fill_model.fill_stop(&sized, bar),
+            // offered all it asks, which ranks the bar's exits; what the budget allows
+            // is read at its turn, as the fills before it left it
+            OrderType::Limit => {
+                // held to the prices traded since the last close, or since the fill
+                // whose part of the bar it meets
+                let close = if parted {
+                    self.starts[i]
+                } else {
+                    self.marks[i]
+                };
+                self.fill_model
+                    .fill_limit(&sized, bar, f64::INFINITY, close)
+            }
+            OrderType::Stop => {
+                let trailing = || self.candles.trailing(self.tick, i);
+                self.fill_model
+                    .fill_stop(&sized, bar, f64::INFINITY, trailing)
+            }
             OrderType::Market => None,
         };
         Offer {
@@ -401,6 +429,7 @@ impl Engine {
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
         let (starts, inside, reach) = (self.starts.clone(), self.inside.clone(), self.reach);
         let (entered, clips, clipped) = (self.entered.clone(), self.clips.clone(), self.clipped);
+        let budget = self.budget.clone();
         let reporter = self.reporter.take();
         let held = self.fill_offers(fills.to_vec(), true);
         let liquidates = held && self.reaches_trigger();
@@ -412,6 +441,7 @@ impl Engine {
         self.clips = clips;
         self.clipped = clipped;
         self.reach = reach;
+        self.budget = budget;
         self.notes.truncate(notes);
         self.flipped = flipped;
         self.fills = count;
@@ -540,6 +570,33 @@ impl Engine {
                 );
                 continue;
             }
+            // the bar the fill met, which prices what the budget allows and which the
+            // margin bound holds its lift inside
+            let bar = self.bar_for(i);
+            let bar = if offer.parted {
+                self.after_fill(i, &bar)
+            } else {
+                bar
+            };
+            // what the bar's budget still allows the order, at the price that size
+            // sets, since a stop's impact grows with it (The liquidity budget)
+            let available = self.available(i);
+            let (fill, costs) = if fill.size.get() <= available {
+                (fill, costs)
+            } else if kind == OrderType::Stop {
+                let trailing = || self.candles.trailing(self.tick, i);
+                self.fill_model
+                    .taker_fill(fill.side, available, costs.reference, &bar, trailing)
+            } else {
+                let fill = Fill {
+                    size: Qty(available),
+                    ..fill
+                };
+                (fill, costs)
+            };
+            if !positive(fill.size.get()) {
+                continue;
+            }
             if kind == OrderType::Limit
                 && tif == TimeInForce::Fok
                 && self.clamp_fill(i, reduce_only, &fill).size.get() + CLOSE_EPS < requested
@@ -552,18 +609,12 @@ impl Engine {
                 _ if leg.is_some() => FillReason::TakeProfit,
                 _ => FillReason::Limit,
             };
-            // the bar the fill met, which the margin bound holds its lift inside
-            let bar = self.bar_for(i);
-            let bar = if offer.parted {
-                self.after_fill(i, &bar)
-            } else {
-                bar
-            };
             let resting = self.book.len();
             let before = self.account.positions[i].qty.get();
             let arming = self.book.legs() > 0 && before == 0.0;
             let applied =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
+            self.spend_budget(i, applied);
             let mut joined = false;
             if applied > 0.0 {
                 // whether the fill moved where the position started: opened, closed,
@@ -677,8 +728,8 @@ mod tests {
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
 
     #[test]
-    fn a_gtc_limit_fills_across_bars_under_the_volume_cap() {
-        // ADR 0013: a resting limit fills up to the volume cap each bar and keeps its
+    fn a_gtc_limit_fills_across_bars_under_the_budget() {
+        // ADR 0013: a resting limit fills up to the bar's budget each bar and keeps its
         // remainder resting for the next, so a large limit completes over several bars
         let candles = Candles::new(vec![
             ohlc(100.0, 100.0, 50.0, 100.0, 10.0), // decision bar
@@ -686,12 +737,12 @@ mod tests {
             ohlc(60.0, 60.0, 40.0, 60.0, 10.0),    // touches again
         ]);
         let cfg = EngineConfig {
-            max_fill_fraction: 0.5, // cap each fill at half the bar volume (5 units)
+            budget: 0.5, // half the trailing volume of 10, 5 units a bar
             ..cfg()
         };
         let mut e = Engine::new(candles, cfg);
         e.reset();
-        e.limit_buy(9.0, 60.0); // wants 9 at 60; the cap allows 5 per bar
+        e.limit_buy(9.0, 60.0); // wants 9 at 60; the budget allows 5 per bar
         let s1 = e.step(); // bar 1: fills 5, 4 remain resting
         assert_eq!(s1.position, 5.0);
         assert_eq!(s1.open_orders.len(), 1);
@@ -755,39 +806,42 @@ mod tests {
             TimeInForce::Fok,
         );
         let s = e.step();
-        assert_eq!(s.position, 10.0); // 10 within the cap, filled whole at 95
+        assert_eq!(s.position, 10.0); // 10 within the budget, filled whole at 95
     }
 
     #[test]
-    fn impact_scales_with_the_fraction_actually_filled() {
-        // both existing fixtures take exactly a tenth of their bar, so they are
-        // degenerate in the one dimension the claim is about and two wrong
-        // implementations reproduce them exactly: a hard-coded tenth, and the
-        // REQUESTED size over the volume rather than the filled one, which are the
-        // same number whenever max_fill_fraction does not bind. Here it binds, so
-        // requested, capped and a tenth are three different fractions
+    fn impact_scales_with_the_share_the_budget_allows() {
+        // impact is k times the window's deviation times the share of its trailing
+        // volume the fill takes, the share the budget ALLOWS rather than the one
+        // requested, which are the same number wherever the budget does not bind.
+        // Here it binds, so a hard-coded share, the requested one and the allowed
+        // one are three different numbers
         let wide = Candles::new(vec![
             ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
-            ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
+            ohlc(100.0, 200.0, 90.0, 110.0, 1000.0),
+            ohlc(110.0, 200.0, 90.0, 100.0, 1000.0),
             ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
         ]);
-        // both caps have to BIND on a request of 400, or the fraction is the
-        // request's own and the second mutant is indistinguishable again
-        for (cap, filled, price) in [(0.25, 250.0, 125.0), (0.2, 200.0, 120.0)] {
+        // the window before the last bar holds returns of ln 1.1 and its negative
+        let sigma = 1.1f64.ln() * 2.0f64.sqrt();
+        // both budgets have to BIND on a request of 400
+        for (budget, filled) in [(0.25, 250.0), (0.2, 200.0)] {
             let mut config = cfg();
             config.quote = 1_000_000.0;
             config.impact = 1.0;
-            config.max_fill_fraction = cap;
+            config.budget = budget;
             let mut e = Engine::new(wide.clone(), config);
             e.reset();
-            e.market_buy(400.0); // more than either cap allows
+            e.step();
+            e.step();
+            e.market_buy(400.0); // more than either budget allows
             let s = e.step();
-            assert_eq!(s.position, filled, "cap {cap} filled the wrong size");
-            // impact 1.0 times the FILLED fraction, off an open of 100
-            assert_eq!(
-                s.quote,
-                1_000_000.0 - filled * price,
-                "cap {cap} priced the fill at something other than {price}"
+            assert_eq!(s.position, filled, "budget {budget} filled the wrong size");
+            let price = 100.0 * (1.0 + sigma * filled / 1000.0);
+            assert!(
+                (s.avg_entry - price).abs() < 1e-9,
+                "budget {budget} priced the fill at {}, not {price}",
+                s.avg_entry
             );
         }
     }
@@ -830,7 +884,7 @@ mod tests {
     #[test]
     fn a_fok_market_fills_fully_or_nothing() {
         let mut config = cfg();
-        config.max_fill_fraction = 0.1; // cap at 100 of a 1000-volume bar
+        config.budget = 0.1; // 100 of a trailing volume of 1000
         let mut e = Engine::new(series(), config);
         e.reset();
         e.order(
@@ -844,7 +898,7 @@ mod tests {
             TimeInForce::Fok,
         );
         let s = e.step();
-        assert_eq!(s.position, 0.0); // 250 over the cap of 100, so FOK fills nothing
+        assert_eq!(s.position, 0.0); // 250 over the budget of 100, so FOK fills nothing
     }
 
     #[test]
@@ -973,7 +1027,7 @@ mod tests {
         // an IOC limit larger than the bar's fillable volume takes what it can this
         // bar and cancels the remainder rather than resting
         let mut config = cfg(); // spot
-        config.max_fill_fraction = 0.1; // at most 10% of a bar's volume per order
+        config.budget = 0.1; // 10% of the trailing volume for every order on the bar
         let candles = Candles::new(vec![
             ohlc(100.0, 160.0, 90.0, 150.0, 1_000.0),
             ohlc(100.0, 160.0, 40.0, 150.0, 1_000.0), // low 40 reaches the limit at 50

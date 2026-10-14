@@ -29,10 +29,10 @@ import numpy as np
 
 import probatum
 from .differential import (KINDS, Script, before, bracket, clock, close_enough,
-                           closed_before, cut, engine_liquidation, limit_price,
-                           liquidation, live, log_difference, prune, resting, setting,
-                           settings, stamps, stop_price, tally, tier_table, walk,
-                           weight, worded)
+                           closed_before, cut, engine_fills, engine_liquidation, fills,
+                           limit_price, liquidation, live, log_difference, prune,
+                           resting, setting, settings, stamps, stop_price, tally,
+                           tier_table, walk, weight, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -796,6 +796,10 @@ def make_reference(times, kinds, columns, cfg, start=0):
         funding         = funding,
         intrabar        = cfg["intrabar"],
         liquidation     = cfg.get("liquidation", "takeover"),
+        budget          = cfg.get("budget", 1.0),
+        window          = cfg.get("window", 24),
+        spread          = cfg.get("spread"),
+        impact          = cfg.get("impact"),
     )
 
     instruments = [Instrument(f"I{k}", kind=kind, tiers=cfg["tiers"][k][0],
@@ -810,10 +814,9 @@ def venue(cfg):
     out = dict(
         market="perp", quote=cfg["balance"], fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
-        max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
-        leverage=cfg["leverage"], impact=0.0,
+        max_open_orders=cfg["max_open_orders"], leverage=cfg["leverage"],
         intrabar=cfg["intrabar"],
-        **engine_liquidation(cfg.get("liquidation", "takeover")),
+        **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
         instruments=[dict(market="spot" if kind == "spot" else "perp", tiers=rows,
                           tiers_by=by)
                      for kind, (rows, by) in zip(cfg["kinds"], cfg["tiers"])],
@@ -946,7 +949,11 @@ def compare(cases, seed):
             case = shared_margin(rng)
         else:
             times, kinds, columns = universe(rng)
-            cfg  = config(rng, times, kinds, columns)
+            cfg = config(rng, times, kinds, columns)
+
+            # the shaped universes are steered without spread or impact, and keep the
+            # plain fill model they were steered on
+            cfg.update(fills(seed, number))
             case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
 
         case[3].setdefault("intrabar", setting(seed, number))

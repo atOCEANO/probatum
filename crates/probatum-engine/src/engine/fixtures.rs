@@ -4,6 +4,7 @@ use probatum_core::{Candle, Market, Tiers};
 
 use super::{EngineConfig, Intrabar, Liquidation};
 use crate::candles::{Candles, Instrument};
+use crate::execution::{Impact, Spread};
 
 pub(super) fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
     Candle {
@@ -50,7 +51,8 @@ pub(super) fn cfg() -> EngineConfig {
         fee_taker: 0.0,
         fee_maker: 0.0,
         slippage_bps: 0.0,
-        max_fill_fraction: 1.0,
+        budget: 1.0,
+        window: 24,
         max_open_orders: 8,
         report: false,
         max_leverage: 0.0,
@@ -59,6 +61,8 @@ pub(super) fn cfg() -> EngineConfig {
         funding_interval: 0,
         intrabar: Intrabar::Pessimistic,
         liquidation: Liquidation::Takeover,
+        impact_model: Impact::Linear,
+        spread: Spread::None,
     }
 }
 

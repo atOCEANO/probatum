@@ -22,6 +22,8 @@ impl EnvBatch {
     /// Build `num_envs` engines over the same candles (shared by `Arc`) and
     /// config.
     pub fn new(num_envs: usize, candles: Candles, config: EngineConfig) -> EnvBatch {
+        // each row's window read once, for every env
+        let candles = Engine::windowed(candles, &config);
         let width = candles.width();
         let engines = (0..num_envs)
             .map(|env| Engine::new(candles.clone(), config).for_env(env))
@@ -33,6 +35,11 @@ impl EnvBatch {
     /// series. Lets each env carry its own config (per-env cost randomization,
     /// ADR 0038) while the candles stay shared with no duplication.
     pub fn with_configs(candles: Candles, configs: &[EngineConfig]) -> EnvBatch {
+        // each row's window read once, for every env that reads it alike
+        let candles = match configs.first() {
+            Some(config) => Engine::windowed(candles, config),
+            None => candles,
+        };
         let width = candles.width();
         let engines = configs
             .iter()
@@ -271,6 +278,7 @@ mod tests {
     use crate::candles::{Candles, Instrument};
     use crate::clock::Clock;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation, TargetError};
+    use crate::execution::{Impact, Spread};
     use probatum_core::{Candle, Market, Side, State, Tiers};
     use proptest::prelude::*;
 
@@ -308,7 +316,8 @@ mod tests {
             fee_taker: 0.0,
             fee_maker: 0.0,
             slippage_bps: 0.0,
-            max_fill_fraction: 1.0,
+            budget: 1.0,
+            window: 24,
             max_open_orders: 8,
             report: false,
             max_leverage: 0.0,
@@ -317,6 +326,8 @@ mod tests {
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
             liquidation: Liquidation::Takeover,
+            impact_model: Impact::Linear,
+            spread: Spread::None,
         }
     }
 
@@ -750,7 +761,8 @@ mod tests {
             fee_taker: 0.0006,
             fee_maker: 0.0002,
             slippage_bps: 2.0,
-            max_fill_fraction: 1.0,
+            budget: 1.0,
+            window: 24,
             max_open_orders: 8,
             report: false,
             max_leverage: 10.0,
@@ -759,6 +771,8 @@ mod tests {
             funding_interval: 2,
             intrabar: Intrabar::Pessimistic,
             liquidation: Liquidation::Takeover,
+            impact_model: Impact::Linear,
+            spread: Spread::None,
         }
     }
 

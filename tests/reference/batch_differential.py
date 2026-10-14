@@ -28,8 +28,9 @@ import numpy as np
 import probatum
 from . import universe_differential
 from .differential import (balance, before, clock, close_enough, closed_before, config,
-                           cut, drawn, engine_funding, liquidation, log_difference,
-                           make_reference, money, set_aside, setting, walk, worded)
+                           cut, drawn, engine_fills, engine_funding, fills, liquidation,
+                           log_difference, make_reference, money, set_aside, setting,
+                           walk, worded)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -58,23 +59,21 @@ def drive_batch(bars, times, cfg, offsets, actions):
     array = np.array([list(bar) for bar in bars], dtype=np.float64)
     batch = probatum.Batch(
         array,
-        num_envs          = len(offsets),
-        market            = cfg["market"],
-        quote             = balance(cfg),
-        fee_taker         = cfg["fee_taker"],
-        fee_maker         = cfg["fee_maker"],
-        slippage_bps      = cfg["slippage_bps"],
-        max_fill_fraction = 1.0,
-        max_open_orders   = cfg["max_open_orders"],
-        leverage          = cfg["leverage"],
-        impact            = 0.0,
-        times             = np.array(times, dtype=np.int64),
-        report            = False,
-        intrabar          = cfg["intrabar"],
-        contract          = cfg.get("contract"),
+        num_envs        = len(offsets),
+        market          = cfg["market"],
+        quote           = balance(cfg),
+        fee_taker       = cfg["fee_taker"],
+        fee_maker       = cfg["fee_maker"],
+        slippage_bps    = cfg["slippage_bps"],
+        max_open_orders = cfg["max_open_orders"],
+        leverage        = cfg["leverage"],
+        times           = np.array(times, dtype=np.int64),
+        report          = False,
+        intrabar        = cfg["intrabar"],
+        contract        = cfg.get("contract"),
         **engine_funding(cfg["funding"]),
+        **engine_fills(cfg),
     )
-
     batch.reset_at_each(np.array(offsets, dtype=np.int64))
 
     seen = []
@@ -94,17 +93,16 @@ def drive_batch(bars, times, cfg, offsets, actions):
 
 
 def drive_references(bars, times, cfg, offsets, actions):
-    """One reference per env over the bars from its offset, on the whole series'
-    interval, so a slice's own median gap cannot move a stamp to another row. A
-    schedule of every n bars is passed as the events it stamps on the whole series,
-    since it counts from each reference's first row."""
+    """One reference per env, opened at its offset on the whole series, so its
+    window reads the bars before that offset as the env's does. A schedule of every
+    n bars is passed as the events it stamps on the whole series."""
     interval = int(statistics.median(b - a for a, b in zip(times, times[1:])))
     events   = None
     if cfg["funding"][0] == "every_bars":
         _, n, rate = cfg["funding"]
         events = [(times[r] + interval, rate) for r in range(n, len(bars), n)]
 
-    refs = [make_reference(bars[off:], cfg, times[off:], interval, events)
+    refs = [make_reference(bars, cfg, times, interval, events, start=off)
             for off in offsets]
 
     seen = []
@@ -190,7 +188,7 @@ def compare(cases, seed):
 
         # tier tables are compared over universes, which `compare_universes` runs
         cfg = dict(config(draw, times, inverse=case >= cases), tiers=None,
-                   intrabar=setting(seed, case))
+                   intrabar=setting(seed, case), **fills(seed, case))
 
         num_envs = draw.randint(2, 5)
         offsets  = offsets_for(draw, bars, num_envs)
@@ -303,6 +301,7 @@ def compare_universes(cases, seed):
         cfg = universe_differential.config(rng, times, kinds, columns)
         cfg["intrabar"]    = setting(seed, case)
         cfg["liquidation"] = liquidation(seed, case, [rows for rows, _ in cfg["tiers"]])
+        cfg.update(fills(seed, case))
         rows     = len(times)
         num_envs = rng.randint(2, 4)
         offsets  = offsets_for(rng, times, num_envs)
@@ -350,10 +349,10 @@ def compare_universes(cases, seed):
                     where = f"env {env} opened at row {start}: {found[1]}"
                     break
 
-                fills = records["fills"]
-                reached["traded"] += bool(fills)
+                logged = records["fills"]
+                reached["traded"] += bool(logged)
                 reached["liquidated"] += any(fill["reason"] == "liquidation"
-                                             for fill in fills)
+                                             for fill in logged)
                 reached["funded"] += bool(np.any(records["ledger"]["funding"] != 0.0))
                 reached["a hole on the row an env opened at"] += any(
                     column[start] is None and any(column[:start]) for column in columns)

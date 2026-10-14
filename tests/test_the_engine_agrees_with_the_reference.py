@@ -37,6 +37,7 @@ SHARED = [
     "a leg joining the check after the open",
     "a limit filled as a maker",
     "a limit filled as a taker",
+    "a limit held to the prices traded since the last close",
     "a limit on the book its bar opened through",
     "a liquidation at the maintenance trigger",
     "a liquidation before the bar opens",
@@ -72,8 +73,11 @@ SHARED = [
     "funding between rows",
     "funding inside a bar counted toward the check",
     "funding inside a bar counted toward the path carried in",
+    "impact paid",
     "an inverse contract filled",
     "slippage paid",
+    "spread paid",
+    "the liquidity budget",
 ]
 
 

@@ -28,8 +28,9 @@ use probatum_core::{
 use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{
-    Action, BatchSnapshot, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Instrument,
-    Intrabar, Liquidation, OrderRef, RoundTrip, Script, Stats, TargetError, Units,
+    Action, BatchSnapshot, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Impact,
+    Instrument, Intrabar, Liquidation, OrderRef, RoundTrip, Script, Spread, Stats, TargetError,
+    Units,
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
@@ -70,6 +71,40 @@ fn parse_liquidation(liquidation: &str, backstop: Option<f64>) -> PyResult<Liqui
         )),
         _ => Err(PyValueError::new_err(format!(
             "liquidation: {liquidation:?} is not a model; use takeover or book_then_backstop"
+        ))),
+    }
+}
+
+/// How a taker's impact grows with its share of the trailing volume, case-insensitively.
+fn parse_impact(model: &str) -> PyResult<Impact> {
+    match model.to_ascii_lowercase().as_str() {
+        "linear" => Ok(Impact::Linear),
+        "sqrt" => Ok(Impact::Sqrt),
+        _ => Err(PyValueError::new_err(format!(
+            "impact_model: {model:?} is not a model; use linear or sqrt"
+        ))),
+    }
+}
+
+/// The spread a taker crosses half of: none, a fixed number of basis points, or
+/// `"estimated"` from the window, case-insensitively.
+fn parse_spread(spread: Option<&Bound<'_, PyAny>>) -> PyResult<Spread> {
+    let Some(spread) = spread else {
+        return Ok(Spread::None);
+    };
+    if let Ok(name) = spread.extract::<String>() {
+        return match name.to_ascii_lowercase().as_str() {
+            "estimated" => Ok(Spread::Estimated),
+            _ => Err(PyValueError::new_err(format!(
+                "spread: {name:?} is not a spread; give basis points, or \"estimated\""
+            ))),
+        };
+    }
+    match spread.extract::<f64>() {
+        Ok(bps) if bps.is_finite() && bps >= 0.0 => Ok(Spread::Fixed(bps)),
+        _ => Err(PyValueError::new_err(format!(
+            "spread: {}; give basis points from 0, or \"estimated\"",
+            shown(spread)
         ))),
     }
 }
@@ -467,7 +502,7 @@ fn check_window(window: usize) -> PyResult<()> {
 
 /// Reject a configuration scalar that is not finite. The candle array is already
 /// checked for exactly this, and a NaN knob is no less poisonous: a NaN quote makes
-/// every state field NaN, and a NaN `max_fill_fraction` deletes the volume cap
+/// every state field NaN, and a NaN `budget` would delete the volume a bar holds,
 /// because `f64::min` keeps the other operand (ADR 0007).
 fn finite(name: &str, value: f64) -> PyResult<f64> {
     if !value.is_finite() {
@@ -787,11 +822,14 @@ fn build_config(
     fee_taker: f64,
     fee_maker: f64,
     slippage_bps: f64,
-    max_fill_fraction: f64,
+    budget: f64,
+    window: usize,
     max_open_orders: usize,
     report: bool,
     leverage: f64,
     impact: f64,
+    impact_model: &str,
+    spread: Option<&Bound<'_, PyAny>>,
     funding_rate: f64,
     funding_interval: usize,
     intrabar: &str,
@@ -828,19 +866,27 @@ fn build_config(
         // slippage and impact are adverse by definition (ADR 0013); a
         // negative rate would fill better than the market and mint equity
         slippage_bps: at_least("slippage_bps", slippage_bps, 0.0)?,
-        max_fill_fraction: {
-            let v = at_least("max_fill_fraction", max_fill_fraction, 0.0)?;
-            if v <= 0.0 {
-                return Err(PyValueError::new_err(
-                    "max_fill_fraction must be greater than 0, got 0",
-                ));
-            }
-            v
+        budget: if budget.is_finite() && budget > 0.0 {
+            budget
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "budget: {budget}; give the share of the trailing volume a bar's fills may \
+                 take, above 0"
+            )));
+        },
+        window: if window > 0 {
+            window
+        } else {
+            return Err(PyValueError::new_err(
+                "window: 0; give the number of bars before a fill its window reads, from 1",
+            ));
         },
         max_open_orders,
         report,
         max_leverage: at_least("leverage", leverage, 0.0)?,
         impact: at_least("impact", impact, 0.0)?,
+        impact_model: parse_impact(impact_model)?,
+        spread: parse_spread(spread)?,
         funding_rate: finite("funding_rate", funding_rate)?,
         funding_interval,
         intrabar: parse_intrabar(intrabar, seed)?,
@@ -1425,11 +1471,14 @@ impl Engine {
         fee_taker = 0.0006,
         fee_maker = 0.0002,
         slippage_bps = 0.0,
-        max_fill_fraction = 1.0,
+        budget = 1.0,
+        window = 24,
         max_open_orders = 8,
         report = false,
         leverage = 10.0,
         impact = 0.0,
+        impact_model = "linear",
+        spread = None,
         funding_rate = 0.0,
         funding_interval = 0,
         times = None,
@@ -1454,11 +1503,14 @@ impl Engine {
         fee_taker: f64,
         fee_maker: f64,
         slippage_bps: f64,
-        max_fill_fraction: f64,
+        budget: f64,
+        window: usize,
         max_open_orders: usize,
         report: bool,
         leverage: f64,
         impact: f64,
+        impact_model: &str,
+        spread: Option<Bound<'_, PyAny>>,
         funding_rate: f64,
         funding_interval: usize,
         times: Option<PyReadonlyArray1<'_, i64>>,
@@ -1482,11 +1534,14 @@ impl Engine {
             fee_taker,
             fee_maker,
             slippage_bps,
-            max_fill_fraction,
+            budget,
+            window,
             max_open_orders,
             report,
             leverage,
             impact,
+            impact_model,
+            spread,
             funding_rate,
             funding_interval,
             times,
@@ -2094,11 +2149,14 @@ impl Batch {
         fee_taker = 0.0006,
         fee_maker = 0.0002,
         slippage_bps = 0.0,
-        max_fill_fraction = 1.0,
+        budget = 1.0,
+        window = 24,
         max_open_orders = 8,
         report = false,
         leverage = 10.0,
         impact = 0.0,
+        impact_model = "linear",
+        spread = None,
         funding_rate = 0.0,
         funding_interval = 0,
         fee_taker_per_env = None,
@@ -2128,11 +2186,14 @@ impl Batch {
         fee_taker: f64,
         fee_maker: f64,
         slippage_bps: f64,
-        max_fill_fraction: f64,
+        budget: f64,
+        window: usize,
         max_open_orders: usize,
         report: bool,
         leverage: f64,
         impact: f64,
+        impact_model: &str,
+        spread: Option<Bound<'_, PyAny>>,
         funding_rate: f64,
         funding_interval: usize,
         fee_taker_per_env: Option<PyReadonlyArray1<'_, f64>>,
@@ -2160,11 +2221,14 @@ impl Batch {
             fee_taker,
             fee_maker,
             slippage_bps,
-            max_fill_fraction,
+            budget,
+            window,
             max_open_orders,
             report,
             leverage,
             impact,
+            impact_model,
+            spread,
             funding_rate,
             funding_interval,
             times,
@@ -3074,11 +3138,14 @@ fn build_series(
     fee_taker: f64,
     fee_maker: f64,
     slippage_bps: f64,
-    max_fill_fraction: f64,
+    budget: f64,
+    window: usize,
     max_open_orders: usize,
     report: bool,
     leverage: f64,
     impact: f64,
+    impact_model: &str,
+    spread: Option<Bound<'_, PyAny>>,
     funding_rate: f64,
     funding_interval: usize,
     times: Option<PyReadonlyArray1<'_, i64>>,
@@ -3144,11 +3211,14 @@ fn build_series(
             fee_taker,
             fee_maker,
             slippage_bps,
-            max_fill_fraction,
+            budget,
+            window,
             max_open_orders,
             report,
             leverage,
             impact,
+            impact_model,
+            spread.as_ref(),
             funding_rate,
             funding_interval,
             intrabar,
@@ -3254,11 +3324,14 @@ fn build_series(
         fee_taker,
         fee_maker,
         slippage_bps,
-        max_fill_fraction,
+        budget,
+        window,
         max_open_orders,
         report,
         leverage,
         impact,
+        impact_model,
+        spread.as_ref(),
         funding_rate,
         funding_interval,
         intrabar,

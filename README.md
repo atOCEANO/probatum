@@ -47,7 +47,7 @@ The whole engine is one small loop: load candles, place an order if you want to,
 
 ## Scope and fidelity
 
-It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, slippage, market impact, a per-order volume cap), a small Python API, and a chart layer that draws a run and your own arrays into one self-contained HTML file.
+It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, a spread, slippage and market impact read off the bars before each fill, a liquidity budget per bar), a small Python API, and a chart layer that draws a run and your own arrays into one self-contained HTML file.
 
 It **does not**: model the full order book (L2), latency, or queue position, and it places no live orders. This is the bar-level, approximate member of a planned family; a future sibling is a tick and L2 engine at higher resolution. At bar granularity the fill model cannot see the intrabar path, so it can be slightly more generous than a live book would be; the costs it charges are the real ones. The bar-level resolution limits are recorded in [ADR 0012](.Documentation/Decisions.md).
 

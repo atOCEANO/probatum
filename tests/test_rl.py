@@ -301,13 +301,24 @@ def ranged_data(t=40, price=100.0, width=10.0):
     )
 
 
+def moving_data(t=40):
+    # the same with closes a point either side of the open, since impact scales with
+    # the deviation of the window's returns, which closes that never move hold at
+    # zero, and a volume of 10, so a trade of 1 is a tenth of what the window traded
+    data = ranged_data(t)
+    data[:, 3] += np.where(np.arange(t) % 2 == 0, 1.0, -1.0)
+    data[:, 4] = 10.0
+    return data
+
+
 def test_each_cost_knob_takes_its_own_range():
     # "each cost knob accepts a (low, high) pair" is four claims and only fee_taker
     # was ever read. A range wired to one knob and ignored on the others leaves this
     # file green, and a cost silently pinned to its default is the worst kind of
     # wrong number: it is plausible (ADR 0038)
-    def spread(**kw):
-        env = VectorEnv(ranged_data(), num_envs=8, window=4, seed=0, **kw)
+    def spread(data=None, **kw):
+        data = ranged_data() if data is None else data
+        env  = VectorEnv(data, num_envs=8, window=4, seed=0, **kw)
         env.reset(seed=0)
         _, rewards, _, _, _ = env.step(np.ones(8, dtype=np.int64))
         return float(np.std(rewards))
@@ -315,7 +326,13 @@ def test_each_cost_knob_takes_its_own_range():
     assert spread() == 0.0                                   # one shared venue
     assert spread(fee_taker=(0.001, 0.02)) > 0.0
     assert spread(slippage_bps=(1.0, 50.0), fee_taker=0.0) > 0.0
-    assert spread(impact=(0.1, 5.0), fee_taker=0.0) > 0.0
+
+    # the envs start on bars the closes moved either way, which spreads the rewards
+    # of a shared venue too, so impact is read against that
+    moving = moving_data()
+    plain  = spread(moving, fee_taker=0.0)
+
+    assert spread(moving, impact=(0.1, 5.0), fee_taker=0.0) != plain
 
     # fee_maker is the fourth, and the batched tier takes market orders only
     # (ADR 0038), so no maker fill can happen here and no reward can read it at

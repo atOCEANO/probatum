@@ -249,8 +249,27 @@ def periods_per_year(times):
     return (len(times) - 1) * 365.0 / days
 
 
+def total(values):
+    """`values` summed in order, one floating-point addition at a time, where the
+    built-in sum compensates its additions."""
+    out = 0.0
+
+    for value in values:
+        out += value
+
+    return out
+
+
 def mean(values):
-    return sum(values) / len(values)
+    return total(values) / len(values)
+
+
+def deviation(values):
+    """The sample standard deviation of `values`, its mean and its squares summed in
+    order."""
+    centre = mean(values)
+    return math.sqrt(total((v - centre) * (v - centre) for v in values)
+                     / (len(values) - 1))
 
 
 def edge(bars):
@@ -277,7 +296,7 @@ def edge(bars):
     pc = (mean([tau[k] * (c[t - 1] != h[t - 1]) for k, t in enumerate(pairs)])
           + mean([tau[k] * (c[t - 1] != lo[t - 1]) for k, t in enumerate(pairs)]))
     pt = mean(tau)
-    if sum(tau) < 2 or po == 0.0 or pc == 0.0:
+    if total(tau) < 2 or po == 0.0 or pc == 0.0:
         return 0.0
 
     d1 = [r - mean(r1) / pt * w for r, w in zip(r1, tau)]
@@ -645,8 +664,7 @@ class Simulator:
         closes  = [bar.close for bar in self.history[i][-(self.venue.window + 1):]]
         returns = [math.log(b / a) for a, b in zip(closes, closes[1:])]
         volume  = mean([bar.volume for bar in bars]) if bars else 0.0
-        sigma   = statistics.stdev(returns) if len(returns) >= 2 else 0.0
-
+        sigma   = deviation(returns) if len(returns) >= 2 else 0.0
         return bars, volume, sigma
 
 
@@ -2865,11 +2883,15 @@ class Simulator:
         realized = inst.profit(math.copysign(closed, before), self.entry[i], price)
 
         # Accounting, Positions: on spot the notional itself changes hands, on a
-        # perpetual only the realized PnL and the fee move the margin wallet
+        # perpetual only the realized PnL and the fee move the margin wallet. The fee
+        # goes first, as an addition of its own: the order decides the last bit of a
+        # wallet a clamp empties, which a target's shortfall reads
         if inst.kind == "spot":
-            self.spot_cash -= inst.notional(signed, price) + fee
+            self.spot_cash -= fee
+            self.spot_cash -= inst.notional(signed, price)
         else:
-            self.margin_cash += realized - fee
+            self.margin_cash -= fee
+            self.margin_cash += realized
 
         after = before + signed
         if abs(after) <= self.dust(i):

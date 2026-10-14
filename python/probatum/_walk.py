@@ -170,7 +170,7 @@ def walk_forward(
     fee_taker=0.0006,
     fee_maker=0.0002,
     slippage_bps=0.0,
-    max_fill_fraction=1.0,
+    budget=1.0,
     max_open_orders=8,
     leverage=10.0,
     impact=0.0,
@@ -201,7 +201,7 @@ def walk_forward(
 
     config = dict(
         market=market, quote=quote, fee_taker=fee_taker, fee_maker=fee_maker,
-        slippage_bps=slippage_bps, max_fill_fraction=max_fill_fraction,
+        slippage_bps=slippage_bps, budget=budget,
         max_open_orders=max_open_orders, leverage=leverage, impact=impact,
         funding_rate=funding_rate, funding_interval=funding_interval,
     )

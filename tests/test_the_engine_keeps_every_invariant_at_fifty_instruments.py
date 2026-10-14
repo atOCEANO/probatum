@@ -153,7 +153,7 @@ def band(rng, n):
 
     kept  = rng.choice([0.0, 0.5])
     venue = dict(market="perp", quote=quote, fee_taker=fee, fee_maker=0.0,
-                 slippage_bps=0.0, max_fill_fraction=1.0, max_open_orders=8,
+                 slippage_bps=0.0, budget=1.0, max_open_orders=8,
                  leverage=0.0, impact=0.0,
                  intrabar=rng.choice(["pessimistic", "optimistic"]),
                  instruments=[dict(market="perp")] * n)

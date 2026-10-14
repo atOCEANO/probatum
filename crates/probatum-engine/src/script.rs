@@ -171,6 +171,7 @@ mod tests {
     use super::{Action, OrderRef, Script};
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation};
+    use crate::execution::{Impact, Spread};
     use crate::reporter::EventKind;
     use crate::strategy::run;
     use probatum_core::{Candle, Market, OrderId, OrderType, Side, TimeInForce};
@@ -191,7 +192,8 @@ mod tests {
             fee_taker: 0.0,
             fee_maker: 0.0,
             slippage_bps: 0.0,
-            max_fill_fraction: 1.0,
+            budget: 1.0,
+            window: 24,
             max_open_orders,
             report: true,
             max_leverage: 0.0,
@@ -200,6 +202,8 @@ mod tests {
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
             liquidation: Liquidation::Takeover,
+            impact_model: Impact::Linear,
+            spread: Spread::None,
         };
         Engine::new(Candles::new(vec![bar; 4]), config)
     }

@@ -384,15 +384,23 @@ mod tests {
     #[test]
     fn a_leg_closes_the_position_it_finds_and_its_remainder_keeps_resting() {
         // armed on a long of 1 that grows to 3 before the stop is reached, the stop
-        // closes all 3, a bar's volume capping it at 2 first: the take-profit goes at
-        // that first fill, and the stop rests on to close the last 1
+        // closes all 3, the bar's budget, half its trailing volume of 4, capping it at
+        // 2 first: the take-profit goes at that first fill, and the stop rests on to
+        // close the last 1
+        let quiet = ohlc(100.0, 100.0, 100.0, 100.0, 4.0);
         let bars = vec![
-            FLAT,
-            FLAT,
-            ohlc(100.0, 100.0, 94.0, 95.0, 2.0),
-            ohlc(95.0, 96.0, 94.0, 95.0, 1e6),
+            quiet,
+            quiet,
+            quiet,
+            ohlc(100.0, 100.0, 94.0, 95.0, 4.0),
+            ohlc(95.0, 96.0, 94.0, 95.0, 4.0),
         ];
-        let mut e = spot(&bars, Intrabar::Pessimistic);
+        let config = EngineConfig {
+            budget: 0.5,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(Candles::new(bars), config);
+        e.reset();
         e.market_buy(1.0);
         e.step();
         let (stop, take_profit) = e.bracket(0, Some(95.0), Some(110.0));
@@ -696,7 +704,8 @@ mod tests {
     fn a_leg_arming_is_its_placement_for_maker_and_taker() {
         // the take-profit at 99 rests through a bar while flat, then arms at the open
         // of 100 on the long a market buy opens there: it is through the price it arms
-        // at, so it fills at once as a taker, though it had rested through a bar
+        // at, so it fills at once as a taker, though it had rested through a bar, and
+        // at 100, the lowest trade since the last close, none of which came down to it
         let mut e = spot(&[FLAT, FLAT], Intrabar::Pessimistic);
         let (_, take_profit) = e.bracket(0, None, Some(99.0));
         e.step();
@@ -706,7 +715,7 @@ mod tests {
         let fill = reporter.fills().last().expect("the take-profit filled");
         assert_eq!(
             (fill.order, fill.price, fill.taker),
-            (take_profit, 99.0, true)
+            (take_profit, 100.0, true)
         );
     }
 

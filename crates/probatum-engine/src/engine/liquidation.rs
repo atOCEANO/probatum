@@ -410,7 +410,9 @@ impl Engine {
             (bar.low, bar.high) = (bar.low.min(mark), bar.high.max(mark));
         }
         let side = if q > 0.0 { Side::Sell } else { Side::Buy };
-        self.fill_model.taker_fill(side, size, price, &bar)
+        let trailing = || self.candles.trailing(self.tick, i);
+        self.fill_model
+            .taker_fill(side, size, price, &bar, trailing)
     }
 
     /// Book then backstop's sale (The forced close): every leg in `closes` sold as a

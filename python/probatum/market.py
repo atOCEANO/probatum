@@ -38,23 +38,23 @@ class Market:
 
 
     def __init__(self, kind="spot", quote=10_000.0, fee_taker=0.0006,
-                 fee_maker=0.0002, slippage_bps=0.0, max_fill_fraction=1.0,
+                 fee_maker=0.0002, slippage_bps=0.0, budget=1.0,
                  max_open_orders=8, leverage=10.0, impact=0.0, funding_rate=0.0,
                  funding_interval=0):
         if kind not in _KINDS:
             raise ValueError(f"kind must be 'spot' or 'perp', got {kind!r}")
 
-        self.kind              = kind
-        self.quote             = quote
-        self.fee_taker         = fee_taker
-        self.fee_maker         = fee_maker
-        self.slippage_bps      = slippage_bps
-        self.max_fill_fraction = max_fill_fraction
-        self.max_open_orders   = max_open_orders
-        self.leverage          = leverage
-        self.impact            = impact
-        self.funding_rate      = funding_rate
-        self.funding_interval  = funding_interval
+        self.kind             = kind
+        self.quote            = quote
+        self.fee_taker        = fee_taker
+        self.fee_maker        = fee_maker
+        self.slippage_bps     = slippage_bps
+        self.budget           = budget
+        self.max_open_orders  = max_open_orders
+        self.leverage         = leverage
+        self.impact           = impact
+        self.funding_rate     = funding_rate
+        self.funding_interval = funding_interval
 
 
     def as_dict(self):
@@ -65,17 +65,17 @@ class Market:
         a market contains a market.
         """
         return {
-            "market":            self.kind,
-            "quote":             self.quote,
-            "fee_taker":         self.fee_taker,
-            "fee_maker":         self.fee_maker,
-            "slippage_bps":      self.slippage_bps,
-            "max_fill_fraction": self.max_fill_fraction,
-            "max_open_orders":   self.max_open_orders,
-            "leverage":          self.leverage,
-            "impact":            self.impact,
-            "funding_rate":      self.funding_rate,
-            "funding_interval":  self.funding_interval,
+            "market":           self.kind,
+            "quote":            self.quote,
+            "fee_taker":        self.fee_taker,
+            "fee_maker":        self.fee_maker,
+            "slippage_bps":     self.slippage_bps,
+            "budget":           self.budget,
+            "max_open_orders":  self.max_open_orders,
+            "leverage":         self.leverage,
+            "impact":           self.impact,
+            "funding_rate":     self.funding_rate,
+            "funding_interval": self.funding_interval,
         }
 
 

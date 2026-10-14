@@ -20,9 +20,9 @@ def to_ohlcv(data):
     file.
 
     **Volume is in base units**, the same units an order's size is in, because the
-    volume cap compares one against the other and the market-impact term divides
-    one by the other. A feed shipping quote volume instead inflates the cap by
-    roughly the price, so ``max_fill_fraction`` stops binding and impact goes to
+    liquidity budget compares one against the other and the market-impact term
+    divides one by the other. A feed shipping quote volume instead inflates the
+    budget by roughly the price, so ``budget`` stops binding and impact goes to
     zero: no error, no warning, just a better backtest than the market would have
     given. The router's frames carry base ``volume`` and a separate
     ``volume_usd``, and only the first is read.

@@ -8,7 +8,9 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use probatum_core::{Candle, Market};
-use probatum_engine::{Candles, Engine, EngineConfig, EnvBatch, Intrabar, Liquidation};
+use probatum_engine::{
+    Candles, Engine, EngineConfig, EnvBatch, Impact, Intrabar, Liquidation, Spread,
+};
 
 const BARS: usize = 1_000;
 
@@ -39,7 +41,8 @@ fn perp_config() -> EngineConfig {
         fee_taker: 0.0006,
         fee_maker: 0.0002,
         slippage_bps: 2.0,
-        max_fill_fraction: 1.0,
+        budget: 1.0,
+        window: 24,
         max_open_orders: 8,
         report: false,
         max_leverage: 0.0,
@@ -48,6 +51,8 @@ fn perp_config() -> EngineConfig {
         funding_interval: 0,
         intrabar: Intrabar::Pessimistic,
         liquidation: Liquidation::Takeover,
+        impact_model: Impact::Linear,
+        spread: Spread::None,
     }
 }
 

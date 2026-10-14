@@ -84,7 +84,7 @@ print(state["equity"], state["position"])      # account value and position at t
 | pandas DataFrame | Needs `open`, `high`, `low`, `close`, `volume` columns; any extra column is ignored. |
 | parquet path | Read with pandas, then treated as the DataFrame case. |
 
-**Volume is in base units**, the same units an order's size is in. The volume cap compares one against the other and the market-impact term divides one by the other, so a feed shipping quote volume instead inflates the cap by roughly the price: `max_fill_fraction` stops binding, impact goes to zero, and nothing says so. The router's frames carry base `volume` alongside a separate `volume_usd`, and only the first is read.
+**Volume is in base units**, the same units an order's size is in. The liquidity budget compares one against the other and the market-impact term divides one by the other, so a feed shipping quote volume instead inflates the budget by roughly the price: `budget` stops binding, impact goes to zero, and nothing says so. The router's frames carry base `volume` alongside a separate `volume_usd`, and only the first is read.
 
 A frame carrying a real (datetime) index must be sorted ascending and unique; a plain `RangeIndex` holds no timestamps, so it is exempt. A missing column, a wrong shape, or an unsorted index raises `ValueError`, and an unsupported type raises `TypeError`.
 
@@ -149,11 +149,14 @@ eng = Engine(
     fee_taker=0.0006,        # taker fee, fraction of notional
     fee_maker=0.0002,        # maker fee, fraction of notional
     slippage_bps=0.0,        # slippage on market fills, basis points
-    max_fill_fraction=1.0,   # cap on the fraction of a bar's volume one order takes
+    budget=1.0,              # the share of the trailing volume a bar's fills may take
+    window=24,               # the bars before a fill its window reads
     max_open_orders=8,       # resting-order slots
     report=False,            # True keeps the equity curve, round trips and logs
     leverage=10.0,           # perp margin cap on notional; 10x default, 0.0 = none
-    impact=0.0,              # market-impact slippage coefficient; 0.0 means none
+    impact=0.0,              # impact coefficient on the window; 0.0 means none
+    impact_model="linear",   # or "sqrt", in the fill's share of the trailing volume
+    spread=None,             # a fixed spread in basis points, or "estimated"
     funding_rate=0.0,        # perp funding per event on notional; long pays, short receives
     funding_interval=0,      # bars between funding events; 0 disables funding
     times=None,              # (T,) int64 open times in UTC nanoseconds: the clock
@@ -197,7 +200,7 @@ eng = Engine(
 
 | Call | Returns | Does |
 | :--- | :--- | :--- |
-| `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, takes slippage. `None` when the queue already holds `max_open_orders` for this bar, or the size is not a positive finite number. |
+| `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, half the spread, the slippage and the impact. `None` when the queue already holds `max_open_orders` for this bar, or the size is not a positive finite number. |
 | `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Limit order; rests until a later bar reaches the price, and pays the maker fee unless its first bar opens at or through it. `None` if the book is full, the size is not a positive finite number, or it would trade against the account's own resting limit; a non-finite price raises. |
 | `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. `None` if the book is full, the size is not a positive finite number, or the trigger is not finite. Pass `reduce_only=True` for a stop-loss. |
 | `bracket(stop=None, take_profit=None)` | two ids or `None`s | A stop and a take-profit as one OCO pair, each a reduce-only leg with no size of its own that closes the position it finds. A leg takes its side from the position it arms on, at once when one is held and otherwise at the first fill that opens one, so a leg in a later slot can close it on that bar; the first fill of either cancels the other, and the bracket goes when that position closes or flips. `None` for a leg not asked for or refused; a non-finite price raises ([ADR 0010](Decisions.md)). |
@@ -242,7 +245,7 @@ You decide on a bar and the order fills on the next one; there is no same-bar lo
 
 <br>
 
-A market order crosses the spread and fills at the next open; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better. A limit its first bar opens at or through is marketable, so it pays the taker fee even though it fills at your price; one that the bar has to come to, or that has rested through a bar, is on the book and pays the maker fee ([ADR 0011](Decisions.md)). A `post_only` limit that would cross the last close is refused, and one its first bar opens at or through is cancelled, rather than turned into a taker. A limit that reaches the account's own resting limit of the other side on its instrument, a buy at or above its own sell or a sell at or below its own buy, is refused, as a venue refuses a trade against the same account ([ADR 0011](Decisions.md)). Fills are volume-capped by `max_fill_fraction`, so one order cannot take more than that slice of a bar. Resting orders and the market orders waiting for the next bar each use `max_open_orders` slots, and beyond either cap a new order is rejected; the market queue empties every bar. The cap is per order, so several orders resolving against one bar each get their own slice ([ADR 0013](Decisions.md)), which is why the queue is bounded at all.
+A market order crosses half the spread and fills at the next open, moved by its slippage and impact; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better, unless no trade since the last close reached it, as when it was placed through the market, where it fills at the best price the market traded ([Specification](Specification.md#limits)). A limit its first bar opens at or through is marketable, so it pays the taker fee even though it fills at your price; one that the bar has to come to, or that has rested through a bar, is on the book and pays the maker fee ([ADR 0011](Decisions.md)). A `post_only` limit that would cross the last close is refused, and one its first bar opens at or through is cancelled, rather than turned into a taker. A limit that reaches the account's own resting limit of the other side on its instrument, a buy at or above its own sell or a sell at or below its own buy, is refused, as a venue refuses a trade against the same account ([ADR 0011](Decisions.md)). Each bar holds `budget` of its instrument's trailing volume for every order on it, taken in resolution order, so splitting an order takes no more of a bar than one order would ([ADR 0013](Decisions.md)). Resting orders and the market orders waiting for the next bar each use `max_open_orders` slots, and beyond either cap a new order is rejected; the market queue empties every bar.
 
 The position is netted: net long, net short, or flat, never both. Adding on the same side averages the entries; reducing or closing books the realized PnL on the part closed; flipping through zero closes the old side and reopens the rest at the new fill. On spot the position cannot go below zero: a sell is clamped to the current long, since shorting base needs a borrow this tier does not model, so a short and a flip through zero are perp behaviors ([ADR 0008](Decisions.md)).
 
@@ -394,7 +397,7 @@ print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
 print(result.equity_curve[-1], len(result.trades))
 ```
 
-`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (the [round trips](#trades), a list of dicts), `.fills` (the [fill log](#fills)), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the round trips cannot always say: a forced close ends one with the reason `liquidation`, but an account drained by fees or funding ends none at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
+`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, budget, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (the [round trips](#trades), a list of dicts), `.fills` (the [fill log](#fills)), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the round trips cannot always say: a forced close ends one with the reason `liquidation`, but an account drained by fees or funding ends none at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
 
 **`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it counts the bars the index holds, the rows less one per 365 days of their span, so hourly candles annualize at 8760 without being told, a feed missing a day annualizes at the bars it actually has, and a stock's daily bars at the 252 or so a year it trades. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0004](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
 
@@ -509,7 +512,7 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `instrument` | The instrument, 0 with one. |
 | `order` | The id of the order that filled, or `None` for a forced close. |
 | `side`, `size`, `price` | What filled, and at what price. |
-| `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, a limit's own price, and for a forced close its price where the margin ran out. |
+| `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, a limit's own price or the price the market reached it at since the last close, and for a forced close its price where the margin ran out. |
 | `spread`, `slippage`, `impact` | What it paid beyond the reference, in price, each its share of how far the price moved before the bar held it. The spread is zero until it is modelled. |
 | `fee` | The fee, in quote. |
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
@@ -692,7 +695,7 @@ metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zer
 
 ### How much friction it survives
 
-The shipped defaults are a frictionless venue: `slippage_bps=0.0`, `impact=0.0`, `max_fill_fraction=1.0`, and on a perp `funding_rate=0.0`. An edge found there is an edge nobody can trade, so the useful question is not whether a strategy makes money but how much cost it lives through.
+The shipped defaults are a frictionless venue: no spread, `slippage_bps=0.0`, `impact=0.0`, `budget=1.0`, and on a perp `funding_rate=0.0`. An edge found there is an edge nobody can trade, so the useful question is not whether a strategy makes money but how much cost it lives through.
 
 ```python
 metrics.cost_curve(SmaCross(20, 60), candles, costs=(0.0, 2.0, 5.0, 10.0, 20.0))

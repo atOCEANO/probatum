@@ -31,8 +31,6 @@ TOL  = 1e-6
 
 # the rules the reference applies that the engine does not have yet
 NOT_IN_THE_ENGINE = {
-    "the liquidity budget",
-    "a limit held to the prices traded since the last close",
     "a waiting market order cancelled",
 }
 
@@ -41,8 +39,7 @@ def walk(rng, n):
     """Consistent bars from a random walk, a third of them violent enough to liquidate
     at 10x and the rest calm enough for a levered account to live until a gap kills
     it, many opening with one. A bar trades nothing or far more than any order here
-    asks: the engine caps a fill at a share of its own bar and the Specification at
-    a share of the trailing volume, and the two agree only where neither binds."""
+    asks, so the liquidity budget binds only where a case draws a small one."""
     bars, price = [], 100.0
     for t in range(n):
         if t > 0 and rng.random() < 0.4:
@@ -321,6 +318,20 @@ def engine_liquidation(model):
     return dict(liquidation=model[0], backstop=model[1])
 
 
+def engine_fills(cfg):
+    """The engine's arguments for a case's fill model."""
+    out    = dict(budget=cfg.get("budget", 1.0), window=cfg.get("window", 24))
+    spread = cfg.get("spread")
+    if spread is not None:
+        out["spread"] = spread if spread == "estimated" else spread[1]
+
+    impact = cfg.get("impact")
+    if impact is not None:
+        out.update(impact_model=impact[0], impact=impact[1])
+
+    return out
+
+
 def engine_funding(source):
     """The engine's arguments for a funding source."""
     if source[0] == "every_bars":
@@ -343,11 +354,10 @@ def venue(cfg):
     return dict(
         market=cfg["market"], quote=balance(cfg), fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
-        max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
-        leverage=cfg["leverage"], impact=0.0, tiers=cfg["tiers"],
-        tiers_by=cfg["tiers_by"], intrabar=cfg["intrabar"],
+        max_open_orders=cfg["max_open_orders"], leverage=cfg["leverage"],
+        tiers=cfg["tiers"], tiers_by=cfg["tiers_by"], intrabar=cfg["intrabar"],
         contract=cfg.get("contract"), **engine_funding(cfg["funding"]),
-        **engine_liquidation(cfg.get("liquidation", "takeover")),
+        **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
     )
 
 
@@ -358,10 +368,11 @@ def play(bars, times, cfg, script):
                                   times=np.array(times, dtype=np.int64))
 
 
-def make_reference(bars, cfg, times, interval=None, events=None):
-    """The reference over one instrument on the clock `times`. `events`, when given,
-    are the venue's own funding events in place of the configured source, which a
-    batch env started part way in needs for a schedule counted in bars."""
+def make_reference(bars, cfg, times, interval=None, events=None, start=0):
+    """The reference over one instrument on the clock `times`, its account opened at
+    row `start`. `events`, when given, are the venue's own funding events in place of
+    the configured source, which a batch env started part way in needs for a
+    schedule counted in bars."""
     source = cfg["funding"]
     if events is None and source[0] == "data":
         events = source[1]
@@ -384,6 +395,10 @@ def make_reference(bars, cfg, times, interval=None, events=None):
         funding         = funding,
         intrabar        = cfg["intrabar"],
         liquidation     = cfg.get("liquidation", "takeover"),
+        budget          = cfg.get("budget", 1.0),
+        window          = cfg.get("window", 24),
+        spread          = cfg.get("spread"),
+        impact          = cfg.get("impact"),
     )
 
     if events is not None:
@@ -404,6 +419,7 @@ def make_reference(bars, cfg, times, interval=None, events=None):
         venue,
         interval = interval,
         funding  = events,
+        start    = start,
     )
 
 
@@ -748,6 +764,19 @@ def setting(seed, case):
     return draw.choice(["pessimistic", "optimistic"])
 
 
+def fills(seed, case):
+    """The fill model case `case` of `seed` trades under, drawn apart from the stream
+    the cases come from: a budget that binds now and then against the walk's
+    volumes, a window, and a spread and an impact or none."""
+    draw = random.Random(f"fills {seed} {case}")
+    return dict(
+        budget=draw.choice([1.0, 1.0, 1e-4, 2e-5]),
+        window=draw.choice([24, 24, 3]),
+        spread=draw.choice([None, None, ("fixed", 10.0), "estimated"]),
+        impact=draw.choice([None, None, ("linear", 50.0), ("sqrt", 1.0)]),
+    )
+
+
 def liquidation(seed, case, tables):
     """How case `case` of `seed` closes its account out: half the venues whose tier
     `tables` keep maintenance book then backstop, at a half or two thirds of the
@@ -783,6 +812,8 @@ def compare(cases, seed):
 
         cfg["intrabar"]    = setting(seed, case)
         cfg["liquidation"] = liquidation(seed, case, [cfg["tiers"]])
+        cfg.update(fills(seed, case))
+
         actions = plan(draw, bars, cfg)
         counted = collections.defaultdict(collections.Counter)
         try:

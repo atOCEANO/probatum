@@ -52,7 +52,7 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::candles::{printed, Candles};
 use crate::clock::Clock;
-use crate::execution::FillModel;
+use crate::execution::{FillModel, Impact, Spread};
 use crate::reporter::{BarCosts, LedgerRow, Leg, Reporter, RoundTrip};
 use crate::stats::Stats;
 use crate::streams;
@@ -143,15 +143,24 @@ pub struct EngineConfig {
     pub fee_taker: f64,
     pub fee_maker: f64,
     pub slippage_bps: f64,
-    pub max_fill_fraction: f64,
+    /// The share of each instrument's trailing volume its fills may take on a bar,
+    /// shared by every order in resolution order (Specification, The liquidity
+    /// budget).
+    pub budget: f64,
+    /// The bars before a fill its window reads (Specification, The window).
+    pub window: usize,
     pub max_open_orders: usize,
     pub report: bool,
     /// Perp margin cap: a fill may not grow the position past `max_leverage`
     /// times equity in notional. Zero means no cap; the shipped default is a
     /// finite 10x (ADR 0015). Ignored on spot.
     pub max_leverage: f64,
-    /// Market-impact coefficient for taker fills (ADR 0013). Zero disables it.
+    /// Market-impact coefficient for taker fills, scaled by the window's volatility
+    /// and the fill's share of its trailing volume (ADR 0013). Zero disables it.
     pub impact: f64,
+    pub impact_model: Impact,
+    /// The spread a taker crosses half of.
+    pub spread: Spread,
     /// Perp funding rate charged per event on the position notional; a long pays a
     /// positive rate, a short receives (ADR 0020). Ignored on spot.
     pub funding_rate: f64,
@@ -172,11 +181,14 @@ impl Default for EngineConfig {
             fee_taker: 0.0006,
             fee_maker: 0.0002,
             slippage_bps: 0.0,
-            max_fill_fraction: 1.0,
+            budget: 1.0,
+            window: 24,
             max_open_orders: 8,
             report: false,
             max_leverage: 10.0,
             impact: 0.0,
+            impact_model: Impact::Linear,
+            spread: Spread::None,
             funding_rate: 0.0,
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
@@ -264,6 +276,10 @@ pub struct Engine {
     /// wallet before it, what the bound paid in and its notional, which the rounding a
     /// close can leave in a margin wallet it empties is measured against.
     reach: f64,
+    /// Each instrument's budget: the bar it was filled for and what its fills may still
+    /// take there, filled from its trailing volume at the bar's first fill on it
+    /// (Specification, The liquidity budget).
+    budget: Vec<(usize, f64)>,
     unseen: Unseen,
     /// The stream a random setting draws each bar's way from, which runs on across
     /// resets, so each episode of one engine draws afresh.
@@ -282,6 +298,7 @@ impl Engine {
     /// first state.
     pub fn new(candles: Candles, config: EngineConfig) -> Engine {
         assert!(!candles.is_empty(), "candles must have at least one row");
+        let candles = Engine::windowed(candles, &config);
         let width = candles.width();
         let markets = (0..width)
             .map(|i| candles.market(i).unwrap_or(config.market))
@@ -296,8 +313,9 @@ impl Engine {
         let mut engine = Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
-                max_fill_fraction: config.max_fill_fraction,
                 impact: config.impact,
+                impact_model: config.impact_model,
+                spread: config.spread,
             },
             cost: FlatCostModel {
                 fee_taker: config.fee_taker,
@@ -333,6 +351,7 @@ impl Engine {
             inside: vec![false; width],
             entered: vec![(f64::NAN, false); width],
             reach: 0.0,
+            budget: vec![(usize::MAX, 0.0); width],
             unseen: {
                 let worse = config.intrabar != Intrabar::Optimistic;
                 Unseen {
@@ -374,6 +393,37 @@ impl Engine {
             self.stream = Some(streams::stream(seed, &key));
         }
         self
+    }
+
+    /// `candles` with each row's window read as `config` asks, kept where they hold
+    /// it already, as a batch's shared series does.
+    pub(crate) fn windowed(candles: Candles, config: &EngineConfig) -> Candles {
+        let estimated = config.spread == Spread::Estimated;
+        if candles.windowed(config.window, estimated) {
+            candles
+        } else {
+            candles.with_window(config.window, estimated)
+        }
+    }
+
+    /// What instrument `i`'s fills may still take on this bar: a share of its trailing
+    /// volume, which every order on its bar draws on in resolution order, filled at
+    /// the bar's first fill on it.
+    pub(super) fn available(&mut self, i: usize) -> f64 {
+        let (at, left) = self.budget[i];
+        if at == self.tick {
+            return left;
+        }
+        let left = self.config.budget * self.candles.trailing(self.tick, i).volume;
+        self.budget[i] = (self.tick, left);
+        left
+    }
+
+    /// Take `applied` from instrument `i`'s budget for this bar, which what is left
+    /// can round a hair below zero, and a bar never owes volume.
+    pub(super) fn spend_budget(&mut self, i: usize, applied: f64) {
+        let left = self.budget[i].1 - applied;
+        self.budget[i].1 = if left > 0.0 { left } else { 0.0 };
     }
 
     /// Each wallet's opening cash: `quote` in the one the config's market settles
@@ -448,6 +498,8 @@ impl Engine {
         self.fills = 0;
         self.funding_paid = 0.0;
         self.bust = false;
+        // what an earlier episode took of a bar's budget is not taken in this one
+        self.budget.fill((usize::MAX, 0.0));
         if self.reporter.is_some() {
             self.reporter = Some(Reporter::new());
             self.record_ledger();
@@ -811,6 +863,7 @@ mod tests {
     use super::{Engine, EngineConfig, Intrabar, Liquidation};
     use crate::candles::{printed, Candles, Instrument};
     use crate::clock::Clock;
+    use crate::execution::{Impact, Spread};
     use probatum_core::TimeInForce::Ioc;
     use probatum_core::{Candle, Market, OrderType, Side, State, Tiers};
     use proptest::prelude::*;
@@ -1191,7 +1244,8 @@ mod tests {
             fee_taker: 0.0006,
             fee_maker: 0.0002,
             slippage_bps: 5.0,
-            max_fill_fraction: 1.0,
+            budget: 1.0,
+            window: 24,
             max_open_orders: 8,
             report: true,
             max_leverage: 10.0,
@@ -1200,6 +1254,8 @@ mod tests {
             funding_interval: 3,
             intrabar: Intrabar::Pessimistic,
             liquidation: Liquidation::Takeover,
+            impact_model: Impact::Linear,
+            spread: Spread::None,
         }
     }
 

@@ -38,6 +38,7 @@ mod tests {
     use super::{run, Strategy};
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation};
+    use crate::execution::{Impact, Spread};
     use probatum_core::{Candle, Market, State};
 
     fn series() -> Candles {
@@ -74,7 +75,8 @@ mod tests {
             fee_taker: 0.0,
             fee_maker: 0.0,
             slippage_bps: 0.0,
-            max_fill_fraction: 1.0,
+            budget: 1.0,
+            window: 24,
             max_open_orders: 8,
             report: false,
             max_leverage: 0.0,
@@ -83,6 +85,8 @@ mod tests {
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
             liquidation: Liquidation::Takeover,
+            impact_model: Impact::Linear,
+            spread: Spread::None,
         }
     }
 

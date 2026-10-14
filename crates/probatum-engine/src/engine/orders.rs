@@ -839,13 +839,13 @@ mod tests {
     }
 
     #[test]
-    fn splitting_an_order_cannot_take_more_than_its_slots_of_a_bar() {
-        // the volume cap is per order (ADR 0013) and the pending queue was
-        // unbounded, so a hundred small market buys took the whole bar while every
-        // slice was priced as though it were the only participant (ADR 0010)
+    fn splitting_an_order_cannot_take_more_than_the_bars_budget() {
+        // the budget is shared by every order on the bar, so a hundred small market
+        // buys take no more of it than one large one would (ADR 0013), and the
+        // pending queue is bounded as the book is (ADR 0010)
         let config = EngineConfig {
             max_open_orders: 3,
-            max_fill_fraction: 0.01, // 10 base units per order, against volume 1000
+            budget: 0.01, // 10 base units of a trailing volume of 1000, for every order
             quote: 1_000_000.0,
             ..cfg()
         };
@@ -854,7 +854,7 @@ mod tests {
         let placed = (0..100).filter(|_| e.market_buy(50.0).is_some()).count();
         assert_eq!(placed, 3);
         let s = e.step();
-        assert_eq!(s.position, 30.0); // three slots at the 10-unit cap, not a hundred
+        assert_eq!(s.position, 10.0); // the first takes the budget, the others nothing
 
         // the queue drains with the bar, so the next bar gets its slots back
         assert!(e.market_buy(50.0).is_some());

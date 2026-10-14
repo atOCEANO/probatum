@@ -911,20 +911,40 @@ def test_closed_trades_flow_into_stats():
 
 
 def test_market_impact_worsens_a_large_fill():
-    # buy 100 into a 1000-volume bar with impact 0.5: slip = 0.5 * 0.1 = 5%
-    e = probatum.Engine(
-        series(),
-        market    = "spot",
-        quote     = 1_000_000.0,
-        fee_taker = 0.0,
-        fee_maker = 0.0,
-        impact    = 0.5,
+    # a buy of 100 against a trailing volume of 1000 takes a tenth of it, and at k of
+    # 0.5, on a window whose returns deviate by sigma, pays 0.5 * sigma * 0.1 of the
+    # open beyond it linearly and 0.5 * sigma * sqrt(0.1) under the square root
+    bars = np.array(
+        [
+            [100.0, 160.0, 90.0, 100.0, 1000.0],
+            [100.0, 160.0, 90.0, 110.0, 1000.0],
+            [110.0, 160.0, 90.0, 100.0, 1000.0],
+            [200.0, 260.0, 190.0, 250.0, 1000.0],
+        ],
+        dtype=np.float64,
     )
-    e.reset()
-    e.market_buy(100.0)
-    s = e.step()
 
-    assert abs(s["avg_entry"] - 210.0) < 1e-9  # bar 1 open 200 * 1.05
+    sigma = np.std(np.diff(np.log(bars[:3, 3])), ddof=1)
+
+    for model, share in (("linear", 0.1), ("sqrt", 0.1 ** 0.5)):
+        e = probatum.Engine(
+            bars,
+            market       = "spot",
+            quote        = 1_000_000.0,
+            fee_taker    = 0.0,
+            fee_maker    = 0.0,
+            impact       = 0.5,
+            impact_model = model,
+        )
+
+        e.reset()
+        e.step()
+        e.step()
+        e.market_buy(100.0)
+        s = e.step()
+
+        assert s["avg_entry"] == pytest.approx(200.0 * (1.0 + 0.5 * sigma * share),
+                                               rel=1e-12)
 
 
 def test_perp_funding_charges_a_held_position():
@@ -1148,7 +1168,7 @@ def test_non_finite_config_scalars_are_rejected():
         {"fee_taker": float("nan")},
         {"fee_maker": float("inf")},
         {"slippage_bps": float("nan")},
-        {"max_fill_fraction": float("nan")},
+        {"budget": float("nan")},
         {"leverage": float("nan")},
         {"impact": float("nan")},
         {"funding_rate": float("nan")},
@@ -1186,8 +1206,12 @@ def test_out_of_range_config_scalars_are_rejected():
         {"slippage_bps": -1.0},  # slippage is adverse, never favourable
         {"impact": -0.5},
         {"leverage": -1.0},
-        {"max_fill_fraction": 0.0},
-        {"max_fill_fraction": -0.5},
+        {"budget": 0.0},
+        {"budget": -0.5},
+        {"window": 0},
+        {"spread": -1.0},
+        {"spread": "wide"},
+        {"impact_model": "cubic"},
         {"fee_maker": -1.0},  # a rebate cannot exceed the notional
         {"fee_taker": -2.0},
         {"max_open_orders": 0},
@@ -1663,10 +1687,20 @@ def test_a_per_env_slippage_lands_on_slippage_and_not_on_impact():
 
 
 def test_a_per_env_impact_lands_on_impact_and_not_on_slippage():
-    # the mirror. One unit of a ten-volume bar is a tenth of it, so an impact of
-    # 5.0 is half the price; the same 5.0 read as slippage_bps would be 5 bps
-    b = probatum.Batch(
-        costed_bars(),
+    # the mirror. On a window that traded 10 a bar and whose returns deviate by
+    # sigma, one unit is a tenth of the trailing volume, so an impact of 5.0 moves
+    # the price by 5.0 * sigma * 0.1 of it; the same 5.0 read as slippage_bps would
+    # be 5 bps
+    bars = np.array([
+        [100.0, 200.0, 90.0, 100.0, 10.0],
+        [100.0, 200.0, 90.0, 110.0, 10.0],
+        [110.0, 200.0, 90.0, 100.0, 10.0],
+        [100.0, 200.0, 90.0, 100.0, 10.0],
+    ], dtype=np.float64)
+
+    sigma = np.std(np.diff(np.log(bars[:3, 3])), ddof=1)
+    b     = probatum.Batch(
+        bars,
         num_envs             = 2,
         market               = "spot",
         fee_taker            = 0.0,
@@ -1676,7 +1710,13 @@ def test_a_per_env_impact_lands_on_impact_and_not_on_slippage():
     )
 
     b.reset_all()
+    for _ in range(2):
+        b.step_all(np.zeros(2, dtype=np.float64))
+
     states = b.step_all(np.array([1.0, 1.0], dtype=np.float64))
 
     assert states[0]["quote"] == 9_900.0
-    assert states[1]["quote"] == 9_850.0            # 5.0 * (1 / 10) is half of 100
+
+    moved = 100.0 * (1.0 + 5.0 * sigma * 0.1)
+
+    assert states[1]["quote"] == pytest.approx(10_000.0 - moved, rel=1e-12)
