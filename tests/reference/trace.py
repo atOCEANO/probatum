@@ -123,7 +123,8 @@ def main():
         bars  = D.walk(rng, rng.randint(8, 40))
         times = D.clock(rng, len(bars))
         cfg   = D.config(rng, times)
-        cfg["intrabar"] = D.setting(seed, case)
+        cfg["intrabar"]    = D.setting(seed, case)
+        cfg["liquidation"] = D.liquidation(seed, case, [cfg["tiers"]])
         actions = D.plan(rng, bars, cfg)
         if diverges(bars, times, cfg, actions) is None:
             continue

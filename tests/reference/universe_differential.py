@@ -10,9 +10,11 @@ perp that moves against both or a limit filled on its gap, and every eighth arou
 take-profit, on a bar that may liquidate the account or with the account between its
 close point and its trigger, and as many again around the margin two to five
 perpetuals share, held long and short or all one way near their tier bounds, on a
-bar that takes the account to about where it runs out. A case is compared up to the
-bar on which the reference first applied a rule the engine does not have yet, as
-`differential` cuts its own.
+bar that takes the account to about where it runs out. After them, one universe for
+every eight is drawn around book then backstop, its bar stopped between the
+account's trigger and its backstop level, or a debit at its close taking the account
+there. A case is compared up to the bar on which the reference first applied a rule
+the engine does not have yet, as `differential` cuts its own.
 
   python -m reference.universe_differential [cases] [seed]     (from tests/)
 """
@@ -20,12 +22,13 @@ bar on which the reference first applied a rule the engine does not have yet, as
 import collections
 import math
 import random
+import statistics
 import sys
 
 import numpy as np
 
 import probatum
-from .differential import (HOUR, KINDS, Script, before, bracket, clock, close_enough,
+from .differential import (KINDS, Script, before, bracket, clock, close_enough,
                            closed_before, cut, engine_liquidation, limit_price,
                            liquidation, live, log_difference, prune, resting, setting,
                            settings, stamps, stop_price, tally, tier_table, walk,
@@ -527,7 +530,12 @@ def backstop(rng):
         worth = sum(abs(probe.position[k]) * at[k] for k in held)
         need  = sum(rates[k] * abs(probe.position[k]) * at[k] for k in held)
         rate  = (after - level * need) / worth
-        cfg["funding"] = ("data", [(times[3] + HOUR, k,
+
+        # stamped at the row's end, or at the next row's open where that comes
+        # first, which the row owns either way
+        interval = int(statistics.median(b - a for a, b in zip(times, times[1:])))
+        stamp    = times[3] + min(interval, times[4] - times[3])
+        cfg["funding"] = ("data", [(stamp, k,
                                     math.copysign(rate, probe.position[k]))
                                    for k in held])
 
