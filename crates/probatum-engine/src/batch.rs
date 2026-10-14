@@ -186,8 +186,8 @@ impl EnvBatch {
     }
 
     /// Per-env termination flag: true where the env's account died, its equity, both
-    /// wallets together, reaching zero. A perp liquidation does that unless the spot
-    /// wallet holds cash (ADR 0008).
+    /// wallets together, reaching zero. A takeover does that unless the spot wallet
+    /// holds cash (ADR 0008).
     pub fn busts(&self) -> Vec<bool> {
         self.engines.iter().map(Engine::is_bust).collect()
     }

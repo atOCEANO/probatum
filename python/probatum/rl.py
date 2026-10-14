@@ -11,8 +11,8 @@ the fast path. The action space is ``Discrete(3)`` by default, where 0 holds, 1
 buys and 2 sells a fixed ``trade_size``; pass ``action_fn`` and ``action_space``
 to decode your own.
 
-Episodes terminate when equity, both wallets together, reaches zero, as a perp
-liquidation does unless the spot wallet holds cash, and truncate at the last bar,
+Episodes terminate when equity, both wallets together, reaches zero, as a takeover
+does unless the spot wallet holds cash, and truncate at the last bar,
 or at ``episode_len`` steps if set; finished envs auto-reset on the same step, with
 the pre-reset observation and equity in ``infos`` (see ADR 0038).
 

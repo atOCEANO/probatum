@@ -178,7 +178,7 @@ eng = Engine(
 
 **An inverse contract is counted in its coin.** `market="inverse"` with `contract=`, the dollars one contract is worth, takes one instrument's `(T, 5)` candles, quoted in dollars. Sizes are contracts and prices are dollars, as the venue quotes them, while `quote`, equity, fees, funding and every other sum are in the coin, a taker's costs among them, each its rate of the coin notional ([Specification](Specification.md#inverse-contracts)). The account holds that one contract in one wallet, so there is no `transfer`, `qty_from_quote(cash)` is `cash / contract` contracts at any price, and the ledger's `equity_in_quote` values equity in dollars at each close ([ADR 0016](Decisions.md)).
 
-**A venue that books then backstops sells a closed-out account on the book.** `liquidation="book_then_backstop"` with `backstop=`, the share of the requirement at which the venue's backstop takes over, two thirds on Hyperliquid, sells every leg as a taker from its trigger price, paying the taker fee and a taker's costs, and the trader keeps what the margin wallet then holds. Where the path also reaches the backstop level, or the sale's own costs would take equity at the trigger below it, the account is taken over instead, as under the default `"takeover"`, which closes every leg where the margin ran out and books what the wallet still holds as the liquidation charge. It needs a tier table that keeps maintenance, since with none the backstop level is the trigger itself ([Specification](Specification.md#the-forced-close), [ADR 0019](Decisions.md)).
+**A venue that books then backstops sells a closed-out account on the book.** `liquidation="book_then_backstop"` with `backstop=`, the share of the requirement at which the venue's backstop takes over, two thirds on Hyperliquid, sells every leg as a taker from its trigger price, paying the taker fee and a taker's costs, and the trader keeps what the margin wallet then holds. Where the sale would leave the wallet below the backstop level, or the path also reaches that level and the bar cannot show that the sale finished first, which `intrabar` decides, the account is taken over instead, as under the default `"takeover"`, which closes every leg where the margin ran out and books what the wallet still holds as the liquidation charge. It needs a perp whose tier table keeps maintenance, since with none the backstop level is the trigger itself ([Specification](Specification.md#the-forced-close), [ADR 0019](Decisions.md)).
 
 `eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
 
@@ -208,7 +208,7 @@ eng = Engine(
 | `transfer(amount, to)` | `None` | Move cash into the `"spot"` or `"margin"` wallet from the other. It lands at the start of the next bar, before any fill, held to what the wallet it leaves can give ([ADR 0008](Decisions.md)). |
 | `target(weights, tolerance=0.0, transfer=False)` | list of ids | Queue the market orders that bring each instrument to a weight of equity at the last close, every reducing leg before every growing one. `weights` is a number with one instrument, one weight per instrument, or a dict from instrument to weight; a leg below `tolerance` of equity is skipped, and `transfer=True` moves the spot legs' shortfall across from the margin wallet. A second target in one decision replaces the first, and a later one replaces the legs earlier ones left waiting on what it names ([ADR 0009](Decisions.md)). |
 | `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order under the same id, with the same side, type and flags, into the first free slot. `None`, and nothing changed, if it is no longer resting or the moved order cannot rest ([ADR 0010](Decisions.md)). |
-| `is_bust()` | bool | True when the account died: its equity, both wallets together, reached zero, which a perp liquidation does unless the spot wallet holds cash ([ADR 0008](Decisions.md)). The engine does not stop on it. |
+| `is_bust()` | bool | True when the account died: its equity, both wallets together, reached zero, which a takeover does unless the spot wallet holds cash ([ADR 0008](Decisions.md)). The engine does not stop on it. |
 | `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
 | `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
 | `qty_from_quote(cash)` | float | Base size for a `cash` amount in quote, at the current close. |
@@ -473,7 +473,7 @@ Each entry in `trades()` is one round trip: a maximal run of one sign, from the 
 | `pnl` | Its net PnL: `realized` less `fees` and `funding`, and for one still open what it holds at the last close as well. The trade statistics are built from it, so they reproduce from the log. |
 | `ret` | `pnl` over `size * entry`. |
 | `best`, `worst` | How far its side's price went for it and against it, as a fraction of `entry`, over the part of each bar it was in: its entry bar from the fill to the close, its exit bar from the open to the fill, and every bar between whole. They are bounds that never overstate, since nothing inside a bar says when its high and its low came ([ADR 0023](Decisions.md)). |
-| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance` or `liquidation`, and `None` while it is open. A forced close is priced where the margin ran out, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
+| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance` or `liquidation`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
 | `open` | True for the round trip still open at the end. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.
@@ -509,11 +509,11 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `instrument` | The instrument, 0 with one. |
 | `order` | The id of the order that filled, or `None` for a forced close. |
 | `side`, `size`, `price` | What filled, and at what price. |
-| `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, and a limit's own price. |
+| `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, a limit's own price, and for a forced close its price where the margin ran out. |
 | `spread`, `slippage`, `impact` | What it paid beyond the reference, in price, each its share of how far the price moved before the bar held it. The spread is zero until it is modelled. |
 | `fee` | The fee, in quote. |
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
-| `taker` | True when the fill took liquidity. A forced close is the venue's and is not. |
+| `taker` | True when the fill took liquidity. A takeover is the venue's and is not; a sale on the book is. |
 | `reason` | `market`, `limit`, `stop`, `take_profit` for a bracket's take-profit, `rebalance` for a leg of a `target`, or `liquidation`. |
 
 ### The order log
