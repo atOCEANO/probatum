@@ -8,7 +8,7 @@
 //! then come out in the coin with no formula of their own. `Units` carries a price,
 //! a size, a side or a record between the venue's terms and the engine's.
 
-use probatum_core::{Candle, Order, Price, Qty, Side, State, Tier, TierBasis, Tiers};
+use probatum_core::{Candle, Order, Price, Qty, Side, State, Tier, TierBasis, TierError, Tiers};
 
 use crate::execution::FillCosts;
 use crate::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal, RoundTrip};
@@ -26,13 +26,45 @@ pub enum Units {
 }
 
 impl Units {
-    /// A price in the other's terms, either way: its reciprocal on an inverse
-    /// contract, with a zero, which a record holds for no price, kept zero.
+    /// Whether the account can trade at `price`: any price on a linear contract,
+    /// which the engine judges itself, and on an inverse contract one whose
+    /// reciprocal is a price, which none at or below zero has, nor one so small its
+    /// reciprocal is past every float.
+    pub fn takes(self, price: f64) -> bool {
+        match self {
+            Units::Inverse(_) => {
+                let reciprocal = 1.0 / price;
+                reciprocal > 0.0 && reciprocal.is_finite()
+            }
+            Units::Linear => true,
+        }
+    }
+
+    /// A price the venue quoted, in the engine's terms: its reciprocal on an inverse
+    /// contract.
     pub fn price(self, price: f64) -> f64 {
         match self {
-            Units::Inverse(_) if price != 0.0 => 1.0 / price,
-            _ => price,
+            Units::Inverse(_) => 1.0 / price,
+            Units::Linear => price,
         }
+    }
+
+    /// A price in the engine's terms as the venue quotes it. On an inverse contract
+    /// it is, of the floats whose reciprocal is `price`, the one written in the
+    /// fewest digits, which is the price quoted wherever one was, since a reciprocal
+    /// taken twice can land up to two floats away from it. A zero, which a record
+    /// holds for no price, stays zero.
+    pub fn dollars(self, price: f64) -> f64 {
+        if self == Units::Linear || price == 0.0 {
+            return price;
+        }
+        let quoted = 1.0 / price;
+        let (below, above) = (quoted.next_down(), quoted.next_up());
+        [quoted, below, above, below.next_down(), above.next_up()]
+            .into_iter()
+            .filter(|&candidate| 1.0 / candidate == price)
+            .min_by_key(|candidate| candidate.to_string().len())
+            .unwrap_or(quoted)
     }
 
     /// A size of contracts in the engine's terms.
@@ -60,10 +92,11 @@ impl Units {
     }
 
     /// Anything a side signs, a position, a weight or a funding rate, in the other's
-    /// terms, either way.
+    /// terms, either way; a zero stays a positive zero, so a flat position reads as
+    /// one.
     pub fn signed(self, value: f64) -> f64 {
         match self {
-            Units::Inverse(_) => -value,
+            Units::Inverse(_) => 0.0 - value,
             Units::Linear => value,
         }
     }
@@ -85,25 +118,12 @@ impl Units {
         }
     }
 
-    /// A bar in the engine's terms, as the venue printed it.
-    pub fn shown(self, bar: Candle) -> Candle {
-        match self {
-            Units::Inverse(value) => Candle {
-                open: 1.0 / bar.open,
-                high: 1.0 / bar.low,
-                low: 1.0 / bar.high,
-                close: 1.0 / bar.close,
-                volume: bar.volume / value,
-            },
-            Units::Linear => bar,
-        }
-    }
-
     /// A tier table in the engine's terms: a quantity table's bounds in the dollars
-    /// its contracts are worth.
-    pub fn tiers(self, tiers: Tiers) -> Tiers {
+    /// its contracts are worth, refused where a bound is past every float there or
+    /// no longer above the one before it.
+    pub fn tiers(self, tiers: Tiers) -> Result<Tiers, TierError> {
         if self == Units::Linear || tiers.basis() != TierBasis::Quantity {
-            return tiers;
+            return Ok(tiers);
         }
         let rows = tiers
             .rows()
@@ -113,10 +133,11 @@ impl Units {
                 ..*tier
             })
             .collect();
-        Tiers::new(TierBasis::Quantity, rows).expect("bounds in dollars keep their order")
+        Tiers::new(TierBasis::Quantity, rows)
     }
 
-    /// A decision of a script in the engine's terms.
+    /// A decision of a script in the engine's terms, its prices ones the account
+    /// `takes`.
     pub fn action(self, action: Action) -> Action {
         let price = |price: Option<f64>| price.map(|price| self.price(price));
         match action {
@@ -177,31 +198,27 @@ impl Units {
         }
     }
 
-    /// Equity in the coin, `equity`, valued at the engine's mark `mark`, in
-    /// dollars: as it is, unless the account is inverse.
-    pub fn in_quote(self, equity: f64, mark: f64) -> f64 {
+    /// Equity in the coin, `equity`, valued in dollars at `close`, the close the
+    /// venue printed: as it is, unless the account is inverse.
+    pub fn in_quote(self, equity: f64, close: f64) -> f64 {
         match self {
-            Units::Inverse(_) => equity / mark,
+            Units::Inverse(_) => equity * close,
             Units::Linear => equity,
         }
     }
 
-    /// A state in the venue's terms.
-    pub fn state(self, state: State) -> State {
+    /// A state in the venue's terms, its bar and its mark read off `printed`, the
+    /// bars as the venue printed them, of the one instrument an inverse account
+    /// holds.
+    pub fn state(self, state: State, printed: &[Candle]) -> State {
         if self == Units::Linear {
             return state;
         }
-        let bar = self.shown(Candle {
-            open: state.bar_open,
-            high: state.bar_high,
-            low: state.bar_low,
-            close: state.bar_close,
-            volume: state.bar_volume,
-        });
+        let bar = printed[state.tick_index];
         State {
             position: self.contracts(self.signed(state.position)),
-            avg_entry: self.price(state.avg_entry),
-            mark_price: self.price(state.mark_price),
+            avg_entry: self.dollars(state.avg_entry),
+            mark_price: bar.close,
             bar_open: bar.open,
             bar_high: bar.high,
             bar_low: bar.low,
@@ -223,10 +240,10 @@ impl Units {
         }
         Order {
             side: self.side(order.side),
-            price: order.price.map(|price| Price(self.price(price.get()))),
+            price: order.price.map(|price| Price(self.dollars(price.get()))),
             trigger: order
                 .trigger
-                .map(|trigger| Price(self.price(trigger.get()))),
+                .map(|trigger| Price(self.dollars(trigger.get()))),
             size: Qty(self.contracts(order.size.get())),
             filled: Qty(self.contracts(order.filled.get())),
             ..order
@@ -241,8 +258,8 @@ impl Units {
             return fill;
         }
         let costs = fill.costs;
-        let (price, reference) = (self.price(fill.price), self.price(costs.reference));
-        let raw = self.price(fill.price - costs.adjustment);
+        let (price, reference) = (self.dollars(fill.price), self.dollars(costs.reference));
+        let raw = self.dollars(fill.price - costs.adjustment);
         let total = costs.spread + costs.slippage + costs.impact;
         let share = |cost: f64| {
             if total > 0.0 {
@@ -273,13 +290,13 @@ impl Units {
         }
         let refusal = |why: Refusal| match why {
             Refusal::Size(size) => Refusal::Size(self.contracts(size)),
-            Refusal::Price(price) => Refusal::Price(self.price(price)),
-            Refusal::Trigger(trigger) => Refusal::Trigger(self.price(trigger)),
+            Refusal::Price(price) => Refusal::Price(self.dollars(price)),
+            Refusal::Trigger(trigger) => Refusal::Trigger(self.dollars(trigger)),
             other => other,
         };
         OrderEvent {
             size: event.size.map(|size| self.contracts(size)),
-            price: event.price.map(|price| self.price(price)),
+            price: event.price.map(|price| self.dollars(price)),
             reason: match event.reason {
                 EventReason::Fits { asked } => EventReason::Fits {
                     asked: self.contracts(asked),
@@ -303,12 +320,12 @@ impl Units {
         let mut out = RoundTrip {
             side: self.side(trip.side),
             size: self.contracts(trip.size),
-            entry: self.price(trip.entry),
-            exit: self.price(trip.exit),
+            entry: self.dollars(trip.entry),
+            exit: self.dollars(trip.exit),
             opened: self.contracts(trip.opened),
             closed: self.contracts(trip.closed),
-            high: self.price(trip.low),
-            low: self.price(trip.high),
+            high: self.dollars(trip.low),
+            low: self.dollars(trip.high),
             ..trip
         };
         out.excursions();
@@ -323,15 +340,17 @@ impl Units {
         }
     }
 
-    /// An instrument's line of a ledger row in the venue's terms.
-    pub fn leg(self, leg: Leg) -> Leg {
+    /// An instrument's line of a ledger row in the venue's terms, marked at `close`,
+    /// the close the venue printed on the row, where an inverse account holds the
+    /// one instrument that always prints.
+    pub fn leg(self, leg: Leg, close: f64) -> Leg {
         if self == Units::Linear {
             return leg;
         }
         Leg {
             position: self.contracts(self.signed(leg.position)),
-            entry: self.price(leg.entry),
-            mark: self.price(leg.mark),
+            entry: self.dollars(leg.entry),
+            mark: close,
             weight: self.signed(leg.weight),
             drift: self.signed(leg.drift),
             ..leg
@@ -348,16 +367,28 @@ mod tests {
     const INVERSE: Units = Units::Inverse(100.0);
 
     #[test]
-    fn a_price_a_side_and_a_sign_come_back_as_they_went() {
-        for price in [60_000.0, 0.5, 0.0] {
-            assert_eq!(INVERSE.price(INVERSE.price(price)), price);
+    fn a_quoted_price_a_side_and_a_sign_come_back_as_they_went() {
+        // one price in six comes back a float away from a reciprocal taken twice,
+        // 49 among them, and the fewest digits find the one quoted again
+        for price in [60_000.0, 0.5, 49.0, 56.31, 40_201.01] {
+            assert_eq!(INVERSE.dollars(INVERSE.price(price)), price);
         }
+        assert_eq!(INVERSE.dollars(0.0), 0.0);
         assert_eq!(INVERSE.side(Side::Buy), Side::Sell);
         assert_eq!(
             INVERSE.contracts(INVERSE.signed(INVERSE.signed(INVERSE.size(600.0)))),
             600.0
         );
-        assert_eq!(Units::Linear.price(60_000.0), 60_000.0);
+        assert!(INVERSE.signed(0.0).is_sign_positive());
+        assert_eq!(Units::Linear.dollars(60_000.0), 60_000.0);
+    }
+
+    #[test]
+    fn an_inverse_contract_takes_no_price_without_a_reciprocal() {
+        for price in [0.0, -1.0, 1e-310] {
+            assert!(!INVERSE.takes(price), "{price}");
+        }
+        assert!(INVERSE.takes(1e-300) && Units::Linear.takes(0.0));
     }
 
     #[test]
@@ -372,7 +403,6 @@ mod tests {
         let engine = INVERSE.bar(bar);
         assert_eq!((engine.high, engine.low), (1.0 / 40.0, 1.0 / 80.0));
         assert_eq!(engine.volume, 300.0);
-        assert_eq!(INVERSE.shown(engine), bar);
         let missing = Candle {
             open: f64::NAN,
             high: f64::NAN,
@@ -398,7 +428,7 @@ mod tests {
             "entered at {}",
             out.entry
         );
-        assert!((out.high - 60_000.0).abs() < 1e-9 && (out.low - 40_000.0).abs() < 1e-9);
+        assert_eq!((out.high, out.low), (60_000.0, 40_000.0));
         assert!((out.best - 0.25).abs() < 1e-12 && (out.worst + 1.0 / 6.0).abs() < 1e-12);
     }
 }

@@ -159,8 +159,8 @@ impl Candles {
         self.width
     }
 
-    /// The first instrument's bar on row `i`, copied out of the shared buffer, or
-    /// `None` past the end.
+    /// The first instrument's bar on row `i` as the engine reads it, copied out of
+    /// the shared buffer, or `None` past the end.
     pub fn get(&self, i: usize) -> Option<Candle> {
         (i < self.rows).then(|| self.bars[i * self.width])
     }

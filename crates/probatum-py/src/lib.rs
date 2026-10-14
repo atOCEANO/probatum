@@ -513,6 +513,18 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
     }
 }
 
+/// `price`, given as `name` and known to be finite, in the engine's `units`: refused
+/// where an inverse contract has no reciprocal to trade at.
+fn engine_price(name: &str, units: Units, price: f64) -> PyResult<f64> {
+    if !units.takes(price) {
+        return Err(PyValueError::new_err(format!(
+            "{name}: {price}, which an inverse contract cannot trade at; give a price \
+             above 0"
+        )));
+    }
+    Ok(units.price(price))
+}
+
 /// Refuse a transfer on an account of `units` that holds its coin in one wallet, as
 /// an inverse contract's does. `at` leads the error, as in `transfer_to`.
 fn one_wallet(at: &str, units: Units) -> PyResult<()> {
@@ -624,6 +636,23 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
                 format!("tiers[{row}]: {field} {value} is negative; give zero or more")
             }
         })
+    })
+}
+
+/// `tiers` in the engine's `units`, refused where a quantity table's bound, counted in
+/// the dollars its contracts are worth, is past every float or meets the one before it.
+fn in_units(units: Units, tiers: Tiers) -> PyResult<Tiers> {
+    let given: Vec<f64> = tiers.rows().iter().map(|tier| tier.up_to).collect();
+    units.tiers(tiers).map_err(|why| {
+        let row = match why {
+            TierError::Bound { row, .. } | TierError::NotFinite { row, .. } => row,
+            _ => 0,
+        };
+        PyValueError::new_err(format!(
+            "tiers[{row}]: up_to {} contracts, counted in dollars of contracts, is past \
+             every float or meets the bound before it; give smaller bounds further apart",
+            given[row]
+        ))
     })
 }
 
@@ -964,10 +993,11 @@ fn states_to_list<'py>(
     py: Python<'py>,
     states: Vec<State>,
     units: Units,
+    printed: &[Candle],
 ) -> PyResult<Bound<'py, PyList>> {
     let list = PyList::empty(py);
     for state in states {
-        list.append(Bound::new(py, PyState::from(units.state(state)))?)?;
+        list.append(Bound::new(py, PyState::from(units.state(state, printed)))?)?;
     }
     Ok(list)
 }
@@ -1198,16 +1228,21 @@ fn ledger_of<'py>(
         d.set_item(name, PyArray1::from_vec(py, column(get)))?;
     }
     let width = engine.width();
-    let marks = reporter.legs().iter().step_by(width).map(|leg| leg.mark);
+    let printed = engine.candles_all();
+    let close = |tick: usize, i: usize| printed[tick * width + i].close;
     let in_quote = rows
         .iter()
-        .zip(marks)
-        .map(|(row, mark)| units.in_quote(row.equity, mark));
+        .map(|row| units.in_quote(row.equity, close(row.tick, 0)));
     d.set_item(
         "equity_in_quote",
         PyArray1::from_vec(py, in_quote.collect()),
     )?;
-    let legs: Vec<Leg> = reporter.legs().iter().map(|&leg| units.leg(leg)).collect();
+    let legs: Vec<Leg> = reporter
+        .legs()
+        .iter()
+        .enumerate()
+        .map(|(k, &leg)| units.leg(leg, close(rows[k / width].tick, k % width)))
+        .collect();
     let leg_columns: [(&str, LegColumn); 7] = [
         ("position", |leg| leg.position),
         ("entry", |leg| leg.entry),
@@ -1443,13 +1478,15 @@ impl Engine {
 
     /// Reset to the first bar and return the initial state.
     fn reset<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyState>> {
-        Bound::new(py, PyState::from(self.units.state(self.inner.reset())))
+        let state = self.inner.reset();
+        self.state_of(py, state)
     }
 
     /// Advance one bar, resolve the orders placed since the last step, mark the
     /// account, and return the new state.
     fn step<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyState>> {
-        Bound::new(py, PyState::from(self.units.state(self.inner.step())))
+        let state = self.inner.step();
+        self.state_of(py, state)
     }
 
     /// True when there is no next bar to step into.
@@ -1565,7 +1602,7 @@ impl Engine {
     /// a non-finite price raises instead.
     fn limit_buy(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
-        Ok(self.limit(Side::Buy, size, price))
+        self.limit(Side::Buy, size, price)
     }
 
     /// Rest a sell limit. Returns the order id, or None if the book is full, size is
@@ -1573,7 +1610,7 @@ impl Engine {
     /// a non-finite price raises instead.
     fn limit_sell(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
-        Ok(self.limit(Side::Sell, size, price))
+        self.limit(Side::Sell, size, price)
     }
 
     /// Rest a stop on `side` that triggers at `trigger`. None if the book is full
@@ -1592,14 +1629,10 @@ impl Engine {
         let side = parse_side(side)?;
         finite("trigger", trigger)?;
         let units = self.units;
+        let trigger = engine_price("trigger", units, trigger)?;
         Ok(self
             .inner
-            .stop(
-                units.side(side),
-                units.size(size),
-                units.price(trigger),
-                reduce_only,
-            )
+            .stop(units.side(side), units.size(size), trigger, reduce_only)
             .map(|id| id.0))
     }
 
@@ -1626,8 +1659,12 @@ impl Engine {
         if let Some(price) = take_profit {
             finite("take_profit", price)?;
         }
-        let price = |price: Option<f64>| price.map(|price| self.units.price(price));
-        let (stop, take_profit) = (price(stop), price(take_profit));
+        let price = |name: &str, price: Option<f64>| {
+            price
+                .map(|price| engine_price(name, self.units, price))
+                .transpose()
+        };
+        let (stop, take_profit) = (price("stop", stop)?, price("take_profit", take_profit)?);
         let (stop, take_profit) = self.inner.bracket(0, stop, take_profit);
         Ok((stop.map(|id| id.0), take_profit.map(|id| id.0)))
     }
@@ -1665,13 +1702,17 @@ impl Engine {
             finite("trigger", t)?;
         }
         let units = self.units;
+        let price = price.map(|p| engine_price("price", units, p)).transpose()?;
+        let trigger = trigger
+            .map(|t| engine_price("trigger", units, t))
+            .transpose()?;
         Ok(self
             .inner
             .replace(
                 OrderId(order_id),
                 size.map(|size| units.size(size)),
-                price.map(|price| units.price(price)),
-                trigger.map(|trigger| units.price(trigger)),
+                price,
+                trigger,
             )
             .map(|id| id.0))
     }
@@ -1784,14 +1825,18 @@ impl Engine {
             finite("trigger", t)?;
         }
         let units = self.units;
+        let price = price.map(|p| engine_price("price", units, p)).transpose()?;
+        let trigger = trigger
+            .map(|t| engine_price("trigger", units, t))
+            .transpose()?;
         Ok(self
             .inner
             .order(
                 units.side(side),
                 units.size(size),
                 kind,
-                price.map(|price| units.price(price)),
-                trigger.map(|trigger| units.price(trigger)),
+                price,
+                trigger,
                 reduce_only,
                 post_only,
                 tif,
@@ -1901,7 +1946,8 @@ impl Engine {
         // double-borrow panic.
         let mut state = {
             let mut engine = slf.borrow_mut();
-            Bound::new(py, PyState::from(engine.units.state(engine.inner.reset())))?
+            let state = engine.inner.reset();
+            engine.state_of(py, state)?
         };
 
         if strategy.hasattr("init")? {
@@ -1929,7 +1975,8 @@ impl Engine {
             }
             state = {
                 let mut engine = slf.borrow_mut();
-                Bound::new(py, PyState::from(engine.units.state(engine.inner.step())))?
+                let state = engine.inner.step();
+                engine.state_of(py, state)?
             };
             tick += 1;
         }
@@ -1939,6 +1986,14 @@ impl Engine {
 }
 
 impl Engine {
+    /// `state` as Python reads it, in the venue's terms.
+    fn state_of<'py>(&self, py: Python<'py>, state: State) -> PyResult<Bound<'py, PyState>> {
+        Bound::new(
+            py,
+            PyState::from(self.units.state(state, self.inner.candles_all())),
+        )
+    }
+
     /// A market order on `side` of `size`, in the engine's units.
     fn market(&mut self, side: Side, size: f64) -> Option<u64> {
         let size = self.units.size(size);
@@ -1950,13 +2005,14 @@ impl Engine {
     }
 
     /// A limit on `side` of `size` at `price`, in the engine's units.
-    fn limit(&mut self, side: Side, size: f64, price: f64) -> Option<u64> {
-        let (size, price) = (self.units.size(size), self.units.price(price));
-        match self.units.side(side) {
+    fn limit(&mut self, side: Side, size: f64, price: f64) -> PyResult<Option<u64>> {
+        let price = engine_price("price", self.units, price)?;
+        let size = self.units.size(size);
+        Ok(match self.units.side(side) {
             Side::Buy => self.inner.limit_buy(size, price),
             Side::Sell => self.inner.limit_sell(size, price),
         }
-        .map(|id| id.0)
+        .map(|id| id.0))
     }
 
     /// One field of every candle as a zero-copy read-only view, `(T,)`, or `(T, N)`
@@ -2161,7 +2217,7 @@ impl Batch {
     /// env order.
     fn reset_all<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let states = py.detach(|| self.inner.reset_all());
-        states_to_list(py, states, self.units)
+        states_to_list(py, states, self.units, self.printed())
     }
 
     /// Apply the per-env `actions` as market orders (positive buys, negative
@@ -2193,7 +2249,7 @@ impl Batch {
             self.inner.step_all()
         });
 
-        states_to_list(py, states, self.units)
+        states_to_list(py, states, self.units, self.printed())
     }
 
     // --- Batched RL surface (used by probatum.rl.VectorEnv) ---
@@ -2466,6 +2522,14 @@ impl Batch {
 }
 
 impl Batch {
+    /// The bars as the venue printed them, which every env shares.
+    fn printed(&self) -> &[Candle] {
+        self.inner
+            .engines()
+            .first()
+            .map_or(&[], |engine| engine.candles_all())
+    }
+
     /// Validate and convert a per-env `i64` offset array into `usize`.
     fn offsets_vec(&self, offsets: PyReadonlyArray1<'_, i64>) -> PyResult<Vec<usize>> {
         let slice = offsets.as_slice().map_err(|_| {
@@ -2620,6 +2684,7 @@ struct Arguments<'a, 'py> {
     at: &'a str,
     verb: &'a str,
     given: &'a Bound<'py, PyDict>,
+    units: Units,
 }
 
 impl<'py> Arguments<'_, 'py> {
@@ -2640,12 +2705,18 @@ impl<'py> Arguments<'_, 'py> {
         })
     }
 
-    /// A limit, a stop or a trigger, which a bar can only reach if it is finite.
+    /// A limit, a stop or a trigger, which a bar can only reach if it is finite, and
+    /// an inverse contract only where it has a reciprocal.
     fn price(&self, name: &str) -> PyResult<Option<f64>> {
         let price = self.number(name)?;
         match price {
             Some(p) if !p.is_finite() => Err(PyValueError::new_err(format!(
                 "{}: {name} {p} is not a price; give a finite number",
+                self.at
+            ))),
+            Some(p) if !self.units.takes(p) => Err(PyValueError::new_err(format!(
+                "{}: {name} {p}, which an inverse contract cannot trade at; give a price \
+                 above 0",
                 self.at
             ))),
             _ => Ok(price),
@@ -2747,6 +2818,7 @@ fn read_action(
     given: &Bound<'_, PyDict>,
     placements: usize,
     engine: &BarEngine,
+    units: Units,
 ) -> PyResult<Action> {
     let width = engine.width();
     let takes: &[&str] = match verb {
@@ -2785,7 +2857,12 @@ fn read_action(
             )));
         }
     }
-    let args = Arguments { at, verb, given };
+    let args = Arguments {
+        at,
+        verb,
+        given,
+        units,
+    };
     let action = match verb {
         "buy" | "sell" => {
             let instrument = args.traded(width)?;
@@ -2925,7 +3002,7 @@ fn read_script<'py>(
                     shown(&action)
                 )));
             };
-            let action = read_action(&at, &verb, &given, placements, engine)?;
+            let action = read_action(&at, &verb, &given, placements, engine, units)?;
             if let Action::Transfer { .. } = action {
                 one_wallet(&format!("{at}: "), units)?;
             }
@@ -3041,11 +3118,14 @@ fn build_series(
         };
         let mut series = candles_from_array(candles, times)?;
         if let Units::Inverse(contract) = units {
-            let low = series.as_slice().iter().position(|bar| bar.low <= 0.0);
+            let low = series
+                .as_slice()
+                .iter()
+                .position(|bar| !units.takes(bar.low));
             if let Some(row) = low {
                 return Err(PyValueError::new_err(format!(
-                    "candles: a low of {} at row {row}; an inverse contract's prices are \
-                     above 0",
+                    "candles: a low of {} at row {row}, which an inverse contract cannot \
+                     trade at; give prices above 0",
                     series.as_slice()[row].low
                 )));
             }
@@ -3063,7 +3143,7 @@ fn build_series(
         )?;
         tier_basis(tiers_by)?;
         let series = match tiers {
-            Some(rows) => series.with_tiers(units.tiers(tiers_from(rows, tiers_by)?)),
+            Some(rows) => series.with_tiers(in_units(units, tiers_from(rows, tiers_by)?)?),
             None => series,
         };
         return Ok((series, config, false, units));

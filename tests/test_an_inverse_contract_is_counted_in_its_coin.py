@@ -4,6 +4,7 @@ beside it. The Specification's worked examples of inverse contracts hold through
 engine, and so do a taker's costs, each its rate of the coin notional.
 """
 
+import math
 import re
 
 import numpy as np
@@ -204,11 +205,55 @@ def test_an_inverse_contract_the_engine_cannot_hold_is_refused(settings, says):
 
 
 def test_a_price_at_zero_a_universe_and_a_transfer_are_refused():
-    with pytest.raises(ValueError, match="candles: a low of 0 at row 1; an inverse"):
+    with pytest.raises(ValueError, match="candles: a low of 0 at row 1, which an"):
         engine(bars((1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 0.0, 1.0)))
+
     with pytest.raises(ValueError, match="market: an inverse contract for a universe"):
         probatum.Engine(np.ones((2, 1, 5)), market="inverse", contract=100.0)
 
     e = engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)))
     with pytest.raises(ValueError, match="transfer: an inverse contract's account"):
         e.transfer(0.5, "spot")
+
+    with pytest.raises(ValueError, match="tiers\\[0\\]: up_to 17976931348623157"):
+        engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)),
+               tiers=[(1.7976931348623157e308, 20.0, 0.0, 0.0)], tiers_by="quantity")
+
+
+@pytest.mark.parametrize("place, says", [
+    (lambda e: e.stop("sell", 600.0, 0.0, reduce_only=True), "trigger: 0, which an"),
+    (lambda e: e.limit_buy(600.0, -5.0), "price: -5, which an inverse contract"),
+    (lambda e: e.bracket(stop=0.0), "stop: 0, which an inverse contract"),
+    (lambda e: e.order("buy", 1.0, "limit", price=1e-310), "which an inverse contract"),
+])
+def test_a_price_with_no_reciprocal_is_refused(place, says):
+    # a dollar price at or below zero has no reciprocal, and a stop at zero would
+    # trigger at once in the engine's terms where a bar can never reach it
+    e = engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)))
+    e.reset()
+
+    with pytest.raises(ValueError, match=re.escape(says)):
+        place(e)
+
+    script = {0: [("buy", {"size": 1.0, "limit": 0.0})]}
+    venue  = dict(market="inverse", contract=100.0, quote=1.0)
+
+    with pytest.raises(ValueError, match=re.escape("script[0][0]: limit 0, which")):
+        probatum._probatum.run(bars((60_000.0,) * 4, (60_000.0,) * 4), venue, script)
+
+
+def test_a_price_comes_back_as_it_was_quoted_and_a_flat_position_reads_flat():
+    # a reciprocal taken twice lands a float off 49 and 56.31, where the fewest
+    # digits find them again
+    candles = bars((49.0, 49.0, 49.0, 49.0), (49.0, 57.0, 48.0, 56.31))
+    e       = engine(candles)
+    state   = e.reset()
+
+    assert math.copysign(1.0, state.position) == 1.0
+
+    e.limit_buy(10.0, 49.0)
+    state = e.step()
+
+    assert (state.avg_entry, state.mark_price, state.bar_close) == (49.0, 56.31, 56.31)
+    assert e.fills()[0]["price"]       == 49.0
+    assert e.ledger()["mark"].tolist() == [49.0, 56.31]
