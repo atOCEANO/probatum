@@ -20,7 +20,7 @@ pub mod sweep;
 pub use batch::{BatchSnapshot, EnvBatch};
 pub use candles::{Candles, Instrument};
 pub use clock::Clock;
-pub use engine::{Engine, EngineConfig, Intrabar, TargetError};
+pub use engine::{Engine, EngineConfig, Intrabar, Liquidation, TargetError};
 pub use execution::{FillCosts, FillModel};
 pub use inverse::Units;
 pub use reporter::{Reporter, RoundTrip};

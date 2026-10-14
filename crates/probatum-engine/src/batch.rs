@@ -270,7 +270,7 @@ mod tests {
     use super::EnvBatch;
     use crate::candles::{Candles, Instrument};
     use crate::clock::Clock;
-    use crate::engine::{Engine, EngineConfig, Intrabar, TargetError};
+    use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation, TargetError};
     use probatum_core::{Candle, Market, Side, State, Tiers};
     use proptest::prelude::*;
 
@@ -316,6 +316,7 @@ mod tests {
             funding_rate: 0.0,
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
+            liquidation: Liquidation::Takeover,
         }
     }
 
@@ -757,6 +758,7 @@ mod tests {
             funding_rate: 0.0001,
             funding_interval: 2,
             intrabar: Intrabar::Pessimistic,
+            liquidation: Liquidation::Takeover,
         }
     }
 

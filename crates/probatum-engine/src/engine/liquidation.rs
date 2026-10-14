@@ -5,15 +5,16 @@
 //! fills past the point the account left the market (ADR 0017). After the fills the
 //! path is solved again for the account they left, and the closes are checked once
 //! the row's funding is charged. A forced close takes the account over at the clip
-//! point and leaves the margin wallet at exactly zero, and no reducing fill books
-//! past the point the margin runs out, so an account can end at zero but never
-//! owing (ADRs 0018, 0019).
+//! point and leaves the margin wallet at exactly zero, unless the venue books then
+//! backstops and a sale of every leg as a taker holds. No reducing fill books past
+//! the point the margin runs out, so an account can end at zero but never owing
+//! (ADRs 0018, 0019).
 
 use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side};
 
 use super::ledger::Moment;
-use super::path::{PathLeg, Point};
-use super::Engine;
+use super::path::{Path, PathLeg, Point};
+use super::{Engine, Liquidation};
 use crate::candles::printed;
 use crate::execution::FillCosts;
 use crate::reporter::{EventKind, EventReason, FillReason, FillRecord};
@@ -76,11 +77,10 @@ impl Engine {
         // the gap is one move for every path, and every path starts the bar at the
         // opens; inside the bars the optimistic way waits for every path to reach
         // the trigger
-        let found = self
-            .solve(&path, |piece| if piece == 0 { wallet } else { inside })
-            .filter(|(trigger, _)| {
-                trigger.piece == 0 || trigger.at == 0.0 || self.every_path_reaches(inside)
-            });
+        let wallets = |piece| if piece == 0 { wallet } else { inside };
+        let found = self.solve(&path, wallets).filter(|(trigger, _)| {
+            trigger.piece == 0 || trigger.at == 0.0 || self.every_path_reaches(inside)
+        });
         if let Some((_, clip)) = found {
             let (from, to) = path.pieces[clip.piece];
             let at = |leg: &PathLeg| leg.start + clip.at * (leg.end - leg.start);
@@ -92,7 +92,7 @@ impl Engine {
                         .iter()
                         .map(|leg| (leg.i, leg.q, at(leg))),
                 );
-                self.take_over(&closes, Moment::BeforeOpen);
+                self.liquidate(&closes, Moment::BeforeOpen, &path, wallets, clip);
                 self.closes = closes;
             } else {
                 for leg in &path.legs[from..to] {
@@ -128,8 +128,13 @@ impl Engine {
                     let (start, end) = leg.ends(a, b);
                     closes.push((leg.i, leg.q, start + clip.at * (end - start)));
                 }
+                // the wallet the path was solved against, before the charges it
+                // counted are paid
+                let wallet = self.account.margin_cash - self.counted_inside();
                 self.pay_counted_inside();
-                self.take_over(&closes, Moment::InBar);
+                let path = std::mem::take(&mut self.path);
+                self.liquidate(&closes, Moment::InBar, &path, |_| wallet, clip);
+                self.path = path;
                 self.closes = closes;
             }
             Found::Clear => self.clear_through = true,
@@ -261,7 +266,7 @@ impl Engine {
 
     /// The rule, 6: once the row's own funding is charged, an account a debit took
     /// to its trigger is closed at the closes, a perp that printed no bar at its
-    /// mark (ADR 0020).
+    /// mark, and book then backstop reads the closes as its whole path (ADR 0020).
     pub(super) fn check_closes(&mut self) {
         if self.account.perps_held() == 0 {
             return;
@@ -279,14 +284,29 @@ impl Engine {
             return;
         }
         let mut closes = std::mem::take(&mut self.closes);
+        let mut path = std::mem::take(&mut self.path);
         closes.clear();
+        path.legs.clear();
+        path.pieces.clear();
         for (i, position) in self.account.positions.iter().enumerate() {
             let q = position.qty.get();
             if self.account.markets[i] == Market::Perp && q != 0.0 {
-                closes.push((i, q, self.close_of(i)));
+                let close = self.close_of(i);
+                closes.push((i, q, close));
+                path.legs.push(PathLeg {
+                    i,
+                    q,
+                    entry: position.avg_entry.get(),
+                    start: close,
+                    end: close,
+                });
             }
         }
-        self.take_over(&closes, Moment::AtClose);
+        path.pieces.push((0, path.legs.len()));
+        let wallet = self.account.margin_cash;
+        let trigger = Point { piece: 0, at: 0.0 };
+        self.liquidate(&closes, Moment::AtClose, &path, |_| wallet, trigger);
+        self.path = path;
         self.closes = closes;
     }
 
@@ -309,6 +329,120 @@ impl Engine {
             close: clip(bar.close),
             volume: bar.volume,
         }
+    }
+
+    /// The forced close of the legs in `closes`, each an instrument, a signed size
+    /// and its price at the clip point `clip` on `path`, the margin wallet holding
+    /// `wallet(k)` on piece `k`: sold on the book where the venue books then
+    /// backstops and the sale holds, and taken over otherwise. With no maintenance
+    /// the backstop level is the trigger itself, so an account holding only perps
+    /// without it is taken over; with maintenance the clip point is the trigger.
+    fn liquidate(
+        &mut self,
+        closes: &[(usize, f64, f64)],
+        moment: Moment,
+        path: &Path,
+        wallet: impl Fn(usize) -> f64,
+        clip: Point,
+    ) {
+        if let Liquidation::BookThenBackstop(share) = self.config.liquidation {
+            if closes.iter().any(|&(i, ..)| self.maintains[i])
+                && self.book_holds(closes, path, wallet, clip, share)
+            {
+                self.sell_on_book(closes, moment);
+                return;
+            }
+        }
+        self.take_over(closes, moment);
+    }
+
+    /// Whether a sale on the book holds (The forced close): `path` never reaches the
+    /// backstop level, equity at `share` of the requirement, and every leg in
+    /// `closes` sold as a taker from its price at the trigger `trigger`, inside its
+    /// raw bar and paying the taker fee, leaves equity there at or above that level.
+    /// The bar cannot show that a sale finished before a path that reaches the level
+    /// got there.
+    fn book_holds(
+        &self,
+        closes: &[(usize, f64, f64)],
+        path: &Path,
+        wallet: impl Fn(usize) -> f64,
+        trigger: Point,
+        share: f64,
+    ) -> bool {
+        if self.reaches(path, &wallet, share) {
+            return false;
+        }
+        let fee = self.cost.fee_taker;
+        let mut paid = 0.0;
+        for &(i, q, price) in closes {
+            let side = if q > 0.0 { Side::Sell } else { Side::Buy };
+            let bar = self.candles.bar(self.tick, i);
+            let (fill, _) = self.fill_model.taker_fill(side, q.abs(), price, &bar);
+            let sold = fill.price.get();
+            paid += (q * (sold - price)).abs();
+            paid += (q * sold).abs() * fee;
+        }
+        let (equity, requirement) = self.level_at(path, trigger, wallet(trigger.piece));
+        equity - paid >= share * requirement
+    }
+
+    /// Book then backstop's sale (The forced close): every leg in `closes` sold as a
+    /// taker from its price, inside its raw bar and not limited by its volume, paying
+    /// the taker fee, and the trader keeps what the margin wallet then holds. An
+    /// instrument's last leg takes what its position still holds, at the price its
+    /// own size was sold at, as `book_holds` priced it.
+    fn sell_on_book(&mut self, closes: &[(usize, f64, f64)], moment: Moment) {
+        for (k, &(i, q, price)) in closes.iter().enumerate() {
+            let last = closes[k + 1..].iter().all(|&(j, ..)| j != i);
+            let held = if last {
+                self.account.positions[i].qty.get()
+            } else {
+                q
+            };
+            if held == 0.0 {
+                continue;
+            }
+            let side = if held > 0.0 { Side::Sell } else { Side::Buy };
+            let bar = self.candles.bar(self.tick, i);
+            let (fill, costs) = self.fill_model.taker_fill(side, q.abs(), price, &bar);
+            let size = held.abs();
+            let sold = fill.price.get();
+            let fill = Fill {
+                size: Qty(size),
+                ..fill
+            };
+            let fee = size * sold * self.cost.fee_taker;
+            let before = self.before_fill(i);
+            self.account.apply_fill(i, &fill, fee);
+            self.book_fill(i, size, sold, fee, before, FillReason::Liquidation, moment);
+            if let Some(reporter) = self.reporter.as_mut() {
+                // what the sale paid beyond its trigger price, each part in
+                // proportion where the bar held the price back
+                let paid = size * (sold - price).abs();
+                let asked = costs.spread + costs.slippage + costs.impact;
+                let bar = reporter.costs_mut();
+                bar.fees += fee;
+                if asked > 0.0 {
+                    bar.spread += paid * costs.spread / asked;
+                    bar.slippage += paid * costs.slippage / asked;
+                    bar.impact += paid * costs.impact / asked;
+                }
+                reporter.record_fill(FillRecord {
+                    tick: self.tick,
+                    instrument: i,
+                    order: None,
+                    side,
+                    size,
+                    price: sold,
+                    costs,
+                    fee,
+                    taker: true,
+                    reason: FillReason::Liquidation,
+                });
+            }
+        }
+        self.cancel_perp_orders();
     }
 
     /// Take the account over (The forced close): close every leg in `closes`, each an
@@ -377,10 +511,14 @@ impl Engine {
         // levers: with the cap off, an account closed out there opened a position
         // again on the next bar. So the wallet ends at exactly zero (ADRs 0015, 0018).
         self.account.margin_cash = 0.0;
-        // Every perp order the closed-out account left goes with it. The empty
-        // wallet refused them anyway until a transfer could fund it again, after
-        // which they filled for an account that had already left the market
-        // (ADR 0018). The spot wallet is untouched, and its orders stand.
+        self.cancel_perp_orders();
+    }
+
+    /// Cancel every perp order the closed-out account left (The forced close).
+    /// After a takeover the empty wallet refused them anyway until a transfer could
+    /// fund it again, after which they filled for an account that had already left
+    /// the market (ADR 0018). The spot wallet is untouched, and its orders stand.
+    fn cancel_perp_orders(&mut self) {
         let perp = |markets: &[Market], i: usize| markets[i] == Market::Perp;
         if self.reporter.is_some() {
             let left: Vec<(OrderId, usize)> = self
@@ -491,7 +629,7 @@ mod tests {
     use crate::candles::{Candles, Instrument};
     use crate::clock::Clock;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, universe};
-    use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
+    use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation, CLOSE_EPS};
     use crate::reporter::{EventKind, EventReason, FillReason};
     use probatum_core::{
         Candle, Market, OrderType, Side, Tier, TierBasis, Tiers, TimeInForce, Wallet,
@@ -1539,15 +1677,30 @@ mod tests {
 
     /// `half_a_bitcoin` deciding what its bars cannot show by `intrabar`.
     fn half_a_bitcoin_at(bars: Candles, intrabar: Intrabar) -> Engine {
-        let config = EngineConfig {
+        half_a_bitcoin_on(
+            bars,
+            EngineConfig {
+                intrabar,
+                ..specification()
+            },
+        )
+    }
+
+    /// The Specification's venue at one instrument: 10,015 of margin and fees of
+    /// 0.02% and 0.05%.
+    fn specification() -> EngineConfig {
+        EngineConfig {
             quote: 10_015.0,
             fee_maker: 0.0002,
             fee_taker: 0.0005,
             max_leverage: 10.0,
             report: true,
-            intrabar,
             ..perp_cfg()
-        };
+        }
+    }
+
+    /// `half_a_bitcoin` at the venue `config`.
+    fn half_a_bitcoin_on(bars: Candles, config: EngineConfig) -> Engine {
         let mut e = Engine::new(bars, config);
         e.reset();
         let gtc = TimeInForce::Gtc;
@@ -1979,6 +2132,44 @@ mod tests {
         let charge = reporter.ledger()[2].costs.liquidation;
         assert!((charge - 100.50).abs() < 0.005, "charged {charge}");
         assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn book_then_backstop_sells_at_the_trigger_unless_it_would_reach_the_backstop() {
+        // sold at 40,201.01 as a taker, the long pays the fee of 10.05 and keeps 90.45
+        // of the 100.50. The backstop level, two thirds of the requirement, is where
+        // 0.5p - 20,000 falls to 0.0016667p, 40,133.78: a low of 40,130 reaches it,
+        // and a slip of 20 bps, held at the low of 40,150, costs 25.51 with the fee
+        // of 10.04, past the 33.50 between the two levels, so both are taken over
+        for (low, slippage_bps, kept, charge) in [
+            (40_150.0, 0.0, 90.45, 0.0),
+            (40_140.0, 0.0, 90.45, 0.0),
+            (40_130.0, 0.0, 0.0, 100.50),
+            (40_150.0, 10.0, 70.36, 0.0),
+            (40_150.0, 20.0, 0.0, 100.50),
+        ] {
+            let slide = ohlc(41_000.0, 41_200.0, low, 40_500.0, 1e6);
+            let config = EngineConfig {
+                slippage_bps,
+                liquidation: Liquidation::BookThenBackstop(2.0 / 3.0),
+                ..specification()
+            };
+            let candles = Candles::new(bitcoin(&[slide])).with_tiers(maintained());
+            let mut e = half_a_bitcoin_on(candles, config);
+            let last = e.step();
+            let reporter = e.reporter().expect("reporting is on");
+            let close = reporter.fills().last().expect("the close");
+            assert_eq!(close.reason, FillReason::Liquidation);
+            assert_eq!(close.taker, charge == 0.0, "a low of {low}");
+            assert!(
+                (last.margin_cash - kept).abs() < 0.005,
+                "kept {} on a low of {low}",
+                last.margin_cash
+            );
+            let booked = reporter.ledger()[2].costs.liquidation;
+            assert!((booked - charge).abs() < 0.005, "charged {booked}");
+            assert_eq!(last.position, 0.0);
+        }
     }
 
     #[test]

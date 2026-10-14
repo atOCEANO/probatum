@@ -25,10 +25,11 @@ import sys
 import numpy as np
 
 import probatum
-from .differential import (KINDS, Script, before, bracket, clock, close_enough,
-                           closed_before, cut, limit_price, live, log_difference,
-                           prune, resting, setting, settings, stamps, stop_price,
-                           tally, tier_table, walk, weight, worded)
+from .differential import (HOUR, KINDS, Script, before, bracket, clock, close_enough,
+                           closed_before, cut, engine_liquidation, limit_price,
+                           liquidation, live, log_difference, prune, resting, setting,
+                           settings, stamps, stop_price, tally, tier_table, walk,
+                           weight, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -438,6 +439,119 @@ def shared_margin(rng):
     return times, kinds, columns, cfg, actions
 
 
+def backstop(rng):
+    """A universe drawn around book then backstop. One to three perpetuals, each with
+    one tier keeping maintenance, are taken by a target at the second row's open, and
+    the account they leave at the third row's close is read off the reference. The
+    fourth row's bar moves every leg against itself to where equity is a drawn share
+    of the requirement: past the trigger and short of the backstop level mostly,
+    where the sale holds if its costs fit between the two, now and then past both,
+    and now and then from a gap that opens past the trigger. Otherwise the bar stops
+    short of the trigger and a funding debit at its close takes the account there.
+    A take-profit resting on one leg goes with the account, and a target now and
+    then takes the legs again afterwards. The rows around it are quiet."""
+    rows    = rng.randint(6, 9)
+    times   = clock(rng, rows)
+    n       = rng.randint(1, 3)
+    kinds   = ["linear"] * n
+    columns = [[calm(rng, rng.choice([5.0, 100.0, 3_000.0]))] for _ in kinds]
+    for column in columns:
+        for _ in range(2):
+            column.append(calm(rng, column[-1].close))
+
+    cfg   = config(rng, times, kinds, columns)
+    share = rng.choice([0.5, 2.0 / 3.0])
+    rates = [rng.choice([0.005, 0.01, 0.02]) for _ in kinds]
+    cfg.update(funding=("none",), leverage=0.0, max_open_orders=8,
+               slippage_bps=rng.choice([0.0, 5.0]),
+               tiers=[([(1e15, 20.0, rate, 0.0)], "notional") for rate in rates],
+               liquidation=("book_then_backstop", share))
+
+    signs   = [rng.choice([1.0, -1.0]) for _ in kinds]
+    parts   = [rng.uniform(0.5, 1.5) for _ in kinds]
+    gross   = rng.uniform(2.0, 10.0)
+    weights = {k: sign * gross * part / sum(parts)
+               for k, (sign, part) in enumerate(zip(signs, parts))}
+
+    probe = make_reference(times[:3], kinds, [column[:3] for column in columns],
+                           dict(cfg, intrabar="pessimistic"))
+    probe.target(weights, **settings("buy", 0.0))
+    probe.step()
+    probe.step()
+
+    held   = [k for k in range(n) if probe.position[k] != 0.0]
+    closes = [column[2].close for column in columns]
+    equity = probe.margin_cash + sum(probe.position[k] * (closes[k] - probe.entry[k])
+                                     for k in held)
+
+    notional = sum(abs(probe.position[k]) * closes[k] for k in held)
+    required = sum(rates[k] * abs(probe.position[k]) * closes[k] for k in held)
+    signed   = sum(rates[k] * probe.position[k] * closes[k] for k in held)
+
+    def depth(level):
+        # the move against every leg, a share of its close, that leaves equity at
+        # `level` of the requirement
+        return (equity - level * required) / (notional - level * signed)
+
+    funded = rng.random() < 0.25
+    if rng.random() < 0.7:
+        level = rng.uniform(share + 0.1 * (1.0 - share), 1.0 - 0.1 * (1.0 - share))
+    else:
+        level = share * rng.uniform(0.2, 0.9)
+
+    if funded:
+        # the bar stops short of the trigger, and the debit at its close takes the
+        # account to `level`
+        end, start = depth(rng.uniform(1.05, 1.5)), 0.0
+    else:
+        end   = depth(level)
+        start = depth(rng.uniform(level, 1.0)) if rng.random() < 0.3 else 0.0
+
+    for k, column in enumerate(columns):
+        if k not in held:
+            column.append(calm(rng, closes[k]))
+            continue
+
+        s = math.copysign(1.0, probe.position[k])
+        o, x = closes[k] * (1.0 - s * start), closes[k] * (1.0 - s * end)
+        f     = o * (1.0 + s * rng.uniform(0.0, 0.005))
+        close = x if funded else x + (o - x) * rng.uniform(0.0, 0.1)
+        column.append(Bar(o, max(o, x, f), min(o, x, f), close, rng.uniform(1e6, 1e7)))
+
+    if funded and held:
+        # each leg charged at its own instrument's rate, signed so that a long and a
+        # short both pay
+        at    = [column[3].close for column in columns]
+        after = probe.margin_cash + sum(probe.position[k] * (at[k] - probe.entry[k])
+                                        for k in held)
+        worth = sum(abs(probe.position[k]) * at[k] for k in held)
+        need  = sum(rates[k] * abs(probe.position[k]) * at[k] for k in held)
+        rate  = (after - level * need) / worth
+        cfg["funding"] = ("data", [(times[3] + HOUR, k,
+                                    math.copysign(rate, probe.position[k]))
+                                   for k in held])
+
+    while len(columns[0]) < rows:
+        for column in columns:
+            column.append(calm(rng, column[-1].close))
+
+    actions = [None] * (rows - 1)
+    actions[0] = (0, "weights", "buy", weights, 0.0)
+
+    if held and rng.random() < 0.5:
+        # a bracket on one leg with only a take-profit, past what the bar moves its
+        # way, which the forced close cancels with the account
+        k         = rng.choice(held)
+        exit_side = "sell" if probe.position[k] > 0.0 else "buy"
+        actions[2] = (k, "bracket", exit_side, abs(probe.position[k]), 0.95)
+
+    if rng.random() < 0.5:
+        actions[4] = (0, "weights", "buy", {k: w / 2.0 for k, w in weights.items()},
+                      0.0)
+
+    return times, kinds, columns, cfg, actions
+
+
 def config(rng, times, kinds, columns):
     """The venue: a funding source charging every perpetual held, or each event its
     own instrument, the wallets the kinds use, and a tier table for some perpetuals,
@@ -673,6 +787,7 @@ def make_reference(times, kinds, columns, cfg, start=0):
         slippage        = cfg["slippage_bps"],
         funding         = funding,
         intrabar        = cfg["intrabar"],
+        liquidation     = cfg.get("liquidation", "takeover"),
     )
 
     instruments = [Instrument(f"I{k}", kind=kind, tiers=cfg["tiers"][k][0],
@@ -690,6 +805,7 @@ def venue(cfg):
         max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
         leverage=cfg["leverage"], impact=0.0,
         intrabar=cfg["intrabar"],
+        **engine_liquidation(cfg.get("liquidation", "takeover")),
         instruments=[dict(market="spot" if kind == "spot" else "perp", tiers=rows,
                           tiers_by=by)
                      for kind, (rows, by) in zip(cfg["kinds"], cfg["tiers"])],
@@ -800,16 +916,21 @@ def compare(cases, seed):
     """`cases` random universes from `seed` through both, as `differential.compare`
     counts them, with the rules the universes drawn around shared margin reached
     counted on their own as well."""
-    rng      = random.Random(seed)
-    reached  = collections.Counter()
-    rules    = collections.Counter()
-    margined = collections.Counter()
-    aside    = collections.Counter()
-    whole, agreed, disagreed = 0, 0, []
+    rng = random.Random(seed)
 
-    for number in range(cases):
-        shared = number % 8 == 5 and SHAPED <= set(KINDS)
-        if number % 4 == 3 and SHAPED <= set(KINDS):
+    # the universes drawn around book then backstop come after the rest, from a
+    # stream of their own, so adding them left every other case as it was
+    backstopped = random.Random(f"backstop {seed}")
+    reached     = collections.Counter()
+    rules       = collections.Counter()
+    margined    = collections.Counter()
+    aside       = collections.Counter()
+    whole, agreed, disagreed = 0, 0, []
+    for number in range(drawn(cases)):
+        shared = number % 8 == 5 and SHAPED <= set(KINDS) and number < cases
+        if number >= cases:
+            case = backstop(backstopped)
+        elif number % 4 == 3 and SHAPED <= set(KINDS):
             case = shaped(rng)
         elif number % 8 == 1 and SHAPED <= set(KINDS):
             case = take_profit(rng, rng.random() < 0.5)
@@ -821,6 +942,8 @@ def compare(cases, seed):
             case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
 
         case[3].setdefault("intrabar", setting(seed, number))
+        tables = [rows for rows, _ in case[3]["tiers"]]
+        case[3].setdefault("liquidation", liquidation(seed, number, tables))
 
         counted = collections.defaultdict(collections.Counter)
         try:
@@ -849,8 +972,14 @@ def compare(cases, seed):
     return Outcome(whole, agreed, disagreed, aside, rules, reached, margined)
 
 
+def drawn(cases):
+    """The universes a comparison of `cases` draws: those, and one drawn around book
+    then backstop for every eighth of them."""
+    return cases + cases // 8
+
+
 def render(out, cases):
-    lines = [f"\n{out.compared} of {cases} compared whole, {out.agreed} agreed, "
+    lines = [f"\n{out.compared} of {drawn(cases)} compared whole, {out.agreed} agreed, "
              f"{len(out.disagreed)} disagreed",
              "compared up to a rule the engine does not have yet: "
              + (", ".join(f"{why} {n}" for why, n in

@@ -28,8 +28,8 @@ import numpy as np
 import probatum
 from . import universe_differential
 from .differential import (balance, before, clock, close_enough, closed_before, config,
-                           cut, drawn, engine_funding, log_difference, make_reference,
-                           money, set_aside, setting, walk, worded)
+                           cut, drawn, engine_funding, liquidation, log_difference,
+                           make_reference, money, set_aside, setting, walk, worded)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -301,7 +301,8 @@ def compare_universes(cases, seed):
     for case in range(cases):
         times, kinds, columns = universe_differential.universe(rng)
         cfg = universe_differential.config(rng, times, kinds, columns)
-        cfg["intrabar"] = setting(seed, case)
+        cfg["intrabar"]    = setting(seed, case)
+        cfg["liquidation"] = liquidation(seed, case, [rows for rows, _ in cfg["tiers"]])
         rows     = len(times)
         num_envs = rng.randint(2, 4)
         offsets  = offsets_for(rng, times, num_envs)

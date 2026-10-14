@@ -125,7 +125,13 @@ impl FillModel {
 
     /// A taker's fill of `size` off `reference`: lifted on a buy and dropped on a
     /// sell by the slip, then held inside the bar, with what it paid.
-    fn taker_fill(&self, side: Side, size: f64, reference: f64, bar: &Candle) -> (Fill, FillCosts) {
+    pub(crate) fn taker_fill(
+        &self,
+        side: Side,
+        size: f64,
+        reference: f64,
+        bar: &Candle,
+    ) -> (Fill, FillCosts) {
         let (total, slippage, impact) = self.taker_slip(size, bar.volume);
         let raw = match side {
             Side::Buy => reference * (1.0 + total),

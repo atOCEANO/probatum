@@ -9,7 +9,7 @@ use std::hint::black_box;
 
 use gungraun::{library_benchmark, library_benchmark_group, main};
 use probatum_core::{Candle, Market};
-use probatum_engine::{Candles, Engine, EngineConfig, Intrabar};
+use probatum_engine::{Candles, Engine, EngineConfig, Intrabar, Liquidation};
 
 /// The same oscillating series and perp config the wall-clock bench steps over.
 fn engine(bars: usize) -> Engine {
@@ -40,6 +40,7 @@ fn engine(bars: usize) -> Engine {
         funding_rate: 0.0,
         funding_interval: 0,
         intrabar: Intrabar::Pessimistic,
+        liquidation: Liquidation::Takeover,
     };
     Engine::new(Candles::new(candles), config)
 }

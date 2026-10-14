@@ -2,7 +2,7 @@
 
 use probatum_core::{Candle, Market, Tiers};
 
-use super::{EngineConfig, Intrabar};
+use super::{EngineConfig, Intrabar, Liquidation};
 use crate::candles::{Candles, Instrument};
 
 pub(super) fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
@@ -58,6 +58,7 @@ pub(super) fn cfg() -> EngineConfig {
         funding_rate: 0.0,
         funding_interval: 0,
         intrabar: Intrabar::Pessimistic,
+        liquidation: Liquidation::Takeover,
     }
 }
 

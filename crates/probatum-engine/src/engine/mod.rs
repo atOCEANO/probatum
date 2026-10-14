@@ -74,6 +74,19 @@ pub enum Intrabar {
     Random(u128),
 }
 
+/// How a venue closes out an account that reaches its trigger (ADR 0019).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Liquidation {
+    /// Every leg closed at its price at the clip point, and what the margin wallet
+    /// still holds booked as the liquidation charge: the default everywhere.
+    Takeover,
+    /// Every leg sold as a taker from its trigger price, the trader keeping what
+    /// remains, unless the path also reaches the backstop level, equity at this share
+    /// of the requirement, or the sale's own costs would take equity there below it,
+    /// where takeover applies.
+    BookThenBackstop(f64),
+}
+
 /// How the bar on hand decides each event its prices cannot order, true where it
 /// takes the worse way (Specification, What a bar cannot show).
 #[derive(Clone, Debug)]
@@ -143,6 +156,8 @@ pub struct EngineConfig {
     pub funding_interval: usize,
     /// How every event a bar's prices cannot order is decided (ADR 0012).
     pub intrabar: Intrabar,
+    /// How an account that reaches its trigger is closed out (ADR 0019).
+    pub liquidation: Liquidation,
 }
 
 impl Default for EngineConfig {
@@ -162,6 +177,7 @@ impl Default for EngineConfig {
             funding_rate: 0.0,
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
+            liquidation: Liquidation::Takeover,
         }
     }
 }
@@ -788,7 +804,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::fixtures::{cfg, ohlc, perp_cfg, report_cfg, series, universe, ABSENT};
-    use super::{Engine, EngineConfig, Intrabar};
+    use super::{Engine, EngineConfig, Intrabar, Liquidation};
     use crate::candles::{printed, Candles, Instrument};
     use crate::clock::Clock;
     use probatum_core::TimeInForce::Ioc;
@@ -1179,6 +1195,7 @@ mod tests {
             funding_rate: 0.0001,
             funding_interval: 3,
             intrabar: Intrabar::Pessimistic,
+            liquidation: Liquidation::Takeover,
         }
     }
 

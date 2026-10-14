@@ -78,6 +78,8 @@ SHARED = [
     "an ioc or fok limit expiring after one bar",
     "an order trading against the account's own refused",
     "an order waiting for its instrument's next bar",
+    "book then backstop falling back to takeover",
+    "book then backstop selling on the book",
     "funding at the close of its row",
     "funding between rows",
     "funding inside a bar counted toward the check",

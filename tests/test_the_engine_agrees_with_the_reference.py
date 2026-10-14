@@ -67,6 +67,7 @@ SHARED = [
     "an exit priced from its position's fill",
     "an ioc or fok limit expiring after one bar",
     "an order trading against the account's own refused",
+    "book then backstop falling back to takeover",
     "funding at the close of its row",
     "funding between rows",
     "funding inside a bar counted toward the check",
@@ -178,6 +179,37 @@ def joined_on_the_favourable_side():
                                       at("stop_entry", "sell", 50.0, 90.0),
                                       shaped=(100.0, 130.0, 80.0, 120.0))
     cfg.update(market="inverse", contract=100.0, quote=20.0, leverage=0.0)
+    return bars, times, cfg, actions
+
+
+def sold_in_its_coin():
+    """An inverse account of 1 coin on contracts of 100 dollars, at 1% maintenance
+    with no cap, a taker fee of 0.06% and 5 bps of slippage, long 10 from 100 for a
+    fee of 0.006, on a bar down to 91.60: its trigger is where 10.994 - 1,000 / p
+    falls to 10 / p, 91.87, and its backstop level, two thirds of the requirement,
+    91.57, lies below the low, so the long is sold on the book from the trigger."""
+    bars, times, cfg, actions = built(("market", "buy", 10.0, 0.0), None, None,
+                                      shaped=(100.0, 100.5, 91.6, 95.0))
+    cfg.update(market="inverse", contract=100.0, quote=1.0, leverage=0.0,
+               fee_taker=0.0006, slippage_bps=5.0, tiers=[(1e12, 0.0, 0.01, 0.0)],
+               liquidation=("book_then_backstop", 2.0 / 3.0))
+    return bars, times, cfg, actions
+
+
+def joined_and_sold():
+    """A long of 5 from 100 on 100 of margin, at 1% maintenance with no cap, a taker
+    fee of 0.06% and 5 bps of slippage, and a buy limit of 5 at 98 the bar fills on
+    its way down to 89.75: the two legs reach the trigger together at 89.93, where
+    10p - 890.3 falls to 0.1p, short of the backstop level, two thirds of the
+    requirement, at 89.63, and each is sold on the book there, the second taking
+    what the position still holds."""
+    bars, times, cfg, actions = built(("market", "buy", 5.0, 0.0), None,
+                                      at("limit", "buy", 5.0, 98.0),
+                                      shaped=(100.0, 100.0, 89.75, 92.0))
+    cfg.update(leverage=0.0, fee_taker=0.0006, slippage_bps=5.0,
+               tiers=[(1e12, 0.0, 0.01, 0.0)],
+               liquidation=("book_then_backstop", 2.0 / 3.0))
+
     return bars, times, cfg, actions
 
 
@@ -313,6 +345,12 @@ BUILT = {
     # moves in step in the reciprocal of the price
     "an inverse short with a leg joined on the favourable side": (
         "a liquidation by the check", joined_on_the_favourable_side()),
+    # book then backstop, which random cases seldom take to a sale: an inverse long,
+    # and a long whose carried leg and the leg the bar joined are sold together
+    "an inverse long sold on the book": (
+        "book then backstop selling on the book", sold_in_its_coin()),
+    "a long with a leg joined during the bar sold on the book": (
+        "book then backstop selling on the book", joined_and_sold()),
 }
 
 

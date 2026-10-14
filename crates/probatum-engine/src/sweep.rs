@@ -111,7 +111,7 @@ where
 mod tests {
     use super::{builtin_strategy, run_sweep, SmaCross};
     use crate::candles::Candles;
-    use crate::engine::{Engine, EngineConfig, Intrabar};
+    use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation};
     use crate::strategy::run;
     use probatum_core::{Candle, Market};
 
@@ -147,6 +147,7 @@ mod tests {
             funding_rate: 0.0,
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
+            liquidation: Liquidation::Takeover,
         }
     }
 

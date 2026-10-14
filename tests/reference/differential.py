@@ -314,6 +314,13 @@ def settings(side, u):
     return dict(tolerance=0.05 if side == "sell" else 0.0, transfer=u > 0.5)
 
 
+def engine_liquidation(model):
+    """The engine's arguments for a liquidation model."""
+    if model == "takeover":
+        return dict(liquidation=model)
+    return dict(liquidation=model[0], backstop=model[1])
+
+
 def engine_funding(source):
     """The engine's arguments for a funding source."""
     if source[0] == "every_bars":
@@ -340,6 +347,7 @@ def venue(cfg):
         leverage=cfg["leverage"], impact=0.0, tiers=cfg["tiers"],
         tiers_by=cfg["tiers_by"], intrabar=cfg["intrabar"],
         contract=cfg.get("contract"), **engine_funding(cfg["funding"]),
+        **engine_liquidation(cfg.get("liquidation", "takeover")),
     )
 
 
@@ -375,6 +383,7 @@ def make_reference(bars, cfg, times, interval=None, events=None):
         slippage        = cfg["slippage_bps"],
         funding         = funding,
         intrabar        = cfg["intrabar"],
+        liquidation     = cfg.get("liquidation", "takeover"),
     )
 
     if events is not None:
@@ -739,6 +748,19 @@ def setting(seed, case):
     return draw.choice(["pessimistic", "optimistic"])
 
 
+def liquidation(seed, case, tables):
+    """How case `case` of `seed` closes its account out: half the venues whose tier
+    `tables` keep maintenance book then backstop, at a half or two thirds of the
+    requirement, drawn apart from the stream the cases come from."""
+    if not any(rows and any(tier[2] > 0.0 for tier in rows) for rows in tables):
+        return "takeover"
+
+    draw = random.Random(f"liquidation {seed} {case}")
+    if draw.random() < 0.5:
+        return "takeover"
+    return ("book_then_backstop", draw.choice([0.5, 2.0 / 3.0]))
+
+
 def compare(cases, seed):
     """`cases` random cases from `seed` through both: how many were compared whole
     and agreed, the disagreements, the rules each case was cut at, and the rules and
@@ -759,7 +781,8 @@ def compare(cases, seed):
         times = clock(draw, len(bars))
         cfg   = config(draw, times, inverse=case >= cases)
 
-        cfg["intrabar"] = setting(seed, case)
+        cfg["intrabar"]    = setting(seed, case)
+        cfg["liquidation"] = liquidation(seed, case, [cfg["tiers"]])
         actions = plan(draw, bars, cfg)
         counted = collections.defaultdict(collections.Counter)
         try:

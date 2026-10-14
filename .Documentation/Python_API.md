@@ -167,6 +167,8 @@ eng = Engine(
     intrabar="pessimistic",  # how what a bar cannot show is decided, "optimistic" or "random"
     seed=None,               # the run's seed, which "random" draws from
     contract=None,           # the dollars one inverse contract is worth
+    liquidation="takeover",  # or "book_then_backstop", which sells on the book first
+    backstop=None,           # the share of the requirement book then backstop takes over at
 )
 ```
 
@@ -175,6 +177,8 @@ eng = Engine(
 **A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers` and `tiers_by`, or `market` and `tiers` for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
 
 **An inverse contract is counted in its coin.** `market="inverse"` with `contract=`, the dollars one contract is worth, takes one instrument's `(T, 5)` candles, quoted in dollars. Sizes are contracts and prices are dollars, as the venue quotes them, while `quote`, equity, fees, funding and every other sum are in the coin, a taker's costs among them, each its rate of the coin notional ([Specification](Specification.md#inverse-contracts)). The account holds that one contract in one wallet, so there is no `transfer`, `qty_from_quote(cash)` is `cash / contract` contracts at any price, and the ledger's `equity_in_quote` values equity in dollars at each close ([ADR 0016](Decisions.md)).
+
+**A venue that books then backstops sells a closed-out account on the book.** `liquidation="book_then_backstop"` with `backstop=`, the share of the requirement at which the venue's backstop takes over, two thirds on Hyperliquid, sells every leg as a taker from its trigger price, paying the taker fee and a taker's costs, and the trader keeps what the margin wallet then holds. Where the path also reaches the backstop level, or the sale's own costs would take equity at the trigger below it, the account is taken over instead, as under the default `"takeover"`, which closes every leg where the margin ran out and books what the wallet still holds as the liquidation charge. It needs a tier table that keeps maintenance, since with none the backstop level is the trigger itself ([Specification](Specification.md#the-forced-close), [ADR 0019](Decisions.md)).
 
 `eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
 
@@ -488,7 +492,7 @@ Each column of `ledger()` holds one value per bar, the first for the opening bal
 | `margin_used` | What the margin cap asks of the position at the close. |
 | `maintenance` | The maintenance requirement the tier table sets, zero without one. |
 | `fees`, `funding`, `spread`, `slippage`, `impact` | What the bar cost, in quote: a fill's spread, slippage and impact are what it paid beyond its reference, each in proportion when the bar's range held its price back. |
-| `liquidation` | What a forced close left in the margin wallet, taken by the venue or absorbed by it, less what the margin bound lifted fills by ([ADR 0018](Decisions.md)). |
+| `liquidation` | What a takeover left in the margin wallet, taken by the venue or absorbed by it, less what the margin bound lifted fills by ([ADR 0018](Decisions.md)). |
 | `dust` | The value of positions too small to trade, zeroed at the close, which nothing makes until sizes are modelled. |
 | `position`, `entry`, `mark`, `notional`, `unrealized`, `weight` | The position, its average entry, the close it is marked at, its notional, its unrealized PnL, and its signed notional over equity. |
 | `drift` | The weight the latest `target` asked of the instrument less `weight`, from the bar after that target was decided; NaN where no target has named it. |

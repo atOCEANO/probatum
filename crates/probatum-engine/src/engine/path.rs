@@ -221,19 +221,16 @@ impl Engine {
         }
     }
 
-    /// The first fraction on `legs` where equity falls to zero, less the
-    /// requirement when `maintained`, or none. The requirement rises with every
-    /// tier, so equity less it is concave on a piece and crosses at most once from
+    /// The first fraction on `legs` where equity falls to `share` of the
+    /// requirement, or none: the trigger at a share of one, and with no maintenance,
+    /// where equity reaches zero, at none. The requirement rises with every tier, so
+    /// equity less a share of it is concave on a piece and crosses at most once from
     /// above; between the bounds a leg's notional crosses it is linear, which makes
     /// the crossing exact by interpolation.
-    fn crossing(&self, legs: &[PathLeg], wallet: f64, maintained: bool) -> Option<f64> {
+    fn crossing(&self, legs: &[PathLeg], wallet: f64, share: f64) -> Option<f64> {
         let gap = |u: f64| {
             let at = self.level(legs, u, wallet);
-            if maintained {
-                at.equity - at.maintenance
-            } else {
-                at.equity
-            }
+            at.equity - share * at.maintenance
         };
         let first = gap(0.0);
         if first <= 0.0 {
@@ -244,7 +241,7 @@ impl Engine {
             return None;
         }
         let mut bounds = Vec::new();
-        if maintained {
+        if share > 0.0 {
             self.notional_bounds(legs, &mut bounds);
         }
         let (mut a, mut ga) = (0.0, first);
@@ -302,8 +299,9 @@ impl Engine {
             &path.legs[from..to]
         };
         let maintained = path.legs.iter().any(|leg| self.has_maintenance(leg.i));
+        let share = if maintained { 1.0 } else { 0.0 };
         let trigger = (0..path.pieces.len()).find_map(|k| {
-            self.crossing(legs(k), wallet(k), maintained)
+            self.crossing(legs(k), wallet(k), share)
                 .map(|at| Point { piece: k, at })
         })?;
         if maintained {
@@ -328,6 +326,25 @@ impl Engine {
             }
             (k, s) = (k - 1, 1.0);
         }
+    }
+
+    /// Whether `path` reaches the backstop level, equity at `share` of the
+    /// requirement, the margin wallet holding `wallet(k)` on piece `k` (The forced
+    /// close).
+    pub(super) fn reaches(&self, path: &Path, wallet: impl Fn(usize) -> f64, share: f64) -> bool {
+        (0..path.pieces.len()).any(|k| {
+            let (from, to) = path.pieces[k];
+            self.crossing(&path.legs[from..to], wallet(k), share)
+                .is_some()
+        })
+    }
+
+    /// Margin equity and the maintenance requirement at `point` on `path`, the margin
+    /// wallet holding `wallet` there.
+    pub(super) fn level_at(&self, path: &Path, point: Point, wallet: f64) -> (f64, f64) {
+        let (from, to) = path.pieces[point.piece];
+        let at = self.level(&path.legs[from..to], point.at, wallet);
+        (at.equity, at.maintenance)
     }
 
     /// The path of the perps carried into the bar (The path): from each last mark to

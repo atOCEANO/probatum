@@ -57,6 +57,8 @@ class Engine:
         intrabar: str = ...,
         seed: Optional[int] = ...,
         contract: Optional[float] = ...,
+        liquidation: str = ...,
+        backstop: Optional[float] = ...,
     ) -> None: ...
     @property
     def shape(self) -> tuple[int, ...]: ...
@@ -163,6 +165,8 @@ class Batch:
         intrabar: str = ...,
         seed: Optional[int] = ...,
         contract: Optional[float] = ...,
+        liquidation: str = ...,
+        backstop: Optional[float] = ...,
     ) -> None: ...
     def __len__(self) -> int: ...
     def done(self) -> bool: ...

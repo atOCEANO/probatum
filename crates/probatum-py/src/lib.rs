@@ -29,7 +29,7 @@ use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEv
 use probatum_engine::schedule::every;
 use probatum_engine::{
     Action, BatchSnapshot, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Instrument,
-    Intrabar, OrderRef, RoundTrip, Script, Stats, TargetError, Units,
+    Intrabar, Liquidation, OrderRef, RoundTrip, Script, Stats, TargetError, Units,
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
@@ -45,6 +45,31 @@ fn parse_intrabar(intrabar: &str, seed: Option<u128>) -> PyResult<Intrabar> {
         )),
         (other, _) => Err(PyValueError::new_err(format!(
             "intrabar: {other:?} is not a setting; use pessimistic, optimistic or random"
+        ))),
+    }
+}
+
+/// How a venue closes out an account, `"book_then_backstop"` at the share of the
+/// requirement `backstop` gives its backstop level, case-insensitively.
+fn parse_liquidation(liquidation: &str, backstop: Option<f64>) -> PyResult<Liquidation> {
+    match (liquidation.to_ascii_lowercase().as_str(), backstop) {
+        ("takeover", None) => Ok(Liquidation::Takeover),
+        ("takeover", Some(share)) => Err(PyValueError::new_err(format!(
+            "backstop: {share} for takeover; give it with liquidation=\"book_then_backstop\""
+        ))),
+        ("book_then_backstop", Some(share)) if share > 0.0 && share < 1.0 => {
+            Ok(Liquidation::BookThenBackstop(share))
+        }
+        ("book_then_backstop", Some(share)) => Err(PyValueError::new_err(format!(
+            "backstop: {share}; give the share of the requirement its level sits at, \
+             above 0 and below 1"
+        ))),
+        ("book_then_backstop", None) => Err(PyValueError::new_err(
+            "backstop: none, and book_then_backstop takes over where equity falls to a \
+             share of the requirement; pass backstop=",
+        )),
+        (other, _) => Err(PyValueError::new_err(format!(
+            "liquidation: {other:?} is not a model; use takeover or book_then_backstop"
         ))),
     }
 }
@@ -771,6 +796,8 @@ fn build_config(
     funding_interval: usize,
     intrabar: &str,
     seed: Option<u128>,
+    liquidation: &str,
+    backstop: Option<f64>,
 ) -> PyResult<EngineConfig> {
     if max_open_orders == 0 || max_open_orders > MAX_OPEN_ORDERS_LIMIT {
         return Err(PyValueError::new_err(format!(
@@ -817,6 +844,7 @@ fn build_config(
         funding_rate: finite("funding_rate", funding_rate)?,
         funding_interval,
         intrabar: parse_intrabar(intrabar, seed)?,
+        liquidation: parse_liquidation(liquidation, backstop)?,
     })
 }
 
@@ -1415,6 +1443,8 @@ impl Engine {
         intrabar = "pessimistic",
         seed = None,
         contract = None,
+        liquidation = "takeover",
+        backstop = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1442,6 +1472,8 @@ impl Engine {
         intrabar: &str,
         seed: Option<Bound<'_, PyAny>>,
         contract: Option<f64>,
+        liquidation: &str,
+        backstop: Option<f64>,
     ) -> PyResult<Engine> {
         let (series, config, universe, units) = build_series(
             &candles,
@@ -1468,6 +1500,8 @@ impl Engine {
             intrabar,
             seed,
             contract,
+            liquidation,
+            backstop,
         )?;
         Ok(Engine {
             inner: BarEngine::new(series, config),
@@ -2082,6 +2116,8 @@ impl Batch {
         intrabar = "pessimistic",
         seed = None,
         contract = None,
+        liquidation = "takeover",
+        backstop = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2114,6 +2150,8 @@ impl Batch {
         intrabar: &str,
         seed: Option<Bound<'_, PyAny>>,
         contract: Option<f64>,
+        liquidation: &str,
+        backstop: Option<f64>,
     ) -> PyResult<Batch> {
         let (series, config, universe, units) = build_series(
             &candles,
@@ -2140,6 +2178,8 @@ impl Batch {
             intrabar,
             seed,
             contract,
+            liquidation,
+            backstop,
         )?;
 
         // Per-env cost randomization (ADR 0038): each override, if given, replaces
@@ -3052,6 +3092,8 @@ fn build_series(
     intrabar: &str,
     seed: Option<Bound<'_, PyAny>>,
     contract: Option<f64>,
+    liquidation: &str,
+    backstop: Option<f64>,
 ) -> PyResult<(Candles, EngineConfig, bool, Units)> {
     let seed = seed_of(seed)?;
     let Ok(array) = candles.cast::<PyUntypedArray>() else {
@@ -3111,6 +3153,8 @@ fn build_series(
             funding_interval,
             intrabar,
             seed,
+            liquidation,
+            backstop,
         )?;
         let config = EngineConfig {
             funding_rate: units.signed(config.funding_rate),
@@ -3146,6 +3190,7 @@ fn build_series(
             Some(rows) => series.with_tiers(in_units(units, tiers_from(rows, tiers_by)?)?),
             None => series,
         };
+        backstopped(&series, &config)?;
         return Ok((series, config, false, units));
     }
     if market.eq_ignore_ascii_case("inverse") || contract.is_some() {
@@ -3218,6 +3263,8 @@ fn build_series(
         funding_interval,
         intrabar,
         seed,
+        liquidation,
+        backstop,
     )?;
     let series = place_funding(
         series.with_instruments(specs),
@@ -3229,7 +3276,22 @@ fn build_series(
         funding_instruments,
         Units::Linear,
     )?;
+    backstopped(&series, &config)?;
     Ok((series, config, true, Units::Linear))
+}
+
+/// Refuse book then backstop where no instrument's tier table keeps maintenance,
+/// since with none its backstop level is the trigger itself.
+fn backstopped(series: &Candles, config: &EngineConfig) -> PyResult<()> {
+    let maintained =
+        (0..series.width()).any(|i| series.tiers(i).rows().iter().any(|tier| tier.rate > 0.0));
+    if matches!(config.liquidation, Liquidation::BookThenBackstop(_)) && !maintained {
+        return Err(PyValueError::new_err(
+            "liquidation: book_then_backstop with no maintenance in any tier table, where \
+             its backstop level is the trigger itself; give tiers a maintenance rate",
+        ));
+    }
+    Ok(())
 }
 
 /// The units an account on `market` counts in: an inverse contract's, worth
