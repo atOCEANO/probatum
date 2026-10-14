@@ -456,9 +456,11 @@ class Simulator:
                     liquidation=0.0, dust=0.0)
 
 
-    def hit(self, rule):
+    def hit(self, rule, bar=None):
+        """Count `rule`, first applied on `bar`, the current one unless a decision
+        names the next, where what it decided acts."""
         self.reached[rule] += 1
-        self.first.setdefault(rule, self.t)
+        self.first.setdefault(rule, self.t if bar is None else bar)
 
 
     def see_row(self, t):
@@ -1072,7 +1074,7 @@ class Simulator:
             self.log("refused", old, f"replace: {why}")
             return None
 
-        self.hit("a replace")
+        self.hit("a replace", self.t + 1)
         self.slots[self.slots.index(old)] = None
         old.update(moved)
         self.rest(old)
@@ -1099,12 +1101,12 @@ class Simulator:
         # a second target in one decision replaces the first: its legs, the
         # shortfall it moved across and the weights it asked for
         if self.decided == self.t:
-            self.hit("a target replaced in its decision")
+            self.hit("a target replaced in its decision", self.t + 1)
             for order in self.target_legs:
                 if order["status"] == "pending":
                     self.cancel(order["id"], "replaced by a later target")
             if self.target_transfer is not None:
-                self.hit("a target's shortfall taken back")
+                self.hit("a target's shortfall taken back", self.t + 1)
                 del self.transfers[self.target_transfer]
             self.asked = list(self.asked_before)
         else:
@@ -1120,7 +1122,7 @@ class Simulator:
                 self.hit("a waiting target leg replaced")
                 self.cancel(order["id"], "replaced by a later target")
 
-        self.hit("a target")
+        self.hit("a target", self.t + 1)
         self.decided, self.target_legs = self.t, []
         for i, weight in weights.items():
             self.asked[i] = weight
@@ -1156,7 +1158,7 @@ class Simulator:
 
             q = self.position[i]
             if q != 0.0 and (q + leg) * q < 0.0:
-                self.hit("a flip split by a target")
+                self.hit("a flip split by a target", self.t + 1)
                 reduce, grow = -q, q + leg
             elif q != 0.0 and abs(q + leg) < abs(q):
                 reduce, grow = leg, 0.0
@@ -1195,7 +1197,7 @@ class Simulator:
                     needed += cost + abs(cost) * self.venue.taker
 
             if needed > 0.0:
-                self.hit("a target's spot shortfall moved across")
+                self.hit("a target's spot shortfall moved across", self.t + 1)
                 self.target_transfer = len(self.transfers)
                 self.transfer(needed, to="spot")
 
