@@ -43,11 +43,12 @@ def offsets_for(rng, bars, num_envs):
     return drawn
 
 
-def plan(rng, num_envs, steps):
+def plan(rng, num_envs, steps, scale=1.0):
     """A signed size per env per step: positive buys, negative sells, zero holds,
-    which is exactly what `advance` reads."""
+    which is exactly what `advance` reads, `scale` times the base units drawn, as
+    many contracts of an inverse perpetual as are worth them at a price of 100."""
     return [
-        [0.0 if rng.random() < 0.45 else rng.uniform(-40.0, 40.0)
+        [0.0 if rng.random() < 0.45 else scale * rng.uniform(-40.0, 40.0)
          for _ in range(num_envs)]
         for _ in range(steps)
     ]
@@ -198,7 +199,8 @@ def compare(cases, seed):
         # past the end for the earliest env, so a finished episode is asked to
         # keep going and has to sit still rather than wrap or run on
         steps   = len(bars) - min(offsets)
-        actions = plan(draw, num_envs, steps)
+        scale   = 100.0 / cfg["contract"] if cfg["market"] == "inverse" else 1.0
+        actions = plan(draw, num_envs, steps, scale)
 
         try:
             mine, batch = drive_batch(bars, times, cfg, offsets, actions)

@@ -123,7 +123,11 @@ def config(rng, times, inverse=False):
     )
 
     if inverse:
-        cfg.update(idle=0.0, contract=rng.choice([10.0, 100.0]))
+        # a balance in the coin worth at the walk's opening price of 100 what a
+        # linear case holds in dollars, so its sizes in contracts sit as far below
+        # the walk's volumes as a linear case's do
+        cfg.update(quote=cfg["quote"] / 100.0, idle=0.0,
+                   contract=rng.choice([10.0, 100.0]))
 
     cfg["tiers"], cfg["tiers_by"] = tier_table(rng, cfg["quote"], perp,
                                               contract=cfg.get("contract"))

@@ -168,6 +168,19 @@ def fees_below_zero():
     return bars, times, cfg, actions
 
 
+def joined_on_the_favourable_side():
+    """An inverse account of 20 coins on contracts of 100 dollars, with no cap or
+    maintenance, short 50 from 100 and selling 50 more by a stop at 90, below its
+    bar's open, so the new leg runs from 90 and the carried one from the open, each
+    to the high of 130 in the reciprocal of the price, where both are liquidated at
+    prices a path read in dollars would put elsewhere."""
+    bars, times, cfg, actions = built(None, ("market", "sell", 50.0, 0.0),
+                                      at("stop_entry", "sell", 50.0, 90.0),
+                                      shaped=(100.0, 130.0, 80.0, 120.0))
+    cfg.update(market="inverse", contract=100.0, quote=20.0, leverage=0.0)
+    return bars, times, cfg, actions
+
+
 def changed(case, **settings):
     """`case` with `settings` in place of its own."""
     bars, times, cfg, actions = case
@@ -296,6 +309,10 @@ BUILT = {
     # a sale the bound stops at its entry, whose fee leaves the wallet below zero
     "a sale whose fee leaves the margin wallet below zero": (
         "a wallet that fees left below zero set to zero", fees_below_zero()),
+    # two legs of one inverse perpetual on segments of their own, which the path
+    # moves in step in the reciprocal of the price
+    "an inverse short with a leg joined on the favourable side": (
+        "a liquidation by the check", joined_on_the_favourable_side()),
 }
 
 
