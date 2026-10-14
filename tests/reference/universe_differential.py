@@ -746,7 +746,7 @@ TRIP_FIELDS  = ("instrument", "side", "size", "entry", "exit", "open_bar",
                 "reason", "open")
 ACCOUNT_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
                   "slippage", "impact", "liquidation", "dust", "margin_used",
-                  "maintenance")
+                  "maintenance", "gross_exposure", "net_exposure", "leverage")
 LEG_FIELDS = (("position", "position"), ("entry", "entry"), ("mark", "mark"),
               ("notional", "notional"), ("unrealized", "upnl"), ("weight", "weight"),
               ("drift", "drift"))

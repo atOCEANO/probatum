@@ -146,6 +146,27 @@ def joined_past_its_trigger():
     return bars, times, cfg, actions
 
 
+def past_its_trigger_at_the_open():
+    """100 of margin with no cap and 1% maintenance buying 150 at an open of 100: a
+    requirement of 150 against equity of 100 where the check's path starts, which
+    closes the account there."""
+    bars, times, cfg, actions = built(None, None, ("market", "buy", 150.0, 0.0),
+                                      shaped=(100.0, 101.0, 99.0, 100.0))
+    cfg.update(leverage=0.0, tiers=[(1e12, 0.0, 0.01, 0.0)])
+    return bars, times, cfg, actions
+
+
+def fees_below_zero():
+    """5 of margin with no cap and a taker fee of 1%: a buy of 3 at 100 pays 3 and
+    leaves 2, and its sale at the next open pays 3 more, the bound stopping at the
+    entry, which leaves -1 with nothing held."""
+    bars, times, cfg, actions = built(None, ("market", "buy", 3.0, 0.0),
+                                      ("market", "sell", 3.0, 0.0),
+                                      shaped=(100.0, 100.0, 100.0, 100.0))
+    cfg.update(quote=5.0, fee_taker=0.01, leverage=0.0)
+    return bars, times, cfg, actions
+
+
 def changed(case, **settings):
     """`case` with `settings` in place of its own."""
     bars, times, cfg, actions = case
@@ -267,6 +288,13 @@ BUILT = {
     # reaches before the reduce-only stop beyond it
     "a long opened inside the bar past its trigger before its stop": (
         "a bar clipped for a leg that joined it", joined_past_its_trigger()),
+    # a long bought at the open already past its trigger, where the check's path
+    # starts
+    "a long past its trigger where it opened": (
+        "a check closing the account at the open", past_its_trigger_at_the_open()),
+    # a sale the bound stops at its entry, whose fee leaves the wallet below zero
+    "a sale whose fee leaves the margin wallet below zero": (
+        "a wallet that fees left below zero set to zero", fees_below_zero()),
 }
 
 

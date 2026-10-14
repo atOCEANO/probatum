@@ -639,7 +639,7 @@ TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees"
 LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
                  "slippage", "impact", "liquidation", "dust", "position", "entry",
                  "mark", "notional", "unrealized", "weight", "drift", "margin_used",
-                 "maintenance")
+                 "maintenance", "gross_exposure", "net_exposure", "leverage")
 
 
 def ledger_difference(mine, theirs, end=None):

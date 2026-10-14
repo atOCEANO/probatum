@@ -643,12 +643,17 @@ class Simulator:
                        margin_cash=self.margin_cash, terminal=equity <= 0.0,
                        equity_in_quote=equity * self.mark[0] if inverse else equity,
                        liquidations=self.liquidations, margin_used=0.0, maintenance=0.0,
-                       instruments=[], **costs)
+                       gross_exposure=0.0, net_exposure=0.0, instruments=[], **costs)
 
         for i, inst in enumerate(self.instruments):
             q, mark = self.position[i], self.mark[i]
             held     = q != 0.0
             exposure = inst.notional(q, mark) if held else 0.0
+
+            # What a run records: the account's exposure at the closes, unsigned and
+            # signed, over every position
+            out["gross_exposure"] += abs(exposure)
+            out["net_exposure"] += exposure
 
             if held and inst.tiers:
                 tier = self.tier_of(i, abs(q), abs(exposure))
@@ -674,6 +679,8 @@ class Simulator:
                 weight=weight, drift=math.nan if asked is None else asked - weight,
             ))
 
+        # and its leverage, gross exposure over equity, nothing once equity is gone
+        out["leverage"] = out["gross_exposure"] / equity if equity > 0.0 else 0.0
         return out
 
 
