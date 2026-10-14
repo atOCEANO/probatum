@@ -339,7 +339,7 @@ Six fills make two closed round trips and an open one, and `num_trades` is 2.
 
 ### The charge
 
-At an event with rate `r` and price `p`, the margin wallet falls by `q * p * r` for each perpetual: a long pays a positive rate and a short receives it. The price is the instrument's close on the row that owns the event, or its last mark when it printed no bar there or the event fell between rows. Once the events are charged the account is checked at the closes, and if a debit has taken margin equity to its trigger, the forced close is booked at the closes, with whatever the margin wallet then holds, positive or negative, as the liquidation charge.
+At an event with rate `r` and price `p`, the margin wallet falls by `q * p * r` for each perpetual: a long pays a positive rate and a short receives it. The price is the instrument's close on the row that owns the event, or its last mark when it printed no bar there or the event fell between rows. Once the events are charged the account is checked at the closes, and if a debit has taken margin equity to its trigger, the forced close is booked at the closes, and book then backstop reads the closes as its whole path ([The forced close](#the-forced-close)).
 
 ### Sources
 

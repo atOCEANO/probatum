@@ -1863,8 +1863,9 @@ class Simulator:
 
         if equity - requirement <= 0.0:
             self.hit("a liquidation at the closes")
+            # book then backstop reads the closes as its whole path
             self.liquidate([(i, self.position[i], prices[i]) for i in held], t,
-                           moment="close")
+                           [piece], [self.margin_cash], (0, 0.0), moment="close")
 
 
     def live_through(self, t):
@@ -1895,7 +1896,7 @@ class Simulator:
         return min(start, bar.close), bar.high
 
 
-    def liquidate(self, closes, t, path=None, wallets=None, trigger=None, moment="bar"):
+    def liquidate(self, closes, t, path, wallets, trigger, moment="bar"):
         """Liquidation, The forced close: takeover closes every leg at its price at the
         clip, and book then backstop sells each from its trigger as a taker unless the
         path reaches the backstop level or the sale's costs would cross it."""
@@ -1911,8 +1912,7 @@ class Simulator:
             self.hit("a liquidation at the maintenance trigger")
 
         model = self.venue.liquidation
-
-        if model != "takeover" and path is not None and maintained:
+        if model != "takeover" and maintained:
             share = model[1]
             sales = []
             for i, q, price in closes:
@@ -1931,12 +1931,20 @@ class Simulator:
             reached = self.solve(path, wallets, share=share) is not None
             if not reached and equity - paid >= share * requirement:
                 self.hit("book then backstop selling on the book")
-                for i, q, sold, costs in sales:
+                for k, (i, q, sold, costs) in enumerate(sales):
+                    # an instrument's last sale takes what its position still holds,
+                    # at the price its own size was sold at
+                    if all(j != i for j, *_ in sales[k + 1:]):
+                        q = self.position[i]
+                    if q == 0.0:
+                        continue
+
                     side = "sell" if q > 0.0 else "buy"
                     self.book(i, abs(q), sold, costs)
                     self.apply(i, side, abs(q), sold, self.venue.taker, True, None,
                                "liquidation", reference=costs["reference"],
                                costs=costs, moment=moment)
+
                 self.after_liquidation()
                 return
 
