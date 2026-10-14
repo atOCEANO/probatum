@@ -308,6 +308,11 @@ impl RoundTrip {
         } else {
             0.0
         };
+        self.excursions();
+    }
+
+    /// Its best and worst from its entry, its high and its low.
+    pub(crate) fn excursions(&mut self) {
         if self.entry > 0.0 {
             let (up, down) = (self.high / self.entry - 1.0, self.low / self.entry - 1.0);
             (self.best, self.worst) = if self.side == Side::Buy {

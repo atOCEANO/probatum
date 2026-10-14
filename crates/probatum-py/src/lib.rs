@@ -28,8 +28,8 @@ use probatum_core::{
 use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{
-    Action, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Instrument, Intrabar,
-    OrderRef, RoundTrip, Script, Stats, TargetError,
+    Action, BatchSnapshot, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Instrument,
+    Intrabar, OrderRef, RoundTrip, Script, Stats, TargetError, Units,
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
@@ -290,12 +290,13 @@ fn funding_instruments_of(
     Ok(Some(out))
 }
 
-/// `series` with a time-stamped funding source placed on its clock: every
-/// `funding_hours` from 00:00 UTC at `funding_rate`, or the events `funding_times`
-/// and `funding_rates`, each charging the instrument `funding_instruments` names for
-/// it or, where it names none, every perp held. Refused unless at most one source
-/// is given, counting `funding_interval`, and a stamped one comes with the clock it
-/// needs (ADR 0020).
+/// `series` with a time-stamped funding source placed on its clock, each rate in the
+/// engine's `units`: every `funding_hours` from 00:00 UTC at `funding_rate`, or the
+/// events `funding_times` and `funding_rates`, each charging the instrument
+/// `funding_instruments` names for it or, where it names none, every perp held.
+/// Refused unless at most one source is given, counting `funding_interval`, and a
+/// stamped one comes with the clock it needs (ADR 0020).
+#[allow(clippy::too_many_arguments)]
 fn place_funding(
     series: Candles,
     funding_rate: f64,
@@ -304,6 +305,7 @@ fn place_funding(
     funding_times: Option<PyReadonlyArray1<'_, i64>>,
     funding_rates: Option<PyReadonlyArray1<'_, f64>>,
     funding_instruments: Option<Vec<Option<usize>>>,
+    units: Units,
 ) -> PyResult<Candles> {
     if !(funding_hours.is_finite() && funding_hours >= 0.0) {
         return Err(PyValueError::new_err(format!(
@@ -355,7 +357,7 @@ fn place_funding(
                     .iter()
                     .zip(&named)
                     .zip(rates.iter())
-                    .map(|((&time, &instrument), &rate)| (time, instrument, rate))
+                    .map(|((&time, &instrument), &rate)| (time, instrument, units.signed(rate)))
                     .collect::<Vec<_>>(),
             )
         }
@@ -384,7 +386,7 @@ fn place_funding(
             ))
         }
         Some(clock) => stamped.unwrap_or_else(|| {
-            every(clock, funding_hours, funding_rate)
+            every(clock, funding_hours, units.signed(funding_rate))
                 .into_iter()
                 .map(|(time, rate)| (time, None, rate))
                 .collect()
@@ -509,6 +511,18 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
         }
         Ok(Opening::Wallets { spot, margin })
     }
+}
+
+/// Refuse a transfer on an account of `units` that holds its coin in one wallet, as
+/// an inverse contract's does. `at` leads the error, as in `transfer_to`.
+fn one_wallet(at: &str, units: Units) -> PyResult<()> {
+    if units == Units::Linear {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(format!(
+        "{at}transfer: an inverse contract's account holds its coin in one wallet, with \
+         no other to move it to; leave the transfer out"
+    )))
 }
 
 /// The wallet a transfer of `amount` goes `to`, once the amount is known to be cash
@@ -946,10 +960,14 @@ impl PyState {
     }
 }
 
-fn states_to_list<'py>(py: Python<'py>, states: Vec<State>) -> PyResult<Bound<'py, PyList>> {
+fn states_to_list<'py>(
+    py: Python<'py>,
+    states: Vec<State>,
+    units: Units,
+) -> PyResult<Bound<'py, PyList>> {
     let list = PyList::empty(py);
     for state in states {
-        list.append(Bound::new(py, PyState::from(state))?)?;
+        list.append(Bound::new(py, PyState::from(units.state(state)))?)?;
     }
     Ok(list)
 }
@@ -1104,40 +1122,55 @@ fn event_to_dict<'py>(
 fn round_trips_of<'py>(
     py: Python<'py>,
     engine: &BarEngine,
+    units: Units,
 ) -> PyResult<Option<Bound<'py, PyList>>> {
     if engine.reporter().is_none() {
         return Ok(None);
     }
     let list = PyList::empty(py);
     for trade in engine.round_trips() {
-        list.append(trade_to_dict(py, &trade, engine)?)?;
+        list.append(trade_to_dict(py, &units.trip(trade), engine)?)?;
     }
     Ok(Some(list))
 }
 
-fn fills_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'py, PyList>>> {
+fn fills_of<'py>(
+    py: Python<'py>,
+    engine: &BarEngine,
+    units: Units,
+) -> PyResult<Option<Bound<'py, PyList>>> {
     let Some(reporter) = engine.reporter() else {
         return Ok(None);
     };
     let list = PyList::empty(py);
     for fill in reporter.fills() {
-        list.append(fill_to_dict(py, fill, engine.open_time(fill.tick))?)?;
+        list.append(fill_to_dict(
+            py,
+            &units.fill(*fill),
+            engine.open_time(fill.tick),
+        )?)?;
     }
     Ok(Some(list))
 }
 
 /// The ledger as columns, an instrument's seven as a value a bar, or for a `universe` as
 /// a row of one per instrument a bar, so code that reads an instrument's column of a
-/// universe reads one of a single instrument the same way.
+/// universe reads one of a single instrument the same way. Each row is in the
+/// account's `units`, with its equity valued in dollars beside it.
 fn ledger_of<'py>(
     py: Python<'py>,
     engine: &BarEngine,
     universe: bool,
+    units: Units,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     let Some(reporter) = engine.reporter() else {
         return Ok(None);
     };
-    let rows = reporter.ledger();
+    let rows: Vec<LedgerRow> = reporter
+        .ledger()
+        .iter()
+        .map(|&row| units.row(row))
+        .collect();
     let column = |get: Column| -> Vec<f64> { rows.iter().map(get).collect() };
     let d = PyDict::new(py);
     let bars: Vec<usize> = rows.iter().map(|row| row.tick).collect();
@@ -1165,7 +1198,16 @@ fn ledger_of<'py>(
         d.set_item(name, PyArray1::from_vec(py, column(get)))?;
     }
     let width = engine.width();
-    let legs = reporter.legs();
+    let marks = reporter.legs().iter().step_by(width).map(|leg| leg.mark);
+    let in_quote = rows
+        .iter()
+        .zip(marks)
+        .map(|(row, mark)| units.in_quote(row.equity, mark));
+    d.set_item(
+        "equity_in_quote",
+        PyArray1::from_vec(py, in_quote.collect()),
+    )?;
+    let legs: Vec<Leg> = reporter.legs().iter().map(|&leg| units.leg(leg)).collect();
     let leg_columns: [(&str, LegColumn); 7] = [
         ("position", |leg| leg.position),
         ("entry", |leg| leg.entry),
@@ -1188,13 +1230,21 @@ fn ledger_of<'py>(
     Ok(Some(d))
 }
 
-fn order_log_of<'py>(py: Python<'py>, engine: &BarEngine) -> PyResult<Option<Bound<'py, PyList>>> {
+fn order_log_of<'py>(
+    py: Python<'py>,
+    engine: &BarEngine,
+    units: Units,
+) -> PyResult<Option<Bound<'py, PyList>>> {
     let Some(reporter) = engine.reporter() else {
         return Ok(None);
     };
     let list = PyList::empty(py);
     for event in reporter.events() {
-        list.append(event_to_dict(py, event, engine.open_time(event.tick))?)?;
+        list.append(event_to_dict(
+            py,
+            &units.event(*event),
+            engine.open_time(event.tick),
+        )?)?;
     }
     Ok(Some(list))
 }
@@ -1297,6 +1347,9 @@ struct Engine {
     // built from a universe's (T, N, 5) candles, whose views and ledger carry an
     // instrument axis
     universe: bool,
+    // how the account's prices and sizes meet the engine's, which every order taken
+    // and every record handed out crosses
+    units: Units,
 }
 
 #[pymethods]
@@ -1326,6 +1379,7 @@ impl Engine {
         instruments = None,
         intrabar = "pessimistic",
         seed = None,
+        contract = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1352,8 +1406,9 @@ impl Engine {
         instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
         seed: Option<Bound<'_, PyAny>>,
+        contract: Option<f64>,
     ) -> PyResult<Engine> {
-        let (series, config, universe) = build_series(
+        let (series, config, universe, units) = build_series(
             &candles,
             market,
             quote,
@@ -1377,22 +1432,24 @@ impl Engine {
             instruments,
             intrabar,
             seed,
+            contract,
         )?;
         Ok(Engine {
             inner: BarEngine::new(series, config),
             universe,
+            units,
         })
     }
 
     /// Reset to the first bar and return the initial state.
     fn reset<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyState>> {
-        Bound::new(py, PyState::from(self.inner.reset()))
+        Bound::new(py, PyState::from(self.units.state(self.inner.reset())))
     }
 
     /// Advance one bar, resolve the orders placed since the last step, mark the
     /// account, and return the new state.
     fn step<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyState>> {
-        Bound::new(py, PyState::from(self.inner.step()))
+        Bound::new(py, PyState::from(self.units.state(self.inner.step())))
     }
 
     /// True when there is no next bar to step into.
@@ -1493,14 +1550,14 @@ impl Engine {
     /// or None if the queue already holds max_open_orders for this bar, or size is
     /// not a positive finite number.
     fn market_buy(&mut self, size: f64) -> Option<u64> {
-        self.inner.market_buy(size).map(|id| id.0)
+        self.market(Side::Buy, size)
     }
 
     /// Queue a market sell; it fills on the next bar's open. Returns the order id,
     /// or None if the queue already holds max_open_orders for this bar, or size is
     /// not a positive finite number.
     fn market_sell(&mut self, size: f64) -> Option<u64> {
-        self.inner.market_sell(size).map(|id| id.0)
+        self.market(Side::Sell, size)
     }
 
     /// Rest a buy limit. Returns the order id, or None if the book is full, size is
@@ -1508,7 +1565,7 @@ impl Engine {
     /// a non-finite price raises instead.
     fn limit_buy(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
-        Ok(self.inner.limit_buy(size, price).map(|id| id.0))
+        Ok(self.limit(Side::Buy, size, price))
     }
 
     /// Rest a sell limit. Returns the order id, or None if the book is full, size is
@@ -1516,7 +1573,7 @@ impl Engine {
     /// a non-finite price raises instead.
     fn limit_sell(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
-        Ok(self.inner.limit_sell(size, price).map(|id| id.0))
+        Ok(self.limit(Side::Sell, size, price))
     }
 
     /// Rest a stop on `side` that triggers at `trigger`. None if the book is full
@@ -1534,9 +1591,15 @@ impl Engine {
     ) -> PyResult<Option<u64>> {
         let side = parse_side(side)?;
         finite("trigger", trigger)?;
+        let units = self.units;
         Ok(self
             .inner
-            .stop(side, size, trigger, reduce_only)
+            .stop(
+                units.side(side),
+                units.size(size),
+                units.price(trigger),
+                reduce_only,
+            )
             .map(|id| id.0))
     }
 
@@ -1563,6 +1626,8 @@ impl Engine {
         if let Some(price) = take_profit {
             finite("take_profit", price)?;
         }
+        let price = |price: Option<f64>| price.map(|price| self.units.price(price));
+        let (stop, take_profit) = (price(stop), price(take_profit));
         let (stop, take_profit) = self.inner.bracket(0, stop, take_profit);
         Ok((stop.map(|id| id.0), take_profit.map(|id| id.0)))
     }
@@ -1599,9 +1664,15 @@ impl Engine {
         if let Some(t) = trigger {
             finite("trigger", t)?;
         }
+        let units = self.units;
         Ok(self
             .inner
-            .replace(OrderId(order_id), size, price, trigger)
+            .replace(
+                OrderId(order_id),
+                size.map(|size| units.size(size)),
+                price.map(|price| units.price(price)),
+                trigger.map(|trigger| units.price(trigger)),
+            )
             .map(|id| id.0))
     }
 
@@ -1617,6 +1688,7 @@ impl Engine {
     /// leaves the cap's requirement covered (ADR 0008).
     fn transfer(&mut self, amount: f64, to: &str) -> PyResult<()> {
         let to = transfer_to("", amount, to)?;
+        one_wallet("", self.units)?;
         self.inner.transfer(amount, to);
         Ok(())
     }
@@ -1639,7 +1711,10 @@ impl Engine {
         tolerance: f64,
         transfer: bool,
     ) -> PyResult<Vec<u64>> {
-        let weights = read_weights("", &weights, &self.inner)?;
+        let weights: Vec<(usize, f64)> = read_weights("", &weights, &self.inner)?
+            .into_iter()
+            .map(|(i, weight)| (i, self.units.signed(weight)))
+            .collect();
         let tolerance = read_tolerance("", tolerance)?;
         let legs = self.inner.target(&weights, tolerance, transfer).map_err(
             |TargetError::Short { instrument, weight }| short_spot("", instrument, weight),
@@ -1708,14 +1783,15 @@ impl Engine {
         if let Some(t) = trigger {
             finite("trigger", t)?;
         }
+        let units = self.units;
         Ok(self
             .inner
             .order(
-                side,
-                size,
+                units.side(side),
+                units.size(size),
                 kind,
-                price,
-                trigger,
+                price.map(|price| units.price(price)),
+                trigger.map(|trigger| units.price(trigger)),
                 reduce_only,
                 post_only,
                 tif,
@@ -1723,14 +1799,19 @@ impl Engine {
             .map(|id| id.0))
     }
 
-    /// Base size for `fraction` of current equity, marked at the current close.
+    /// Base size for `fraction` of current equity, marked at the current close, or
+    /// contracts on an inverse contract.
     fn qty_from_weight(&self, fraction: f64) -> f64 {
-        self.inner.qty_from_weight(fraction)
+        self.units.contracts(self.inner.qty_from_weight(fraction))
     }
 
-    /// Base size for a `cash` amount in quote, at the current close.
+    /// Base size for a `cash` amount in quote, at the current close, or contracts on
+    /// an inverse contract, each worth a fixed number of dollars at any price.
     fn qty_from_quote(&self, cash: f64) -> f64 {
-        self.inner.qty_from_quote(cash)
+        match self.units {
+            Units::Inverse(value) => cash / value,
+            Units::Linear => self.inner.qty_from_quote(cash),
+        }
     }
 
     /// Performance stats when reporting is on, else None. `periods_per_year`
@@ -1768,7 +1849,7 @@ impl Engine {
     /// and then the one still open, marked at the current close with `open` true,
     /// or None when reporting is off (ADR 0023).
     fn trades<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        round_trips_of(py, &self.inner)
+        round_trips_of(py, &self.inner, self.units)
     }
 
     /// The fill log as a list of dicts, one per fill in the order they landed, or
@@ -1778,7 +1859,7 @@ impl Engine {
     /// beyond that per unit, its fee, whether it took liquidity, and its reason
     /// (ADR 0022).
     fn fills<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        fills_of(py, &self.inner)
+        fills_of(py, &self.inner, self.units)
     }
 
     /// The ledger as a dict of numpy columns, one row per bar from the opening balance
@@ -1789,7 +1870,7 @@ impl Engine {
     /// entry, mark, notional, unrealized PnL, weight and drift, `(T,)` for one
     /// instrument and `(T, N)` for a universe (ADR 0022).
     fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        ledger_of(py, &self.inner, self.universe)
+        ledger_of(py, &self.inner, self.universe, self.units)
     }
 
     /// The order log as a list of dicts, one per event in the order they happened,
@@ -1799,7 +1880,7 @@ impl Engine {
     /// reason. A refused placement is here under the id it would have had
     /// (ADRs 0010, 0022).
     fn order_log<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        order_log_of(py, &self.inner)
+        order_log_of(py, &self.inner, self.units)
     }
 
     /// Drive `strategy` over the whole series and return the final state. Resets,
@@ -1820,7 +1901,7 @@ impl Engine {
         // double-borrow panic.
         let mut state = {
             let mut engine = slf.borrow_mut();
-            Bound::new(py, PyState::from(engine.inner.reset()))?
+            Bound::new(py, PyState::from(engine.units.state(engine.inner.reset())))?
         };
 
         if strategy.hasattr("init")? {
@@ -1848,7 +1929,7 @@ impl Engine {
             }
             state = {
                 let mut engine = slf.borrow_mut();
-                Bound::new(py, PyState::from(engine.inner.step()))?
+                Bound::new(py, PyState::from(engine.units.state(engine.inner.step())))?
             };
             tick += 1;
         }
@@ -1858,6 +1939,26 @@ impl Engine {
 }
 
 impl Engine {
+    /// A market order on `side` of `size`, in the engine's units.
+    fn market(&mut self, side: Side, size: f64) -> Option<u64> {
+        let size = self.units.size(size);
+        match self.units.side(side) {
+            Side::Buy => self.inner.market_buy(size),
+            Side::Sell => self.inner.market_sell(size),
+        }
+        .map(|id| id.0)
+    }
+
+    /// A limit on `side` of `size` at `price`, in the engine's units.
+    fn limit(&mut self, side: Side, size: f64, price: f64) -> Option<u64> {
+        let (size, price) = (self.units.size(size), self.units.price(price));
+        match self.units.side(side) {
+            Side::Buy => self.inner.limit_buy(size, price),
+            Side::Sell => self.inner.limit_sell(size, price),
+        }
+        .map(|id| id.0)
+    }
+
     /// One field of every candle as a zero-copy read-only view, `(T,)`, or `(T, N)`
     /// over a universe.
     fn column<'py>(slf: Bound<'py, Self>, column: usize) -> Bound<'py, PyAny> {
@@ -1888,6 +1989,8 @@ struct Batch {
     // built from a universe's (T, N, 5) candles, whose observation and records
     // carry an instrument axis
     universe: bool,
+    // how the accounts' prices and sizes meet the engine's, as on `Engine`
+    units: Units,
 }
 
 #[pymethods]
@@ -1922,6 +2025,7 @@ impl Batch {
         instruments = None,
         intrabar = "pessimistic",
         seed = None,
+        contract = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1953,8 +2057,9 @@ impl Batch {
         instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
         seed: Option<Bound<'_, PyAny>>,
+        contract: Option<f64>,
     ) -> PyResult<Batch> {
-        let (series, config, universe) = build_series(
+        let (series, config, universe, units) = build_series(
             &candles,
             market,
             quote,
@@ -1978,6 +2083,7 @@ impl Batch {
             instruments,
             intrabar,
             seed,
+            contract,
         )?;
 
         // Per-env cost randomization (ADR 0038): each override, if given, replaces
@@ -2022,6 +2128,7 @@ impl Batch {
             features: Vec::new(),
             n_features: 0,
             universe,
+            units,
         })
     }
 
@@ -2054,7 +2161,7 @@ impl Batch {
     /// env order.
     fn reset_all<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let states = py.detach(|| self.inner.reset_all());
-        states_to_list(py, states)
+        states_to_list(py, states, self.units)
     }
 
     /// Apply the per-env `actions` as market orders (positive buys, negative
@@ -2086,7 +2193,7 @@ impl Batch {
             self.inner.step_all()
         });
 
-        states_to_list(py, states)
+        states_to_list(py, states, self.units)
     }
 
     // --- Batched RL surface (used by probatum.rl.VectorEnv) ---
@@ -2223,7 +2330,7 @@ impl Batch {
             )));
         }
         let tolerance = read_tolerance("", tolerance)?;
-        let rows: Vec<f64> = view.iter().copied().collect();
+        let rows: Vec<f64> = view.iter().map(|&w| self.units.signed(w)).collect();
         py.detach(|| self.inner.target_all(&rows, tolerance, transfer))
             .map_err(|(env, TargetError::Short { instrument, weight })| {
                 PyValueError::new_err(format!(
@@ -2246,10 +2353,10 @@ impl Batch {
             )));
         };
         let out = PyDict::new(py);
-        out.set_item("ledger", ledger_of(py, engine, self.universe)?)?;
-        out.set_item("fills", fills_of(py, engine)?)?;
-        out.set_item("order_log", order_log_of(py, engine)?)?;
-        out.set_item("trades", round_trips_of(py, engine)?)?;
+        out.set_item("ledger", ledger_of(py, engine, self.universe, self.units)?)?;
+        out.set_item("fills", fills_of(py, engine, self.units)?)?;
+        out.set_item("order_log", order_log_of(py, engine, self.units)?)?;
+        out.set_item("trades", round_trips_of(py, engine, self.units)?)?;
         Ok(out)
     }
 
@@ -2320,6 +2427,22 @@ impl Batch {
     /// every instrument's `positions` and `marks` as `(num_envs, N)` arrays.
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.inner.snapshot();
+        let units = self.units;
+        let positions = |values: Vec<f64>| -> Vec<f64> {
+            values
+                .into_iter()
+                .map(|q| units.contracts(units.signed(q)))
+                .collect()
+        };
+        let prices =
+            |values: Vec<f64>| -> Vec<f64> { values.into_iter().map(|p| units.price(p)).collect() };
+        let snap = BatchSnapshot {
+            positions: positions(snap.positions),
+            position: positions(snap.position),
+            marks: prices(snap.marks),
+            mark_price: prices(snap.mark_price),
+            ..snap
+        };
         let (n, width) = (self.inner.len(), self.inner.width());
         let grid = |values: Vec<f64>| {
             Array2::from_shape_vec((n, width), values)
@@ -2380,7 +2503,13 @@ impl Batch {
                         self.inner.len()
                     )));
                 }
-                Ok(Some(slice.to_vec()))
+                let units = self.units;
+                Ok(Some(
+                    slice
+                        .iter()
+                        .map(|&size| units.signed(units.size(size)))
+                        .collect(),
+                ))
             }
             None => Ok(None),
         }
@@ -2748,12 +2877,13 @@ fn read_action(
 
 /// Read a script: a dict from a bar to the actions taken at its close, each a verb
 /// and a dict of its arguments, into the actions of each of the `bars`, on `width`
-/// instruments. A decision on the last bar or after it could never fill, so it is
-/// refused.
+/// instruments, in the engine's `units`. A decision on the last bar or after it
+/// could never fill, so it is refused.
 fn read_script<'py>(
     script: &Bound<'py, PyDict>,
     bars: usize,
     engine: &BarEngine,
+    units: Units,
 ) -> PyResult<Vec<Vec<Action>>> {
     let mut entries = Vec::with_capacity(script.len());
     for (bar, actions) in script.iter() {
@@ -2796,13 +2926,16 @@ fn read_script<'py>(
                 )));
             };
             let action = read_action(&at, &verb, &given, placements, engine)?;
+            if let Action::Transfer { .. } = action {
+                one_wallet(&format!("{at}: "), units)?;
+            }
             placements += match action {
                 Action::Order { .. } | Action::Close(_) => 1,
                 // a bracket places its stop and then its take-profit
                 Action::Bracket { .. } => 2,
                 _ => 0,
             };
-            out[t].push(action);
+            out[t].push(units.action(action));
         }
     }
     Ok(out)
@@ -2813,7 +2946,9 @@ fn read_script<'py>(
 /// tier table in `instruments`, or `market` and `tiers` for every one, and the
 /// instrument each of `funding_times` charges in `funding_instruments`. A number for
 /// `quote` funds the one wallet a universe of one kind uses, and a universe holding
-/// both kinds names each wallet's cash. Returns whether it is a universe as well.
+/// both kinds names each wallet's cash. An inverse contract, worth `contract` dollars,
+/// is one instrument's alone, its series in the engine's terms. Returns whether it is
+/// a universe as well, and the units its account counts in.
 #[allow(clippy::too_many_arguments)]
 fn build_series(
     candles: &Bound<'_, PyAny>,
@@ -2839,7 +2974,8 @@ fn build_series(
     instruments: Option<Vec<Bound<'_, PyDict>>>,
     intrabar: &str,
     seed: Option<Bound<'_, PyAny>>,
-) -> PyResult<(Candles, EngineConfig, bool)> {
+    contract: Option<f64>,
+) -> PyResult<(Candles, EngineConfig, bool, Units)> {
     let seed = seed_of(seed)?;
     let Ok(array) = candles.cast::<PyUntypedArray>() else {
         return Err(PyValueError::new_err(format!(
@@ -2869,11 +3005,22 @@ fn build_series(
                  for a universe, or market and tiers for one instrument",
             ));
         }
+        let units = units_of(market, contract)?;
+        if let (Units::Inverse(_), Opening::Wallets { .. }) = (units, &quote) {
+            return Err(PyValueError::new_err(
+                "quote: a dict of wallets for an inverse contract, whose account holds its \
+                 coin in one; give the coin as a number",
+            ));
+        }
         let candles = candles
             .extract::<PyReadonlyArray2<'_, f64>>()
             .map_err(|_| dtype())?;
         let config = build_config(
-            market,
+            if units == Units::Linear {
+                market
+            } else {
+                "perp"
+            },
             quote,
             fee_taker,
             fee_maker,
@@ -2888,21 +3035,44 @@ fn build_series(
             intrabar,
             seed,
         )?;
+        let config = EngineConfig {
+            funding_rate: units.signed(config.funding_rate),
+            ..config
+        };
+        let mut series = candles_from_array(candles, times)?;
+        if let Units::Inverse(contract) = units {
+            let low = series.as_slice().iter().position(|bar| bar.low <= 0.0);
+            if let Some(row) = low {
+                return Err(PyValueError::new_err(format!(
+                    "candles: a low of {} at row {row}; an inverse contract's prices are \
+                     above 0",
+                    series.as_slice()[row].low
+                )));
+            }
+            series = series.inverse(contract);
+        }
         let series = place_funding(
-            candles_from_array(candles, times)?,
+            series,
             funding_rate,
             funding_interval,
             funding_hours,
             funding_times,
             funding_rates,
             funding_instruments_of(funding_instruments, 1)?,
+            units,
         )?;
         tier_basis(tiers_by)?;
         let series = match tiers {
-            Some(rows) => series.with_tiers(tiers_from(rows, tiers_by)?),
+            Some(rows) => series.with_tiers(units.tiers(tiers_from(rows, tiers_by)?)),
             None => series,
         };
-        return Ok((series, config, false));
+        return Ok((series, config, false, units));
+    }
+    if market.eq_ignore_ascii_case("inverse") || contract.is_some() {
+        return Err(PyValueError::new_err(
+            "market: an inverse contract for a universe; its account holds that one \
+             perpetual alone, so pass its (T, 5) candles",
+        ));
     }
     let candles = candles
         .extract::<PyReadonlyArray3<'_, f64>>()
@@ -2977,8 +3147,30 @@ fn build_series(
         funding_times,
         funding_rates,
         funding_instruments,
+        Units::Linear,
     )?;
-    Ok((series, config, true))
+    Ok((series, config, true, Units::Linear))
+}
+
+/// The units an account on `market` counts in: an inverse contract's, worth
+/// `contract` dollars, or as they are for spot and linear contracts, which take no
+/// contract.
+fn units_of(market: &str, contract: Option<f64>) -> PyResult<Units> {
+    match (market.eq_ignore_ascii_case("inverse"), contract) {
+        (true, Some(value)) if value.is_finite() && value > 0.0 => Ok(Units::Inverse(value)),
+        (true, Some(value)) => Err(PyValueError::new_err(format!(
+            "contract: {value}; give the dollars one contract is worth, above 0"
+        ))),
+        (true, None) => Err(PyValueError::new_err(
+            "contract: none, and an inverse contract is worth a fixed number of dollars; \
+             pass contract=",
+        )),
+        (false, Some(value)) => Err(PyValueError::new_err(format!(
+            "contract: {value} for a {market} market; give it with market=\"inverse\" \
+             alone"
+        ))),
+        (false, None) => Ok(Units::Linear),
+    }
 }
 
 /// Play `script` over `candles` at `venue` in one call and return what the run
@@ -3024,18 +3216,18 @@ fn run_script<'py>(
     let engine = py.get_type::<Engine>().call((candles,), Some(&settings))?;
     let engine = engine.cast_into::<Engine>()?;
     let mut engine = engine.borrow_mut();
-    let universe = engine.universe;
+    let (universe, units) = (engine.universe, engine.units);
     let bars = engine.inner.num_bars();
-    let mut script = Script::new(read_script(&script, bars, &engine.inner)?);
+    let mut script = Script::new(read_script(&script, bars, &engine.inner, units)?);
     let inner = &mut engine.inner;
     py.detach(|| {
         probatum_engine::run(inner, &mut script);
     });
     let out = PyDict::new(py);
-    out.set_item("ledger", ledger_of(py, &engine.inner, universe)?)?;
-    out.set_item("fills", fills_of(py, &engine.inner)?)?;
-    out.set_item("order_log", order_log_of(py, &engine.inner)?)?;
-    out.set_item("trades", round_trips_of(py, &engine.inner)?)?;
+    out.set_item("ledger", ledger_of(py, &engine.inner, universe, units)?)?;
+    out.set_item("fills", fills_of(py, &engine.inner, units)?)?;
+    out.set_item("order_log", order_log_of(py, &engine.inner, units)?)?;
+    out.set_item("trades", round_trips_of(py, &engine.inner, units)?)?;
     Ok(out)
 }
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use probatum_core::{Candle, Market, Tiers};
 
 use crate::clock::Clock;
+use crate::inverse::Units;
 use crate::schedule::Schedule;
 
 /// What the venue says about one instrument of a universe.
@@ -23,7 +24,8 @@ pub struct Instrument {
 #[derive(Clone, Debug)]
 pub struct Candles {
     // row by row, `width` bars to a row, one per instrument; a row an instrument
-    // printed no bar on holds five NaNs for it
+    // printed no bar on holds five NaNs for it. An inverse series keeps the bars as
+    // printed after its own, for the views
     bars: Arc<[Candle]>,
     width: usize,
     // the rows the bars fill, kept so the length asked on every step is not a
@@ -96,6 +98,23 @@ impl Candles {
         self
     }
 
+    /// The same series of an inverse contract worth `contract` dollars, in the
+    /// engine's terms (`inverse`): each bar's reciprocal, with the bars as printed
+    /// kept after them for the views. Its funding rates and a quantity table's
+    /// bounds are given in the engine's terms too. Panics unless it is one
+    /// instrument.
+    pub fn inverse(mut self, contract: f64) -> Candles {
+        assert_eq!(self.width, 1, "an inverse account holds one instrument");
+        let units = Units::Inverse(contract);
+        let printed = self.as_slice();
+        self.bars = printed
+            .iter()
+            .map(|&bar| units.bar(bar))
+            .chain(printed.iter().copied())
+            .collect();
+        self
+    }
+
     /// The series' clock, or `None` when its bars came without times.
     pub fn clock(&self) -> Option<&Clock> {
         self.clock.as_ref()
@@ -143,7 +162,7 @@ impl Candles {
     /// The first instrument's bar on row `i`, copied out of the shared buffer, or
     /// `None` past the end.
     pub fn get(&self, i: usize) -> Option<Candle> {
-        self.bars.get(i * self.width).copied()
+        (i < self.rows).then(|| self.bars[i * self.width])
     }
 
     /// Instrument `i`'s bar on row `t`, five NaNs where it printed none.
@@ -152,9 +171,9 @@ impl Candles {
         self.bars[t * self.width + i]
     }
 
-    /// The whole series as a slice, a zero-copy borrow, row by row.
+    /// The whole series as the venue printed it, a zero-copy borrow, row by row.
     pub fn as_slice(&self) -> &[Candle] {
-        &self.bars
+        &self.bars[self.bars.len() - self.rows * self.width..]
     }
 
     /// The `len` bars ending just before `end`, as a zero-copy borrow, for a series
@@ -162,9 +181,10 @@ impl Candles {
     /// `end` saturates at the series length, so out-of-range requests return the
     /// available bars.
     pub fn window(&self, end: usize, len: usize) -> &[Candle] {
-        let end = end.min(self.bars.len());
+        let bars = self.as_slice();
+        let end = end.min(bars.len());
         let start = end.saturating_sub(len);
-        &self.bars[start..end]
+        &bars[start..end]
     }
 }
 
@@ -262,5 +282,19 @@ mod tests {
     #[should_panic(expected = "whole rows")]
     fn bars_that_do_not_fill_whole_rows_are_refused() {
         Candles::universe(series(5).as_slice().to_vec(), 3, None);
+    }
+
+    #[test]
+    fn an_inverse_series_steps_on_the_reciprocal_and_shows_the_bars_as_printed() {
+        let printed = series(4);
+        let inverse = Candles::new(printed.as_slice().to_vec()).inverse(10.0);
+        assert_eq!(inverse.len(), 4);
+        assert_eq!(inverse.as_slice(), printed.as_slice());
+        assert_eq!(inverse.window(3, 2), printed.window(3, 2));
+        let (bar, engine) = (printed.bar(2, 0), inverse.bar(2, 0));
+        assert_eq!((engine.high, engine.low), (1.0 / bar.low, 1.0 / bar.high));
+        assert_eq!(engine.volume, bar.volume * 10.0);
+        assert_eq!(inverse.get(3).map(|bar| bar.open), Some(1.0 / 3.0));
+        assert!(inverse.get(4).is_none());
     }
 }

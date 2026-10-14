@@ -91,9 +91,12 @@ def stamps(rng, times):
     return events
 
 
-def config(rng, times):
-    market  = rng.choice(["spot", "perp"])
-    perp    = market == "perp"
+def config(rng, times, inverse=False):
+    """A venue for one instrument, spot or a perpetual, or with `inverse` an inverse
+    perpetual on contracts of 10 or 100 dollars, its balance in the coin and no
+    other wallet."""
+    market  = "inverse" if inverse else rng.choice(["spot", "perp"])
+    perp    = market != "spot"
     funding = ("none",)
     if perp:
         rate    = rng.choice([0.0001, 0.02, -0.01, 0.1])
@@ -118,21 +121,29 @@ def config(rng, times):
         leverage=rng.choice([0.0, 3.0, 10.0]) if perp else 10.0,
         funding=funding,
     )
-    cfg["tiers"], cfg["tiers_by"] = tier_table(rng, cfg["quote"], perp)
 
+    if inverse:
+        cfg.update(idle=0.0, contract=rng.choice([10.0, 100.0]))
+
+    cfg["tiers"], cfg["tiers_by"] = tier_table(rng, cfg["quote"], perp,
+                                              contract=cfg.get("contract"))
     return cfg
 
 
-def tier_table(rng, quote, perp, price=100.0):
+def tier_table(rng, quote, perp, price=100.0, contract=None):
     """No table for most cases, and for some perpetuals three tiers of falling
     leverage, their bounds a few times the balance in notional, or in size at
-    `price`, the walk's opening price, so the cap meets them. Half keep maintenance
-    at rising rates, a notional table's amounts continuous across its bounds."""
+    `price`, the walk's opening price, so the cap meets them, in contracts of
+    `contract` dollars on an inverse perpetual. Half keep maintenance at rising
+    rates, a notional table's amounts continuous across its bounds."""
     if not perp or rng.random() < 0.6:
         return None, "notional"
 
-    basis    = rng.choice(["notional", "quantity"])
-    scale    = quote if basis == "notional" else quote / price
+    basis = rng.choice(["notional", "quantity"])
+    scale = quote if basis == "notional" else quote / price
+    if basis == "quantity" and contract is not None:
+        scale = quote * price / contract
+
     bounds   = [scale * b for b in sorted(rng.sample([1.0, 2.0, 4.0, 8.0, 16.0], 3))]
     leverage = sorted(rng.sample([20.0, 10.0, 5.0, 3.0, 2.0], 3), reverse=True)
     rates    = [0.0] * 3
@@ -184,14 +195,21 @@ def plan(rng, bars, cfg):
     twentieth of the balance's worth at that close to twelve times it, so the cap
     binds, the spot clamps bind and levered accounts die."""
     out = []
+
+    # an inverse account has one wallet, so nothing to transfer to, and its sizes
+    # are contracts
+    kinds = [kind for kind in KINDS if cfg["market"] != "inverse" or kind != "transfer"]
+
     for t in range(len(bars) - 1):
         if rng.random() < 0.45:
             out.append(None)
             continue
 
         worth = cfg["quote"] / bars[t].close
-        size  = worth * math.exp(rng.uniform(math.log(0.05), math.log(12.0)))
-        out.append((rng.choice(KINDS), rng.choice(["buy", "sell"]), size,
+        if cfg["market"] == "inverse":
+            worth = cfg["quote"] * bars[t].close / cfg["contract"]
+        size = worth * math.exp(rng.uniform(math.log(0.05), math.log(12.0)))
+        out.append((rng.choice(kinds), rng.choice(["buy", "sell"]), size,
                     rng.random()))
 
     return out
@@ -317,7 +335,7 @@ def venue(cfg):
         max_fill_fraction=1.0, max_open_orders=cfg["max_open_orders"],
         leverage=cfg["leverage"], impact=0.0, tiers=cfg["tiers"],
         tiers_by=cfg["tiers_by"], intrabar=cfg["intrabar"],
-        **engine_funding(cfg["funding"]),
+        contract=cfg.get("contract"), **engine_funding(cfg["funding"]),
     )
 
 
@@ -343,7 +361,7 @@ def make_reference(bars, cfg, times, interval=None, events=None):
     else:
         funding = "none"
 
-    kind  = "spot" if cfg["market"] == "spot" else "linear"
+    kind  = {"perp": "linear"}.get(cfg["market"], cfg["market"])
     venue = Venue(
         balance         = balance(cfg),
         maker           = cfg["fee_maker"],
@@ -357,9 +375,11 @@ def make_reference(bars, cfg, times, interval=None, events=None):
 
     if events is not None:
         events = [(stamp, None, rate) for stamp, rate in events]
+
     instrument = Instrument(
         "X",
         kind     = kind,
+        contract = cfg.get("contract"),
         tiers    = cfg.get("tiers"),
         tiers_by = cfg.get("tiers_by", "notional"),
     )
@@ -636,10 +656,11 @@ TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees"
                 "funding", "pnl", "ret", "best", "worst", "reason", "open")
 
 
-LEDGER_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
-                 "slippage", "impact", "liquidation", "dust", "position", "entry",
-                 "mark", "notional", "unrealized", "weight", "drift", "margin_used",
-                 "maintenance", "gross_exposure", "net_exposure", "leverage")
+LEDGER_FIELDS = ("equity", "equity_in_quote", "spot_cash", "margin_cash", "fees",
+                 "funding", "spread", "slippage", "impact", "liquidation", "dust",
+                 "position", "entry", "mark", "notional", "unrealized", "weight",
+                 "drift", "margin_used", "maintenance", "gross_exposure",
+                 "net_exposure", "leverage")
 
 
 def ledger_difference(mine, theirs, end=None):
@@ -718,18 +739,24 @@ def compare(cases, seed):
     """`cases` random cases from `seed` through both: how many were compared whole
     and agreed, the disagreements, the rules each case was cut at, and the rules and
     actions the parts compared reached."""
-    rng     = random.Random(seed)
+    rng = random.Random(seed)
+    # the inverse cases come after the rest, from a stream of their own, so adding
+    # them left every other case as it was
+    inverse = random.Random(f"inverse {seed}")
+
     reached = collections.Counter()
     rules   = collections.Counter()
     aside   = collections.Counter()
     whole, agreed, disagreed = 0, 0, []
 
-    for case in range(cases):
-        bars  = walk(rng, rng.randint(8, 40))
-        times = clock(rng, len(bars))
-        cfg   = config(rng, times)
+    for case in range(drawn(cases)):
+        draw  = rng if case < cases else inverse
+        bars  = walk(draw, draw.randint(8, 40))
+        times = clock(draw, len(bars))
+        cfg   = config(draw, times, inverse=case >= cases)
+
         cfg["intrabar"] = setting(seed, case)
-        actions = plan(rng, bars, cfg)
+        actions = plan(draw, bars, cfg)
         counted = collections.defaultdict(collections.Counter)
         try:
             rows, records, sim = run(bars, times, cfg, actions, counted)
@@ -756,8 +783,14 @@ def compare(cases, seed):
     return Outcome(whole, agreed, disagreed, aside, rules, reached)
 
 
+def drawn(cases):
+    """The cases a comparison of `cases` draws: those, and an inverse perpetual for
+    every fourth of them."""
+    return cases + cases // 4
+
+
 def render(out, cases):
-    lines = [f"\n{out.compared} of {cases} compared whole, {out.agreed} agreed, "
+    lines = [f"\n{out.compared} of {drawn(cases)} compared whole, {out.agreed} agreed, "
              f"{len(out.disagreed)} disagreed",
              "compared up to a rule the engine does not have yet: "
              + (", ".join(f"{why} {n}" for why, n in

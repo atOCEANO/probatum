@@ -71,6 +71,7 @@ SHARED = [
     "funding between rows",
     "funding inside a bar counted toward the check",
     "funding inside a bar counted toward the path carried in",
+    "an inverse contract filled",
     "slippage paid",
 ]
 

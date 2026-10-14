@@ -144,7 +144,7 @@ from probatum import Engine
 
 eng = Engine(
     candles,                 # (T, 5) float64 open, high, low, close, volume, or (T, N, 5)
-    market="spot",           # "spot" or "perp"
+    market="spot",           # "spot", "perp", or "inverse" with contract=
     quote=10_000.0,          # opening cash, or {"spot": s, "margin": m}
     fee_taker=0.0006,        # taker fee, fraction of notional
     fee_maker=0.0002,        # maker fee, fraction of notional
@@ -166,12 +166,15 @@ eng = Engine(
     instruments=None,        # a universe's market, tiers and tiers_by, a dict per instrument
     intrabar="pessimistic",  # how what a bar cannot show is decided, "optimistic" or "random"
     seed=None,               # the run's seed, which "random" draws from
+    contract=None,           # the dollars one inverse contract is worth
 )
 ```
 
 **A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound. The table is refused where the Specification's loader refuses it: bounds that do not rise, a leverage that rises or a maintenance rate that falls from one tier to the next, a maintenance rate not below one or reaching its tier's initial rate, one over the leverage, a notional table whose first amount is not zero or whose amounts break continuity, and any value that is not finite or is below zero ([Specification](Specification.md#maintenance)).
 
 **A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers` and `tiers_by`, or `market` and `tiers` for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
+
+**An inverse contract is counted in its coin.** `market="inverse"` with `contract=`, the dollars one contract is worth, takes one instrument's `(T, 5)` candles, quoted in dollars. Sizes are contracts and prices are dollars, as the venue quotes them, while `quote`, equity, fees, funding and every other sum are in the coin, a taker's costs among them, each its rate of the coin notional ([Specification](Specification.md#inverse-contracts)). The account holds that one contract in one wallet, so there is no `transfer`, `qty_from_quote(cash)` is `cash / contract` contracts at any price, and the ledger's `equity_in_quote` values equity in dollars at each close ([ADR 0016](Decisions.md)).
 
 `eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
 
@@ -479,6 +482,7 @@ Each column of `ledger()` holds one value per bar, the first for the opening bal
 | :--- | :--- |
 | `bar`, `time` | The bar, and its open time when the engine was built with `times=`; `time` is `None` without. |
 | `equity`, `spot_cash`, `margin_cash` | The account at the close: both wallets together, and each wallet's cash. |
+| `equity_in_quote` | Equity valued in the quote currency at the close: dollars for an inverse contract, and equity itself for any other. |
 | `gross_exposure`, `net_exposure` | The position's notional at the close, unsigned and signed. |
 | `leverage` | Gross exposure over equity, zero once equity is gone. |
 | `margin_used` | What the margin cap asks of the position at the close. |
@@ -502,7 +506,7 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `order` | The id of the order that filled, or `None` for a forced close. |
 | `side`, `size`, `price` | What filled, and at what price. |
 | `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, and a limit's own price. |
-| `spread`, `slippage`, `impact` | What it paid beyond the reference, per unit of size. The spread is zero until it is modelled. |
+| `spread`, `slippage`, `impact` | What it paid beyond the reference, in price, each its share of how far the price moved before the bar held it. The spread is zero until it is modelled. |
 | `fee` | The fee, in quote. |
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
 | `taker` | True when the fill took liquidity. A forced close is the venue's and is not. |

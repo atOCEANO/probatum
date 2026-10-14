@@ -28,8 +28,8 @@ import numpy as np
 import probatum
 from . import universe_differential
 from .differential import (balance, before, clock, close_enough, closed_before, config,
-                           cut, engine_funding, log_difference, make_reference, money,
-                           set_aside, setting, walk, worded)
+                           cut, drawn, engine_funding, log_difference, make_reference,
+                           money, set_aside, setting, walk, worded)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -70,8 +70,10 @@ def drive_batch(bars, times, cfg, offsets, actions):
         times             = np.array(times, dtype=np.int64),
         report            = False,
         intrabar          = cfg["intrabar"],
+        contract          = cfg.get("contract"),
         **engine_funding(cfg["funding"]),
     )
+
     batch.reset_at_each(np.array(offsets, dtype=np.int64))
 
     seen = []
@@ -169,6 +171,9 @@ Outcome = collections.namedtuple(
 
 def compare(cases, seed):
     rng = random.Random(seed)
+    # the inverse cases come after the rest, from a stream of their own, as in the
+    # comparison of one engine
+    inverse = random.Random(f"inverse {seed}")
 
     # what the cases actually reached. "0 disagreed" over a hundred flat accounts
     # that never funded and never died is a pass that means nothing, and there is
@@ -177,19 +182,23 @@ def compare(cases, seed):
     aside   = collections.Counter()
     agreed, disagreed = 0, []
 
-    for case in range(cases):
-        bars  = walk(rng, rng.randint(12, 40))
-        times = clock(rng, len(bars))
+    for case in range(drawn(cases)):
+        draw  = rng if case < cases else inverse
+        bars  = walk(draw, draw.randint(12, 40))
+        times = clock(draw, len(bars))
+
         # tier tables are compared over universes, which `compare_universes` runs
-        cfg      = dict(config(rng, times), tiers=None, intrabar=setting(seed, case))
-        num_envs = rng.randint(2, 5)
-        offsets  = offsets_for(rng, bars, num_envs)
-        window   = rng.randint(1, 6)
+        cfg = dict(config(draw, times, inverse=case >= cases), tiers=None,
+                   intrabar=setting(seed, case))
+
+        num_envs = draw.randint(2, 5)
+        offsets  = offsets_for(draw, bars, num_envs)
+        window   = draw.randint(1, 6)
 
         # past the end for the earliest env, so a finished episode is asked to
         # keep going and has to sit still rather than wrap or run on
         steps   = len(bars) - min(offsets)
-        actions = plan(rng, num_envs, steps)
+        actions = plan(draw, num_envs, steps)
 
         try:
             mine, batch = drive_batch(bars, times, cfg, offsets, actions)
@@ -207,6 +216,7 @@ def compare(cases, seed):
                 market   = cfg["market"],
                 quote    = balance(cfg),
                 report   = False,
+                contract = cfg.get("contract"),
             )
             fresh.reset_at_each(np.array(offsets, dtype=np.int64))
             where = observation_disagreement(fresh, bars, offsets, window)
@@ -379,7 +389,7 @@ def render_universes(out, cases):
 
 
 def render(out, cases):
-    lines = [f"\n{out.compared} of {cases} compared, {out.agreed} agreed, "
+    lines = [f"\n{out.compared} of {drawn(cases)} compared, {out.agreed} agreed, "
              f"{len(out.disagreed)} disagreed",
              "set aside: " + (", ".join(f"{why} {n}" for why, n in
                                         sorted(out.set_aside.items())) or "none"),
