@@ -301,6 +301,12 @@ impl Engine {
         }
     }
 
+    /// `size` rounded down to instrument `i`'s lot, as sizes hold a fill after its
+    /// clamps.
+    fn lot_down(&self, i: usize, size: Qty) -> Qty {
+        Qty(self.candles.sizes(i).down(size.get()))
+    }
+
     /// Every risk clamp applied to a copy of `fill` on instrument `i` without
     /// booking anything: the perp margin cap, the spot short and cash clamps, then
     /// reduce_only. Returns the fill that would actually be booked, so an
@@ -336,6 +342,10 @@ impl Engine {
                 return fill;
             }
             fill.size = Qty(fill.size.get().min(pos.abs()));
+        }
+        // with sizes on, what the clamps leave is rounded down to the lot
+        if self.config.sizes {
+            fill.size = self.lot_down(i, fill.size);
         }
         // a clamp can leave NaN or a negative remainder; normalize so the caller only
         // has to test for a positive size. The gate is the dust epsilon, not zero,
@@ -989,6 +999,7 @@ mod tests {
         let at = |leverage| Instrument {
             market: Some(Market::Perp),
             tiers: Tiers::new(TierBasis::Notional, vec![tier(1e12, leverage)]).expect("a table"),
+            ..Instrument::default()
         };
         let bars = Candles::universe([rows, third.to_vec()].concat(), 2, None)
             .with_instruments(vec![at(20.0), at(10.0)]);

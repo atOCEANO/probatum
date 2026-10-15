@@ -10,8 +10,8 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use probatum_core::{Candle, Market};
 use probatum_engine::{
-    builtin_strategy, run, run_sweep, Candles, Engine, EngineConfig, Impact, Intrabar, Liquidation,
-    SmaCross, Spread,
+    builtin_strategy, run, run_sweep, Candles, Engine, EngineConfig, Impact, Intrabar, Limit,
+    Liquidation, SmaCross, Spread,
 };
 
 const BARS: usize = 1_000;
@@ -53,6 +53,8 @@ fn spot_config() -> EngineConfig {
         liquidation: Liquidation::Takeover,
         impact_model: Impact::Linear,
         spread: Spread::None,
+        limit: Limit::Touch,
+        sizes: false,
     }
 }
 

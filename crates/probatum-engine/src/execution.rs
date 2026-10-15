@@ -24,6 +24,16 @@ pub enum Impact {
     Sqrt,
 }
 
+/// When a resting limit fills.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Limit {
+    /// When its bar reaches its price.
+    #[default]
+    Touch,
+    /// When its bar trades half a step of its instrument's price rule past it.
+    Through,
+}
+
 /// The spread a taker crosses half of.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Spread {
@@ -225,9 +235,23 @@ impl FillModel {
         close: f64,
     ) -> Option<(Fill, FillCosts)> {
         let limit = order.price?.get();
+        self.fill_limit_at(order, bar, available, close, limit)
+    }
+
+    /// The same, filled once its bar trades at or past `reach`, which under `through`
+    /// lies half a step of the price rule beyond the limit.
+    pub fn fill_limit_at(
+        &self,
+        order: &Order,
+        bar: &Candle,
+        available: f64,
+        close: f64,
+        reach: f64,
+    ) -> Option<(Fill, FillCosts)> {
+        let limit = order.price?.get();
         let touched = match order.side {
-            Side::Buy => bar.low <= limit,
-            Side::Sell => bar.high >= limit,
+            Side::Buy => bar.low <= reach,
+            Side::Sell => bar.high >= reach,
         };
         if !touched {
             return None;

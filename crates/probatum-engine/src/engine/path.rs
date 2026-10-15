@@ -577,10 +577,12 @@ mod tests {
             Instrument {
                 market: Some(Market::Perp),
                 tiers: Tiers::default(),
+                ..Instrument::default()
             },
             Instrument {
                 market: Some(Market::Perp),
                 tiers,
+                ..Instrument::default()
             },
         ];
         let candles = Candles::universe(vec![flat, flat], 2, None).with_instruments(instruments);

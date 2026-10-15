@@ -129,20 +129,35 @@ impl Engine {
                 continue;
             }
             let q = self.account.positions[i].qty.get();
-            let leg = weight * equity / close - q;
+            let mut leg = weight * equity / close - q;
+            let sizes = self.candles.sizes(i);
+            if self.config.sizes {
+                leg = sizes.down(leg.abs()).copysign(leg);
+            }
             if leg.abs() <= DUST || leg.abs() * close < tolerance * equity {
                 continue;
             }
+            // with sizes on, a part below the minimum notional is skipped, a reducing
+            // one only where the venue does not spare reduce-only orders
+            let small = |size: f64, reduce_only: bool| {
+                self.config.sizes
+                    && size.abs() * close < sizes.min_notional
+                    && !(reduce_only && sizes.reduce_only_exempt)
+            };
             let grow = if q != 0.0 && (q + leg) * q < 0.0 {
-                reducing.push((i, -q));
+                if !small(q, true) {
+                    reducing.push((i, -q));
+                }
                 q + leg
             } else if q != 0.0 && (q + leg).abs() < q.abs() {
-                reducing.push((i, leg));
+                if !small(leg, true) {
+                    reducing.push((i, leg));
+                }
                 0.0
             } else {
                 leg
             };
-            if grow.abs() > DUST {
+            if grow.abs() > DUST && !small(grow, false) {
                 growing.push((i, grow));
             }
         }
@@ -158,8 +173,11 @@ impl Engine {
                 };
                 self.targets.legs.push((id, tick));
                 queued.push(id);
+                // what the leg costs at the size it was placed at, which the
+                // maximum order quantity can hold below the leg
                 if self.account.markets[i] == Market::Spot {
-                    let cost = leg * self.marks[i];
+                    let placed = self.pending.last().map_or(0.0, |order| order.size.get());
+                    let cost = placed.copysign(leg) * self.marks[i];
                     needed += cost + cost.abs() * self.cost.fee_taker;
                 }
             }
@@ -204,6 +222,7 @@ mod tests {
     use crate::engine::fixtures::{cfg, ohlc, perp_cfg, universe, ABSENT};
     use crate::engine::{Engine, EngineConfig};
     use crate::reporter::{EventKind, EventReason, FillReason};
+    use crate::sizes::Sizes;
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce, Wallet};
 
     /// A flat perp account of 10,000 with no fees, on a bar at 60,000 and then `next`.
@@ -567,5 +586,31 @@ mod tests {
             (cancelled.order, cancelled.reason),
             (Some(first[0]), EventReason::Retargeted)
         );
+    }
+
+    #[test]
+    fn with_a_lot_of_0_001_a_target_of_half_at_60_000_buys_0_083() {
+        // the Specification's example: the leg of 0.083333 is rounded toward zero to
+        // the lot, and a part below the minimum notional, 4,980 under 6,000, is skipped
+        for (least, buys) in [(0.0, Some(0.083)), (6_000.0, None)] {
+            let sizes = Sizes {
+                lot: 0.001,
+                min_notional: least,
+                ..Sizes::default()
+            };
+            let at = ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6);
+            let config = EngineConfig {
+                quote: 10_000.0,
+                sizes: true,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(Candles::new(vec![at, at]).with_sizes(sizes), config);
+            e.reset();
+            let legs = e
+                .target(&[(0, 0.5)], 0.0, false)
+                .expect("a perp may be targeted");
+            let bought = legs.first().map(|_| e.pending[0].size.get());
+            assert_eq!(bought.map(|size| (size * 1e6).round() / 1e6), buys);
+        }
     }
 }

@@ -29,8 +29,8 @@ use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEv
 use probatum_engine::schedule::every;
 use probatum_engine::{
     Action, BatchSnapshot, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Impact,
-    Instrument, Intrabar, Liquidation, OrderRef, RoundTrip, Script, Spread, Stats, TargetError,
-    Units,
+    Instrument, Intrabar, Limit, Liquidation, OrderRef, PriceRule, RoundTrip, Script, Sizes,
+    Spread, Stats, TargetError, Units,
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
@@ -592,6 +592,127 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Window {
     }
 }
 
+/// When a resting limit fills, as `limit` names it, case-insensitively.
+fn parse_limit(limit: &str) -> PyResult<Limit> {
+    match limit.to_ascii_lowercase().as_str() {
+        "touch" => Ok(Limit::Touch),
+        "through" => Ok(Limit::Through),
+        _ => Err(PyValueError::new_err(format!(
+            "limit: {limit:?} is not a fill rule; use touch or through"
+        ))),
+    }
+}
+
+/// A whole number from `least` to `most` as `name` takes it, `at` leading the
+/// refusal, refused here rather than left to pyo3, whose own refusal of a float is a
+/// TypeError.
+fn whole(at: &str, name: &str, value: &Bound<'_, PyAny>, least: u32, most: u32) -> PyResult<u32> {
+    match value.extract::<i64>() {
+        Ok(n) if n >= i64::from(least) && n <= i64::from(most) => Ok(n as u32),
+        _ => Err(PyValueError::new_err(format!(
+            "{at}{name}: {}; give a whole number from {least} to {most}",
+            shown(value)
+        ))),
+    }
+}
+
+/// One instrument's size and price rules as the venue gives them, and the first of
+/// them given, which a universe given its instruments one by one refuses beside
+/// them.
+#[derive(Clone, Copy)]
+struct Rules {
+    sizes: Sizes,
+    given: Option<&'static str>,
+}
+
+/// One instrument's size and price rules from the values given, `at` leading each
+/// refusal: a lot, a tick or a minimum notional that is not a number from zero, a
+/// maximum order quantity not above zero, and a significant-figure rule without its
+/// decimal cap or beside a tick (ADR 0007; Specification, Sizes and dust).
+#[allow(clippy::too_many_arguments)]
+fn rules_of(
+    at: &str,
+    lot: f64,
+    tick: f64,
+    sigfigs: Option<&Bound<'_, PyAny>>,
+    decimals: Option<&Bound<'_, PyAny>>,
+    min_notional: f64,
+    max_qty: Option<f64>,
+    reduce_only_exempt: bool,
+) -> PyResult<Rules> {
+    let from_zero = |name: &str, value: f64, what: &str| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(value)
+        } else {
+            Err(PyValueError::new_err(format!(
+                "{at}{name}: {value}; give {what}, from 0"
+            )))
+        }
+    };
+    let lot = from_zero("lot", lot, "the lot every size is a whole number of")?;
+    let tick = from_zero("tick", tick, "the step prices sit on")?;
+    let min_notional = from_zero(
+        "min_notional",
+        min_notional,
+        "the smallest notional an order may have",
+    )?;
+    let max_qty = match max_qty {
+        None => f64::INFINITY,
+        Some(most) if most > 0.0 => most,
+        Some(most) => {
+            return Err(PyValueError::new_err(format!(
+                "{at}max_qty: {most}; give the largest size an order may have, above 0"
+            )))
+        }
+    };
+    let figures = sigfigs
+        .map(|value| whole(at, "sigfigs", value, 1, 22))
+        .transpose()?;
+    let cap = decimals
+        .map(|value| whole(at, "decimals", value, 0, 22))
+        .transpose()?;
+    let prices = match (figures, cap) {
+        (None, None) if tick > 0.0 => PriceRule::Tick(tick),
+        (None, None) => PriceRule::Free,
+        (Some(figures), Some(cap)) if tick == 0.0 => PriceRule::Figures { figures, cap },
+        (Some(figures), Some(_)) => {
+            return Err(PyValueError::new_err(format!(
+                "{at}sigfigs: {figures} beside a tick of {tick}; give one price rule"
+            )))
+        }
+        (Some(figures), None) => {
+            return Err(PyValueError::new_err(format!(
+                "{at}sigfigs: {figures} without decimals; give the decimal cap with it"
+            )))
+        }
+        (None, Some(cap)) => {
+            return Err(PyValueError::new_err(format!(
+                "{at}decimals: {cap} without sigfigs; give the significant figures with it"
+            )))
+        }
+    };
+    let given = [
+        ("lot", lot != 0.0),
+        ("tick", tick != 0.0),
+        ("sigfigs", figures.is_some()),
+        ("decimals", cap.is_some()),
+        ("min_notional", min_notional != 0.0),
+        ("max_qty", max_qty.is_finite()),
+        ("reduce_only_exempt", reduce_only_exempt),
+    ]
+    .into_iter()
+    .find(|&(_, set)| set)
+    .map(|(name, _)| name);
+    let sizes = Sizes {
+        lot,
+        prices,
+        min_notional,
+        max_qty,
+        reduce_only_exempt,
+    };
+    Ok(Rules { sizes, given })
+}
+
 /// `price`, given as `name` and known to be finite, in the engine's `units`: refused
 /// where an inverse contract has no reciprocal to trade at.
 fn engine_price(name: &str, units: Units, price: f64) -> PyResult<f64> {
@@ -760,10 +881,10 @@ fn instruments_from(
                     shown(&key)
                 )));
             };
-            if !["market", "tiers", "tiers_by"].contains(&name.as_str()) {
+            if !SETTINGS.contains(&name.as_str()) {
                 return Err(PyValueError::new_err(format!(
-                    "instruments[{i}]: {name:?} is not a setting; give market, tiers and \
-                     tiers_by"
+                    "instruments[{i}]: {name:?} is not a setting; give {}",
+                    SETTINGS.join(", ")
                 )));
             }
         }
@@ -810,13 +931,65 @@ fn instruments_from(
             }
             None => Tiers::default(),
         };
+        let given = |name: &str| -> PyResult<Option<Bound<'_, PyAny>>> {
+            Ok(spec.get_item(name)?.filter(|value| !value.is_none()))
+        };
+        let number = |name: &str, default: f64| -> PyResult<f64> {
+            match given(name)? {
+                Some(value) => value.extract().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "instruments[{i}]: {name}: {}; give a number",
+                        shown(&value)
+                    ))
+                }),
+                None => Ok(default),
+            }
+        };
+        let exempt = match given("reduce_only_exempt")? {
+            Some(value) => value.extract().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "instruments[{i}]: reduce_only_exempt: {}; give True or False",
+                    shown(&value)
+                ))
+            })?,
+            None => false,
+        };
+        let most = match given("max_qty")? {
+            Some(_) => Some(number("max_qty", f64::INFINITY)?),
+            None => None,
+        };
+        let rules = rules_of(
+            &format!("instruments[{i}]: "),
+            number("lot", 0.0)?,
+            number("tick", 0.0)?,
+            given("sigfigs")?.as_ref(),
+            given("decimals")?.as_ref(),
+            number("min_notional", 0.0)?,
+            most,
+            exempt,
+        )?;
         out.push(Instrument {
             market: Some(market),
             tiers,
+            sizes: rules.sizes,
         });
     }
     Ok(out)
 }
+
+/// The settings an instrument of a universe takes by name.
+const SETTINGS: [&str; 10] = [
+    "market",
+    "tiers",
+    "tiers_by",
+    "lot",
+    "tick",
+    "sigfigs",
+    "decimals",
+    "min_notional",
+    "max_qty",
+    "reduce_only_exempt",
+];
 
 /// Reject a fee rate at or below -1. A rebate larger than the notional turns the
 /// spot cash clamp's `1 + rate` divisor non-positive and mints equity out of a
@@ -849,6 +1022,8 @@ fn build_config(
     impact: f64,
     impact_model: &str,
     spread: Option<&Bound<'_, PyAny>>,
+    limit: &str,
+    sizes: bool,
     funding_rate: f64,
     funding_interval: usize,
     intrabar: &str,
@@ -900,6 +1075,8 @@ fn build_config(
         impact: at_least("impact", impact, 0.0)?,
         impact_model: parse_impact(impact_model)?,
         spread: parse_spread(spread)?,
+        limit: parse_limit(limit)?,
+        sizes,
         funding_rate: finite("funding_rate", funding_rate)?,
         funding_interval,
         intrabar: parse_intrabar(intrabar, seed)?,
@@ -1188,6 +1365,10 @@ fn refusal_text(why: Refusal) -> String {
             format!("it would trade against the account's own order {}", own.0)
         }
         Refusal::Unlisted => "the instrument has not printed its first bar".to_string(),
+        Refusal::Lot { size, lot } => format!("size: {size} rounds to nothing at a lot of {lot}"),
+        Refusal::MinNotional { size, least } => {
+            format!("size: {size} is below the minimum notional of {least}")
+        }
     }
 }
 
@@ -1206,6 +1387,7 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::Replacing(why) => format!("replace: {}", refusal_text(why)),
         EventReason::Fits { asked } => format!("{size} of the {asked} asked fits"),
         EventReason::Transfer { asked } => format!("transfer: {size} of the {asked} asked"),
+        EventReason::HeldTo { asked } => format!("size: {asked} held to {size}"),
         EventReason::NothingFilled => "nothing could fill on its bar".to_string(),
         EventReason::Fok => "fok: the whole size could not".to_string(),
         EventReason::MarketBar => "a market order takes one bar".to_string(),
@@ -1216,6 +1398,7 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::PositionClosed => "its position closed".to_string(),
         EventReason::PartnerFilled => "its OCO partner filled".to_string(),
         EventReason::Liquidation => "liquidation".to_string(),
+        EventReason::Dust => "dust".to_string(),
     }
 }
 
@@ -1492,6 +1675,8 @@ impl Engine {
         impact = 0.0,
         impact_model = "linear",
         spread = None,
+        limit = "touch",
+        sizes = false,
         funding_rate = 0.0,
         funding_interval = 0,
         times = None,
@@ -1501,6 +1686,13 @@ impl Engine {
         funding_instruments = None,
         tiers = None,
         tiers_by = "notional",
+        lot = 0.0,
+        tick = 0.0,
+        sigfigs = None,
+        decimals = None,
+        min_notional = 0.0,
+        max_qty = None,
+        reduce_only_exempt = false,
         instruments = None,
         intrabar = "pessimistic",
         seed = None,
@@ -1524,6 +1716,8 @@ impl Engine {
         impact: f64,
         impact_model: &str,
         spread: Option<Bound<'_, PyAny>>,
+        limit: &str,
+        sizes: bool,
         funding_rate: f64,
         funding_interval: usize,
         times: Option<PyReadonlyArray1<'_, i64>>,
@@ -1533,6 +1727,13 @@ impl Engine {
         funding_instruments: Option<Vec<Option<i64>>>,
         tiers: Option<Vec<Vec<f64>>>,
         tiers_by: &str,
+        lot: f64,
+        tick: f64,
+        sigfigs: Option<Bound<'_, PyAny>>,
+        decimals: Option<Bound<'_, PyAny>>,
+        min_notional: f64,
+        max_qty: Option<f64>,
+        reduce_only_exempt: bool,
         instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
         seed: Option<Bound<'_, PyAny>>,
@@ -1555,6 +1756,8 @@ impl Engine {
             impact,
             impact_model,
             spread,
+            limit,
+            sizes,
             funding_rate,
             funding_interval,
             times,
@@ -1564,6 +1767,16 @@ impl Engine {
             funding_instruments,
             tiers,
             tiers_by,
+            rules_of(
+                "",
+                lot,
+                tick,
+                sigfigs.as_ref(),
+                decimals.as_ref(),
+                min_notional,
+                max_qty,
+                reduce_only_exempt,
+            )?,
             instruments,
             intrabar,
             seed,
@@ -2170,6 +2383,8 @@ impl Batch {
         impact = 0.0,
         impact_model = "linear",
         spread = None,
+        limit = "touch",
+        sizes = false,
         funding_rate = 0.0,
         funding_interval = 0,
         fee_taker_per_env = None,
@@ -2183,6 +2398,13 @@ impl Batch {
         funding_instruments = None,
         tiers = None,
         tiers_by = "notional",
+        lot = 0.0,
+        tick = 0.0,
+        sigfigs = None,
+        decimals = None,
+        min_notional = 0.0,
+        max_qty = None,
+        reduce_only_exempt = false,
         instruments = None,
         intrabar = "pessimistic",
         seed = None,
@@ -2207,6 +2429,8 @@ impl Batch {
         impact: f64,
         impact_model: &str,
         spread: Option<Bound<'_, PyAny>>,
+        limit: &str,
+        sizes: bool,
         funding_rate: f64,
         funding_interval: usize,
         fee_taker_per_env: Option<PyReadonlyArray1<'_, f64>>,
@@ -2220,6 +2444,13 @@ impl Batch {
         funding_instruments: Option<Vec<Option<i64>>>,
         tiers: Option<Vec<Vec<f64>>>,
         tiers_by: &str,
+        lot: f64,
+        tick: f64,
+        sigfigs: Option<Bound<'_, PyAny>>,
+        decimals: Option<Bound<'_, PyAny>>,
+        min_notional: f64,
+        max_qty: Option<f64>,
+        reduce_only_exempt: bool,
         instruments: Option<Vec<Bound<'_, PyDict>>>,
         intrabar: &str,
         seed: Option<Bound<'_, PyAny>>,
@@ -2242,6 +2473,8 @@ impl Batch {
             impact,
             impact_model,
             spread,
+            limit,
+            sizes,
             funding_rate,
             funding_interval,
             times,
@@ -2251,6 +2484,16 @@ impl Batch {
             funding_instruments,
             tiers,
             tiers_by,
+            rules_of(
+                "",
+                lot,
+                tick,
+                sigfigs.as_ref(),
+                decimals.as_ref(),
+                min_notional,
+                max_qty,
+                reduce_only_exempt,
+            )?,
             instruments,
             intrabar,
             seed,
@@ -3159,6 +3402,8 @@ fn build_series(
     impact: f64,
     impact_model: &str,
     spread: Option<Bound<'_, PyAny>>,
+    limit: &str,
+    sizes: bool,
     funding_rate: f64,
     funding_interval: usize,
     times: Option<PyReadonlyArray1<'_, i64>>,
@@ -3168,6 +3413,7 @@ fn build_series(
     funding_instruments: Option<Vec<Option<i64>>>,
     tiers: Option<Vec<Vec<f64>>>,
     tiers_by: &str,
+    rules: Rules,
     instruments: Option<Vec<Bound<'_, PyDict>>>,
     intrabar: &str,
     seed: Option<Bound<'_, PyAny>>,
@@ -3232,6 +3478,8 @@ fn build_series(
             impact,
             impact_model,
             spread.as_ref(),
+            limit,
+            sizes,
             funding_rate,
             funding_interval,
             intrabar,
@@ -3273,6 +3521,14 @@ fn build_series(
             Some(rows) => series.with_tiers(in_units(units, tiers_from(rows, tiers_by)?)?),
             None => series,
         };
+        if let (Units::Inverse(_), PriceRule::Figures { figures, .. }) = (units, rules.sizes.prices)
+        {
+            return Err(PyValueError::new_err(format!(
+                "sigfigs: {figures} for an inverse contract, whose prices take a tick; give \
+                 its tick"
+            )));
+        }
+        let series = series.with_sizes(units.sizes(rules.sizes));
         backstopped(&series, &config)?;
         return Ok((series, config, false, units));
     }
@@ -3303,6 +3559,12 @@ fn build_series(
                 "tiers: given beside instruments; give each instrument its own there",
             ))
         }
+        Some(_) if rules.given.is_some() => {
+            return Err(PyValueError::new_err(format!(
+                "{}: given beside instruments; give each instrument its own there",
+                rules.given.unwrap_or_default()
+            )))
+        }
         Some(given) => instruments_from(given, width, named, tiers_by)?,
         None => {
             let tiers = match tiers {
@@ -3313,6 +3575,7 @@ fn build_series(
                 Instrument {
                     market: Some(named),
                     tiers,
+                    sizes: rules.sizes,
                 };
                 width
             ]
@@ -3345,6 +3608,8 @@ fn build_series(
         impact,
         impact_model,
         spread.as_ref(),
+        limit,
+        sizes,
         funding_rate,
         funding_interval,
         intrabar,
@@ -3405,28 +3670,27 @@ fn units_of(market: &str, contract: Option<f64>) -> PyResult<Units> {
 }
 
 /// Play `script` over `candles` at `venue` in one call and return what the run
-/// recorded: its ledger, fill log, order log and round trips, as `Engine` hands
-/// them out. `candles` is `(T, 5)` for one instrument, or `(T, N, 5)` for a universe
-/// of N, an instrument that printed no bar on a row holding NaN in all five values
-/// there. `venue` takes `Engine`'s settings by name, and for a universe
-/// `instruments`, a dict per instrument with its `market`, `tiers` and `tiers_by`,
-/// and `funding_instruments`, the instrument each of `funding_times` charges or None
-/// for every perp held. `script` maps a bar to the actions taken at its close, each a
-/// verb and a dict of its arguments: `buy` and `sell` with a `size`, and a `limit` or
-/// a `stop`, `tif`, `post_only` and `reduce_only`; `close` and `cancel_all`;
-/// `cancel` and `replace` naming an `order`, the second with the `price`, `trigger`
-/// or `size` it moves to; `transfer` with an `amount` and the wallet it goes `to`,
-/// the margin wallet unless named; and `target` with its `weights`, `tolerance` and
-/// `transfer`, as `Engine.target` takes them. `buy`, `sell` and `close` name the
-/// `instrument` they trade, counted from 0, which one instrument leaves out, and
-/// `cancel_all` cancels one instrument's orders when it names one and every order
-/// when it does not. An order is named by an earlier placement in the script,
-/// counting its buys, sells and closes from 0, and a bracket as two, its stop's and
-/// then its take-profit's, which names nothing once the engine
-/// refused that placement or a close found nothing to close, or as `"oldest"`, the
-/// oldest order still resting. The ledger gives each instrument's columns a value a
-/// bar at one instrument and a row of N a bar for a universe. The comparison with
-/// the reference simulator and the tests drive the engine through this.
+/// recorded: its ledger, fill log, order log and round trips, as `Engine` hands them
+/// out. `candles` is `(T, 5)` for one instrument, or `(T, N, 5)` for a universe of N,
+/// an instrument that printed no bar on a row holding NaN in all five values there.
+/// `venue` takes `Engine`'s settings by name, and for a universe `instruments`, a dict
+/// per instrument with its `market`, `tiers`, `tiers_by` and size rules, and
+/// `funding_instruments`, the instrument each of `funding_times` charges or None for
+/// every perp held. `script` maps a bar to the actions taken at its close, each a verb
+/// and a dict of its arguments: `buy` and `sell` with a `size`, and a `limit` or a
+/// `stop`, `tif`, `post_only` and `reduce_only`; `close` and `cancel_all`; `cancel` and
+/// `replace` naming an `order`, the second with the `price`, `trigger` or `size` it
+/// moves to; `transfer` with an `amount` and the wallet it goes `to`, the margin wallet
+/// unless named; and `target` with its `weights`, `tolerance` and `transfer`, as
+/// `Engine.target` takes them. `buy`, `sell` and `close` name the `instrument` they
+/// trade, counted from 0, which one instrument leaves out, and `cancel_all` cancels one
+/// instrument's orders when it names one and every order when it does not. An order is
+/// named by an earlier placement in the script, counting its buys, sells and closes
+/// from 0, and a bracket as two, its stop's and then its take-profit's, which names
+/// nothing once the engine refused that placement or a close found nothing to close, or
+/// as `"oldest"`, the oldest order still resting. The ledger gives each instrument's
+/// columns a value a bar at one instrument and a row of N a bar for a universe. The
+/// comparison with the reference simulator and the tests drive the engine through this.
 #[pyfunction]
 #[pyo3(name = "run", signature = (candles, venue, script, times = None))]
 fn run_script<'py>(

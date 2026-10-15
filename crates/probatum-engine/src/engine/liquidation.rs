@@ -2517,6 +2517,7 @@ mod tests {
                 }],
             )
             .expect("a table"),
+            ..Instrument::default()
         };
         let bars = Candles::universe(rows, 2, None).with_instruments(vec![at(20.0), at(10.0)]);
         let config = EngineConfig {
@@ -2567,6 +2568,7 @@ mod tests {
                 }],
             )
             .expect("a table"),
+            ..Instrument::default()
         };
         for intrabar in [Intrabar::Pessimistic, Intrabar::Optimistic] {
             let flat = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);

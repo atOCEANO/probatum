@@ -9,6 +9,7 @@ use probatum_core::{Candle, Market, Tiers};
 use crate::clock::Clock;
 use crate::inverse::Units;
 use crate::schedule::Schedule;
+use crate::sizes::Sizes;
 use crate::window::{Trailing, Windows};
 
 /// What the venue says about one instrument of a universe.
@@ -19,6 +20,8 @@ pub struct Instrument {
     pub market: Option<Market>,
     /// Its tier table, empty for none.
     pub tiers: Tiers,
+    /// What the venue's sizes hold its orders to, and the grid its prices sit on.
+    pub sizes: Sizes,
 }
 
 /// An immutable OHLCV series, or a universe of them, shared cheaply across envs.
@@ -138,6 +141,20 @@ impl Candles {
     /// Instrument `i`'s tier table, empty when the venue sets none.
     pub fn tiers(&self, i: usize) -> &Tiers {
         &self.instruments[i].tiers
+    }
+
+    /// The same series with the venue's size and price rules for its first
+    /// instrument.
+    pub fn with_sizes(mut self, sizes: Sizes) -> Candles {
+        let mut instruments = self.instruments.to_vec();
+        instruments[0].sizes = sizes;
+        self.instruments = instruments.into();
+        self
+    }
+
+    /// Instrument `i`'s size and price rules.
+    pub fn sizes(&self, i: usize) -> Sizes {
+        self.instruments[i].sizes
     }
 
     /// The same series with each row's window of the last `bars` bars read for every

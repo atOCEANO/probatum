@@ -171,7 +171,7 @@ mod tests {
     use super::{Action, OrderRef, Script};
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation};
-    use crate::execution::{Impact, Spread};
+    use crate::execution::{Impact, Limit, Spread};
     use crate::reporter::EventKind;
     use crate::strategy::run;
     use probatum_core::{Candle, Market, OrderId, OrderType, Side, TimeInForce};
@@ -204,6 +204,8 @@ mod tests {
             liquidation: Liquidation::Takeover,
             impact_model: Impact::Linear,
             spread: Spread::None,
+            limit: Limit::Touch,
+            sizes: false,
         };
         Engine::new(Candles::new(vec![bar; 4]), config)
     }

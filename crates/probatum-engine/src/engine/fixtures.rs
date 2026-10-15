@@ -4,7 +4,7 @@ use probatum_core::{Candle, Market, Tiers};
 
 use super::{EngineConfig, Intrabar, Liquidation};
 use crate::candles::{Candles, Instrument};
-use crate::execution::{Impact, Spread};
+use crate::execution::{Impact, Limit, Spread};
 
 pub(super) fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
     Candle {
@@ -63,6 +63,8 @@ pub(super) fn cfg() -> EngineConfig {
         liquidation: Liquidation::Takeover,
         impact_model: Impact::Linear,
         spread: Spread::None,
+        limit: Limit::Touch,
+        sizes: false,
     }
 }
 
@@ -116,6 +118,7 @@ pub(super) fn universe(markets: &[Market], rows: Vec<Vec<Candle>>) -> Candles {
         .map(|&market| Instrument {
             market: Some(market),
             tiers: Tiers::default(),
+            ..Instrument::default()
         })
         .collect();
     Candles::universe(bars, markets.len(), None).with_instruments(specs)

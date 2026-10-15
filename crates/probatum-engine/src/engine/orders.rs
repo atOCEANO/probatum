@@ -55,6 +55,58 @@ impl Engine {
         None
     }
 
+    /// `order`'s price and trigger on its instrument's grid, where the venue's sizes
+    /// are on (Specification, Sizes and dust).
+    fn on_grid(&self, order: &mut Order) {
+        let rule = self.candles.sizes(order.instrument).prices;
+        order.price = order.price.map(|price| Price(rule.round(price.get())));
+        order.trigger = order
+            .trigger
+            .map(|trigger| Price(rule.round(trigger.get())));
+    }
+
+    /// Hold `order` to its instrument's sizes as it is placed: its size rounded down
+    /// to the lot and held to the maximum order quantity, the hold logged as a clamp,
+    /// and why it is refused where it rounds to no lot or its notional at the last
+    /// close falls short of the minimum, which a reduce-only order escapes where the
+    /// venue spares it (Specification, Sizes and dust).
+    fn sized(&mut self, order: &mut Order) -> Option<Refusal> {
+        let i = order.instrument;
+        let sizes = self.candles.sizes(i);
+        let size = order.size.get();
+        let rounded = sizes.down(size);
+        if rounded <= 0.0 {
+            return Some(Refusal::Lot {
+                size,
+                lot: sizes.lot,
+            });
+        }
+        let held = if rounded > sizes.max_qty {
+            let asked = EventReason::HeldTo { asked: rounded };
+            let (id, max) = (order.id, sizes.max_qty);
+            self.log_event(
+                EventKind::Clamped,
+                Some(id),
+                Some(i),
+                Some(max),
+                None,
+                asked,
+            );
+            max
+        } else {
+            rounded
+        };
+        order.size = Qty(held);
+        let exempt = order.reduce_only && sizes.reduce_only_exempt;
+        if held * self.marks[i] < sizes.min_notional && !exempt {
+            return Some(Refusal::MinNotional {
+                size: held,
+                least: sizes.min_notional,
+            });
+        }
+        None
+    }
+
     pub(super) fn place_market(
         &mut self,
         instrument: usize,
@@ -101,6 +153,15 @@ impl Engine {
         if !positive(size) {
             return self.refuse(id, instrument, Refusal::Size(size));
         }
+        let size = if self.config.sizes {
+            let mut sized = Order::market(id, side, Qty(size), reduce_only).on(instrument);
+            if let Some(why) = self.sized(&mut sized) {
+                return self.refuse(id, instrument, why);
+            }
+            sized.size.get()
+        } else {
+            size
+        };
         // The queue holds the same number of orders the resting book does, for each
         // instrument (ADR 0010), so a strategy that places without bound cannot make
         // one bar's work unbounded
@@ -136,7 +197,7 @@ impl Engine {
     /// account's own, or a post_only limit that would cross. `replacing` is the
     /// order a replace moves, whose slot has just been given up (ADRs 0007, 0010,
     /// 0011).
-    fn resting_refusal(&self, order: &Order, replacing: Option<&Order>) -> Option<Refusal> {
+    fn resting_refusal(&mut self, order: &mut Order, replacing: Option<&Order>) -> Option<Refusal> {
         let last = self.marks[order.instrument];
         if last.is_nan() {
             return Some(Refusal::Unlisted);
@@ -150,6 +211,11 @@ impl Engine {
         let sizeless = order.leg.is_some_and(|leg| leg.sizeless);
         if !sizeless && !positive(size) {
             return Some(Refusal::Size(size));
+        }
+        if self.config.sizes && !sizeless {
+            if let Some(why) = self.sized(order) {
+                return Some(why);
+            }
         }
         if let Some(price) = order.price.map(Price::get) {
             if !price.is_finite() {
@@ -209,9 +275,13 @@ impl Engine {
             .map(|own| own.id)
     }
 
-    /// Rest `order` in the first free slot, or log why it cannot rest.
-    pub(super) fn rest(&mut self, order: Order, reason: EventReason) -> Option<OrderId> {
-        if let Some(why) = self.resting_refusal(&order, None) {
+    /// Rest `order` in the first free slot, its price and trigger on its instrument's
+    /// grid where the venue's sizes are on, or log why it cannot rest.
+    pub(super) fn rest(&mut self, mut order: Order, reason: EventReason) -> Option<OrderId> {
+        if self.config.sizes {
+            self.on_grid(&mut order);
+        }
+        if let Some(why) = self.resting_refusal(&mut order, None) {
             return self.refuse(order.id, order.instrument, why);
         }
         let id = self.book.place(order).ok()?;
@@ -426,12 +496,16 @@ impl Engine {
         } else {
             moved.trigger = trigger.map(Price).or(old.trigger);
         }
+        // the old price and trigger sit on the grid already, which leaves them there
+        if self.config.sizes {
+            self.on_grid(&mut moved);
+        }
         // a limit moved to another price enters the book again, for maker or taker
         // and for post_only (ADR 0011)
         if moved.price != old.price {
             moved.on_book = false;
         }
-        if let Some(why) = self.resting_refusal(&moved, Some(&old)) {
+        if let Some(why) = self.resting_refusal(&mut moved, Some(&old)) {
             // The cancel came first, so a replacement refused here would otherwise
             // leave nothing behind and still answer `None`, which this method
             // defines as "nothing happened". A caller trailing a stop reads that as
@@ -530,6 +604,7 @@ mod tests {
     };
     use crate::engine::{Engine, EngineConfig};
     use crate::reporter::{EventKind, EventReason, OrderEvent, Refusal};
+    use crate::sizes::{PriceRule, Sizes};
     use probatum_core::{Market, OrderId, OrderType, Side, TimeInForce};
 
     fn events(e: &Engine) -> Vec<(u64, EventKind)> {
@@ -1247,5 +1322,83 @@ mod tests {
         assert_eq!((fills[0].0, fills[0].1, fills[0].2), (1, 1.0, 40.0));
         assert_eq!((fills[1].0, fills[1].2), (0, 50.0));
         assert!((fills[1].1 - 0.4).abs() < 1e-12);
+    }
+
+    /// An engine at a close of 150 whose instrument's sizes are a lot of 0.001, a tick of
+    /// 0.01, a minimum notional of 10 and a maximum order quantity of 1, a reduce-only
+    /// order spared the minimum where `exempt`.
+    fn sized(exempt: bool) -> Engine {
+        let sizes = Sizes {
+            lot: 0.001,
+            prices: PriceRule::Tick(0.01),
+            min_notional: 10.0,
+            max_qty: 1.0,
+            reduce_only_exempt: exempt,
+        };
+        let config = EngineConfig {
+            sizes: true,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(series().with_sizes(sizes), config);
+        e.reset();
+        e
+    }
+
+    #[test]
+    fn with_sizes_on_an_order_is_held_to_the_lot_the_grid_and_the_largest_size() {
+        let mut e = sized(false);
+        assert!(e.market_buy(0.0004).is_none());
+        let held = e
+            .market_buy(5.0)
+            .expect("held to the largest size and placed");
+        let id = e
+            .limit_buy(0.2004, 99.404)
+            .expect("rests on the lot and the grid");
+        let resting = e.book.get(id).expect("resting");
+        assert!((resting.size.get() - 0.2).abs() < 1e-15);
+        assert!((resting.price.expect("a limit").get() - 99.40).abs() < 1e-9);
+        let log = log(&e);
+        assert_eq!(
+            log[0].reason,
+            EventReason::Refused(Refusal::Lot {
+                size: 0.0004,
+                lot: 0.001
+            })
+        );
+        let clamp = log
+            .iter()
+            .find(|event| event.order == Some(held) && event.kind == EventKind::Clamped)
+            .expect("the hold is logged");
+        assert_eq!(clamp.size, Some(1.0));
+        assert_eq!(clamp.reason, EventReason::HeldTo { asked: 5.0 });
+        assert_eq!(e.pending[0].size.get(), 1.0);
+    }
+
+    #[test]
+    fn an_order_below_the_minimum_notional_is_refused_and_a_reduce_only_one_spared() {
+        // 0.05 at the close of 150 is 7.5, below the minimum of 10
+        for exempt in [false, true] {
+            let mut e = sized(exempt);
+            assert!(e.market_buy(0.05).is_none());
+            let reduce = e.order(
+                Side::Sell,
+                0.05,
+                OrderType::Market,
+                None,
+                None,
+                true,
+                false,
+                TimeInForce::Ioc,
+            );
+            assert_eq!(reduce.is_some(), exempt, "exempt {exempt}");
+            assert_eq!(
+                log(&e)[0].reason,
+                EventReason::Refused(Refusal::MinNotional {
+                    size: 0.05,
+                    least: 10.0
+                })
+            );
+        }
     }
 }

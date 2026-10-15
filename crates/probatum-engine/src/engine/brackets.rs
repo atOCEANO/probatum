@@ -161,15 +161,14 @@ impl Engine {
     }
 
     /// Cancel the armed legs resting on instrument `i`, whose position a fill by
-    /// `filling` closed or flipped, but that order, which goes as its fill leaves it,
-    /// and its partner, which the OCO rule cancels.
-    pub(super) fn disarm(&mut self, i: usize, filling: OrderId) {
+    /// `filling` closed or flipped, or the dust sweep zeroed, but that order, which
+    /// goes as its fill leaves it, and its partner, which the OCO rule cancels.
+    pub(super) fn disarm(&mut self, i: usize, filling: Option<OrderId>) {
         if self.book.legs() == 0 {
             return;
         }
-        let pair = self
-            .book
-            .get(filling)
+        let pair = filling
+            .and_then(|filling| self.book.get(filling))
             .and_then(|order| order.leg)
             .and_then(|leg| leg.pair);
         let gone: Vec<OrderId> = self
@@ -177,7 +176,7 @@ impl Engine {
             .iter()
             .filter(|order| order.instrument == i && order.leg.is_some_and(|leg| leg.armed))
             .map(|order| order.id)
-            .filter(|&id| id != filling && Some(id) != pair)
+            .filter(|&id| Some(id) != filling && Some(id) != pair)
             .collect();
         for id in gone {
             self.book.cancel(id);

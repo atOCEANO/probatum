@@ -211,6 +211,7 @@ impl Engine {
             FillReason::TakeProfit => EventReason::TakeProfit,
             FillReason::Rebalance => EventReason::Rebalance,
             FillReason::Liquidation => EventReason::Liquidation,
+            FillReason::Dust => EventReason::Dust,
         };
         self.log_event(
             EventKind::Filled,
@@ -222,7 +223,7 @@ impl Engine {
         );
         // a bracket goes with the position it armed on (ADR 0010)
         if held != 0.0 && (after == 0.0 || held * after < 0.0) {
-            self.disarm(i, order);
+            self.disarm(i, Some(order));
         }
         applied
     }
@@ -318,6 +319,30 @@ impl Engine {
             trip.size = trip.size.max(pos_after.abs());
         }
     }
+
+    /// Zero each position floating-point sums left below half a lot, at the close
+    /// and with no fee, its value at the close booked as the dust adjustment and its
+    /// round trip and its bracket ended with it (Specification, Sizes and dust).
+    pub(super) fn sweep_dust(&mut self) {
+        for i in 0..self.marks.len() {
+            let lot = self.candles.sizes(i).lot;
+            let q = self.account.positions[i].qty.get();
+            if q == 0.0 || lot <= 0.0 || q.abs() >= lot / 2.0 {
+                continue;
+            }
+            let mark = Price(self.marks[i]);
+            let value = match self.account.markets[i] {
+                Market::Spot => q * mark.get(),
+                Market::Perp => self.account.unrealized(i, mark),
+            };
+            self.account.zero(i);
+            if let Some(reporter) = self.reporter.as_mut() {
+                reporter.costs_mut().dust += value;
+                reporter.close_trip(i, self.tick, FillReason::Dust);
+            }
+            self.disarm(i, None);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -330,6 +355,7 @@ mod tests {
     use crate::engine::{Engine, EngineConfig};
     use crate::execution::FillCosts;
     use crate::reporter::{BarCosts, EventKind, FillReason, FillRecord, RoundTrip};
+    use crate::sizes::Sizes;
     use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side, Wallet};
 
     fn fills(e: &Engine) -> &[FillRecord] {
@@ -1261,5 +1287,28 @@ mod tests {
         let (row, leg) = (reporter.ledger()[1], reporter.legs()[1]);
         assert_eq!((row.equity, leg.position), (0.0, 0.0));
         assert_eq!((row.leverage, leg.weight), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_holding_below_half_a_lot_is_swept_at_the_close_as_dust() {
+        // a spot holding of 0.0004 under a lot of 0.001 is zeroed at a close of 250
+        // with no fee, its value there, 0.1, booked as the dust adjustment
+        let sizes = Sizes {
+            lot: 0.001,
+            ..Sizes::default()
+        };
+        let config = EngineConfig {
+            sizes: true,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(series().with_sizes(sizes), config);
+        e.reset();
+        e.account.positions[0].qty = Qty(0.0004);
+        e.account.positions[0].avg_entry = Price(100.0);
+        let state = e.step();
+        assert_eq!(state.position, 0.0);
+        assert_eq!(state.quote, 10_000.0);
+        let row = e.reporter().expect("reporting is on").ledger()[1];
+        assert!((row.costs.dust - 0.1).abs() < 1e-12, "{}", row.costs.dust);
     }
 }

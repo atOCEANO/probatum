@@ -128,6 +128,16 @@ impl Account {
         }
     }
 
+    /// Zero instrument `i`'s position with no fill, no fee and no cash, as a venue
+    /// sweeps dust; what it was worth is the caller's to book.
+    pub fn zero(&mut self, i: usize) {
+        if self.markets[i] == Market::Perp && !self.positions[i].is_flat() {
+            self.perps -= 1;
+        }
+        self.positions[i].qty = Qty(0.0);
+        self.positions[i].avg_entry = Price(0.0);
+    }
+
     /// What `wallet` is worth with each instrument marked at its entry in `marks`,
     /// in quote: its cash, plus the spot holdings when it is the spot wallet, or the
     /// perps' unrealized PnL when it is the margin wallet. The margin wallet's is the

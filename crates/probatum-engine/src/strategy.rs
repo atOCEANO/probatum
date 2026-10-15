@@ -38,7 +38,7 @@ mod tests {
     use super::{run, Strategy};
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation};
-    use crate::execution::{Impact, Spread};
+    use crate::execution::{Impact, Limit, Spread};
     use probatum_core::{Candle, Market, State};
 
     fn series() -> Candles {
@@ -87,6 +87,8 @@ mod tests {
             liquidation: Liquidation::Takeover,
             impact_model: Impact::Linear,
             spread: Spread::None,
+            limit: Limit::Touch,
+            sizes: false,
         }
     }
 

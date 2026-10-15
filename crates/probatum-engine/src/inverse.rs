@@ -13,6 +13,20 @@ use probatum_core::{Candle, Order, Price, Qty, Side, State, Tier, TierBasis, Tie
 use crate::execution::FillCosts;
 use crate::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal, RoundTrip};
 use crate::script::Action;
+use crate::sizes::{PriceRule, Sizes};
+
+/// Of the floats whose reciprocal is `price`, the one written in the fewest digits,
+/// which is the price quoted wherever one was, since a reciprocal taken twice can
+/// land up to two floats away from it.
+pub(crate) fn quoted(price: f64) -> f64 {
+    let quoted = 1.0 / price;
+    let (below, above) = (quoted.next_down(), quoted.next_up());
+    [quoted, below, above, below.next_down(), above.next_up()]
+        .into_iter()
+        .filter(|&candidate| 1.0 / candidate == price)
+        .min_by_key(|candidate| candidate.to_string().len())
+        .unwrap_or(quoted)
+}
 
 /// How an account's prices and sizes meet the engine's: as they are for spot and
 /// linear contracts, and for an inverse contract each price's reciprocal, each size
@@ -49,22 +63,14 @@ impl Units {
         }
     }
 
-    /// A price in the engine's terms as the venue quotes it. On an inverse contract
-    /// it is, of the floats whose reciprocal is `price`, the one written in the
-    /// fewest digits, which is the price quoted wherever one was, since a reciprocal
-    /// taken twice can land up to two floats away from it. A zero, which a record
-    /// holds for no price, stays zero.
+    /// A price in the engine's terms as the venue quotes it: on an inverse contract
+    /// the price `quoted` reads off its reciprocal. A zero, which a record holds for
+    /// no price, stays zero.
     pub fn dollars(self, price: f64) -> f64 {
         if self == Units::Linear || price == 0.0 {
             return price;
         }
-        let quoted = 1.0 / price;
-        let (below, above) = (quoted.next_down(), quoted.next_up());
-        [quoted, below, above, below.next_down(), above.next_up()]
-            .into_iter()
-            .filter(|&candidate| 1.0 / candidate == price)
-            .min_by_key(|candidate| candidate.to_string().len())
-            .unwrap_or(quoted)
+        quoted(price)
     }
 
     /// A size of contracts in the engine's terms.
@@ -115,6 +121,24 @@ impl Units {
                 volume: bar.volume * value,
             },
             Units::Linear => bar,
+        }
+    }
+
+    /// The venue's size and price rules in the engine's terms: on an inverse
+    /// contract its lot and largest size in the dollars its contracts are worth and
+    /// its tick on the reciprocal of the price.
+    pub fn sizes(self, sizes: Sizes) -> Sizes {
+        match self {
+            Units::Inverse(_) => Sizes {
+                lot: self.size(sizes.lot),
+                max_qty: self.size(sizes.max_qty),
+                prices: match sizes.prices {
+                    PriceRule::Tick(tick) => PriceRule::Reciprocal(tick),
+                    other => other,
+                },
+                ..sizes
+            },
+            Units::Linear => sizes,
         }
     }
 
@@ -292,6 +316,14 @@ impl Units {
             Refusal::Size(size) => Refusal::Size(self.contracts(size)),
             Refusal::Price(price) => Refusal::Price(self.dollars(price)),
             Refusal::Trigger(trigger) => Refusal::Trigger(self.dollars(trigger)),
+            Refusal::Lot { size, lot } => Refusal::Lot {
+                size: self.contracts(size),
+                lot: self.contracts(lot),
+            },
+            Refusal::MinNotional { size, least } => Refusal::MinNotional {
+                size: self.contracts(size),
+                least,
+            },
             other => other,
         };
         OrderEvent {
@@ -299,6 +331,9 @@ impl Units {
             price: event.price.map(|price| self.dollars(price)),
             reason: match event.reason {
                 EventReason::Fits { asked } => EventReason::Fits {
+                    asked: self.contracts(asked),
+                },
+                EventReason::HeldTo { asked } => EventReason::HeldTo {
                     asked: self.contracts(asked),
                 },
                 EventReason::Refused(why) => EventReason::Refused(refusal(why)),

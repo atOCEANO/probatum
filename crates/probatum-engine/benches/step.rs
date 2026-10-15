@@ -9,7 +9,7 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use probatum_core::{Candle, Market};
 use probatum_engine::{
-    Candles, Engine, EngineConfig, EnvBatch, Impact, Intrabar, Liquidation, Spread,
+    Candles, Engine, EngineConfig, EnvBatch, Impact, Intrabar, Limit, Liquidation, Spread,
 };
 
 const BARS: usize = 1_000;
@@ -53,6 +53,8 @@ fn perp_config() -> EngineConfig {
         liquidation: Liquidation::Takeover,
         impact_model: Impact::Linear,
         spread: Spread::None,
+        limit: Limit::Touch,
+        sizes: false,
     }
 }
 

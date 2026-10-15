@@ -19,6 +19,8 @@ pub enum FillReason {
     /// A leg a `target` placed.
     Rebalance,
     Liquidation,
+    /// A position below half a lot, zeroed at the close, which ends its round trip.
+    Dust,
 }
 
 impl FillReason {
@@ -31,6 +33,7 @@ impl FillReason {
             FillReason::TakeProfit => "take_profit",
             FillReason::Rebalance => "rebalance",
             FillReason::Liquidation => "liquidation",
+            FillReason::Dust => "dust",
         }
     }
 }
@@ -107,6 +110,10 @@ pub enum Refusal {
     SelfTrade(OrderId),
     /// An order on an instrument that has not printed its first bar.
     Unlisted,
+    /// A size that rounds down to no lot.
+    Lot { size: f64, lot: f64 },
+    /// A size whose notional at the last close falls short of the venue's minimum.
+    MinNotional { size: f64, least: f64 },
 }
 
 /// Why an event happened, with the numbers its text quotes (ADR 0022).
@@ -135,6 +142,10 @@ pub enum EventReason {
     Transfer {
         asked: f64,
     },
+    /// A placement held to the maximum order quantity, the event's size, of `asked`.
+    HeldTo {
+        asked: f64,
+    },
     /// A market order that nothing on its bar could fill.
     NothingFilled,
     /// A fok market order that could not fill whole.
@@ -153,6 +164,8 @@ pub enum EventReason {
     /// A target's leg cancelled by a later target in the same decision.
     Retargeted,
     Liquidation,
+    /// A position below half a lot, zeroed at the close.
+    Dust,
 }
 
 /// One event in an order's life (ADR 0022).

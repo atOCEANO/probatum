@@ -12,7 +12,7 @@ use probatum_core::{
 
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
-use crate::execution::{positive, FillCosts};
+use crate::execution::{positive, FillCosts, Limit};
 use crate::reporter::{EventKind, EventReason, FillReason};
 
 /// How badly a fill on `side` at `price` ends for the position currently held: the
@@ -307,8 +307,19 @@ impl Engine {
                 } else {
                     self.marks[i]
                 };
+                // and under through, met once its bar trades half a step of its
+                // instrument's price rule past it
+                let reach = sized
+                    .price
+                    .map_or(f64::NAN, |price| match self.config.limit {
+                        Limit::Touch => price.get(),
+                        Limit::Through => {
+                            let rule = self.candles.sizes(i).prices;
+                            rule.through(sized.side, price.get())
+                        }
+                    });
                 self.fill_model
-                    .fill_limit(&sized, bar, f64::INFINITY, close)
+                    .fill_limit_at(&sized, bar, f64::INFINITY, close, reach)
             }
             OrderType::Stop => {
                 let trailing = || self.candles.trailing(self.tick, i);
@@ -327,6 +338,17 @@ impl Engine {
             reduces,
             parted,
             made: made.map(|(fill, costs)| (fill, costs, sized.remaining().get())),
+        }
+    }
+
+    /// Whether an order on instrument `i` with `left` to fill can no longer fill: what
+    /// remains rounds down to no lot where the venue's sizes are on, and is dust
+    /// otherwise (Specification, Sizes and dust).
+    fn spent(&self, i: usize, left: f64) -> bool {
+        if self.config.sizes {
+            self.candles.sizes(i).spent(left, CLOSE_EPS)
+        } else {
+            left <= CLOSE_EPS
         }
     }
 
@@ -671,10 +693,10 @@ impl Engine {
                         && applied > 0.0
                         && self.account.positions[i].qty.get() == 0.0;
                     let left = self.book.get(id).map(|o| o.remaining().get());
-                    let done = closed || left.is_some_and(|left| left <= CLOSE_EPS);
+                    let done = closed || left.is_some_and(|left| self.spent(i, left));
                     if done {
                         let sized = leg.is_some_and(|leg| !leg.sizeless);
-                        if closed && sized && left.is_some_and(|left| left > CLOSE_EPS) {
+                        if closed && sized && left.is_some_and(|left| !self.spent(i, left)) {
                             self.log_event(
                                 EventKind::Cancelled,
                                 Some(id),
@@ -724,7 +746,9 @@ mod tests {
         cfg, crash_series, dip_series, ohlc, perp_cfg, report_cfg, series, universe, ABSENT,
     };
     use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
+    use crate::execution::Limit;
     use crate::reporter::{EventKind, EventReason, FillReason, Refusal};
+    use crate::sizes::{PriceRule, Sizes};
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
 
     #[test]
@@ -843,6 +867,29 @@ mod tests {
                 "budget {budget} priced the fill at {}, not {price}",
                 s.avg_entry
             );
+        }
+    }
+
+    #[test]
+    fn a_buy_limit_at_99_40_fills_on_touch_and_through_only_a_tick_past() {
+        let tick = Sizes {
+            prices: PriceRule::Tick(0.01),
+            ..Sizes::default()
+        };
+        for (limit, low, fills) in [
+            (Limit::Touch, 99.40, true),
+            (Limit::Through, 99.40, false),
+            (Limit::Through, 99.39, true),
+        ] {
+            let candles = Candles::new(vec![
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+                ohlc(100.0, 100.2, low, 99.8, 1e6),
+            ]);
+            let mut e = Engine::new(candles.with_sizes(tick), EngineConfig { limit, ..cfg() });
+            e.reset();
+            e.limit_buy(1.0, 99.40);
+            let filled = e.step().position == 1.0;
+            assert_eq!(filled, fills, "{limit:?} on a low of {low}");
         }
     }
 

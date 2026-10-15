@@ -114,7 +114,7 @@ mod tests {
     use super::{builtin_strategy, run_sweep, SmaCross};
     use crate::candles::Candles;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation};
-    use crate::execution::{Impact, Spread};
+    use crate::execution::{Impact, Limit, Spread};
     use crate::strategy::run;
     use probatum_core::{Candle, Market};
 
@@ -154,6 +154,8 @@ mod tests {
             liquidation: Liquidation::Takeover,
             impact_model: Impact::Linear,
             spread: Spread::None,
+            limit: Limit::Touch,
+            sizes: false,
         }
     }
 

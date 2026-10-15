@@ -275,7 +275,7 @@ mod tests {
     use crate::candles::{Candles, Instrument};
     use crate::clock::Clock;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation, TargetError};
-    use crate::execution::{Impact, Spread};
+    use crate::execution::{Impact, Limit, Spread};
     use probatum_core::{Candle, Market, Side, State, Tiers};
     use proptest::prelude::*;
 
@@ -325,6 +325,8 @@ mod tests {
             liquidation: Liquidation::Takeover,
             impact_model: Impact::Linear,
             spread: Spread::None,
+            limit: Limit::Touch,
+            sizes: false,
         }
     }
 
@@ -645,6 +647,7 @@ mod tests {
             .map(|market| Instrument {
                 market: Some(market),
                 tiers: Tiers::default(),
+                ..Instrument::default()
             })
             .to_vec();
         Candles::universe(bars, 3, None).with_instruments(specs)
@@ -770,6 +773,8 @@ mod tests {
             liquidation: Liquidation::Takeover,
             impact_model: Impact::Linear,
             spread: Spread::None,
+            limit: Limit::Touch,
+            sizes: false,
         }
     }
 

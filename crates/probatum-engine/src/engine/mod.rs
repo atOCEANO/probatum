@@ -52,7 +52,7 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::candles::{printed, Candles};
 use crate::clock::Clock;
-use crate::execution::{FillModel, Impact, Spread};
+use crate::execution::{FillModel, Impact, Limit, Spread};
 use crate::reporter::{BarCosts, LedgerRow, Leg, Reporter, RoundTrip};
 use crate::stats::Stats;
 use crate::streams;
@@ -161,6 +161,13 @@ pub struct EngineConfig {
     pub impact_model: Impact,
     /// The spread a taker crosses half of.
     pub spread: Spread,
+    /// When a resting limit fills: on touch, or half a step of its instrument's price
+    /// rule past it (Specification, Limits).
+    pub limit: Limit,
+    /// Whether each instrument's sizes hold its orders: the lot, the price rule, the
+    /// minimum notional and the maximum order quantity (Specification, Sizes and
+    /// dust).
+    pub sizes: bool,
     /// Perp funding rate charged per event on the position notional; a long pays a
     /// positive rate, a short receives (ADR 0020). Ignored on spot.
     pub funding_rate: f64,
@@ -189,6 +196,8 @@ impl Default for EngineConfig {
             impact: 0.0,
             impact_model: Impact::Linear,
             spread: Spread::None,
+            limit: Limit::Touch,
+            sizes: false,
             funding_rate: 0.0,
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
@@ -718,6 +727,9 @@ impl Engine {
                 }
                 self.marks[i] = bar.close;
             }
+            if self.config.sizes {
+                self.sweep_dust();
+            }
             if self.reporter.is_some() {
                 self.record_ledger();
             }
@@ -870,9 +882,9 @@ mod tests {
     use super::{Engine, EngineConfig, Intrabar, Liquidation};
     use crate::candles::{printed, Candles, Instrument};
     use crate::clock::Clock;
-    use crate::execution::{Impact, Spread};
+    use crate::execution::{Impact, Limit, Spread};
     use probatum_core::TimeInForce::Ioc;
-    use probatum_core::{Candle, Market, OrderType, Side, State, Tiers};
+    use probatum_core::{Candle, Market, OrderType, Side, State};
     use proptest::prelude::*;
 
     #[test]
@@ -1263,6 +1275,8 @@ mod tests {
             liquidation: Liquidation::Takeover,
             impact_model: Impact::Linear,
             spread: Spread::None,
+            limit: Limit::Touch,
+            sizes: false,
         }
     }
 
@@ -1444,7 +1458,7 @@ mod tests {
             let width = markets.len();
             let specs = markets
                 .iter()
-                .map(|&market| Instrument { market: Some(market), tiers: Tiers::default() })
+                .map(|&market| Instrument { market: Some(market), ..Instrument::default() })
                 .collect();
             let config = EngineConfig {
                 quote: 5_000.0,
