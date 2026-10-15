@@ -68,7 +68,7 @@ Python-facing work (anything in `probatum-py` or `python/probatum`) is validated
 
 ### The dev directory
 
-`dev/` holds the tools that check the library rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/probatum` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are three, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows. The second simulator the engine is compared with asserts rather than produces, so it is a test, in `tests/reference/`, and the [Validation Guide](Validation_Guide.md) is where it is explained.
+`dev/` holds the tools that check the library, or write the data it ships, rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/probatum` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are four, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows. The second simulator the engine is compared with asserts rather than produces, so it is a test, in `tests/reference/`, and the [Validation Guide](Validation_Guide.md) is where it is explained.
 
 `dev/charts/` produces every chart image the documentation shows. `build.py` runs the documented examples for real against a frozen parquet and saves each one as a chart, and `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn. Nothing is cropped or retouched, so what a reader sees is what the library drew, and the snippet printed beside a picture is the snippet that produced it. Both run in one opt-in stage, which needs the published [sample dataset](https://github.com/atOCEANO/sample-market-data) mounted because a picture built from live candles cannot be regenerated, only redrawn differently:
 
@@ -101,6 +101,14 @@ The renderer is pinned to a digest in the Dockerfile rather than tracked as `lat
 Three things the setup depends on, each of which cost an afternoon. The image's bundled headless-shell is broken with an ENOENT, so `puppeteer.json` points `executablePath` at the chromium the image also ships, and its entrypoint is `mmdc` itself, so the stage clears it and calls the binary by full path. The background has to be `transparent` rather than white, or the images invert badly against GitHub's dark mode. And no `-w`: setting a width made every wide diagram 2304 across where the rest are 2352.
 
 The palette in `config.json` is the project's own: node fill `#16232e`, a teal `#2ee6a6` border for an engine stage, a blue `#4d9feb` one for anything the caller invokes, `#e6edf3` text, `#8b949e` arrows, trebuchet sans. It also names the cluster and edge-label colours, which look like padding and are not: mermaid derives whatever the palette leaves out, and left to itself it drew the no-lookahead frames as opaque brown boxes.
+
+`dev/venues/build.py` writes the venue presets in `python/probatum/venues/`: each venue's instruments, with each one's tick, lot and tier table, from its public endpoints, and the fee rates, liquidation models and Hyperliquid's price rule the venues document, as the script gives them. It asks the venues themselves, so it runs by hand and never in the gate, and each preset records the day it ran as the day its tables were taken:
+
+```bash
+docker run --rm -v "${PWD}:/src" -w /src python:3.13-slim python dev/venues/build.py
+```
+
+A rerun rewrites every preset but frictionless, so its diff is what the venues changed since the last one.
 
 <br>
 
@@ -152,7 +160,7 @@ A new way to drive the engine (say a different backtest style, or a distributed 
 
 A venue preset is a TOML file in `python/probatum/venues/`, named for the preset, and a new venue or a corrected table is a change to such a file and nothing else ([ADR 0028](Decisions.md)). It holds four tables:
 
-- `[venue]`: its `name`; `taken`, the day its tables were taken, as `YYYY-MM-DD`; and `kind`, `spot`, `linear` or `inverse`, where every instrument it lists is of one kind.
+- `[venue]`: its `name`; `taken`, the day its tables were taken, as `YYYY-MM-DD`; and `kind`, `spot`, `linear` or `inverse`, where every instrument it lists is of one kind, or `combines`, the presets of one kind each it puts in one account. A combining preset holds no other table: each part's instruments come under their kind, as `kind:SYMBOL`, each part's own settings and rates become its kind's, and the account's settings are the same in every part that gives one, but for `funding`, where a part's `"none"` yields to another's.
 - `[defaults]`: the venue's rates, `fees = { maker = r, taker = r }`, its `liquidation` and `backstop`, its `leverage`, the cap on a perpetual with no tier table, its `max_open_orders`, its `funding`, which is `"none"`, `"data"`, `{ every = hours, rate = r }` or `{ every_bars = n, rate = r }`, and any setting an instrument carries, for every instrument; and `[defaults.fills]`, its fill model: `limit`, `window`, `liquidity = { budget = f }`, `spread` (`"none"`, `"estimated"` or `{ fixed = bps }`), `slippage` (`"none"` or `{ fixed = bps }`), `impact` (`"none"`, `{ linear = k }` or `{ sqrt = k }`) and `sizes` (`"on"` or `"off"`).
 - `[kinds.spot]`, `[kinds.linear]` and `[kinds.inverse]`, in a preset that mixes kinds: the settings every instrument of that kind carries, such as a market's own `fees`.
 - `[instruments.KEY]`, one per instrument, keyed by the router's symbol, or by `kind:SYMBOL` in a preset that mixes kinds: its `tiers`, a list of `{ up_to, leverage, rate, amount }`, its `tiers_by`, and any size rule or `fees` of its own.
