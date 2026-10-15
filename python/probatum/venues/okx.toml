@@ -1,0 +1,6 @@
+# written by dev/venues/build.py, which a rerun rewrites
+
+[venue]
+name = "okx"
+taken = "2026-10-16"
+combines = ["okx_spot", "okx_perp"]

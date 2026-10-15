@@ -1,0 +1,6 @@
+# written by dev/venues/build.py, which a rerun rewrites
+
+[venue]
+name = "binance"
+taken = "2026-10-16"
+combines = ["binance_spot", "binance_perp"]

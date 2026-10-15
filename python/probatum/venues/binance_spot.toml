@@ -1,0 +1,18 @@
+# written by dev/venues/build.py, which a rerun rewrites
+
+[venue]
+name = "binance_spot"
+taken = "2026-10-16"
+kind = "spot"
+
+[defaults]
+fees = { maker = 0.001, taker = 0.001 }
+funding = "none"
+
+[defaults.fills]
+limit = "through"
+liquidity = { budget = 0.1 }
+spread = "estimated"
+slippage = { fixed = 1.0 }
+impact = { sqrt = 0.1 }
+sizes = "on"

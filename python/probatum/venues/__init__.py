@@ -1,6 +1,7 @@
 """The venue presets: each a TOML file in this package, dated, read and checked when it
-loads (ADR 0028). A preset holds the venue's defaults, each kind's where it mixes spot
-and perpetual markets, and each instrument's own tables.
+loads (ADR 0028). A preset holds the venue's defaults, each instrument's own tables, and
+each kind's settings where it mixes spot and perpetual markets, or names the presets
+it combines.
 """
 
 import datetime
@@ -34,14 +35,28 @@ def _names():
 
 
 @functools.cache
+def _file(name):
+    """The packaged preset ``name`` as its file reads, its shape checked once."""
+    path = importlib.resources.files(__name__) / f"{name}.toml"
+    return _read(path.read_text(encoding="utf-8"), name)
+
+
+@functools.cache
 def _preset(name):
     """The packaged preset ``name``, read and checked once."""
     if name not in _names():
         raise ValueError(f"venue: {name!r} is not a preset; use one of "
                          f"{', '.join(_names())}")
 
-    path   = importlib.resources.files(__name__) / f"{name}.toml"
-    preset = _read(path.read_text(encoding="utf-8"), name)
+    preset = _file(name)
+
+    if preset["combines"]:
+        for part in preset["combines"]:
+            if part not in _names():
+                raise ValueError(f"{name}: venue: combines {part!r}, which is not a "
+                                 f"preset; use one of {', '.join(_names())}")
+        preset = _combine(preset, [_file(part) for part in preset["combines"]])
+
     _check(preset)
 
     return preset
@@ -96,9 +111,9 @@ def _typed(origin, where, name, value):
 def _read(text, origin):
     """The preset in the TOML ``text``, its shape checked and ``origin`` naming it in
     what is refused: its name, the day its tables were taken, the kind of every
-    instrument where it holds one kind, its defaults, each kind's settings and each
-    instrument's, each of its type. The values are checked by `_check`, where the
-    Engine checks them."""
+    instrument where it holds one kind, or the presets it combines, its defaults, each
+    kind's settings and each instrument's, each of its type. The values are checked
+    by `_check`, where the Engine checks them."""
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
@@ -107,7 +122,7 @@ def _read(text, origin):
 
     _known(origin, "the file", data, ("venue", "defaults", "kinds", "instruments"))
     venue = _known(origin, "venue", _table(origin, "venue", data.get("venue")),
-                   ("name", "taken", "kind"))
+                   ("name", "taken", "kind", "combines"))
 
     name = venue.get("name")
     if not isinstance(name, str) or not name:
@@ -128,6 +143,16 @@ def _read(text, origin):
     kind = venue.get("kind")
     if kind is not None and kind not in KINDS:
         raise ValueError(f"{origin}: venue: kind {kind!r}; use {', '.join(KINDS)}")
+
+    combines = venue.get("combines", [])
+    if not isinstance(combines, list) or not all(isinstance(part, str)
+                                                 for part in combines):
+        raise ValueError(f"{origin}: venue: combines {combines!r}; give the list of "
+                         f"the presets it combines")
+
+    if combines and (kind is not None or set(data) != {"venue"}):
+        raise ValueError(f"{origin}: venue: combines {combines!r} beside settings of "
+                         f"its own; give a combining preset its venue alone")
 
     defaults = _known(origin, "defaults",
                       _table(origin, "defaults", data.get("defaults", {})),
@@ -159,8 +184,41 @@ def _read(text, origin):
         if "tiers" in table:
             _rows(origin, f"{where}.tiers", table["tiers"])
 
-    return dict(name=name, taken=taken, kind=kind,
+    return dict(name=name, taken=taken, kind=kind, combines=combines,
                 defaults=dict(defaults, fills=fills), kinds=kinds,
+                instruments=instruments)
+
+
+def _combine(preset, parts):
+    """``preset``, which combines ``parts`` in one account: each part's instruments
+    under its kind, as kind:SYMBOL, each part's own settings and rates its kind's,
+    and the venue's settings, the same in every part that gives one, but for
+    funding, where a part's none yields to another's."""
+    origin = preset["name"]
+
+    defaults, kinds, instruments = {}, {}, {}
+    for part in parts:
+        kind = part["kind"]
+        if kind is None or kind in kinds:
+            raise ValueError(f"{origin}: combines {part['name']!r}; combine presets of "
+                             f"one kind each, no two of a kind")
+
+        kinds[kind] = {name: value for name, value in part["defaults"].items()
+                       if name in INSTRUMENT}
+        for symbol, table in part["instruments"].items():
+            instruments[f"{kind}:{symbol}"] = table
+
+        for name, value in part["defaults"].items():
+            if name in INSTRUMENT or (name == "funding" and value == "none"):
+                continue
+            if defaults.get(name, value) != value:
+                raise ValueError(f"{origin}: combines {part['name']!r}, whose {name} "
+                                 f"{value!r} is not the {defaults[name]!r} another "
+                                 f"gives; give the parts one {name}")
+            defaults[name] = value
+
+    defaults.setdefault("fills", {})
+    return dict(preset, kind=None, defaults=defaults, kinds=kinds,
                 instruments=instruments)
 
 
@@ -345,20 +403,22 @@ def _check(preset):
     """Run every setting of ``preset`` through the checks the Engine runs, on one row of
     placeholder bars, so a preset passes exactly what a venue built by hand does: its
     spot and linear instruments as one universe, and each inverse contract alone, as
-    its account holds it. A preset that lists no instruments is checked on one
-    instrument of its kind, or one of each where it holds any. Where the venue books
-    then backstops, every perpetual keeps maintenance, so that any of its instruments
-    runs without the others."""
+    its account holds it. A kind it holds but lists no instrument of is checked on a
+    placeholder of that kind, and a preset of no kind that lists none on one of each.
+    Where the venue books then backstops, every perpetual keeps maintenance, so that
+    any of its instruments runs without the others."""
     origin = preset["name"]
-    listed = list(preset["instruments"])
-    if listed:
-        keys, shown = listed, listed
-    elif preset["kind"] is not None:
-        keys, shown = ["placeholder"], [None]
-    else:
-        keys  = [f"{kind}:placeholder" for kind in KINDS]
-        shown = [None] * len(keys)
+    keys   = list(preset["instruments"])
 
+    if preset["kind"] is not None:
+        missing = [] if keys else ["placeholder"]
+    else:
+        held    = {_kind_of(origin, key, None)[0] for key in keys}
+        kinds   = list(preset["kinds"]) or ([] if keys else list(KINDS))
+        missing = [f"{kind}:placeholder" for kind in kinds if kind not in held]
+
+    shown   = keys + [None] * len(missing)
+    keys    = keys + missing
     checked = dict(preset, instruments={key: preset["instruments"].get(key, {})
                                         for key in keys})
     kinds = [_kind_of(origin, key, preset["kind"])[0] for key in keys]

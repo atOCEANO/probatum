@@ -1,0 +1,1301 @@
+# written by dev/venues/build.py, which a rerun rewrites
+
+[venue]
+name = "hyperliquid_perp"
+taken = "2026-10-16"
+kind = "linear"
+
+[defaults]
+fees = { maker = 0.00015, taker = 0.00045 }
+liquidation = "book_then_backstop"
+backstop = 0.6666666666666666
+funding = "data"
+sigfigs = 5
+
+[defaults.fills]
+limit = "through"
+liquidity = { budget = 0.1 }
+spread = "estimated"
+slippage = { fixed = 1.0 }
+impact = { sqrt = 0.1 }
+sizes = "on"
+
+[instruments.0GUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.2ZUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.AAVEUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.ACEUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.ADAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.AEROUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.AIXBTUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.ALGOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ALTUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.ANIMEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.APEUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.APEXUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.APTUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.ARBUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.ARUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ASTERUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ATOMUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.AVAXUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.AVNTUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.AXSUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.AZTECUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BABYUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BANANAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BCHUSDC]
+lot = 0.001
+decimals = 3
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.BERAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.BIGTIMEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BIOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BLURUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BNBUSDC]
+lot = 0.001
+decimals = 3
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.BOMEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BRETTUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BSVUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.BTCUSDC]
+lot = 1e-05
+decimals = 1
+tiers = [
+    { up_to = 150000000.0, leverage = 40.0, rate = 0.0125 },
+    { up_to = inf, leverage = 20.0, rate = 0.025, amount = 1875000.0 },
+]
+
+[instruments.CAKEUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.CASHCATUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.CCUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.CELOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.CFXUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.CHIPUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.COMPUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.CRVUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.DASHUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.DOGEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.DOTUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.DYDXUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.DYMUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.EIGENUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ENAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.ENSUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ETCUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ETHFIUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ETHUSDC]
+lot = 0.0001
+decimals = 2
+tiers = [
+    { up_to = 100000000.0, leverage = 25.0, rate = 0.02 },
+    { up_to = inf, leverage = 15.0, rate = 0.03333333333333333, amount = 1333333.3333333333 },
+]
+
+[instruments.FARTCOINUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.FETUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.FILUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.FOGOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.GALAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.GASUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.GMTUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.GMXUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.GOATUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.GRAMUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.GRASSUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.GRIFFAINUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.HBARUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.HEMIUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.HMSTRUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.HYPERUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.HYPEUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.ICPUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.IMXUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.INITUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.INJUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.IOTAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.IOUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.JTOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.JUPUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.KAITOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.KASUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.KBONKUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.KFLOKIUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.KLUNCUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.KNEIROUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.KPEPEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.KSHIBUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.LAYERUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.LDOUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.LINEAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.LINKUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.LITUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.LTCUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.MANTAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MEGAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MELANIAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MEMEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MERLUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.METUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MEUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MINAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MNTUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.MONUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.MOODENGUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.MORPHOUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.MOVEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.NEARUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.NEOUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.NILUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.NOTUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.NXPCUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.ONDOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.OPUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ORDIUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.PAXGUSDC]
+lot = 0.001
+decimals = 3
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.PENDLEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.PENGUUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.PEOPLEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.PNUTUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.POLUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.POLYXUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.PONSUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.POPCATUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.PROVEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.PUMPUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.PURRUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.PYTHUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.RENDERUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.RESOLVUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.REZUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.RSRUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.RUNEUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.SAGAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.SANDUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.SEIUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.SKRUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.SKYUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.SNXUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.SOLUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = 70000000.0, leverage = 20.0, rate = 0.025 },
+    { up_to = inf, leverage = 10.0, rate = 0.05, amount = 1750000.0 },
+]
+
+[instruments.SOPHUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.SPXUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.STABLEUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.STBLUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.STRKUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.STXUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.SUIUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.SUPERUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.SUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.SUSHIUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.SYRUPUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.TAOUSDC]
+lot = 0.001
+decimals = 3
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.TIAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.TNSRUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.TRBUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.TRUMPUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.TRXUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.TURBOUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.UMAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.UNIUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.USELESSUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.USUALUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.VIRTUALUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.VVVUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.WCTUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.WIFUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.WLDUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.WLFIUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.WUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.XAIUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.XLMUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.XMRUSDC]
+lot = 0.001
+decimals = 3
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.XPLUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 3000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 150000.0 },
+]
+
+[instruments.XRPUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = 40000000.0, leverage = 20.0, rate = 0.025 },
+    { up_to = inf, leverage = 10.0, rate = 0.05, amount = 1000000.0 },
+]
+
+[instruments.YGGUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.ZECUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = 20000000.0, leverage = 10.0, rate = 0.05 },
+    { up_to = inf, leverage = 5.0, rate = 0.1, amount = 1000000.0 },
+]
+
+[instruments.ZENUSDC]
+lot = 0.01
+decimals = 4
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ZETAUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.ZKUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]
+
+[instruments.ZORAUSDC]
+lot = 1.0
+decimals = 6
+tiers = [
+    { up_to = inf, leverage = 3.0, rate = 0.16666666666666666 },
+]
+
+[instruments.ZROUSDC]
+lot = 0.1
+decimals = 5
+tiers = [
+    { up_to = inf, leverage = 5.0, rate = 0.1 },
+]

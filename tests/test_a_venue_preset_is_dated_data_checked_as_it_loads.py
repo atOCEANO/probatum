@@ -270,3 +270,61 @@ def test_a_preset_it_does_not_hold_is_refused_naming_those_it_does():
     with pytest.raises(ValueError, match=re.escape(
             "venue: 'binance_futures' is not a preset; use one of")):
         venues._preset("binance_futures")
+
+
+def test_a_combined_preset_holds_its_parts_each_at_its_own_rates():
+    binance = venues._preset("binance")
+
+    assert binance["combines"] == ["binance_spot", "binance_perp"]
+
+    linear = venues._preset("binance_perp")["instruments"]
+
+    assert binance["instruments"] == {f"linear:{key}": table
+                                      for key, table in linear.items()}
+
+    settings = venues._settings(binance, ["spot:BTCUSDT", "linear:BTCUSDT"])
+    spot, perp = settings["instruments"]
+
+    assert (spot["market"], spot["fee_maker"], spot["fee_taker"]) == (
+        "spot", 0.001, 0.001)
+    assert (perp["market"], perp["fee_maker"], perp["fee_taker"]) == (
+        "perp", 0.0002, 0.0005)
+    assert perp["reduce_only_exempt"] and perp["tiers"]
+
+
+@pytest.mark.parametrize("parts, says", [
+    ([("spot", ""), (None, "")],
+     "made: combines 'part1'; combine presets of one kind each"),
+    ([("spot", ""), ("spot", "")],
+     "made: combines 'part1'; combine presets of one kind each"),
+    ([("spot", '[defaults]\nliquidation = "takeover"\n'),
+      ("linear", '[defaults]\nliquidation = "book_then_backstop"\n')],
+     "made: combines 'part1', whose liquidation 'book_then_backstop' is not the "
+     "'takeover' another gives; give the parts one liquidation"),
+])
+def test_a_combination_is_refused_unless_its_parts_are_of_one_kind_each_and_agree(
+        parts, says):
+    def part(k, kind, text):
+        head = HEAD.replace('name = "made"', f'name = "part{k}"')
+        return venues._read(head.replace('kind = "linear"\n', "" if kind is None
+                                         else f'kind = "{kind}"\n') + text, f"part{k}")
+
+    combining = venues._read(HEAD.replace('kind = "linear"\n',
+                                          'combines = ["part0", "part1"]\n'), "made")
+
+    with pytest.raises(ValueError, match=re.escape(says)):
+        venues._combine(combining, [part(k, *each) for k, each in enumerate(parts)])
+
+
+@pytest.mark.parametrize("text, says", [
+    (HEAD.replace('kind = "linear"\n', 'combines = ["a", "b"]\n') + "[defaults]\n",
+     "made: venue: combines ['a', 'b'] beside settings of its own; give a combining "
+     "preset its venue alone"),
+    (HEAD + 'combines = ["a", "b"]\n',
+     "made: venue: combines ['a', 'b'] beside settings of its own"),
+    (HEAD.replace('kind = "linear"\n', 'combines = "a"\n'),
+     "made: venue: combines 'a'; give the list of the presets it combines"),
+])
+def test_a_combining_preset_is_refused_unless_it_names_its_parts_alone(text, says):
+    with pytest.raises(ValueError, match=re.escape(says)):
+        venues._read(text, "made")
