@@ -19,10 +19,11 @@ def bars(*rows):
 
 def test_a_budget_of_a_tenth_of_50_holds_5_for_five_orders_of_2():
     # five market orders of 2 BTC under budget(0.1) with a trailing volume of 50 fill
-    # 2, 2 and 1, and the last two fill nothing
+    # 2, 2 and 1, and the last two fill nothing; the 80 their own bar trades is not
+    # in the window before it
     e = probatum.Engine(
         bars((100.0, 100.0, 100.0, 100.0, 50.0),
-             (100.0, 100.0, 100.0, 100.0, 50.0)),
+             (100.0, 100.0, 100.0, 100.0, 80.0)),
         fee_taker = 0.0,
         budget    = 0.1,
         report    = True,
@@ -38,6 +39,27 @@ def test_a_budget_of_a_tenth_of_50_holds_5_for_five_orders_of_2():
 
     reasons = [event["reason"] for event in e.order_log() if event["bar"] == 1]
     assert reasons.count("nothing could fill on its bar") == 2
+
+
+def test_a_bar_after_a_window_that_traded_nothing_fills_nothing():
+    # three bars that traded nothing leave a window of three with no volume, so the
+    # fourth holds no budget, though it trades
+    e = probatum.Engine(
+        bars(*[(100.0, 100.0, 100.0, 100.0, 0.0)] * 3,
+             (100.0, 101.0, 99.0, 100.0, 1e6)),
+        window = 3,
+        report = True,
+    )
+
+    e.reset()
+    for _ in range(2):
+        e.step()
+
+    e.market_buy(1.0)
+
+    assert e.step().position == 0.0
+    assert [event["reason"] for event in e.order_log() if event["bar"] == 3] == [
+        "nothing could fill on its bar"]
 
 
 def test_the_six_bars_spread_moves_a_buy_from_100_40_up_by_0_05():
@@ -88,6 +110,8 @@ def test_a_limit_placed_through_the_market_fills_where_it_traded():
      "budget: 0; give the share of the trailing volume a bar's fills may take"),
     (dict(window=0),
      "window: 0; give the number of bars before a fill its window reads, from 1"),
+    (dict(window=-1), "window: -1; give the number of bars before a fill its window"),
+    (dict(window=24.0), "window: 24.0; give the number of bars before a fill its"),
     (dict(spread=-1.0), 'spread: -1.0; give basis points from 0, or "estimated"'),
     (dict(spread="Wide"), 'spread: "Wide" is not a spread; give basis points'),
     (dict(impact_model="Cubic"), 'impact_model: "Cubic" is not a model; use linear or'),

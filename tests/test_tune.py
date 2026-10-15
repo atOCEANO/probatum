@@ -437,7 +437,7 @@ DEFAULTS = dict(
 
 def thin_series(n=300):
     # a venue-sensitive series: the volume is small enough that one order exhausts
-    # the fill cap, and the bar is wide enough that the whole taker slip stays
+    # the budget, and the bar is wide enough that the whole taker slip stays
     # inside it, since a price clipped to the bar (ADR 0013) is the same price
     # whatever the slippage was and neither knob would move a number. The swing is
     # small enough that the venue's own position never busts, which would flatten
@@ -452,7 +452,7 @@ def thin_series(n=300):
 
 
 class Crowd(Strategy):
-    """Rests eight limit buys at once, then takes more of a bar than the volume cap
+    """Rests eight limit buys at once, then takes more of a bar than the budget
     allows on each of sixteen bars, then closes. Every venue knob changes one of its
     numbers, the two order-book caps included: a market-order crossover feels
     neither, which is what let them be dropped unnoticed. ``depth`` spaces the

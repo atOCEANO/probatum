@@ -41,8 +41,8 @@ def halving_data(t):
     open_ = 100.0 * np.power(0.5, np.arange(t, dtype=np.float64))
     close = open_ * 0.5
 
-    # the volume is far past anything the position asks for, because the fill cap
-    # is a size and the prices here span three orders of magnitude: a cap that bit
+    # the volume is far past anything the position asks for, because the budget is
+    # a size and the prices here span three orders of magnitude: a budget that bit
     # would leave the late offsets holding a position too small to bankrupt
     return np.stack([open_, open_, close, close, np.full(t, 1e9)], axis=1)
 
@@ -328,11 +328,12 @@ def test_each_cost_knob_takes_its_own_range():
     assert spread(slippage_bps=(1.0, 50.0), fee_taker=0.0) > 0.0
 
     # the envs start on bars the closes moved either way, which spreads the rewards
-    # of a shared venue too, so impact is read against that
+    # of one impact every env shares too, so the drawn impacts are read against the
+    # high end of their range, which every env would carry without its own draw
     moving = moving_data()
-    plain  = spread(moving, fee_taker=0.0)
+    shared = spread(moving, impact=5.0, fee_taker=0.0)
 
-    assert spread(moving, impact=(0.1, 5.0), fee_taker=0.0) != plain
+    assert spread(moving, impact=(0.1, 5.0), fee_taker=0.0) != shared
 
     # fee_maker is the fourth, and the batched tier takes market orders only
     # (ADR 0038), so no maker fill can happen here and no reward can read it at

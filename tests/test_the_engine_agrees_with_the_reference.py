@@ -28,9 +28,10 @@ SHARED = [
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
+    "a fixed spread paid",
     "a flip",
-    "a flip's old side on the check",
     "a flip split by a target",
+    "a flip's old side on the check",
     "a fok order filling nothing",
     "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
@@ -63,9 +64,12 @@ SHARED = [
     "a target's spot shortfall moved across",
     "a transfer",
     "a transfer clamped",
+    "a window cut to its last bars",
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
+    "an estimated spread paid",
     "an exit priced from its position's fill",
+    "an inverse contract filled",
     "an ioc or fok limit expiring after one bar",
     "an order trading against the account's own refused",
     "book then backstop falling back to takeover",
@@ -73,10 +77,9 @@ SHARED = [
     "funding between rows",
     "funding inside a bar counted toward the check",
     "funding inside a bar counted toward the path carried in",
-    "impact paid",
-    "an inverse contract filled",
+    "linear impact paid",
     "slippage paid",
-    "spread paid",
+    "sqrt impact paid",
     "the liquidity budget",
 ]
 
@@ -201,19 +204,21 @@ def sold_in_its_coin():
 
 
 def joined_and_sold():
-    """A long of 5 from 100 on 100 of margin, at 1% maintenance with no cap, a taker
-    fee of 0.06% and 5 bps of slippage, and a buy limit of 5 at 98 the bar fills on
-    its way down to 89.75: the two legs reach the trigger together at 89.93, where
-    10p - 890.3 falls to 0.1p, short of the backstop level, two thirds of the
-    requirement, at 89.63, and each is sold on the book there, the second taking
-    what the position still holds."""
+    """A long of 5 from 100.06 on 100 of margin, at 1% maintenance with no cap, a
+    taker fee of 0.06%, 5 bps of slippage, a spread of 2 bps and square-root impact
+    on a window whose close rose 1% and fell back, and a buy limit of 5 at 98 the bar
+    fills on its way down to 89.75: the two legs reach the trigger together at 89.96,
+    where 10p - 890.60 falls to 0.1p, short of the backstop level, two thirds of the
+    requirement, at 89.66, and each is sold on the book there, its impact sized on
+    the 10 the instrument sells, the second taking what the position still holds."""
     bars, times, cfg, actions = built(("market", "buy", 5.0, 0.0), None,
                                       at("limit", "buy", 5.0, 98.0),
                                       shaped=(100.0, 100.0, 89.75, 92.0))
+    bars[1] = Bar(100.0, 101.0, 100.0, 101.0, 1e6)
     cfg.update(leverage=0.0, fee_taker=0.0006, slippage_bps=5.0,
+               spread=("fixed", 2.0), impact=("sqrt", 1.0),
                tiers=[(1e12, 0.0, 0.01, 0.0)],
                liquidation=("book_then_backstop", 2.0 / 3.0))
-
     return bars, times, cfg, actions
 
 

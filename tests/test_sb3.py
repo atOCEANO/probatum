@@ -24,7 +24,7 @@ def series(n=200):
 def halving(n=16):
     # every bar opens where the last closed and halves inside itself, so a levered
     # long dies on the step it opened whatever offset it drew. The volume is far
-    # past anything the position asks for, because a fill cap that bit would leave
+    # past anything the position asks for, because a budget that bit would leave
     # the late offsets holding too small a position to bankrupt
     open_ = 100.0 * np.power(0.5, np.arange(n, dtype=np.float64))
     close = open_ * 0.5

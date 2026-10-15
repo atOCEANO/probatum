@@ -71,7 +71,7 @@ def rounded(value):
     return round(value, 6) if isinstance(value, float) else value
 
 
-COSTS = ("fees", "slippage", "funding", "liquidation")
+COSTS = ("fees", "spread", "slippage", "impact", "funding", "liquidation", "dust")
 
 
 def on_bar(log, t):

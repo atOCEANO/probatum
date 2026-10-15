@@ -214,6 +214,14 @@ class Venue:
         if intrabar not in ("pessimistic", "optimistic"):
             raise ValueError(f"intrabar: {intrabar!r}; use pessimistic or optimistic")
 
+        if int(window) < 1:
+            raise ValueError(f"window: {window!r}; give the number of bars before a "
+                             "fill its window reads, from 1")
+
+        if not float(budget) > 0.0:
+            raise ValueError(f"budget: {budget!r}; give the share of the trailing "
+                             "volume a bar's fills may take, above 0")
+
         self.balance         = balance
         self.maker           = float(maker)
         self.taker           = float(taker)
@@ -660,7 +668,10 @@ class Simulator:
     def window(self, i):
         """Fills, The window: the instrument's last W bars before the fill's bar, their
         mean volume, and the sample deviation of their log returns close to close."""
-        bars    = self.history[i][-self.venue.window:]
+        bars = self.history[i][-self.venue.window:]
+        if len(self.history[i]) > self.venue.window:
+            self.hit("a window cut to its last bars")
+
         closes  = [bar.close for bar in self.history[i][-(self.venue.window + 1):]]
         returns = [math.log(b / a) for a, b in zip(closes, closes[1:])]
         volume  = mean([bar.volume for bar in bars]) if bars else 0.0
@@ -2154,8 +2165,19 @@ class Simulator:
         paid = abs(self.instruments[i].profit(size, costs["reference"], price))
         for name in ("spread", "slippage", "impact"):
             if costs[name] > 0.0:
-                self.hit(f"{name} paid")
+                self.hit(self.paid(name))
             self.costs[name] += paid * costs[name] / computed
+
+
+    def paid(self, name):
+        """The rule a fill paying the cost `name` reaches, the spread and the impact
+        by the kind the venue charges."""
+        if name == "spread":
+            return ("an estimated spread paid" if self.venue.spread == "estimated"
+                    else "a fixed spread paid")
+        if name == "impact":
+            return f"{self.venue.impact[0]} impact paid"
+        return "slippage paid"
 
 
     def fill_market_orders(self, t):

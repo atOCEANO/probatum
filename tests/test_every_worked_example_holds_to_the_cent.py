@@ -433,7 +433,8 @@ def test_a_taker_buy_of_0_141_pays_spread_slippage_and_impact_up_to_21_014_75():
         closes.append(closes[-1] * math.exp(a if k % 2 == 0 else -a))
 
     bars = [[Bar(c, c, c, c, 24_800.0)] for c in closes]
-    bars.append([Bar(21_012.0, 21_080.0, 21_000.0, 21_050.0, 24_800.0)])
+    # the bar's own volume, which the window before it leaves out
+    bars.append([Bar(21_012.0, 21_080.0, 21_000.0, 21_050.0, 30_000.0)])
     venue = Venue(
         taker    = 0.0005,
         spread   = ("fixed", 0.6),
@@ -448,12 +449,17 @@ def test_a_taker_buy_of_0_141_pays_spread_slippage_and_impact_up_to_21_014_75():
     assert fill["slippage"] == pytest.approx(2.10, abs=0.005)
     assert fill["impact"]   == pytest.approx(0.02, abs=0.005)
     assert fill["price"]    == pytest.approx(21_014.75, abs=0.005)
+
+    moved = 0.6e-4 / 2.0 + 1e-4 + 0.1 * 0.004 * math.sqrt(0.141 / 24_800.0)
+    assert fill["price"] == pytest.approx(21_012.0 * (1.0 + moved), rel=1e-12)
     assert fill["size"] * fill["price"] == pytest.approx(2_963.08, abs=0.005)
     assert fill["fee"] == pytest.approx(1.48, abs=0.005)
 
 
 def test_a_budget_of_a_tenth_of_50_lets_five_orders_of_2_fill_2_2_and_1():
-    bars   = [[flat(100.0, volume=50.0)] for _ in range(26)]
+    # the bar they fill on trades 80 of its own, which the window before it leaves out
+    bars = [[flat(100.0, volume=50.0)] for _ in range(25)]
+    bars.append([flat(100.0, volume=80.0)])
     script = {24: [("buy", dict(instrument=0, size=2.0)) for _ in range(5)]}
     sim    = run(hourly(len(bars)), bars, [Instrument("BTCUSDT")], Venue(budget=0.1),
                  script=script)

@@ -911,15 +911,16 @@ def test_closed_trades_flow_into_stats():
 
 
 def test_market_impact_worsens_a_large_fill():
-    # a buy of 100 against a trailing volume of 1000 takes a tenth of it, and at k of
-    # 0.5, on a window whose returns deviate by sigma, pays 0.5 * sigma * 0.1 of the
-    # open beyond it linearly and 0.5 * sigma * sqrt(0.1) under the square root
+    # a buy of 100 against a trailing volume of 1000 takes a tenth of it, its own
+    # bar's 4000 left out, and at k of 0.5, on a window whose returns deviate by
+    # sigma, pays 0.5 * sigma * 0.1 of the open beyond it linearly and
+    # 0.5 * sigma * sqrt(0.1) under the square root
     bars = np.array(
         [
             [100.0, 160.0, 90.0, 100.0, 1000.0],
             [100.0, 160.0, 90.0, 110.0, 1000.0],
             [110.0, 160.0, 90.0, 100.0, 1000.0],
-            [200.0, 260.0, 190.0, 250.0, 1000.0],
+            [200.0, 260.0, 190.0, 250.0, 4000.0],
         ],
         dtype=np.float64,
     )
@@ -1653,9 +1654,8 @@ def test_spot_buy_cannot_spend_more_quote_than_held():
 
 def costed_bars():
     # bar 1 is the one a decision on bar 0 fills against: its open is the fill
-    # price, its volume is what an impact fraction is taken of, and its high sits
-    # far enough above both that the taker clamp of ADR 0013 never binds and the
-    # slip can be read straight off the price
+    # price, and its high sits far enough above it that the taker clamp of ADR 0013
+    # never binds and the slip can be read straight off the price
     return np.array([
         [100.0, 200.0, 90.0, 100.0, 1000.0],
         [100.0, 200.0, 90.0, 100.0, 10.0],
@@ -1665,10 +1665,11 @@ def costed_bars():
 
 def test_a_per_env_slippage_lands_on_slippage_and_not_on_impact():
     # asserted by VALUE. The only thing standing behind these two arrays was
-    # np.std(rewards) > 0.0, a property, and crossing the two assignments still
-    # spreads the rewards: a slippage draw landing on impact moves the price by
-    # size/volume times the number instead of by basis points, which is wrong by
-    # orders of magnitude and reads identical to a property
+    # np.std(rewards) > 0.0, a property, and crossing the two assignments can still
+    # spread the rewards: a slippage draw landing on impact is scaled by the
+    # window's deviation and the share of its volume instead of read as basis
+    # points, which is wrong by orders of magnitude and reads identical to a
+    # property
     b = probatum.Batch(
         costed_bars(),
         num_envs             = 2,
