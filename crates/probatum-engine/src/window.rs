@@ -5,6 +5,7 @@
 //! series, since no fill's size or price may depend on a bar printed after its
 //! order was decided.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use probatum_core::Candle;
@@ -25,68 +26,110 @@ pub struct Trailing {
 }
 
 /// Each row's window of the last `bars` bars for every instrument of a series held
-/// row by row, `width` to a row, its spread estimated where `estimated`.
+/// row by row: the mean volume, and the deviation and the spread where a fill model
+/// reads them, none where no fill model does.
 #[derive(Clone, Debug)]
 pub(crate) struct Windows {
     pub(crate) bars: usize,
-    pub(crate) estimated: bool,
-    pub(crate) read: Arc<[Trailing]>,
+    pub(crate) volume: Arc<[f64]>,
+    pub(crate) sigma: Option<Arc<[f64]>>,
+    pub(crate) spread: Option<Arc<[f64]>>,
+}
+
+/// A bar a window holds: its volume, its log return from the close its instrument
+/// printed before it, and the logs the spread estimate reads, each taken once as it
+/// enters and only where it is read.
+#[derive(Clone, Copy)]
+struct Seen {
+    volume: f64,
+    ret: f64,
+    logs: [f64; 5],
 }
 
 impl Windows {
     /// Read the windows of `series`, `rows` rows of `width` bars, an instrument that
-    /// printed no bar on a row adding nothing to its window there.
+    /// printed no bar on a row adding nothing to its window there: the deviation
+    /// where `sigma` and the spread where `estimated`.
     pub(crate) fn read(
         series: &[Candle],
         rows: usize,
         width: usize,
         bars: usize,
+        sigma: bool,
         estimated: bool,
     ) -> Windows {
-        let mut read = vec![Trailing::default(); rows * width];
-        let mut recent: Vec<Candle> = Vec::with_capacity(bars + 1);
+        let cells = rows * width;
+        let mut volume = vec![0.0; cells];
+        let mut deviations = vec![0.0; if sigma { cells } else { 0 }];
+        let mut spreads = vec![0.0; if estimated { cells } else { 0 }];
+        // the window's own bars and the bar before them, whose close the first of
+        // their returns is measured from; a window longer than the series holds all
+        // of it
+        let mut recent: VecDeque<Seen> = VecDeque::with_capacity(bars.min(rows) + 1);
+        let mut logs: Vec<[f64; 5]> = Vec::new();
         for i in 0..width {
             recent.clear();
+            let mut close = f64::NAN;
             for t in 0..rows {
-                // the window's own bars, and the bar before them, whose close the
-                // first of their returns is measured from
-                let window = &recent[recent.len().saturating_sub(bars)..];
-                read[t * width + i] = Trailing {
-                    volume: if window.is_empty() {
-                        0.0
-                    } else {
-                        window.iter().map(|bar| bar.volume).sum::<f64>() / window.len() as f64
-                    },
-                    sigma: deviation(&recent),
-                    spread: if estimated { edge(window) } else { 0.0 },
-                };
-                let bar = series[t * width + i];
+                let k = t * width + i;
+                let held = recent.len().min(bars);
+                let window = recent.iter().skip(recent.len() - held);
+                if held > 0 {
+                    volume[k] = window.clone().map(|seen| seen.volume).sum::<f64>() / held as f64;
+                }
+                if sigma {
+                    deviations[k] = deviation(&recent);
+                }
+                if estimated {
+                    logs.clear();
+                    logs.extend(window.map(|seen| seen.logs));
+                    spreads[k] = estimate(&logs);
+                }
+                let bar = series[k];
                 if printed(&bar) {
-                    if recent.len() == bars + 1 {
-                        recent.remove(0);
+                    if recent.len() == bars.saturating_add(1) {
+                        recent.pop_front();
                     }
-                    recent.push(bar);
+                    recent.push_back(Seen {
+                        volume: bar.volume,
+                        ret: if sigma {
+                            libm::log(bar.close / close)
+                        } else {
+                            0.0
+                        },
+                        logs: if estimated { logged(&bar) } else { [0.0; 5] },
+                    });
+                    close = bar.close;
                 }
             }
         }
         Windows {
             bars,
-            estimated,
-            read: read.into(),
+            volume: volume.into(),
+            sigma: sigma.then(|| deviations.into()),
+            spread: estimated.then(|| spreads.into()),
+        }
+    }
+
+    /// What the window of cell `k` shows.
+    #[inline]
+    pub(crate) fn at(&self, k: usize) -> Trailing {
+        Trailing {
+            volume: self.volume[k],
+            sigma: self.sigma.as_ref().map_or(0.0, |sigma| sigma[k]),
+            spread: self.spread.as_ref().map_or(0.0, |spread| spread[k]),
         }
     }
 }
 
-/// The sample standard deviation of the log returns from each close of `bars` to
-/// the next, zero with fewer than two.
-fn deviation(bars: &[Candle]) -> f64 {
-    if bars.len() < 3 {
+/// The sample standard deviation of the log returns of the bars `recent` holds after
+/// its first, each from the close before it, zero with fewer than two.
+fn deviation(recent: &VecDeque<Seen>) -> f64 {
+    if recent.len() < 3 {
         return 0.0;
     }
-    let returns = bars
-        .windows(2)
-        .map(|pair| (pair[1].close / pair[0].close).ln());
-    let n = (bars.len() - 1) as f64;
+    let returns = recent.iter().skip(1).map(|seen| seen.ret);
+    let n = (recent.len() - 1) as f64;
     let mean = returns.clone().sum::<f64>() / n;
     let squares = returns.map(|r| (r - mean) * (r - mean)).sum::<f64>();
     (squares / (n - 1.0)).sqrt()
@@ -98,17 +141,26 @@ fn deviation(bars: &[Candle]) -> f64 {
 /// price moved, or none where the open or the close left an extreme (Specification,
 /// The spread estimate).
 pub fn edge(bars: &[Candle]) -> f64 {
-    if bars.len() < 3 {
+    estimate(&bars.iter().map(logged).collect::<Vec<_>>())
+}
+
+/// The logs of a bar's open, high, low and close, and the mid of its log high and
+/// log low, which the estimate reads.
+fn logged(bar: &Candle) -> [f64; 5] {
+    let (o, h, l, c) = (
+        libm::log(bar.open),
+        libm::log(bar.high),
+        libm::log(bar.low),
+        libm::log(bar.close),
+    );
+    [o, h, l, c, (h + l) / 2.0]
+}
+
+/// The estimate over bars whose logs `logged` took.
+fn estimate(logs: &[[f64; 5]]) -> f64 {
+    if logs.len() < 3 {
         return 0.0;
     }
-    // each bar's log open, high, low and close, and the mid of its high and low
-    let logs: Vec<[f64; 5]> = bars
-        .iter()
-        .map(|bar| {
-            let (o, h, l, c) = (bar.open.ln(), bar.high.ln(), bar.low.ln(), bar.close.ln());
-            [o, h, l, c, (h + l) / 2.0]
-        })
-        .collect();
     let over = |f: fn(&[f64; 5], &[f64; 5]) -> f64| -> Vec<f64> {
         logs.windows(2).map(|pair| f(&pair[0], &pair[1])).collect()
     };
@@ -202,6 +254,9 @@ mod tests {
         assert_eq!(edge(&[moving, moving]), 0.0);
         let flat = bar(100.0, 100.0, 100.0, 100.0, 1.0);
         assert_eq!(edge(&[flat, flat, flat, flat]), 0.0);
+        // the price moves across every pair, but no open leaves an extreme
+        let level = |price: f64| bar(price, price, price, price, 1.0);
+        assert_eq!(edge(&[level(100.0), level(101.0), level(102.0)]), 0.0);
     }
 
     #[test]
@@ -216,8 +271,10 @@ mod tests {
             bar(99.0, 99.0, 99.0, 99.0, 30.0),
             bar(99.0, 99.0, 99.0, 99.0, 40.0),
         ];
-        let read = Windows::read(&series, 5, 1, 2, false).read;
-        let read: Vec<(f64, f64)> = read.iter().map(|w| (w.volume, w.sigma)).collect();
+        let windows = Windows::read(&series, 5, 1, 2, true, false);
+        let read: Vec<(f64, f64)> = (0..5)
+            .map(|k| (windows.at(k).volume, windows.at(k).sigma))
+            .collect();
         assert_eq!(read[0], (0.0, 0.0));
         assert_eq!(read[1], (10.0, 0.0));
         assert_eq!(read[2], (15.0, 0.0));
@@ -230,5 +287,18 @@ mod tests {
             "{}",
             read[4].1
         );
+    }
+
+    #[test]
+    fn a_window_longer_than_the_series_reads_all_of_it() {
+        let series = [
+            bar(100.0, 100.0, 100.0, 100.0, 10.0),
+            bar(110.0, 110.0, 110.0, 110.0, 20.0),
+            bar(99.0, 99.0, 99.0, 99.0, 30.0),
+        ];
+        let windows = Windows::read(&series, 3, 1, usize::MAX, false, false);
+        assert_eq!(windows.at(2).volume, 15.0);
+        // the deviation and the spread, not asked for, read as zero
+        assert_eq!((windows.at(2).sigma, windows.at(2).spread), (0.0, 0.0));
     }
 }

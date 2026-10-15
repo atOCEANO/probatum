@@ -208,9 +208,9 @@ impl FillModel {
     /// below its price, a sell if at or above, sized at the remaining held to
     /// `available`, and pays no slippage. It fills at its own price, or, where no
     /// trade from `close`, the last close, through the bar reached that price, at
-    /// the best of those trades: a buy placed through the market fills where the
-    /// market was, not where it was asked to. `None` if untouched, the bar gives no
-    /// volume or the budget is spent.
+    /// the highest of those trades for a buy and the lowest for a sell: a buy placed
+    /// through the market fills where the market was, not where it was asked to.
+    /// `None` if untouched, the bar gives no volume or the budget is spent.
     ///
     /// It pays the taker rate only on its first bar, when that bar opens at or
     /// through it, since it is then lifted on arrival; one that has rested through
@@ -517,6 +517,10 @@ mod tests {
             "{}",
             fill.price.get()
         );
+        // and exactly as the formula gives it, which the bar's own volume of 30,000
+        // in place of the trailing one would miss by 0.0018
+        let moved = 0.6e-4 / 2.0 + 1e-4 + 0.1 * 0.004 * (0.141f64 / 24_800.0).sqrt();
+        assert!((fill.price.get() - 21_012.0 * (1.0 + moved)).abs() < 1e-9);
     }
 
     #[test]
@@ -552,19 +556,18 @@ mod tests {
     #[test]
     fn a_sell_is_never_priced_at_or_below_zero() {
         // a huge flat slip or a huge impact would otherwise reach 1.0 and price the
-        // fill at zero, or beyond it and price it negative (ADR 0013)
+        // fill at zero, or beyond it and price it negative, on a bar that traded down
+        // to nothing (ADR 0013)
+        let to_nothing = ohlc(100.0, 150.0, 0.0, 130.0, 1000.0);
         let flat = model(50_000.0)
-            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0), ALL, quiet)
+            .fill_market(&market(Side::Sell, 1.0), &to_nothing, ALL, quiet)
             .unwrap()
             .0;
         assert!(flat.price.get() > 0.0);
         let f = impacted(5.0, Impact::Linear)
-            .fill_market(
-                &market(Side::Sell, 1000.0),
-                &bar(100.0, 1000.0),
-                ALL,
-                || window(1000.0, 1.0),
-            )
+            .fill_market(&market(Side::Sell, 1000.0), &to_nothing, ALL, || {
+                window(1000.0, 1.0)
+            })
             .unwrap()
             .0;
         assert!(f.price.get() > 0.0, "priced at {}", f.price.get());

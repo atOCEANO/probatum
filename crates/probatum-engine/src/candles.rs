@@ -141,22 +141,22 @@ impl Candles {
     }
 
     /// The same series with each row's window of the last `bars` bars read for every
-    /// instrument, its spread estimated where `estimated`, once for every env that
-    /// shares it (Specification, The window).
-    pub fn with_window(mut self, bars: usize, estimated: bool) -> Candles {
+    /// instrument, its deviation where `sigma` and its spread estimated where
+    /// `estimated`, once for every env that shares it (Specification, The window).
+    pub fn with_window(mut self, bars: usize, sigma: bool, estimated: bool) -> Candles {
         let engine = &self.bars[..self.rows * self.width];
         self.windows = Some(Windows::read(
-            engine, self.rows, self.width, bars, estimated,
+            engine, self.rows, self.width, bars, sigma, estimated,
         ));
         self
     }
 
-    /// Whether the series holds each row's window of `bars` bars, its spread estimated
-    /// where `estimated`.
-    pub fn windowed(&self, bars: usize, estimated: bool) -> bool {
-        self.windows
-            .as_ref()
-            .is_some_and(|w| w.bars == bars && w.estimated == estimated)
+    /// Whether the series holds each row's window of `bars` bars with all that is
+    /// asked of it: the deviation where `sigma` and the spread where `estimated`.
+    pub fn windowed(&self, bars: usize, sigma: bool, estimated: bool) -> bool {
+        self.windows.as_ref().is_some_and(|w| {
+            w.bars == bars && (w.sigma.is_some() || !sigma) && (w.spread.is_some() || !estimated)
+        })
     }
 
     /// What the window before row `t` shows of instrument `i`, nothing where the
@@ -165,7 +165,15 @@ impl Candles {
     pub fn trailing(&self, t: usize, i: usize) -> Trailing {
         self.windows
             .as_ref()
-            .map_or(Trailing::default(), |w| w.read[t * self.width + i])
+            .map_or(Trailing::default(), |w| w.at(t * self.width + i))
+    }
+
+    /// The mean volume of that window, which the liquidity budget reads alone.
+    #[inline]
+    pub fn trailing_volume(&self, t: usize, i: usize) -> f64 {
+        self.windows
+            .as_ref()
+            .map_or(0.0, |w| w.volume[t * self.width + i])
     }
 
     /// The market instrument `i` trades in, or `None` for the engine's own.

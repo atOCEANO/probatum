@@ -94,6 +94,8 @@ where
 {
     let mut config = config;
     config.report = true;
+    // each row's window read once, for every run
+    let candles = Engine::windowed(candles, &[config]);
     params
         .par_iter()
         .map(|row| {

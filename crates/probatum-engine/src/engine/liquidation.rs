@@ -416,7 +416,7 @@ impl Engine {
     }
 
     /// Book then backstop's sale (The forced close): every leg in `closes` sold as a
-    /// taker from its price, not limited by the bar's volume, paying the taker fee,
+    /// taker from its price, not limited by the liquidity budget, paying the taker fee,
     /// and the trader keeps what the margin wallet then holds. An instrument's last
     /// leg takes what its position still holds, at the price `book_holds` read.
     fn sell_on_book(&mut self, closes: &[(usize, f64, f64)], moment: Moment) {

@@ -23,7 +23,7 @@ impl EnvBatch {
     /// config.
     pub fn new(num_envs: usize, candles: Candles, config: EngineConfig) -> EnvBatch {
         // each row's window read once, for every env
-        let candles = Engine::windowed(candles, &config);
+        let candles = Engine::windowed(candles, &[config]);
         let width = candles.width();
         let engines = (0..num_envs)
             .map(|env| Engine::new(candles.clone(), config).for_env(env))
@@ -35,11 +35,8 @@ impl EnvBatch {
     /// series. Lets each env carry its own config (per-env cost randomization,
     /// ADR 0038) while the candles stay shared with no duplication.
     pub fn with_configs(candles: Candles, configs: &[EngineConfig]) -> EnvBatch {
-        // each row's window read once, for every env that reads it alike
-        let candles = match configs.first() {
-            Some(config) => Engine::windowed(candles, config),
-            None => candles,
-        };
+        // each row's window read once, with all that any env reads of it
+        let candles = Engine::windowed(candles, configs);
         let width = candles.width();
         let engines = configs
             .iter()

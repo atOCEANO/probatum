@@ -733,20 +733,20 @@ mod tests {
         // remainder resting for the next, so a large limit completes over several bars
         let candles = Candles::new(vec![
             ohlc(100.0, 100.0, 50.0, 100.0, 10.0), // decision bar
-            ohlc(60.0, 60.0, 40.0, 60.0, 10.0),    // touches the 60 limit, low volume
-            ohlc(60.0, 60.0, 40.0, 60.0, 10.0),    // touches again
+            ohlc(60.0, 60.0, 40.0, 60.0, 30.0),    // touches the 60 limit
+            ohlc(60.0, 60.0, 40.0, 60.0, 2.0),     // touches again
         ]);
         let cfg = EngineConfig {
-            budget: 0.5, // half the trailing volume of 10, 5 units a bar
+            budget: 0.5, // half the trailing volume
             ..cfg()
         };
         let mut e = Engine::new(candles, cfg);
         e.reset();
-        e.limit_buy(9.0, 60.0); // wants 9 at 60; the budget allows 5 per bar
-        let s1 = e.step(); // bar 1: fills 5, 4 remain resting
+        e.limit_buy(9.0, 60.0); // wants 9 at 60
+        let s1 = e.step(); // bar 1: half of the 10 before it, 5, fills; 4 rest on
         assert_eq!(s1.position, 5.0);
         assert_eq!(s1.open_orders.len(), 1);
-        let s2 = e.step(); // bar 2: fills the remaining 4 and completes
+        let s2 = e.step(); // bar 2: half of the mean of 10 and 30 covers the 4 left
         assert_eq!(s2.position, 9.0);
         assert!(s2.open_orders.is_empty());
     }
@@ -772,8 +772,8 @@ mod tests {
 
     #[test]
     fn a_fok_limit_fills_fully_or_not_at_all() {
-        // bar 1 dips to 94 and trades 1000; a FOK for more than the volume cap
-        // cannot fill in full, so it fills nothing and does not rest
+        // bar 1 dips to 94 after a bar of 1000, all the budget allows it; a FOK for
+        // more cannot fill in full, so it fills nothing and does not rest
         let mut e = Engine::new(dip_series(), cfg());
         e.reset();
         e.order(
@@ -815,12 +815,12 @@ mod tests {
         // volume the fill takes, the share the budget ALLOWS rather than the one
         // requested, which are the same number wherever the budget does not bind.
         // Here it binds, so a hard-coded share, the requested one and the allowed
-        // one are three different numbers
+        // one are three different numbers, and the last bar's own volume a fourth
         let wide = Candles::new(vec![
             ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
             ohlc(100.0, 200.0, 90.0, 110.0, 1000.0),
             ohlc(110.0, 200.0, 90.0, 100.0, 1000.0),
-            ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
+            ohlc(100.0, 200.0, 90.0, 100.0, 5000.0),
         ]);
         // the window before the last bar holds returns of ln 1.1 and its negative
         let sigma = 1.1f64.ln() * 2.0f64.sqrt();
@@ -847,11 +847,109 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_the_budget_cuts_pays_impact_on_what_it_gets() {
+        // a buy stop for 400 triggered at 150 is cut to the 250 the budget allows,
+        // and priced for that size rather than for all it asks
+        let wide = Candles::new(vec![
+            ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
+            ohlc(100.0, 200.0, 90.0, 110.0, 1000.0),
+            ohlc(110.0, 200.0, 90.0, 100.0, 1000.0),
+            ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
+        ]);
+        let sigma = 1.1f64.ln() * 2.0f64.sqrt();
+        let mut config = cfg();
+        config.quote = 1_000_000.0;
+        config.impact = 1.0;
+        config.budget = 0.25;
+        let mut e = Engine::new(wide, config);
+        e.reset();
+        e.step();
+        e.step();
+        e.stop(Side::Buy, 400.0, 150.0, false);
+        let s = e.step();
+        assert_eq!(s.position, 250.0);
+        let price = 150.0 * (1.0 + sigma * 250.0 / 1000.0);
+        assert!(
+            (s.avg_entry - price).abs() < 1e-9,
+            "priced at {}, not {price}",
+            s.avg_entry
+        );
+    }
+
+    #[test]
+    fn market_and_resting_orders_draw_on_one_budget() {
+        // the market order goes first and takes 3 of the 5 the bar holds, and the
+        // limit the bar dips to gets the 2 left, resting on for the rest
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 10.0),
+            ohlc(100.0, 101.0, 94.0, 100.0, 10.0),
+        ]);
+        let mut e = Engine::new(
+            candles,
+            EngineConfig {
+                budget: 0.5,
+                ..cfg()
+            },
+        );
+        e.reset();
+        e.limit_buy(4.0, 95.0);
+        e.market_buy(3.0);
+        let s = e.step();
+        assert_eq!(s.position, 5.0);
+        assert_eq!(s.open_orders[0].remaining().get(), 2.0);
+    }
+
+    #[test]
+    fn a_buy_and_a_sell_draw_on_one_budget() {
+        // on a perpetual, a buy of 3 takes 3 of the 5 the bar holds and the sell of
+        // 4 after it the 2 left, which leaves a long of 1
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 10.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 10.0),
+        ]);
+        let mut e = Engine::new(
+            candles,
+            EngineConfig {
+                budget: 0.5,
+                quote: 10_000.0,
+                ..perp_cfg()
+            },
+        );
+        e.reset();
+        e.market_buy(3.0);
+        e.market_sell(4.0);
+        assert_eq!(e.step().position, 1.0);
+    }
+
+    #[test]
+    fn a_reset_gives_a_bar_its_whole_budget_again() {
+        // an episode that spent bar 1's budget leaves the next episode's bar 1 all
+        // of it
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 10.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 10.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 10.0),
+        ]);
+        let mut e = Engine::new(
+            candles,
+            EngineConfig {
+                budget: 0.5,
+                ..cfg()
+            },
+        );
+        for episode in 0..2 {
+            e.reset();
+            e.market_buy(5.0);
+            assert_eq!(e.step().position, 5.0, "episode {episode}");
+        }
+    }
+
+    #[test]
     fn a_fok_limit_the_cash_cannot_afford_fills_nothing() {
         // ADR 0010 says all or nothing against EVERY clamp, not just the bar's
         // liquidity, and the resting path judges that with a second copy of the
         // rule the pending path already has. Only the pending one was pinned:
-        // a_fok_limit_fills_fully_or_not_at_all is refused by the volume cap
+        // a_fok_limit_fills_fully_or_not_at_all is refused by the budget
         // before any clamp is consulted, so the case the decision actually names,
         // where the bar HAS the liquidity and a clamp shrinks the fill, was never
         // reached on a limit. Comparing the pre-clamp size here books the five

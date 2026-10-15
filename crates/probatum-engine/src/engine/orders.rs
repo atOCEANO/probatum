@@ -102,11 +102,8 @@ impl Engine {
             return self.refuse(id, instrument, Refusal::Size(size));
         }
         // The queue holds the same number of orders the resting book does, for each
-        // instrument. It was unbounded, and since the volume cap is per order (ADR
-        // 0013), one order split into a hundred took a hundred times the cap against
-        // a single bar, every slice priced as though it were the only participant.
-        // Bounding it does not make the cap honest, it makes the evasion finite; a
-        // liquidity budget shared across a bar is the real answer (ADR 0010)
+        // instrument (ADR 0010), so a strategy that places without bound cannot make
+        // one bar's work unbounded
         let waiting = self
             .pending
             .iter()
@@ -564,9 +561,8 @@ mod tests {
 
     #[test]
     fn a_nan_market_size_is_a_no_op() {
-        // f64::min keeps the other operand when one side is NaN, so without the cap
-        // guard a NaN size would fill the whole volume cap; it must fill nothing and
-        // pay nothing (ADR 0014)
+        // a NaN size must fill nothing and pay nothing, rather than reach the fill as
+        // all the budget allows or as a NaN (ADR 0014)
         let cfg = EngineConfig {
             fee_taker: 0.001,
             ..cfg()

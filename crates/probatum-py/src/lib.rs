@@ -502,8 +502,7 @@ fn check_window(window: usize) -> PyResult<()> {
 
 /// Reject a configuration scalar that is not finite. The candle array is already
 /// checked for exactly this, and a NaN knob is no less poisonous: a NaN quote makes
-/// every state field NaN, and a NaN `budget` would delete the volume a bar holds,
-/// because `f64::min` keeps the other operand (ADR 0007).
+/// every state field NaN (ADR 0007).
 fn finite(name: &str, value: f64) -> PyResult<f64> {
     if !value.is_finite() {
         return Err(PyValueError::new_err(format!(
@@ -570,6 +569,26 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
             }
         }
         Ok(Opening::Wallets { spot, margin })
+    }
+}
+
+/// The bars a fill's window reads, as `window` takes them: refused here as a whole
+/// number from 1 rather than left to pyo3, whose own refusal of a negative is an
+/// OverflowError and of a float a TypeError.
+struct Window(usize);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Window {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Window> {
+        match obj.extract() {
+            Ok(bars) if bars > 0 => Ok(Window(bars)),
+            _ => Err(PyValueError::new_err(format!(
+                "window: {}; give the number of bars before a fill its window reads, \
+                 from 1",
+                shown(&obj)
+            ))),
+        }
     }
 }
 
@@ -874,13 +893,7 @@ fn build_config(
                  take, above 0"
             )));
         },
-        window: if window > 0 {
-            window
-        } else {
-            return Err(PyValueError::new_err(
-                "window: 0; give the number of bars before a fill its window reads, from 1",
-            ));
-        },
+        window,
         max_open_orders,
         report,
         max_leverage: at_least("leverage", leverage, 0.0)?,
@@ -1472,7 +1485,7 @@ impl Engine {
         fee_maker = 0.0002,
         slippage_bps = 0.0,
         budget = 1.0,
-        window = 24,
+        window = Window(24),
         max_open_orders = 8,
         report = false,
         leverage = 10.0,
@@ -1504,7 +1517,7 @@ impl Engine {
         fee_maker: f64,
         slippage_bps: f64,
         budget: f64,
-        window: usize,
+        window: Window,
         max_open_orders: usize,
         report: bool,
         leverage: f64,
@@ -1535,7 +1548,7 @@ impl Engine {
             fee_maker,
             slippage_bps,
             budget,
-            window,
+            window.0,
             max_open_orders,
             report,
             leverage,
@@ -2150,7 +2163,7 @@ impl Batch {
         fee_maker = 0.0002,
         slippage_bps = 0.0,
         budget = 1.0,
-        window = 24,
+        window = Window(24),
         max_open_orders = 8,
         report = false,
         leverage = 10.0,
@@ -2187,7 +2200,7 @@ impl Batch {
         fee_maker: f64,
         slippage_bps: f64,
         budget: f64,
-        window: usize,
+        window: Window,
         max_open_orders: usize,
         report: bool,
         leverage: f64,
@@ -2222,7 +2235,7 @@ impl Batch {
             fee_maker,
             slippage_bps,
             budget,
-            window,
+            window.0,
             max_open_orders,
             report,
             leverage,

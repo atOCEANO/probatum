@@ -298,7 +298,7 @@ impl Engine {
     /// first state.
     pub fn new(candles: Candles, config: EngineConfig) -> Engine {
         assert!(!candles.is_empty(), "candles must have at least one row");
-        let candles = Engine::windowed(candles, &config);
+        let candles = Engine::windowed(candles, &[config]);
         let width = candles.width();
         let markets = (0..width)
             .map(|i| candles.market(i).unwrap_or(config.market))
@@ -395,14 +395,21 @@ impl Engine {
         self
     }
 
-    /// `candles` with each row's window read as `config` asks, kept where they hold
-    /// it already, as a batch's shared series does.
-    pub(crate) fn windowed(candles: Candles, config: &EngineConfig) -> Candles {
-        let estimated = config.spread == Spread::Estimated;
-        if candles.windowed(config.window, estimated) {
+    /// `candles` with each row's window read as `configs` ask between them, the
+    /// deviation where an impact reads it and the spread where one is estimated, kept
+    /// where they hold it already, as a batch's shared series does.
+    pub(crate) fn windowed(candles: Candles, configs: &[EngineConfig]) -> Candles {
+        let Some(config) = configs.first() else {
+            return candles;
+        };
+        let sigma = configs.iter().any(|config| config.impact > 0.0);
+        let estimated = configs
+            .iter()
+            .any(|config| config.spread == Spread::Estimated);
+        if candles.windowed(config.window, sigma, estimated) {
             candles
         } else {
-            candles.with_window(config.window, estimated)
+            candles.with_window(config.window, sigma, estimated)
         }
     }
 
@@ -414,7 +421,7 @@ impl Engine {
         if at == self.tick {
             return left;
         }
-        let left = self.config.budget * self.candles.trailing(self.tick, i).volume;
+        let left = self.config.budget * self.candles.trailing_volume(self.tick, i);
         self.budget[i] = (self.tick, left);
         left
     }

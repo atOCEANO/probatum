@@ -16,11 +16,11 @@ pub struct Candle {
     pub high: f64,
     pub low: f64,
     pub close: f64,
-    /// Traded volume in BASE units, the same units an order's size is in. The
-    /// volume cap compares one against the other and the impact term divides one
-    /// by the other, so both are meaningless if this arrives denominated in quote:
-    /// the cap stops binding and impact goes to zero, silently and in the caller's
-    /// favour (ADR 0013).
+    /// Traded volume in the units an order's size is in: base units, or contracts on
+    /// an inverse instrument. The liquidity budget is a share of it and the impact
+    /// term divides a fill's size by it, so both are meaningless if it arrives in
+    /// quote: the budget stops binding and impact goes to zero, silently and in the
+    /// caller's favour (ADR 0013).
     pub volume: f64,
 }
 
