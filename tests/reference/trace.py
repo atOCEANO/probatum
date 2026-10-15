@@ -119,16 +119,22 @@ def main():
     cases = int(sys.argv[2]) if len(sys.argv) > 2 else 500
     rng   = random.Random(seed)
 
-    for case in range(cases):
-        bars  = D.walk(rng, rng.randint(8, 40))
-        times = D.clock(rng, len(bars))
-        cfg   = D.config(rng, times)
+    # the inverse cases come after the rest, from their own stream, as the comparison
+    # draws them
+    inverse = random.Random(f"inverse {seed}")
+
+    for case in range(D.drawn(cases)):
+        draw  = rng if case < cases else inverse
+        bars  = D.walk(draw, draw.randint(8, 40))
+        times = D.clock(draw, len(bars))
+        cfg   = D.config(draw, times, inverse=case >= cases)
+
         cfg["intrabar"]    = D.setting(seed, case)
         cfg["liquidation"] = D.liquidation(seed, case, [cfg["tiers"]])
         cfg.update(D.fills(seed, case))
         opens = [bars[0].open]
         cfg.update(D.sizes(seed, case, cfg["quote"], opens, cfg.get("contract")))
-        actions = D.plan(rng, bars, cfg)
+        actions = D.plan(draw, bars, cfg)
         if diverges(bars, times, cfg, actions) is None:
             continue
 

@@ -69,6 +69,8 @@ RULES = [
     "a post_only limit its first bar opened through",
     "a post_only order refused at the last close",
     "a price put on a tick",
+    "a price put on significant figures",
+    "a reduce-only order spared the minimum notional",
     "a reduce_only order held to the position",
     "a reduce_only order with nothing to reduce",
     "a reducing fill bounded at a fee of its own",
@@ -246,9 +248,15 @@ def account(seed, several):
                               flat=0.4 if rough else 0.1))
 
         lot, least, most = (1.0, 0.5, 200.0) if kind == "inverse" else (0.1, 20.0, 20.0)
-        options = dict(tick=0.01, lot=lot if sizes else 0.0,
+        # a linear or spot instrument takes Hyperliquid's figures now and then
+        figures = kind != "inverse" and rng.random() < 0.3
+        options = dict(tick=0.0 if figures else 0.01,
+                       sigfigs=rng.choice([2, 5]) if figures else None,
+                       decimals=rng.choice([1, 3]) if figures else None,
+                       lot=lot if sizes else 0.0,
                        min_notional=rng.choice([0.0, least]),
-                       max_qty=rng.choice([1e12, most]))
+                       max_qty=rng.choice([1e12, most]),
+                       reduce_only_exempt=rng.random() < 0.5)
         if kind == "spot":
             instruments.append(Instrument(f"S{k}", kind="spot", **options))
             continue

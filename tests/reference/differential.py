@@ -803,16 +803,21 @@ def sizes(seed, case, quote, opens, contract=None):
                 sizes=draw.random() < 0.5, rules=[])
 
     for price in opens:
-        worth = quote * price / contract if contract else quote / price
-        kinds = ["free", "fine", "coarse"] + ([] if contract else ["figures"])
-        rule  = draw.choice(kinds)
+        worth   = quote * price / contract if contract else quote / price
+        kinds   = ["free", "fine", "coarse"] + ([] if contract else ["figures"])
+        rule    = draw.choice(kinds)
+        figures = rule == "figures"
+        lot     = draw.choice([0.0, worth / 1_000.0, worth / 20.0])
+
         out["rules"].append(dict(
             tick={"fine": price / 10_000.0, "coarse": price / 200.0}.get(rule, 0.0),
-            sigfigs=5 if rule == "figures" else None,
-            decimals=2 if rule == "figures" else None,
-            lot=draw.choice([0.0, worth / 1_000.0, worth / 20.0]),
+            # two and three figures keep only whole numbers at the walks' prices
+            sigfigs=draw.choice([2, 3, 5]) if figures else None,
+            decimals=draw.choice([1, 2, 4]) if figures else None,
+            lot=lot,
             min_notional=draw.choice([0.0, 0.0, quote / 10.0]),
-            max_qty=draw.choice([None, None, 3.0 * worth]),
+            # a maximum off the lot as well as on it
+            max_qty=draw.choice([None, None, 3.0 * worth, 3.0 * worth + lot / 2.0]),
             reduce_only_exempt=draw.random() < 0.5,
         ))
 
