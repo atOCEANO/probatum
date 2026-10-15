@@ -2336,12 +2336,14 @@ class Simulator:
     def after_fill(self, i, bar):
         """What a bar cannot show: the part of `bar` after the fill inside it that
         opened or flipped the position on instrument `i`. It opens at that fill's
-        reference and closes at the close, reaches the extreme beyond the fill, and
-        reaches the one on the open's side where it came after the fill: always where
-        it works against the position, as the check runs the position from its fill
-        to it, and where it favours the position only under the optimistic setting.
-        Otherwise it goes no further that way than the fill and the close."""
-        start, long = self.start[i], self.position[i] > 0.0
+        reference, or at the clip where one after the fill tightened past it, and
+        closes at the close, reaches the extreme beyond the fill, and reaches the one
+        on the open's side where it came after the fill: always where it works against
+        the position, as the check runs the position from its fill to it, and where it
+        favours the position only under the optimistic setting. Otherwise it goes no
+        further that way than the fill and the close."""
+        long    = self.position[i] > 0.0
+        start   = max(self.start[i], bar.low) if long else min(self.start[i], bar.high)
         down    = start < bar.open
         favours = down == long
         after   = not favours or self.venue.intrabar == "optimistic"
