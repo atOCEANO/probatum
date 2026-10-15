@@ -126,6 +126,8 @@ def main():
         cfg["intrabar"]    = D.setting(seed, case)
         cfg["liquidation"] = D.liquidation(seed, case, [cfg["tiers"]])
         cfg.update(D.fills(seed, case))
+        opens = [bars[0].open]
+        cfg.update(D.sizes(seed, case, cfg["quote"], opens, cfg.get("contract")))
         actions = D.plan(rng, bars, cfg)
         if diverges(bars, times, cfg, actions) is None:
             continue

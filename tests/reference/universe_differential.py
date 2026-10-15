@@ -31,8 +31,8 @@ import probatum
 from .differential import (KINDS, Script, before, bracket, clock, close_enough,
                            closed_before, cut, engine_fills, engine_liquidation, fills,
                            limit_price, liquidation, live, log_difference, prune,
-                           resting, setting, settings, stamps, stop_price, tally,
-                           tier_table, walk, weight, worded)
+                           reference_rules, resting, setting, settings, sizes, stamps,
+                           stop_price, tally, tier_table, walk, weight, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -800,26 +800,36 @@ def make_reference(times, kinds, columns, cfg, start=0):
         window          = cfg.get("window", 24),
         spread          = cfg.get("spread"),
         impact          = cfg.get("impact"),
+        limit           = cfg.get("limit", "touch"),
+        sizes           = cfg.get("sizes", False),
     )
 
     instruments = [Instrument(f"I{k}", kind=kind, tiers=cfg["tiers"][k][0],
-                              tiers_by=cfg["tiers"][k][1])
+                              tiers_by=cfg["tiers"][k][1], **reference_rules(cfg, k))
                    for k, kind in enumerate(kinds)]
     rows = [[column[t] for column in columns] for t in range(len(times))]
     return Simulator(times, rows, instruments, venue, funding=events, start=start)
 
 
+def opens(columns):
+    """Each instrument's first open, which its size and price rules are scaled to."""
+    return [next(bar for bar in column if bar is not None).open for column in columns]
+
+
 def venue(cfg):
     """The engine's settings for a universe, as the binding takes them."""
-    out = dict(
+    rules = cfg.get("rules") or [{}] * len(cfg["kinds"])
+    out   = dict(
         market="perp", quote=cfg["balance"], fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
         max_open_orders=cfg["max_open_orders"], leverage=cfg["leverage"],
-        intrabar=cfg["intrabar"],
+        intrabar=cfg["intrabar"], limit=cfg.get("limit", "touch"),
+        sizes=cfg.get("sizes", False),
         **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
         instruments=[dict(market="spot" if kind == "spot" else "perp", tiers=rows,
-                          tiers_by=by)
-                     for kind, (rows, by) in zip(cfg["kinds"], cfg["tiers"])],
+                          tiers_by=by, **rule)
+                     for kind, (rows, by), rule
+                     in zip(cfg["kinds"], cfg["tiers"], rules)],
     )
 
     source = cfg["funding"]
@@ -954,6 +964,7 @@ def compare(cases, seed):
             # the shaped universes are steered without spread or impact, and keep the
             # plain fill model they were steered on
             cfg.update(fills(seed, number))
+            cfg.update(sizes(seed, number, cfg["quote"], opens(columns)))
             case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
 
         case[3].setdefault("intrabar", setting(seed, number))

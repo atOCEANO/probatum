@@ -28,9 +28,9 @@ import numpy as np
 import probatum
 from . import universe_differential
 from .differential import (balance, before, clock, close_enough, closed_before, config,
-                           cut, drawn, engine_fills, engine_funding, fills, liquidation,
-                           log_difference, make_reference, money, set_aside, setting,
-                           walk, worded)
+                           cut, drawn, engine_fills, engine_funding, engine_sizes,
+                           fills, liquidation, log_difference, make_reference, money,
+                           set_aside, setting, sizes, walk, worded)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -73,7 +73,9 @@ def drive_batch(bars, times, cfg, offsets, actions):
         contract        = cfg.get("contract"),
         **engine_funding(cfg["funding"]),
         **engine_fills(cfg),
+        **engine_sizes(cfg),
     )
+
     batch.reset_at_each(np.array(offsets, dtype=np.int64))
 
     seen = []
@@ -189,6 +191,7 @@ def compare(cases, seed):
         # tier tables are compared over universes, which `compare_universes` runs
         cfg = dict(config(draw, times, inverse=case >= cases), tiers=None,
                    intrabar=setting(seed, case), **fills(seed, case))
+        cfg.update(sizes(seed, case, cfg["quote"], [bars[0].open], cfg.get("contract")))
 
         num_envs = draw.randint(2, 5)
         offsets  = offsets_for(draw, bars, num_envs)
@@ -302,6 +305,9 @@ def compare_universes(cases, seed):
         cfg["intrabar"]    = setting(seed, case)
         cfg["liquidation"] = liquidation(seed, case, [rows for rows, _ in cfg["tiers"]])
         cfg.update(fills(seed, case))
+        opens = universe_differential.opens(columns)
+        cfg.update(sizes(seed, case, cfg["quote"], opens))
+
         rows     = len(times)
         num_envs = rng.randint(2, 4)
         offsets  = offsets_for(rng, times, num_envs)

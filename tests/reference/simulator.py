@@ -810,7 +810,11 @@ class Simulator:
         """Fills, Sizes and dust: to the nearest tick, or to Hyperliquid's rule."""
         if not self.venue.sizes or price is None or not math.isfinite(price):
             return price
-        return self.instruments[i].on_grid(price)
+
+        rounded = self.instruments[i].on_grid(price)
+        if rounded != price:
+            self.hit("a price put on its rule's grid")
+        return rounded
 
 
     def remainder_done(self, i, remaining):
@@ -2394,11 +2398,12 @@ class Simulator:
             price = order["price"]
             # through needs the market a step past the limit; prices sit on the grid,
             # so half a step past is a whole one without a float landing short of it
-            past = (price - bar.low) if side == "buy" else (bar.high - price)
-            if self.venue.limit == "through":
-                reached = past >= inst.step(price) / 2.0
-            else:
-                reached = past >= 0.0
+            half    = inst.step(price) / 2.0 if self.venue.limit == "through" else 0.0
+            touched = bar.low <= price if side == "buy" else bar.high >= price
+            reached = (bar.low <= price - half) if side == "buy" else (
+                bar.high >= price + half)
+            if touched and not reached:
+                self.hit("a limit a step short of through")
             opened_through = bar.open <= price if side == "buy" else bar.open >= price
             if not reached:
                 return None

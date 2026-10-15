@@ -19,6 +19,7 @@ import collections
 import math
 import os
 import random
+import re
 import sys
 
 import numpy as np
@@ -358,6 +359,7 @@ def venue(cfg):
         tiers=cfg["tiers"], tiers_by=cfg["tiers_by"], intrabar=cfg["intrabar"],
         contract=cfg.get("contract"), **engine_funding(cfg["funding"]),
         **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
+        **engine_sizes(cfg),
     )
 
 
@@ -399,6 +401,8 @@ def make_reference(bars, cfg, times, interval=None, events=None, start=0):
         window          = cfg.get("window", 24),
         spread          = cfg.get("spread"),
         impact          = cfg.get("impact"),
+        limit           = cfg.get("limit", "touch"),
+        sizes           = cfg.get("sizes", False),
     )
 
     if events is not None:
@@ -410,6 +414,7 @@ def make_reference(bars, cfg, times, interval=None, events=None, start=0):
         contract = cfg.get("contract"),
         tiers    = cfg.get("tiers"),
         tiers_by = cfg.get("tiers_by", "notional"),
+        **reference_rules(cfg, 0),
     )
 
     return Simulator(
@@ -650,11 +655,20 @@ def closed_before(trips, end):
     return [trip for trip in trips if not trip["open"] and trip["close_bar"] < end]
 
 
+NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:e[-+]?\d+)?")
+
+
 def worded(log):
-    """The order log with a clamp's reason left out, which quotes its sizes as each
-    simulator prints a float."""
-    return [dict(event, reason=None) if event["kind"] == "clamped" else event
-            for event in log]
+    """The order log with a clamp's reason left out, which quotes sizes each simulator
+    reaches by its own arithmetic, and every other reason's numbers read as floats to
+    twelve figures: one prints a whole number with a point where the other leaves it
+    off, and an inverse contract's sizes come back from the engine's terms a few
+    floats from the contracts the reference counts in."""
+    def floats(reason):
+        return NUMBER.sub(lambda number: f"{float(number.group()):.12g}", reason)
+
+    return [dict(event, reason=None) if event["kind"] == "clamped"
+            else dict(event, reason=floats(event["reason"])) for event in log]
 
 
 FIELDS = ("position", "equity", "spot_cash", "margin_cash", "funding_paid")
@@ -777,6 +791,52 @@ def fills(seed, case):
     )
 
 
+def sizes(seed, case, quote, opens, contract=None):
+    """The size and price rules case `case` of `seed` trades under, drawn apart from
+    the stream the cases come from: whether a limit fills on touch or a step
+    through, whether sizes hold, and for each instrument, at `opens` its first opens,
+    a tick or, off an inverse contract, Hyperliquid's figures, and a lot, a minimum
+    notional and a maximum order quantity scaled to what `quote` buys there, in
+    contracts of `contract` dollars on an inverse perpetual."""
+    draw = random.Random(f"sizes {seed} {case}")
+    out  = dict(limit=draw.choice(["touch", "touch", "through"]),
+                sizes=draw.random() < 0.5, rules=[])
+
+    for price in opens:
+        worth = quote * price / contract if contract else quote / price
+        kinds = ["free", "fine", "coarse"] + ([] if contract else ["figures"])
+        rule  = draw.choice(kinds)
+        out["rules"].append(dict(
+            tick={"fine": price / 10_000.0, "coarse": price / 200.0}.get(rule, 0.0),
+            sigfigs=5 if rule == "figures" else None,
+            decimals=2 if rule == "figures" else None,
+            lot=draw.choice([0.0, worth / 1_000.0, worth / 20.0]),
+            min_notional=draw.choice([0.0, 0.0, quote / 10.0]),
+            max_qty=draw.choice([None, None, 3.0 * worth]),
+            reduce_only_exempt=draw.random() < 0.5,
+        ))
+
+    return out
+
+
+def engine_sizes(cfg):
+    """The engine's arguments for a case's limit rule, whether its sizes hold, and
+    its one instrument's size and price rules."""
+    rules = cfg.get("rules") or [{}]
+    return dict(limit=cfg.get("limit", "touch"), sizes=cfg.get("sizes", False),
+                **rules[0])
+
+
+def reference_rules(cfg, k):
+    """Instrument `k`'s size and price rules as the reference takes them, no maximum
+    order quantity an infinite one."""
+    rules = dict((cfg.get("rules") or [{}] * (k + 1))[k])
+    if rules.get("max_qty", 0.0) is None:
+        rules["max_qty"] = math.inf
+
+    return rules
+
+
 def liquidation(seed, case, tables):
     """How case `case` of `seed` closes its account out: half the venues whose tier
     `tables` keep maintenance book then backstop, at a half or two thirds of the
@@ -813,6 +873,7 @@ def compare(cases, seed):
         cfg["intrabar"]    = setting(seed, case)
         cfg["liquidation"] = liquidation(seed, case, [cfg["tiers"]])
         cfg.update(fills(seed, case))
+        cfg.update(sizes(seed, case, cfg["quote"], [bars[0].open], cfg.get("contract")))
 
         actions = plan(draw, bars, cfg)
         counted = collections.defaultdict(collections.Counter)
