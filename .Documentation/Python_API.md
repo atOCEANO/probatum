@@ -96,7 +96,7 @@ The wrappers call it for you, so a DataFrame can go straight into `Backtester` o
 
 ## The market
 
-A backtest, a search and an RL rollout each take the same eleven of the engine's knobs, and leave its `window`, `spread` and `impact_model` at their defaults: a window of 24 bars, no spread and linear impact. Written out at three call sites they are three chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `probatum.Market` holds them once and hands out the surfaces itself.
+A backtest, a search and an RL rollout each take the same eleven of the engine's knobs, and leave its `window`, `spread`, `impact_model`, `limit` and `sizes` at their defaults: a window of 24 bars, no spread, linear impact, limits filled on touch and sizes off. Written out at three call sites they are three chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `probatum.Market` holds them once and hands out the surfaces itself.
 
 ```python
 import probatum
@@ -157,6 +157,8 @@ eng = Engine(
     impact=0.0,              # impact coefficient on the window; 0.0 means none
     impact_model="linear",   # or "sqrt", in the fill's share of the trailing volume
     spread=None,             # a fixed spread in basis points, or "estimated"
+    limit="touch",           # when a resting limit fills, or "through", a step past it
+    sizes=False,             # True holds orders to the lot, the price rule and the bounds
     funding_rate=0.0,        # perp funding per event on notional; long pays, short receives
     funding_interval=0,      # bars between funding events; 0 disables funding
     times=None,              # (T,) int64 open times in UTC nanoseconds: the clock
@@ -166,7 +168,14 @@ eng = Engine(
     funding_instruments=None,  # the instrument each stamp charges, or None for every perp held
     tiers=None,              # or the venue's tiers: rows of (up_to, leverage, rate, amount)
     tiers_by="notional",     # what the tiers' bounds measure: "notional" or "quantity"
-    instruments=None,        # a universe's market, tiers and tiers_by, a dict per instrument
+    lot=0.0,                 # the lot every size is a whole number of; 0.0 = none
+    tick=0.0,                # the tick prices sit on; 0.0 = none
+    sigfigs=None,            # or Hyperliquid's significant figures, with decimals=
+    decimals=None,           # the most decimals such a price keeps
+    min_notional=0.0,        # the smallest notional an order may have
+    max_qty=None,            # the largest size an order may have
+    reduce_only_exempt=False,  # True spares a reduce-only order the minimum notional
+    instruments=None,        # a universe's market, tiers and size rules, a dict per instrument
     intrabar="pessimistic",  # how what a bar cannot show is decided, "optimistic" or "random"
     seed=None,               # the run's seed, which "random" draws from
     contract=None,           # the dollars one inverse contract is worth
@@ -177,7 +186,9 @@ eng = Engine(
 
 **A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound. The table is refused where the Specification's loader refuses it: bounds that do not rise, a leverage that rises or a maintenance rate that falls from one tier to the next, a maintenance rate not below one or reaching its tier's initial rate, one over the leverage, a notional table whose first amount is not zero or whose amounts break continuity, and any value that is not finite or is below zero ([Specification](Specification.md#maintenance)).
 
-**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers` and `tiers_by`, or `market` and `tiers` for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
+**A venue's sizes hold every order to its instrument's grid.** With `sizes=True` a size is rounded down to the `lot` when it is placed, and so is every fill after its clamps; a limit or a trigger is rounded to the `tick`, or to `sigfigs` significant figures within `decimals` decimals, Hyperliquid's rule, where a whole-number price is always allowed; an order below `min_notional` at the last close is refused, a reduce-only one spared where `reduce_only_exempt` says the venue spares it; one above `max_qty` is held to it; and a position floating point leaves below half a lot is zeroed at the close as dust. On an inverse contract the lot and `max_qty` are in contracts, the tick in dollars and `min_notional` in the coin. `limit="through"` fills a limit only once its bar trades half a step of the price rule past it, and with no price rule it fills on touch ([Specification](Specification.md#sizes-and-dust)).
+
+**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers`, `tiers_by` and size rules, or `market`, `tiers` and the size rules for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
 
 **An inverse contract is counted in its coin.** `market="inverse"` with `contract=`, the dollars one contract is worth, takes one instrument's `(T, 5)` candles, quoted in dollars. Sizes are contracts and prices are dollars, as the venue quotes them, while `quote`, equity, fees, funding and every other sum are in the coin, a taker's costs among them, each its rate of the coin notional ([Specification](Specification.md#inverse-contracts)). The account holds that one contract in one wallet, so there is no `transfer`, `qty_from_quote(cash)` is `cash / contract` contracts at any price, and the ledger's `equity_in_quote` values equity in dollars at each close ([ADR 0016](Decisions.md)).
 
@@ -476,7 +487,7 @@ Each entry in `trades()` is one round trip: a maximal run of one sign, from the 
 | `pnl` | Its net PnL: `realized` less `fees` and `funding`, and for one still open what it holds at the last close as well. The trade statistics are built from it, so they reproduce from the log. |
 | `ret` | `pnl` over `size * entry`. |
 | `best`, `worst` | How far its side's price went for it and against it, as a fraction of `entry`, over the part of each bar it was in: its entry bar from the fill to the close, its exit bar from the open to the fill, and every bar between whole. They are bounds that never overstate, since nothing inside a bar says when its high and its low came ([ADR 0023](Decisions.md)). |
-| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance` or `liquidation`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
+| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance`, `liquidation` or `dust`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
 | `open` | True for the round trip still open at the end. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.
@@ -496,7 +507,7 @@ Each column of `ledger()` holds one value per bar, the first for the opening bal
 | `maintenance` | The maintenance requirement the tier table sets, zero without one. |
 | `fees`, `funding`, `spread`, `slippage`, `impact` | What the bar cost, in quote: a fill's spread, slippage and impact are what it paid beyond its reference, each in proportion when the bar's range held its price back. |
 | `liquidation` | What a takeover left in the margin wallet, taken by the venue or absorbed by it, less what the margin bound lifted fills by ([ADR 0018](Decisions.md)). |
-| `dust` | The value of positions too small to trade, zeroed at the close, which nothing makes until sizes are modelled. |
+| `dust` | The value of positions below half a lot, zeroed at the close where sizes are on. |
 | `position`, `entry`, `mark`, `notional`, `unrealized`, `weight` | The position, its average entry, the close it is marked at, its notional, its unrealized PnL, and its signed notional over equity. |
 | `drift` | The weight the latest `target` asked of the instrument less `weight`, from the bar after that target was decided; NaN where no target has named it. |
 
