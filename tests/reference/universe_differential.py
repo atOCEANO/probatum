@@ -30,9 +30,10 @@ import numpy as np
 import probatum
 from .differential import (KINDS, Script, before, bracket, clock, close_enough,
                            closed_before, cut, engine_fills, engine_liquidation, fees,
-                           fills, limit_price, liquidation, live, log_difference, prune,
-                           reference_rules, resting, setting, settings, sizes, stamps,
-                           stop_price, tally, tier_table, walk, weight, worded)
+                           fills, limit_price, liquidation, live, log_difference,
+                           opened, prune, reference_rules, resting, setting, settings,
+                           sizes, stamps, stop_price, tally, tier_table, walk, weight,
+                           worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -974,6 +975,8 @@ def compare(cases, seed):
             cfg.update(fills(seed, number))
             cfg.update(sizes(seed, number, cfg["quote"], opens(columns)))
             cfg.update(fees(seed, number, kinds))
+            tables = opened(seed, number, [rows for rows, _ in cfg["tiers"]])
+            cfg["tiers"] = [(rows, by) for rows, (_, by) in zip(tables, cfg["tiers"])]
             case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
 
         case[3].setdefault("intrabar", setting(seed, number))

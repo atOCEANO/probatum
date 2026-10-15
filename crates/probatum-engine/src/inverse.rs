@@ -144,12 +144,12 @@ impl Units {
 
     /// A tier table in the engine's terms: a quantity table's bounds in the dollars
     /// its contracts are worth, refused where a bound is past every float there or
-    /// no longer above the one before it.
+    /// no longer above the one before it. Only a bound given open stays open.
     pub fn tiers(self, tiers: Tiers) -> Result<Tiers, TierError> {
         if self == Units::Linear || tiers.basis() != TierBasis::Quantity {
             return Ok(tiers);
         }
-        let rows = tiers
+        let rows: Vec<Tier> = tiers
             .rows()
             .iter()
             .map(|tier| Tier {
@@ -157,6 +157,18 @@ impl Units {
                 ..*tier
             })
             .collect();
+        let past = tiers
+            .rows()
+            .iter()
+            .zip(&rows)
+            .position(|(given, held)| given.up_to.is_finite() && !held.up_to.is_finite());
+        if let Some(row) = past {
+            return Err(TierError::NotFinite {
+                row,
+                field: "up_to",
+                value: rows[row].up_to,
+            });
+        }
         Tiers::new(TierBasis::Quantity, rows)
     }
 
@@ -397,7 +409,7 @@ impl Units {
 mod tests {
     use super::Units;
     use crate::reporter::RoundTrip;
-    use probatum_core::{Candle, Side};
+    use probatum_core::{Candle, Side, Tier, TierBasis, Tiers};
 
     const INVERSE: Units = Units::Inverse(100.0);
 
@@ -424,6 +436,24 @@ mod tests {
             assert!(!INVERSE.takes(price), "{price}");
         }
         assert!(INVERSE.takes(1e-300) && Units::Linear.takes(0.0));
+    }
+
+    #[test]
+    fn a_quantity_table_counts_its_bounds_in_dollars_and_keeps_an_open_one_open() {
+        let row = |up_to, leverage, rate| Tier {
+            up_to,
+            leverage,
+            rate,
+            amount: 0.0,
+        };
+        let given = Tiers::new(
+            TierBasis::Quantity,
+            vec![row(10.0, 50.0, 0.01), row(f64::INFINITY, 20.0, 0.02)],
+        )
+        .unwrap();
+        let held = INVERSE.tiers(given).unwrap();
+        let bounds: Vec<f64> = held.rows().iter().map(|tier| tier.up_to).collect();
+        assert_eq!(bounds, [1_000.0, f64::INFINITY]);
     }
 
     #[test]

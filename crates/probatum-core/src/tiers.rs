@@ -74,10 +74,10 @@ impl Tiers {
     /// continuity, `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)` from a first amount
     /// of zero, and when the bounds do not rise, the leverage rises or the
     /// maintenance rate falls with them, since both requirements have to grow with
-    /// the position, and wherever a number is not finite or a leverage or a rate is
-    /// negative. A notional table keeps each amount at the value continuity sets,
-    /// once the one given is within rounding of it, so the requirement meets itself
-    /// at every bound.
+    /// the position, and wherever a number is not finite, but a last bound left open
+    /// where the venue sets no largest position, or a leverage or a rate is negative.
+    /// A notional table keeps each amount at the value continuity sets, once the one
+    /// given is within rounding of it, so the requirement meets itself at every bound.
     pub fn new(basis: TierBasis, mut rows: Vec<Tier>) -> Result<Tiers, TierError> {
         let cap = |leverage: f64| {
             if leverage > 0.0 {
@@ -87,6 +87,7 @@ impl Tiers {
             }
         };
         let mut previous: Option<Tier> = None;
+        let last = rows.len().saturating_sub(1);
         for (row, tier) in rows.iter_mut().enumerate() {
             let named = [
                 ("up_to", tier.up_to),
@@ -95,7 +96,8 @@ impl Tiers {
                 ("amount", tier.amount),
             ];
             for (field, value) in named {
-                if !value.is_finite() {
+                let open = field == "up_to" && value == f64::INFINITY && row == last;
+                if !value.is_finite() && !open {
                     return Err(TierError::NotFinite { row, field, value });
                 }
             }
@@ -271,6 +273,35 @@ mod tests {
                 initial: 0.05
             })
         );
+    }
+
+    #[test]
+    fn a_last_bound_left_open_is_read_where_the_venue_sets_no_largest_position() {
+        // Hyperliquid's BTC: 40x to 150,000,000 and on at 20x with no bound
+        let open = Tiers::new(
+            TierBasis::Notional,
+            vec![
+                tier(150e6, 40.0, 0.0125, 0.0),
+                tier(f64::INFINITY, 20.0, 0.025, 1_875_000.0),
+            ],
+        )
+        .expect("a table with an open last bound");
+        assert_eq!(open.tier(1.0, 2e8).map(|tier| tier.rate), Some(0.025));
+        let early = Tiers::new(
+            TierBasis::Notional,
+            vec![
+                tier(f64::INFINITY, 40.0, 0.0125, 0.0),
+                tier(2e8, 20.0, 0.025, 0.0),
+            ],
+        );
+        assert!(matches!(
+            early,
+            Err(TierError::NotFinite {
+                row: 0,
+                field: "up_to",
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -834,6 +834,14 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
                 "tiers[{row}]: a maintenance rate of {rate} is below the tier before it, \
                  {below}; let the rate rise with the bounds"
             ),
+            TierError::NotFinite {
+                row,
+                field: "up_to",
+                value,
+            } => format!(
+                "tiers[{row}]: up_to {value} is not a finite number; give a finite bound, \
+                 or leave only the last one open"
+            ),
             TierError::NotFinite { row, field, value } => {
                 format!("tiers[{row}]: {field} {value} is not a finite number; give a number")
             }

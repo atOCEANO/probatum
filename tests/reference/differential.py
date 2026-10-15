@@ -824,6 +824,21 @@ def sizes(seed, case, quote, opens, contract=None):
     return out
 
 
+def opened(seed, case, tables):
+    """Case `case` of `seed`'s tier `tables`, a third of them with the last bound left
+    open, as a venue that sets no largest position leaves it, drawn apart from the
+    stream the cases come from."""
+    draw = random.Random(f"open {seed} {case}")
+    out  = []
+
+    for rows in tables:
+        if rows is not None and draw.random() < 1.0 / 3.0:
+            rows = rows[:-1] + [(math.inf, *rows[-1][1:])]
+        out.append(rows)
+
+    return out
+
+
 def fees(seed, case, kinds):
     """The rates case `case` of `seed` charges each of its `kinds` instruments apart
     from the venue's, a maker rate, a taker rate, both or neither, drawn apart from
@@ -895,6 +910,7 @@ def compare(cases, seed):
 
         cfg["intrabar"]    = setting(seed, case)
         cfg["liquidation"] = liquidation(seed, case, [cfg["tiers"]])
+        [cfg["tiers"]] = opened(seed, case, [cfg["tiers"]])
         cfg.update(fills(seed, case))
         cfg.update(sizes(seed, case, cfg["quote"], [bars[0].open], cfg.get("contract")))
 

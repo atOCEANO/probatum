@@ -242,6 +242,29 @@ def test_a_tier_table_holds_a_perp_where_its_margin_stops_carrying_it():
     assert e.step().position == pytest.approx(100_000.0 / 60_000.0)
 
 
+def test_an_open_last_tier_holds_a_perp_by_its_leverage_alone():
+    # Hyperliquid's BTC table: 20,000,000 of margin at 20x past 150,000,000 holds a
+    # buy of 200,000,000 of notional whole, which keeps 3,125,000
+    bars = np.full((2, 5), 100.0)
+    bars[:, 4] = 1e9
+
+    tiers = [(150e6, 40.0, 0.0125, 0.0), (float("inf"), 20.0, 0.025, 1_875_000.0)]
+    e     = probatum.Engine(
+        bars,
+        market    = "perp",
+        quote     = 20_000_000.0,
+        fee_taker = 0.0,
+        tiers     = tiers,
+        report    = True,
+    )
+
+    e.reset()
+    e.market_buy(2_000_000.0)
+
+    assert e.step().position == 2_000_000.0
+    assert e.ledger()["maintenance"][-1] == pytest.approx(3_125_000.0)
+
+
 @pytest.mark.parametrize("tiers, tiers_by, says", [
     ([(300_000.0, 125.0, 0.004, 0.0), (800_000.0, 100.0, 0.005, 250.0)], "notional",
      "continuity needs 300"),
