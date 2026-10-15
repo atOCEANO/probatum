@@ -777,6 +777,17 @@ def test_binance_tiers_ask_1_200_either_side_of_300_000():
         Instrument("BTCUSDT", tiers=[(1e12, 125.0, 0.008, 0.0)])
 
 
+def test_hyperliquids_open_btc_table_keeps_3_125_000_on_200_000_000():
+    tiers = [(150_000_000.0, 40.0, 0.0125, 0.0), (math.inf, 20.0, 0.025, 1_875_000.0)]
+    sim   = run(hourly(1), [[flat(60_000.0)]], [Instrument("BTCUSDC", tiers=tiers)])
+
+    assert sim.maintenance_of(0, 1.0, 200_000_000.0) == pytest.approx(3_125_000.0)
+
+    with pytest.raises(ValueError, match="not finite"):
+        Instrument("BTCUSDC", tiers=[(math.inf, 40.0, 0.0125, 0.0),
+                                     (2e8, 20.0, 0.025, 0.0)])
+
+
 FALL = Bar(41_500.0, 41_500.0, 39_000.0, 39_500.0, 1_000.0)
 
 

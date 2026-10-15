@@ -382,7 +382,7 @@ Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the 
 
 ### The cap
 
-- Summed over the perpetuals, each position's notional over the maximum leverage of the tier its size falls in may not exceed margin equity: `sum_i N_i / L_k(i) <= E`, with equity measured before the fill's own fee, but for a flip after the fee on the side it closes, so a flip opens no more than its close leaves room for. A leverage of 0.0 removes the cap for that instrument, and a fill past the last tier's bound is clamped there.
+- Summed over the perpetuals, each position's notional over the maximum leverage of the tier its size falls in may not exceed margin equity: `sum_i N_i / L_k(i) <= E`, with equity measured before the fill's own fee, but for a flip after the fee on the side it closes, so a flip opens no more than its close leaves room for. A leverage of 0.0 removes the cap for that instrument, and a fill past the last tier's bound is clamped there, unless the table leaves that bound open, at `inf`, as a venue that sets no largest position does.
 - A growing fill is clamped to what the cap allows, and the clamp is an order-log event with the size allowed and the size asked.
 - When one fill is checked, every other leg is marked at the same fraction of its own bar's move as the fill sits at on its own bar ([The path](#the-path)), or at its favourable extreme under `intrabar="optimistic"`. The fill is placed on its bar from the open to the adverse extreme of the side its instrument holds, so a flip sits where its old side leaves, and from flat of the side it opens.
 - While the account is over the cap because equity fell, no fill may raise the summed requirement, and a flip must fit the cap outright. A position over the cap is never force-reduced. With margin equity at or below zero, only reducing fills pass.
@@ -398,9 +398,11 @@ Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the 
 
 - **Notional tiers** (Binance, Bybit, Hyperliquid): a position's requirement is `M_i = N_i * m_k - c_k` in the tier its notional falls in, and the account's is the sum. The cumulative amounts make it continuous across tier boundaries: `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`.
 - **Quantity tiers** (OKX): the tier is chosen by the position's size in contracts, and its rate applies to the whole position.
-- The loader refuses a notional table whose amounts break continuity or whose first amount is not zero, any rate not below one, any tier whose maintenance rate reaches its initial rate `1 / L_k`, and a table whose bounds do not rise, whose leverage rises or whose maintenance rate falls from one tier to the next, a leverage of 0.0 standing for no cap, since both requirements have to grow with the position.
+- The loader refuses a notional table whose amounts break continuity or whose first amount is not zero, any rate not below one, any tier whose maintenance rate reaches its initial rate `1 / L_k`, a table whose bounds do not rise, whose leverage rises or whose maintenance rate falls from one tier to the next, a leverage of 0.0 standing for no cap, since both requirements have to grow with the position, and a value that is not finite, but for a last bound left open.
 
 **Worked example.** BTCUSDT's first two Binance tiers: up to 300,000 at 0.4% with no amount, then up to 800,000 at 0.5% with an amount of 300. At 300,000 of notional the first asks `0.004 * 300,000 = 1,200` and the second `0.005 * 300,000 - 300 = 1,200`.
+
+**Worked example.** Hyperliquid keeps half the initial rate at a tier's maximum leverage and leaves its last tier open: BTC's table runs to 150,000,000 at 40x, then on at 20x, so its rates are 1.25% and 2.5%, and the second tier's amount is `(0.025 - 0.0125) * 150,000,000 = 1,875,000`. A position of 200,000,000 keeps `0.025 * 200,000,000 - 1,875,000 = 3,125,000`, and no bound holds it.
 
 <br>
 <br>

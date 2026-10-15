@@ -10,6 +10,7 @@ and a long one with the slow stage.
 """
 
 import collections
+import math
 import random
 
 import pytest
@@ -212,15 +213,15 @@ def tiers_for(rng, scale):
     if pick < 0.6:
         leverage = rng.choice([5.0, 10.0, 25.0, 50.0])
         rates    = [0.0, 0.005, 0.01] + ([0.02] if leverage < 50.0 else [])
-        return [(1e12, leverage, rng.choice(rates), 0.0)], "notional"
+        return [(math.inf, leverage, rng.choice(rates), 0.0)], "notional"
 
     first = scale * rng.choice([0.5, 2.0])
-    last  = rng.choice([1e12, 6.0 * first])
+    last  = rng.choice([math.inf, 6.0 * first])
     if pick < 0.85:
         return [(first, 25.0, 0.01, 0.0), (last, 10.0, 0.02, 0.01 * first)], "notional"
 
     return [(rng.choice([2.0, 20.0]), 25.0, 0.01, 0.0),
-            (1e12, 10.0, 0.02, 0.0)], "quantity"
+            (math.inf, 10.0, 0.02, 0.0)], "quantity"
 
 
 def account(seed, several):
