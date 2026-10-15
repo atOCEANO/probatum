@@ -148,6 +148,19 @@ A new way to drive the engine (say a different backtest style, or a distributed 
 
 <br>
 
+### Adding a preset
+
+A venue preset is a TOML file in `python/probatum/venues/`, named for the preset, and a new venue or a corrected table is a change to such a file and nothing else ([ADR 0028](Decisions.md)). It holds four tables:
+
+- `[venue]`: its `name`; `taken`, the day its tables were taken, as `YYYY-MM-DD`; and `kind`, `spot`, `linear` or `inverse`, where every instrument it lists is of one kind.
+- `[defaults]`: the venue's rates, `fees = { maker = r, taker = r }`, its `liquidation` and `backstop`, its `leverage`, the cap on a perpetual with no tier table, its `max_open_orders`, its `funding`, which is `"none"`, `"data"`, `{ every = hours, rate = r }` or `{ every_bars = n, rate = r }`, and any setting an instrument carries, for every instrument; and `[defaults.fills]`, its fill model: `limit`, `window`, `liquidity = { budget = f }`, `spread` (`"none"`, `"estimated"` or `{ fixed = bps }`), `slippage` (`"none"` or `{ fixed = bps }`), `impact` (`"none"`, `{ linear = k }` or `{ sqrt = k }`) and `sizes` (`"on"` or `"off"`).
+- `[kinds.spot]`, `[kinds.linear]` and `[kinds.inverse]`, in a preset that mixes kinds: the settings every instrument of that kind carries, such as a market's own `fees`.
+- `[instruments.KEY]`, one per instrument, keyed by the router's symbol, or by `kind:SYMBOL` in a preset that mixes kinds: its `tiers`, a list of `{ up_to, leverage, rate, amount }`, its `tiers_by`, and any size rule or `fees` of its own.
+
+An instrument takes the defaults, then its kind's settings, then its own. The loader checks a file's shape and the type of every setting, and every value passes the checks the Engine runs, on one row of placeholder bars, so a preset is held to exactly what a venue built by hand is. The tests load every file in the folder, so a new preset is covered as soon as it is there.
+
+<br>
+
 ### Adding a fidelity tier
 
 The larger extension the workspace is built for is a second engine at a different fidelity, a tick or L2 sibling. It would be a new crate beside `probatum-engine`, reusing `probatum-core` for the position, account, costs, and book, and replacing only the resolution layer (how a fill is decided). Nothing in `probatum-core` should assume bars, so that reuse stays clean; if a change to core starts to assume a candle, it belongs in `probatum-engine` instead.
