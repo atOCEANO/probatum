@@ -19,13 +19,13 @@ def to_ohlcv(data):
     DataFrame with the columns open/high/low/close/volume, or a path to a parquet
     file.
 
-    **Volume is in base units**, the same units an order's size is in, because the
-    liquidity budget compares one against the other and the market-impact term
-    divides one by the other. A feed shipping quote volume instead inflates the
-    budget by roughly the price, so ``budget`` stops binding and impact goes to
-    zero: no error, no warning, just a better backtest than the market would have
-    given. The router's frames carry base ``volume`` and a separate
-    ``volume_usd``, and only the first is read.
+    **Volume is in the units an order's size is in**, base units or contracts on an
+    inverse perpetual, because the liquidity budget is a share of it and the
+    market-impact term divides a fill's size by it. A feed shipping quote volume
+    instead inflates the budget by roughly the price, so ``budget`` stops binding
+    and impact goes to zero: no error, no warning, just a better backtest than the
+    market would have given. The router's frames carry base ``volume`` and a
+    separate ``volume_usd``, and only the first is read.
     """
     if isinstance(data, np.ndarray):
         arr = np.ascontiguousarray(data, dtype=np.float64)

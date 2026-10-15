@@ -259,4 +259,4 @@ This is the pre-1.0 Gymnasium vector autoreset, the same-step convention the lar
 
 ## On the cost hook
 
-The spec sketched a per-fill `cost_fn(fill, state)` callback. It is deliberately not offered: a Python callback cannot run inside the GIL-free batched step without dragging the engine back under the GIL and down to Python speed. Its size-dependent intent lives instead in the `impact` coefficient (a worse fill for a larger share of the bar's volume), and its cross-env variety in the cost ranges above. The reasoning is in [ADR 0013](Decisions.md).
+The spec sketched a per-fill `cost_fn(fill, state)` callback. It is deliberately not offered: a Python callback cannot run inside the GIL-free batched step without dragging the engine back under the GIL and down to Python speed. Its size-dependent intent lives instead in the `impact` coefficient (a worse fill for a larger share of the trailing volume), and its cross-env variety in the cost ranges above. The reasoning is in [ADR 0013](Decisions.md).

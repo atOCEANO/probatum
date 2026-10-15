@@ -1144,12 +1144,13 @@ def cost_curve(strategy, data, costs=(0.0, 2.0, 5.0, 10.0, 20.0), **config):
     """Re-run ``strategy`` over ``data`` at each round-trip cost in ``costs``, in
     basis points, and report what survives.
 
-    The shipped defaults are a frictionless venue: no slippage, no impact, and one
-    order allowed to eat a whole bar. An edge found there is an edge nobody can
-    trade, and the useful question is not whether a strategy makes money but how
-    much friction it survives. Each cost is split evenly across the two sides of a
-    round trip and applied to both fee rates, so 10 means five basis points in and
-    five out. Anything else in ``config`` goes to the ``Backtester`` unchanged.
+    The shipped defaults are a frictionless venue: no spread, no slippage, no
+    impact, and the whole of a bar's trailing volume for its orders to take. An
+    edge found there is an edge nobody can trade, and the useful question is not
+    whether a strategy makes money but how much friction it survives. Each cost is
+    split evenly across the two sides of a round trip and applied to both fee rates,
+    so 10 means five basis points in and five out. Anything else in ``config`` goes
+    to the ``Backtester`` unchanged.
 
     ``strategy`` is a ``Strategy`` subclass, which is rebuilt for each run, or an
     instance, whose attributes are put back as they were before each one. Either

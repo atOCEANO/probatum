@@ -1,10 +1,10 @@
 """The venue and your account on it, as one object.
 
-The engine takes eleven knobs, and a backtest, a parameter search and an RL
-rollout each take the same eleven. Written out at three call sites they are three
-chances to disagree, and the claim this library makes, that one fill model sits
-behind every surface, was being upheld by whoever typed them retyping them
-identically. ``Market`` holds them once and hands out the surfaces itself::
+A backtest, a parameter search and an RL rollout each take the same eleven of the
+engine's knobs. Written out at three call sites they are three chances to disagree,
+and the claim this library makes, that one fill model sits behind every surface,
+was being upheld by whoever typed them retyping them identically. ``Market`` holds
+them once and hands out the surfaces itself::
 
     binance = probatum.Market(kind="perp", fee_taker=0.0004, fee_maker=0.0002,
                           slippage_bps=2.0, funding_rate=0.0001,
