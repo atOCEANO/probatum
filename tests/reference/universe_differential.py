@@ -29,8 +29,8 @@ import numpy as np
 
 import probatum
 from .differential import (KINDS, Script, before, bracket, clock, close_enough,
-                           closed_before, cut, engine_fills, engine_liquidation, fills,
-                           limit_price, liquidation, live, log_difference, prune,
+                           closed_before, cut, engine_fills, engine_liquidation, fees,
+                           fills, limit_price, liquidation, live, log_difference, prune,
                            reference_rules, resting, setting, settings, sizes, stamps,
                            stop_price, tally, tier_table, walk, weight, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
@@ -290,8 +290,9 @@ def gentle(source):
     return source
 
 
-def shared_margin(rng):
-    """A universe drawn around the margin two to five perpetuals share. A target at
+def shared_margin(rng, own):
+    """A universe drawn around the margin two to five perpetuals share, each leg at
+    its rates in `own`, those it charges apart from the venue's. A target at
     the first row's close takes every one, long and short or all one way, inside the
     cap so that every leg fills, each with a tier table whose first bound lies near
     its position. The fourth row's bar moves each against its own position, or the
@@ -320,6 +321,7 @@ def shared_margin(rng):
     cfg = config(rng, times, kinds, columns)
     cfg["max_open_orders"] = 8
     cfg["funding"]         = gentle(cfg["funding"])
+    cfg["fees"]            = own[:n]
 
     gross   = rng.uniform(1.5, 8.0)
     shares  = [rng.uniform(0.5, 1.5) for _ in kinds]
@@ -380,18 +382,20 @@ def shared_margin(rng):
         there = rng.uniform(0.0, 0.1) if rng.random() < 0.5 else None
     else:
         # the depth that leaves equity at the corner a share of the fee closing every
-        # leg there would pay, each leg taken at the first row's close and marked at
-        # the third's
-        fee, quote = cfg["fee_taker"], cfg["quote"]
+        # leg there would pay, each leg at its own taker rate, taken at the first
+        # row's close and marked at the third's
+        rates   = [leg.get("fee_taker", cfg["fee_taker"]) for leg in cfg["fees"]]
+        quote   = cfg["quote"]
         entries = [column[0].close for column in columns]
         marks   = [column[2].close for column in columns]
         sizes   = [w * quote / e for w, e in zip(weights, entries)]
-        wallet  = quote - fee * sum(abs(q) * e for q, e in zip(sizes, entries))
+        wallet  = quote - sum(f * abs(q) * e for f, q, e in zip(rates, sizes, entries))
         drift   = sum(q * (m - e) for q, m, e in zip(sizes, marks, entries))
         held    = sum(abs(q) * m for q, m in zip(sizes, marks))
-        net     = sum(q * m for q, m in zip(sizes, marks))
+        closing = sum(f * abs(q) * m for f, q, m in zip(rates, sizes, marks))
+        net     = sum(f * q * m for f, q, m in zip(rates, sizes, marks))
         share   = rng.uniform(0.2, 0.8)
-        depth   = (wallet + drift - share * fee * held) / (held - share * fee * net)
+        depth   = (wallet + drift - share * closing) / (held - share * net)
         gap, there = 0.0, 0.0
 
     for sign, column in zip(signs, columns):
@@ -804,8 +808,11 @@ def make_reference(times, kinds, columns, cfg, start=0):
         sizes           = cfg.get("sizes", False),
     )
 
+    own         = cfg.get("fees") or [{}] * len(kinds)
     instruments = [Instrument(f"I{k}", kind=kind, tiers=cfg["tiers"][k][0],
-                              tiers_by=cfg["tiers"][k][1], **reference_rules(cfg, k))
+                              tiers_by=cfg["tiers"][k][1], **reference_rules(cfg, k),
+                              maker=own[k].get("fee_maker"),
+                              taker=own[k].get("fee_taker"))
                    for k, kind in enumerate(kinds)]
     rows = [[column[t] for column in columns] for t in range(len(times))]
     return Simulator(times, rows, instruments, venue, funding=events, start=start)
@@ -819,6 +826,7 @@ def opens(columns):
 def venue(cfg):
     """The engine's settings for a universe, as the binding takes them."""
     rules = cfg.get("rules") or [{}] * len(cfg["kinds"])
+    own   = cfg.get("fees") or [{}] * len(cfg["kinds"])
     out   = dict(
         market="perp", quote=cfg["balance"], fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
@@ -827,9 +835,9 @@ def venue(cfg):
         sizes=cfg.get("sizes", False),
         **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
         instruments=[dict(market="spot" if kind == "spot" else "perp", tiers=rows,
-                          tiers_by=by, **rule)
-                     for kind, (rows, by), rule
-                     in zip(cfg["kinds"], cfg["tiers"], rules)],
+                          tiers_by=by, **rule, **fee)
+                     for kind, (rows, by), rule, fee
+                     in zip(cfg["kinds"], cfg["tiers"], rules, own)],
     )
 
     source = cfg["funding"]
@@ -956,7 +964,7 @@ def compare(cases, seed):
         elif number % 8 == 1 and SHAPED <= set(KINDS):
             case = take_profit(rng, rng.random() < 0.5)
         elif shared:
-            case = shared_margin(rng)
+            case = shared_margin(rng, fees(seed, number, ["linear"] * 5)["fees"])
         else:
             times, kinds, columns = universe(rng)
             cfg = config(rng, times, kinds, columns)
@@ -965,6 +973,7 @@ def compare(cases, seed):
             # plain fill model they were steered on
             cfg.update(fills(seed, number))
             cfg.update(sizes(seed, number, cfg["quote"], opens(columns)))
+            cfg.update(fees(seed, number, kinds))
             case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
 
         case[3].setdefault("intrabar", setting(seed, number))

@@ -37,6 +37,7 @@ RULES = [
     "a corner or the closes reaching the trigger",
     "a delisting",
     "a favourable exit held back on a liquidating bar",
+    "a fee at its instrument's own rate",
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
@@ -257,6 +258,14 @@ def account(seed, several):
                        min_notional=rng.choice([0.0, least]),
                        max_qty=rng.choice([1e12, most]),
                        reduce_only_exempt=rng.random() < 0.5)
+
+        # an instrument charges its own rates now and then, drawn apart from the
+        # account's stream; a rough one keeps the venue's high rates
+        own = random.Random(f"fees {seed} {k}")
+        if not rough:
+            options.update(maker=own.choice([None, None, 0.0, 0.001]),
+                           taker=own.choice([None, None, 0.0005, 0.003]))
+
         if kind == "spot":
             instruments.append(Instrument(f"S{k}", kind="spot", **options))
             continue

@@ -28,7 +28,7 @@ import numpy as np
 import probatum
 from . import universe_differential
 from .differential import (balance, before, clock, close_enough, closed_before, config,
-                           cut, drawn, engine_fills, engine_funding, engine_sizes,
+                           cut, drawn, engine_fills, engine_funding, engine_sizes, fees,
                            fills, liquidation, log_difference, make_reference, money,
                            set_aside, setting, sizes, walk, worded)
 
@@ -307,6 +307,7 @@ def compare_universes(cases, seed):
         cfg.update(fills(seed, case))
         opens = universe_differential.opens(columns)
         cfg.update(sizes(seed, case, cfg["quote"], opens))
+        cfg.update(fees(seed, case, kinds))
 
         rows     = len(times)
         num_envs = rng.randint(2, 4)

@@ -31,6 +31,7 @@ SHARED = [
     "a bracket waiting through a row without its bar",
     "a corner or the closes reaching the trigger",
     "a favourable exit held back on a liquidating bar",
+    "a fee at its instrument's own rate",
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",

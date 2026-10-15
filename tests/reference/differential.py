@@ -824,6 +824,24 @@ def sizes(seed, case, quote, opens, contract=None):
     return out
 
 
+def fees(seed, case, kinds):
+    """The rates case `case` of `seed` charges each of its `kinds` instruments apart
+    from the venue's, a maker rate, a taker rate, both or neither, drawn apart from
+    the stream the cases come from."""
+    draw = random.Random(f"fees {seed} {case}")
+    out  = []
+
+    for _ in kinds:
+        own = {}
+        if draw.random() < 0.3:
+            own["fee_maker"] = draw.choice([0.0, 0.001])
+        if draw.random() < 0.3:
+            own["fee_taker"] = draw.choice([0.0005, 0.001, 0.003])
+        out.append(own)
+
+    return dict(fees=out)
+
+
 def engine_sizes(cfg):
     """The engine's arguments for a case's limit rule, whether its sizes hold, and
     its one instrument's size and price rules."""
