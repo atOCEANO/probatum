@@ -198,7 +198,7 @@ Every rule is chosen in the venue. A preset uses the realistic option in each ro
 | spread | `none`, `fixed(bps)` or `estimated` | `none` |
 | slippage | `fixed(bps)` | 0 |
 | impact | `none`, `linear(k)` or `sqrt(k)` | `none` |
-| fees | maker and taker rates | maker 0.02%, taker 0.06% |
+| fees | maker and taker rates, which an instrument may set apart from the venue's | maker 0.02%, taker 0.06% |
 | sizes | rounding to the lot and the price rule, the minimum notional and the maximum order quantity, or `off` | `off` |
 
 ### The window
@@ -294,7 +294,9 @@ The `1e-9` keeps a size that floating point left a hair under a whole number of 
 
 ### Fees
 
-A fill of size `s` at price `p` pays `s * p * f`, at the maker or the taker rate, in the settlement currency. A round trip carries its entry fee and its exit fee exactly once: a closing fill's fee plus its share of the entry fee still standing on the position.
+A fill of size `s` at price `p` pays `s * p * f`, at the maker or the taker rate of its instrument, in the settlement currency. An instrument charges the venue's maker or taker rate unless it has its own for that side, as a venue's spot and perpetual markets charge apart, and every rule that charges or sets aside a fee reads the rates of the instrument it trades. A round trip carries its entry fee and its exit fee exactly once: a closing fill's fee plus its share of the entry fee still standing on the position.
+
+**Worked example.** A universe holds BTC on spot at maker and taker rates of 0.1%, beside BTC on a perpetual at the venue's 0.02% and 0.05%. A taker buy of 0.5 BTC on spot at 60,000 pays 30.00, and a taker sale of 0.5 on the perpetual at 60,000 pays 15.00.
 
 ### Positions
 
@@ -430,7 +432,7 @@ Under `intrabar="optimistic"` the account is liquidated on a bar only if every p
 ### The trigger, close and clip points
 
 - **The trigger point** is where margin equity falls to the maintenance requirement, `E = M`; with no maintenance, where equity reaches zero.
-- **The close point** is where equity, less a closing fee on every position's notional, reaches zero: `E = f * sum_i N_i`, with the liquidation fee when there is no maintenance and the taker fee when there is.
+- **The close point** is where equity, less a closing fee on every position's notional, reaches zero: `E = sum_i f_i * N_i`, each at its instrument's liquidation fee when there is no maintenance, the taker rate unless the venue sets one, and at its taker fee when there is.
 - **The clip point** is where the account leaves the market: with maintenance, the trigger point; with none, the point from which the account stays at or past the close level all the way to the trigger.
 
 For one long position in one tier:
@@ -499,6 +501,7 @@ A margin wallet of 10,000 USDT holds a long of 1 BTC and a short of 20 ETH, ente
 - The trigger: `10,000 - 12,000s = 0` gives `s = 0.8333`.
 - The close point: `10,000 - 12,000s = 60` gives `s = 0.8283`, where BTC is at 55,030.00 and ETH at 3,248.50. With no maintenance this is the clip point.
 - Both bars are clipped there and both legs close at those prices; equity there is 60, the fee is 60, and the wallet ends at zero.
+- Had ETH charged its own taker rate of 0.1%, the closing fee would be `0.0005 * (60,000 - 6,000s) + 0.001 * 20 * (3,000 + 300s) = 90 + 3s`, and `10,000 - 12,000s = 90 + 3s` gives `s = 0.8256`, where BTC is at 55,046.24, ETH at 3,247.69 and the fees 92.48.
 
 Under the optimistic setting, with BTC's high and ETH's low at their opens, the corners are BTC at 54,000 with ETH at 3,000, and ETH at 3,300 with BTC at 60,000, and the bars close at 57,000 and 3,150. Equity is 4,000 at each corner and at the closes, so the account survives the bar. Had the bars closed at 55,000 and 3,250, equity at the closes would be zero: every path ends there, so the optimistic setting liquidates too, at the synchronous path's clip.
 

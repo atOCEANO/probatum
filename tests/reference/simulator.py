@@ -100,7 +100,7 @@ class Instrument:
     def __init__(self, name, kind="linear", contract=None, lot=0.0, tick=0.0,
                  sigfigs=None, decimals=None, min_notional=0.0, max_qty=math.inf,
                  reduce_only_exempt=False, tiers=None, tiers_by="notional",
-                 delist=None):
+                 delist=None, maker=None, taker=None):
         if kind not in ("spot", "linear", "inverse"):
             raise ValueError(f"kind: {kind!r} is not modelled; use spot, linear or "
                              f"inverse")
@@ -126,6 +126,13 @@ class Instrument:
         if tiers_by not in ("notional", "quantity"):
             raise ValueError(f"tiers_by: {tiers_by!r}; use notional or quantity")
 
+        # Accounting, Fees: an instrument's own rates, the venue's where it has none
+        for side, rate in (("maker", maker), ("taker", taker)):
+            if rate is not None and not (math.isfinite(rate) and rate > -1.0):
+                raise ValueError(f"{side}: {rate!r}; give a rate above -1")
+
+        self.maker              = None if maker is None else float(maker)
+        self.taker              = None if taker is None else float(taker)
         self.name               = name
         self.kind               = kind
         self.contract           = None if contract is None else float(contract)
@@ -302,8 +309,9 @@ class Venue:
                              "('book_then_backstop', share) with a share above 0 and "
                              "below 1")
 
-        self.liquidation     = liquidation  # "takeover" or ("book_then_backstop", share)
-        self.liquidation_fee = (self.taker if liquidation_fee is None
+        self.liquidation = liquidation    # "takeover" or ("book_then_backstop", share)
+        # None charges each instrument its own taker rate
+        self.liquidation_fee = (None if liquidation_fee is None
                                 else float(liquidation_fee))
 
 
@@ -583,6 +591,26 @@ class Simulator:
     def equity(self):
         spot, margin = self.wallet_equity()
         return spot + margin
+
+
+    def taker(self, i):
+        """Accounting, Fees: instrument `i`'s taker rate, its own or the venue's."""
+        own = self.instruments[i].taker
+        return self.venue.taker if own is None else own
+
+
+    def maker(self, i):
+        """Accounting, Fees: instrument `i`'s maker rate, its own or the venue's."""
+        own = self.instruments[i].maker
+        return self.venue.maker if own is None else own
+
+
+    def closing_fee(self, i, maintained):
+        """Liquidation, The trigger, close and clip points: the fee a close of
+        instrument `i` pays, its taker rate with maintenance and its liquidation fee
+        without, the taker rate unless the venue sets one."""
+        fee = self.venue.liquidation_fee
+        return self.taker(i) if maintained or fee is None else fee
 
 
     def has_maintenance(self, i):
@@ -1352,7 +1380,7 @@ class Simulator:
             for i, leg in placed:
                 if self.instruments[i].kind == "spot":
                     cost = leg * self.mark[i]
-                    needed += cost + abs(cost) * self.venue.taker
+                    needed += cost + abs(cost) * self.taker(i)
 
             if needed > 0.0:
                 self.hit("a target's spot shortfall moved across", self.t + 1)
@@ -1595,8 +1623,9 @@ class Simulator:
 
 
     def state_at(self, piece, wallet, s):
-        """Margin equity, the maintenance requirement and the notional on a piece of
-        the path at fraction s, with every leg at the same fraction of its move."""
+        """Margin equity, the maintenance requirement and each instrument's notional on
+        a piece of the path at fraction s, with every leg at the same fraction of its
+        move."""
         equity    = wallet
         sizes     = collections.defaultdict(float)
         notionals = collections.defaultdict(float)
@@ -1609,7 +1638,7 @@ class Simulator:
             notionals[leg.instrument] += abs(inst.notional(leg.q, price))
 
         requirement = sum(self.maintenance_of(i, sizes[i], notionals[i]) for i in sizes)
-        return equity, requirement, sum(notionals.values())
+        return equity, requirement, notionals
 
 
     def solve(self, path, wallets, share=1.0):
@@ -1621,15 +1650,15 @@ class Simulator:
         inverse account's one leg, so each crosses once."""
         maintained = any(self.has_maintenance(leg.instrument)
                          for piece in path for leg in piece)
-        fee = self.venue.taker if maintained else self.venue.liquidation_fee
 
         def g(k, s):
             equity, requirement, _ = self.state_at(path[k], wallets[k], s)
             return equity - share * requirement
 
         def h(k, s):
-            equity, _, notional = self.state_at(path[k], wallets[k], s)
-            return equity - fee * notional
+            equity, _, notionals = self.state_at(path[k], wallets[k], s)
+            return equity - sum(self.closing_fee(i, maintained) * notional
+                                for i, notional in notionals.items())
 
         trigger = None
         for k in range(len(path)):
@@ -2069,7 +2098,7 @@ class Simulator:
             for i, q, sold, _ in sales:
                 inst = self.instruments[i]
                 kept += inst.profit(q, self.entry[i], sold)
-                kept -= abs(inst.notional(q, sold)) * self.venue.taker
+                kept -= abs(inst.notional(q, sold)) * self.taker(i)
 
             _, requirement, _ = self.state_at(path[k], wallets[k], s)
             holds = kept >= share * requirement
@@ -2092,7 +2121,7 @@ class Simulator:
 
                     side = "sell" if q > 0.0 else "buy"
                     self.book(i, abs(q), sold, costs)
-                    self.apply(i, side, abs(q), sold, self.venue.taker, True, None,
+                    self.apply(i, side, abs(q), sold, self.taker(i), True, None,
                                "liquidation", reference=costs["reference"],
                                costs=costs, moment=moment)
 
@@ -2102,7 +2131,6 @@ class Simulator:
             self.hit("book then backstop falling back to takeover")
 
         self.hit("a takeover")
-        rate = 0.0 if maintained else self.venue.liquidation_fee
         for k, (i, q, price) in enumerate(closes):
             # an instrument's last close takes what its position still holds, which
             # the closes of its other legs can leave a hair off their own size
@@ -2110,6 +2138,8 @@ class Simulator:
                 q = self.position[i]
             if q == 0.0:
                 continue
+
+            rate = 0.0 if maintained else self.closing_fee(i, False)
             self.apply(i, "sell" if q > 0.0 else "buy", abs(q), price, rate, False,
                        None, "liquidation", reference=price, moment=moment)
 
@@ -2311,9 +2341,8 @@ class Simulator:
                 allowed = min(wanted, budget)
             if budget < wanted:
                 self.hit("the liquidity budget")
-
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
-                                               order["reduce_only"], self.venue.taker))
+                                               order["reduce_only"], self.taker(i)))
             whole         = size >= self.lot_down(i, wanted) - self.dust(i)
             refused_whole = order["tif"] == "fok" and not whole
             if size <= self.dust(i) or refused_whole:
@@ -2334,10 +2363,9 @@ class Simulator:
             self.budget_left[i] = max(budget - size, 0.0)
             self.book(i, size, price, costs)
             cash = self.margin_cash
-            price, costs = self.bound(i, side, size, price, bar, self.venue.taker,
-                                      costs)
+            price, costs = self.bound(i, side, size, price, bar, self.taker(i), costs)
             flat = self.position[i] == 0.0
-            self.apply(i, side, size, price, self.venue.taker, True, order,
+            self.apply(i, side, size, price, self.taker(i), True, order,
                        order["reason"], reference=bar.open, costs=costs)
             self.zero_rounding(i, cash, self.paid_in, size, price)
             order["filled"] += size
@@ -2593,7 +2621,7 @@ class Simulator:
                 price, costs = reference, dict(spread=0.0, slippage=0.0, impact=0.0,
                                                adjustment=0.0, reference=reference)
 
-            rate = self.venue.taker if taker else self.venue.maker
+            rate = self.taker(i) if taker else self.maker(i)
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
                                                order["reduce_only"], rate))
             whole = size >= self.lot_down(i, remaining) - self.dust(i)
@@ -2876,7 +2904,7 @@ class Simulator:
         closed     = min(size, abs(q))
         part       = math.copysign(closed, q)    # what the fill closes, signed
         maintained = self.account_maintained()
-        fee        = self.venue.taker if maintained else self.venue.liquidation_fee
+        fee        = self.closing_fee(i, maintained)
         others     = self.others_at(self.fraction(i, q > 0.0, price, self.t), self.t,
                                     skip=i)
 
@@ -2888,11 +2916,12 @@ class Simulator:
             return inst.profit(part, self.entry[i], p) - own_fee(p)
 
         def level(p, paid=rate):
-            rest = sum(abs(self.instruments[j].notional(self.position[j], others[j]))
+            rest = sum(self.closing_fee(j, maintained)
+                       * abs(self.instruments[j].notional(self.position[j], others[j]))
                        for j in others)
-            rest += abs(inst.notional(abs(q) - closed, p))
+            rest += fee * abs(inst.notional(abs(q) - closed, p))
             return (self.margin_equity({**others, i: p})
-                    - abs(inst.notional(closed, p)) * paid - fee * rest)
+                    - abs(inst.notional(closed, p)) * paid - rest)
 
         def lift(paid):
             """Where the fill is lifted to and what the bar cannot hold of the lift,
@@ -3000,6 +3029,10 @@ class Simulator:
         inst  = self.instruments[i]
         costs = costs or dict(spread=0.0, slippage=0.0, impact=0.0, adjustment=0.0)
         fee   = abs(inst.notional(size, price)) * rate
+        # a takeover's closes are booked as no taker's, and pay the taker side
+        own = inst.taker if taker or reason == "liquidation" else inst.maker
+        if fee != 0.0 and rate == own:
+            self.hit("a fee at its instrument's own rate")
         self.costs["fees"] += fee
 
         signed   = size if side == "buy" else -size

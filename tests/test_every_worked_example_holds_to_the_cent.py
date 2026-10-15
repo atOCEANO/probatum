@@ -243,6 +243,18 @@ def test_a_fill_pays_its_size_times_its_price_times_the_fee():
     assert fill["fee"] == pytest.approx(1.48, abs=0.005)
 
 
+def test_a_spot_buy_pays_its_own_0_1_percent_beside_a_perpetual_at_the_venues_0_05():
+    sim = run(hourly(2), [[flat(60_000.0), flat(60_000.0)]] * 2,
+              [Instrument("spot:BTCUSDT", kind="spot", maker=0.001, taker=0.001),
+               Instrument("linear:BTCUSDT")],
+              Venue(balance={"spot": 40_000.0, "margin": 40_000.0}, maker=0.0002,
+                    taker=0.0005),
+              script={0: [("buy", dict(instrument=0, size=0.5)),
+                          ("sell", dict(instrument=1, size=0.5))]})
+
+    assert [fill["fee"] for fill in sim.fills] == pytest.approx([30.0, 15.0])
+
+
 @pytest.mark.parametrize("bar, price", [(Bar(96.0, 96.5, 94.0, 95.5, 1_000.0), 95.0),
                                         (Bar(93.0, 94.0, 92.0, 93.5, 1_000.0), 93.0)])
 def test_a_sell_stop_fills_at_its_trigger_or_at_an_open_that_gapped_through_it(bar,
@@ -712,16 +724,17 @@ def test_twenty_times_ten_thousand_lets_a_buy_of_5_bitcoin_fill_3_33333():
     assert [e["kind"] for e in sim.events] == ["placed", "clamped", "filled", "expired"]
 
 
-def bitcoin_and_ether(row_two, decisions, **venue):
+def bitcoin_and_ether(row_two, decisions, ether=None, **venue):
     """Two perpetuals in one margin wallet, BTCUSDT at 20x and ETHUSDT at 10x with no
-    maintenance, on two rows at 60,000 and 3,000 and then ``row_two``."""
+    maintenance, on two rows at 60,000 and 3,000 and then ``row_two``, ETHUSDT at its
+    own taker rate ``ether`` where given."""
     bars     = [[flat(60_000.0), flat(3_000.0)], [flat(60_000.0), flat(3_000.0)], row_two]
     settings = dict(balance=10_000.0, maker=0.0, taker=0.0)
     settings.update(venue)
 
     return run(hourly(3), bars,
                [Instrument("BTCUSDT", tiers=[(1e12, 20.0, 0.0, 0.0)]),
-                Instrument("ETHUSDT", tiers=[(1e12, 10.0, 0.0, 0.0)])],
+                Instrument("ETHUSDT", tiers=[(1e12, 10.0, 0.0, 0.0)], taker=ether)],
                Venue(**settings), script=decisions)
 
 
@@ -881,6 +894,19 @@ def test_a_long_bitcoin_and_short_ether_are_both_closed_at_the_close_point():
     assert closes[0][1]           == pytest.approx(55_030.0, abs=0.005)
     assert closes[1][1]           == pytest.approx(3_248.50, abs=0.005)
     assert sim.ledger[-1]["fees"] == pytest.approx(60.0, abs=0.005)
+    assert sim.margin_cash        == 0.0
+
+
+def test_an_ether_short_at_its_own_taker_rate_moves_the_close_point_to_0_8256():
+    sim = bitcoin_and_ether(falling_bitcoin_rising_ether((57_000.0, 3_150.0)),
+                            LONG_BITCOIN_SHORT_ETHER, ether=0.001, balance=10_090.0,
+                            taker=0.0005)
+
+    assert sim.ledger[1]["equity"] == pytest.approx(10_000.0)
+
+    prices = [f["price"] for f in sim.fills if f["reason"] == "liquidation"]
+    assert prices                 == pytest.approx([55_046.24, 3_247.69], abs=0.005)
+    assert sim.ledger[-1]["fees"] == pytest.approx(92.48, abs=0.005)
     assert sim.margin_cash        == 0.0
 
 
