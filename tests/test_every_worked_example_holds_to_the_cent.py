@@ -504,6 +504,20 @@ def test_with_sizes_on_a_budget_cut_fill_rounds_down_to_the_lot():
     assert sim.orders[2]["status"] == "refused"
 
 
+@pytest.mark.parametrize("low, fills", [(1_234.6, False), (1_234.5, True)])
+def test_five_figures_with_a_cap_of_one_decimal_rest_1_234_56_at_1_234_6(low, fills):
+    bars  = [[flat(1_300.0)], [Bar(1_300.0, 1_300.0, low, 1_250.0, 1_000.0)]]
+    venue = Venue(sizes=True, limit="through")
+    btc   = Instrument("BTC", sigfigs=5, decimals=1)
+    sim   = run(hourly(2), bars, [btc], venue,
+                script={0: [("buy", dict(instrument=0, size=1.0, limit=1_234.56)),
+                            ("buy", dict(instrument=0, size=1.0, limit=123_456.7))]})
+
+    assert (sim.orders[1]["price"], sim.orders[2]["price"]) == (1_234.6, 123_457.0)
+    assert [fill["order"] for fill in sim.fills if fill["price"] == 1_234.6] == (
+        [1] if fills else [])
+
+
 def test_a_bar_that_carries_half_a_bitcoin_and_buys_a_tenth_gains_266_0815():
     bars = [[flat(60_000.0, volume=1e6)], [flat(60_000.0, volume=1e6)],
             [Bar(60_300.0, 60_600.0, 60_250.0, 60_500.0, 1e6)]]

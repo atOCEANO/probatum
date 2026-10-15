@@ -192,14 +192,14 @@ Every rule is chosen in the venue. A preset uses the realistic option in each ro
 
 | Rule | Options | Plain default |
 | :--- | :--- | :--- |
-| limit fill | `touch`, or `through`, which needs the market to trade one tick past the limit | `touch` |
+| limit fill | `touch`, or `through`, which needs the market to trade a step of the price rule past the limit | `touch` |
 | window | the bars the volume, the volatility and the spread estimate are read over | 24 |
 | liquidity | `budget(f)`, a share `f` of the trailing volume per bar and instrument, shared by every order | `budget(1.0)` |
 | spread | `none`, `fixed(bps)` or `estimated` | `none` |
 | slippage | `fixed(bps)` | 0 |
 | impact | `none`, `linear(k)` or `sqrt(k)` | `none` |
 | fees | maker and taker rates | maker 0.02%, taker 0.06% |
-| sizes | lot, tick, minimum notional and maximum order quantity, or `off` | `off` |
+| sizes | lot, price rule, minimum notional and maximum order quantity, or `off` | `off` |
 
 ### The window
 
@@ -219,7 +219,7 @@ price = ref * (1 + side * (s / 2 + slip + imp)), held inside [low, high]
 
 ### Limits
 
-A limit fills at its own price, unless no trade from the last close through its bar reached that price, as when it was placed through the market or a bar that filled nothing left it there: then a buy fills at the highest of those trades and a sell at the lowest. Under `touch` a buy fills when the bar's low reaches its price; under `through` the low must be a tick below it. A sell is the mirror.
+A limit fills at its own price, unless no trade from the last close through its bar reached that price, as when it was placed through the market or a bar that filled nothing left it there: then a buy fills at the highest of those trades and a sell at the lowest. Under `touch` a buy fills when the bar's low reaches its price; under `through` the low must reach half a step of the price rule below it, a whole step where the market's prices sit on the rule's grid, and with no price rule `through` is `touch` ([Sizes and dust](#sizes-and-dust)). A sell is the mirror, and on an inverse contract the step and the prices are in dollars.
 
 **Worked example.** A buy limit at 99.40, with a tick of 0.01, fills under `touch` on a low of 99.40, and under `through` only on a low of 99.39 or lower. A buy limit at 110 placed at a close of 100 fills as a taker on a next bar that opens at 96 with a high of 98, and since no trade from that close through the bar reached 110, it fills at 100.
 
@@ -273,9 +273,18 @@ give `s2 = 1.0553e-6`, a spread of 0.1027% of the price. A buy whose reference i
 
 ### Sizes and dust
 
-With sizes on, an order's size is rounded down to the lot when it is placed, and so is every fill's size after its clamps, and a limit or a trigger is rounded to the nearest tick, or to Hyperliquid's five significant figures within its decimal cap. An order below the minimum notional at the last close is refused, a reducing one exempt where the venue exempts it; one above the maximum order quantity is clamped to it; and an order retires when what remains of it is less than a lot. A position that floating-point sums leave below half a lot is zeroed at the bar's close with no fee, and its value there is recorded as a dust adjustment. With sizes off, a fill of 1e-9 base units or less, or of 1e-9 dollars of contracts on an inverse contract, moves nothing, and an order retires at that remainder.
+With sizes on, an order's size is rounded down to the lot when it is placed, and so is every fill's size after its clamps, and a limit or a trigger is rounded to the instrument's price rule: a fixed tick, or Hyperliquid's five significant figures within its decimal cap, where a whole-number price is always allowed. An order below the minimum notional at the last close is refused, a reducing one exempt where the venue exempts it; one above the maximum order quantity is clamped to it; and an order retires when what remains of it rounds down to no lot. A position that floating-point sums leave below half a lot is zeroed at the bar's close with no fee, and its value there is recorded as a dust adjustment. With sizes off, a fill of 1e-9 base units or less, or of 1e-9 dollars of contracts on an inverse contract, moves nothing, and an order retires at that remainder.
 
-**Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0754 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0004 is refused when it is placed, since it rounds to nothing.
+```text
+lot       q = lot * floor(q / lot + 1e-9)
+tick      p = tick * round_half_even(p / tick)
+figures   p = round_half_even(p * 10^d) / 10^d,  d = min(max(figures - 1 - e, 0), cap),
+          where 10^e <= abs(p) < 10^(e + 1)
+```
+
+The `1e-9` keeps a size that floating point left a hair under a whole number of lots at that number, and a target's leg is rounded the same way toward zero. `10^k` is exact for `k >= 0` and is `1 / 10^-k` below zero. The step of a price rule at a price is its tick, or `10^-d` under significant figures. The significant-figure rule is Hyperliquid's, whose perpetuals are linear, so an inverse contract takes a tick, in dollars; its lot and maximum order quantity are in contracts and its minimum notional in the coin.
+
+**Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0754 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0004 is refused when it is placed, since it rounds to nothing. Under five significant figures with a cap of one decimal, a limit at 1,234.56 rests at 1,234.6, where the step is 0.1, so under `through` a buy there fills only on a low of 1,234.5 or lower; one at 123,456.7 rests at 123,457, a whole number.
 
 <br>
 <br>

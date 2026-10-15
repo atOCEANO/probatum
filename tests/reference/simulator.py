@@ -37,6 +37,17 @@ SNAP     = 10**9     # Funding: a stamp within a second of a row boundary is on 
 
 Bar  = collections.namedtuple("Bar", "open high low close volume")
 Tier = collections.namedtuple("Tier", "up_to leverage rate amount")
+
+
+def lots(size, lot):
+    """Sizes and dust: the whole lots in `size`, a size floating point left a hair
+    under a whole number of lots kept at that number."""
+    return math.floor(size / lot + 1e-9)
+
+
+def power(k):
+    """Sizes and dust: `10^k`, exact for `k >= 0` and `1 / 10^-k` below zero."""
+    return float(10 ** k) if k >= 0 else 1.0 / float(10 ** -k)
 # a leg of the liquidation path: its price runs from start to end as s runs 0 to 1
 Leg = collections.namedtuple("Leg", "instrument q entry start end")
 # a leg of the check: it joins the path at frac, at start, and runs on to end; one a
@@ -100,6 +111,13 @@ class Instrument:
 
         if kind == "inverse" and not float(contract) > 0.0:
             raise ValueError(f"contract: {contract!r} is not a positive value")
+
+        # Sizes and dust: the significant-figure rule is Hyperliquid's, whose
+        # perpetuals are linear, and it comes with its cap on decimals
+        if sigfigs is not None and (kind == "inverse" or tick or decimals is None):
+            raise ValueError(f"sigfigs: {sigfigs!r} beside kind {kind!r}, tick {tick!r} "
+                             f"and decimals {decimals!r}; give a linear or spot "
+                             f"instrument its figures and their cap, and no tick")
 
         if tiers_by not in ("notional", "quantity"):
             raise ValueError(f"tiers_by: {tiers_by!r}; use notional or quantity")
@@ -200,6 +218,40 @@ class Instrument:
     def units(self, amount, p):
         """The size a value order of `amount` fills at `p`."""
         return amount / self.contract if self.kind == "inverse" else amount / p
+
+
+    # Sizes and dust: the price rule
+
+    def figures_at(self, p):
+        """The decimals the significant-figure rule keeps at `p`, a whole number
+        always allowed."""
+        e = 0
+
+        while e < 22 and abs(p) >= power(e + 1):
+            e += 1
+        while e > -22 and abs(p) < power(e):
+            e -= 1
+
+        return min(max(self.sigfigs - 1 - e, 0), self.decimals)
+
+
+    def on_grid(self, p):
+        """`p` on the price rule's grid: the nearest tick, or the significant figures
+        kept within the cap, ties to even."""
+        if self.sigfigs is not None:
+            d = self.figures_at(p)
+            return round(p * power(d)) / power(d)
+        if self.tick > 0.0:
+            return round(p / self.tick) * self.tick
+        return p
+
+
+    def step(self, p):
+        """The price rule's step at `p`, its tick or `10^-d`, and none without a
+        rule."""
+        if self.sigfigs is not None:
+            return power(-self.figures_at(p))
+        return self.tick
 
 
 class Venue:
@@ -748,7 +800,7 @@ class Simulator:
         if not self.venue.sizes or lot <= 0.0:
             return size
 
-        rounded = math.floor(round(size / lot, 9)) * lot
+        rounded = lots(size, lot) * lot
         if rounded < size - DUST:
             self.hit("a size rounded down to the lot")
         return rounded
@@ -756,27 +808,16 @@ class Simulator:
 
     def round_price(self, i, price):
         """Fills, Sizes and dust: to the nearest tick, or to Hyperliquid's rule."""
-        inst = self.instruments[i]
         if not self.venue.sizes or price is None or not math.isfinite(price):
             return price
-
-        if inst.sigfigs is not None:
-            digits = inst.sigfigs - 1 - int(math.floor(math.log10(abs(price))))
-            if inst.decimals is not None:
-                digits = min(digits, inst.decimals)
-            return round(price, digits)
-
-        if inst.tick > 0.0:
-            return round(price / inst.tick) * inst.tick
-
-        return price
+        return self.instruments[i].on_grid(price)
 
 
     def remainder_done(self, i, remaining):
-        """An order retires when what remains of it can no longer fill."""
+        """An order retires when what remains of it rounds down to no lot."""
         lot = self.instruments[i].lot
         if self.venue.sizes and lot > 0.0:
-            return remaining < lot - DUST
+            return lots(remaining, lot) <= 0
         return remaining <= self.dust(i)
 
 
@@ -1211,7 +1252,7 @@ class Simulator:
             unit = inst.notional(1.0, close)
             leg  = weight * equity / unit - self.position[i]
             if self.venue.sizes and inst.lot > 0.0:
-                leg = math.trunc(round(leg / inst.lot, 9)) * inst.lot
+                leg = math.copysign(lots(abs(leg), inst.lot) * inst.lot, leg)
 
             if abs(leg) <= self.dust(i):
                 continue
@@ -2351,11 +2392,11 @@ class Simulator:
 
         if order["kind"] == "limit":
             price = order["price"]
-            # through needs the market a tick past the limit; prices sit on the tick,
-            # so half a tick past is a whole one without a float landing short of it
+            # through needs the market a step past the limit; prices sit on the grid,
+            # so half a step past is a whole one without a float landing short of it
             past = (price - bar.low) if side == "buy" else (bar.high - price)
             if self.venue.limit == "through":
-                reached = past >= inst.tick / 2.0
+                reached = past >= inst.step(price) / 2.0
             else:
                 reached = past >= 0.0
             opened_through = bar.open <= price if side == "buy" else bar.open >= price
