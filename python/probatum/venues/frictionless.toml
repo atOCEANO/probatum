@@ -1,0 +1,15 @@
+[venue]
+name = "frictionless"
+taken = "2026-10-15"
+
+[defaults]
+fees = { maker = 0.0, taker = 0.0 }
+funding = "none"
+
+[defaults.fills]
+limit = "touch"
+liquidity = { budget = 1.0 }
+spread = "none"
+slippage = "none"
+impact = "none"
+sizes = "off"
