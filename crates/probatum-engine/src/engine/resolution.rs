@@ -878,14 +878,17 @@ mod tests {
     }
 
     #[test]
-    fn a_buy_limit_at_99_40_fills_on_touch_and_through_only_a_tick_past() {
+    fn a_buy_limit_at_99_40_fills_on_touch_and_through_half_a_tick_past() {
         let tick = Sizes {
             prices: PriceRule::Tick(0.01),
             ..Sizes::default()
         };
+        // half a tick past the limit, 99.395, and not a whole one nor the limit itself
         for (limit, low, fills) in [
             (Limit::Touch, 99.40, true),
             (Limit::Through, 99.40, false),
+            (Limit::Through, 99.398, false),
+            (Limit::Through, 99.394, true),
             (Limit::Through, 99.39, true),
         ] {
             let candles = Candles::new(vec![

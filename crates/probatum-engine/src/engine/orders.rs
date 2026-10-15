@@ -7,7 +7,7 @@
 
 use probatum_core::{Order, OrderId, OrderType, Price, Qty, Side, TimeInForce};
 
-use super::Engine;
+use super::{Engine, CLOSE_EPS};
 use crate::execution::positive;
 use crate::reporter::{EventKind, EventReason, OrderEvent, Refusal};
 
@@ -66,43 +66,50 @@ impl Engine {
     }
 
     /// Hold `order` to its instrument's sizes as it is placed: its size rounded down
-    /// to the lot and held to the maximum order quantity, the hold logged as a clamp,
-    /// and why it is refused where it rounds to no lot or its notional at the last
-    /// close falls short of the minimum, which a reduce-only order escapes where the
-    /// venue spares it (Specification, Sizes and dust).
+    /// to the lot and held to the maximum order quantity rounded down to the lot, the
+    /// hold logged as a clamp, and why it is refused where it rounds to no lot, its
+    /// notional at the last close falls short of the minimum, which a reduce-only
+    /// order escapes where the venue spares it, or a replace held to the maximum
+    /// leaves less than a lot to fill (Specification, Sizes and dust).
     fn sized(&mut self, order: &mut Order) -> Option<Refusal> {
         let i = order.instrument;
         let sizes = self.candles.sizes(i);
         let size = order.size.get();
         let rounded = sizes.down(size);
-        if rounded <= 0.0 {
+        // a lot past every float, or so small a size over it is, rounds to no number
+        if rounded <= 0.0 || !rounded.is_finite() {
             return Some(Refusal::Lot {
                 size,
                 lot: sizes.lot,
             });
         }
-        let held = if rounded > sizes.max_qty {
+        let most = sizes.down(sizes.max_qty);
+        let held = if rounded > most {
             let asked = EventReason::HeldTo { asked: rounded };
-            let (id, max) = (order.id, sizes.max_qty);
+            let id = order.id;
             self.log_event(
                 EventKind::Clamped,
                 Some(id),
                 Some(i),
-                Some(max),
+                Some(most),
                 None,
                 asked,
             );
-            max
+            most
         } else {
             rounded
         };
         order.size = Qty(held);
         let exempt = order.reduce_only && sizes.reduce_only_exempt;
-        if held * self.marks[i] < sizes.min_notional && !exempt {
+        if (held * self.marks[i]).abs() < sizes.min_notional && !exempt {
             return Some(Refusal::MinNotional {
                 size: held,
                 least: sizes.min_notional,
             });
+        }
+        let left = order.remaining().get();
+        if sizes.spent(left, CLOSE_EPS) {
+            return Some(Refusal::Size(left));
         }
         None
     }
@@ -1400,5 +1407,48 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn a_maximum_off_the_lot_holds_an_order_to_the_lot_below_it() {
+        // a maximum of 1.0005 under a lot of 0.001 holds a buy of 5 to 1.000
+        let sizes = Sizes {
+            lot: 0.001,
+            max_qty: 1.0005,
+            ..Sizes::default()
+        };
+        let config = EngineConfig {
+            sizes: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(series().with_sizes(sizes), config);
+        e.reset();
+        e.market_buy(5.0).expect("held and placed");
+        assert_eq!(e.pending[0].size.get(), 1.0);
+    }
+
+    #[test]
+    fn a_replace_that_leaves_less_than_a_lot_to_fill_is_refused() {
+        // a buy of 1.0 that a budget of 0.6 filled 0.6 of, replaced by 0.05 more, is
+        // 0.65, which rounds to the 0.6 it filled under a lot of 0.1
+        let candles = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 0.6),
+            ohlc(100.0, 100.0, 95.0, 100.0, 0.6),
+        ])
+        .with_sizes(Sizes {
+            lot: 0.1,
+            ..Sizes::default()
+        });
+        let config = EngineConfig {
+            sizes: true,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        let id = e.limit_buy(1.0, 99.0).expect("rests");
+        assert!((e.step().position - 0.6).abs() < 1e-12);
+        assert_eq!(e.replace(id, Some(0.05), None, None), None);
+        let refused = log(&e).last().expect("the refusal is logged").reason;
+        assert_eq!(refused, EventReason::Replacing(Refusal::Size(0.0)));
     }
 }

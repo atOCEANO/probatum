@@ -46,7 +46,8 @@ pub enum PriceRule {
 }
 
 impl PriceRule {
-    /// The decimals `figures` significant figures within `cap` keep at `price`.
+    /// The decimals `figures` significant figures within `cap` keep at `price`, a cap
+    /// past the 22 decimals whose powers of ten a double holds exactly read as 22.
     fn decimals(figures: u32, cap: u32, price: f64) -> i32 {
         let size = price.abs();
         let mut e = 0;
@@ -56,7 +57,7 @@ impl PriceRule {
         while e > -22 && size < power(e) {
             e -= 1;
         }
-        (figures as i32 - 1 - e).max(0).min(cap as i32)
+        (figures as i32 - 1 - e).max(0).min(cap.min(22) as i32)
     }
 
     /// `price` on the grid, ties to even.
@@ -84,7 +85,16 @@ impl PriceRule {
             PriceRule::Figures { figures, cap } => {
                 price - half(power(-Self::decimals(figures, cap, price)))
             }
-            PriceRule::Reciprocal(tick) => 1.0 / (1.0 / price + half(tick)),
+            // on the dollar price quoted, and never reached where a dollar buy sits
+            // within half a tick of zero
+            PriceRule::Reciprocal(tick) => {
+                let dollars = quoted(price) + half(tick);
+                if dollars > 0.0 {
+                    1.0 / dollars
+                } else {
+                    f64::INFINITY
+                }
+            }
         }
     }
 }
@@ -163,8 +173,13 @@ mod tests {
         assert_eq!(rule.round(1_234.56), 1_234.6);
         // a whole number is always allowed
         assert_eq!(rule.round(123_456.7), 123_457.0);
-        // the cap holds a small price to one decimal
+        // the cap holds a small price to one decimal, and one past 22 is read as 22
         assert_eq!(rule.round(99.987), 100.0);
+        let wide = PriceRule::Figures {
+            figures: 22,
+            cap: 30,
+        };
+        assert_eq!(wide.round(0.05), 0.05);
         // the step at 1,234.6 is 0.1, so a buy there under through needs a low half
         // of it below, which on prices on the grid is 1,234.5
         assert!((rule.through(Side::Buy, 1_234.6) - 1_234.55).abs() < 1e-9);
@@ -191,6 +206,13 @@ mod tests {
         assert!(near(rule.through(Side::Sell, x), 1.0 / (60_000.0 - 0.05)));
         assert!(near(rule.through(Side::Buy, x), 1.0 / (60_000.0 + 0.05)));
         assert!(near(rule.round(1.0 / 60_000.04), 1.0 / 60_000.0));
+        // a dollar sell at 49 under a tick of 1 is reached by a dollar high of 49.5
+        // exactly, read off the price quoted rather than the reciprocal taken twice
+        let one = PriceRule::Reciprocal(1.0);
+        assert_eq!(one.through(Side::Buy, 1.0 / 49.0), 1.0 / 49.5);
+        // and a dollar buy within half a tick of zero is never reached
+        let half = PriceRule::Reciprocal(0.5);
+        assert_eq!(half.through(Side::Sell, 1.0 / 0.2), f64::INFINITY);
         // a price at half a tick rounds as the dollar price quoted does, where its
         // reciprocal taken twice could land either side of the half
         for quoted in [60_000.05, 60_000.15, 60_000.25, 99.95] {

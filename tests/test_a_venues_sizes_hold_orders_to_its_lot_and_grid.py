@@ -1,7 +1,7 @@
 """A venue's sizes hold every order to its instrument's lot, price rule, minimum
-notional and largest size, and a limit under `through` fills once its bar trades a
-step of the price rule past it. The Specification's worked examples hold through the
-binding, and a rule no venue could hold is refused where it enters.
+notional and largest size, and a limit under `through` fills once its bar trades half
+a step of the price rule past it. The Specification's worked examples hold through
+the binding, and a rule no venue could hold is refused where it enters.
 """
 
 import re
@@ -16,10 +16,11 @@ def bars(*rows):
     return np.array(rows, dtype=np.float64)
 
 
-def test_a_lot_of_0_001_fills_0_075_of_a_budget_of_0_0754_and_refuses_0_0004():
+def test_a_lot_of_0_001_fills_0_075_of_a_budget_of_0_0756_and_refuses_0_0006():
+    # both round down where the nearest lot would round them up
     e = probatum.Engine(
-        bars((100.0, 100.0, 100.0, 100.0, 0.0754),
-             (100.0, 100.5, 98.5, 99.5, 0.0754)),
+        bars((100.0, 100.0, 100.0, 100.0, 0.0756),
+             (100.0, 100.5, 98.5, 99.5, 0.0756)),
         fee_taker = 0.0,
         fee_maker = 0.0,
         sizes     = True,
@@ -30,22 +31,25 @@ def test_a_lot_of_0_001_fills_0_075_of_a_budget_of_0_0754_and_refuses_0_0004():
     e.reset()
     e.limit_buy(0.2, 99.0)
 
-    assert e.market_buy(0.0004) is None
+    assert e.market_buy(0.0006) is None
 
     state = e.step()
+
     assert state.position == pytest.approx(0.075, abs=1e-12)
 
     [resting] = state.open_orders
     assert resting["remaining"] == pytest.approx(0.125, abs=1e-12)
 
     [refused] = [event for event in e.order_log() if event["kind"] == "refused"]
-    assert refused["reason"] == "size: 0.0004 rounds to nothing at a lot of 0.001"
+    assert refused["reason"] == "size: 0.0006 rounds to nothing at a lot of 0.001"
 
 
 @pytest.mark.parametrize("limit, low, fills", [("touch", 99.40, True),
                                                ("through", 99.40, False),
+                                               ("through", 99.398, False),
+                                               ("through", 99.394, True),
                                                ("through", 99.39, True)])
-def test_a_buy_limit_at_99_40_fills_on_touch_and_through_only_a_tick_past(limit, low,
+def test_a_buy_limit_at_99_40_fills_on_touch_and_through_half_a_tick_past(limit, low,
                                                                           fills):
     e = probatum.Engine(
         bars((100.0, 100.0, 100.0, 100.0, 1e6),
@@ -53,18 +57,18 @@ def test_a_buy_limit_at_99_40_fills_on_touch_and_through_only_a_tick_past(limit,
         limit = limit,
         tick  = 0.01,
     )
-    e.reset()
 
+    e.reset()
     e.limit_buy(1.0, 99.40)
 
     assert (e.step().position == 1.0) is fills
 
 
-@pytest.mark.parametrize("low, fills", [(1_234.6, False), (1_234.5, True)])
-def test_five_figures_with_a_cap_of_one_decimal_rest_1_234_56_at_1_234_6(low, fills):
+@pytest.mark.parametrize("low, fills", [(99.98, False), (99.9, True)])
+def test_five_figures_with_a_cap_of_one_decimal_rest_99_987_at_100_0(low, fills):
     e = probatum.Engine(
-        bars((1_300.0, 1_300.0, 1_300.0, 1_300.0, 1e6),
-             (1_300.0, 1_300.0, low, 1_250.0, 1e6)),
+        bars((101.0, 101.0, 101.0, 101.0, 1e6),
+             (101.0, 101.0, low, 100.5, 1e6)),
         quote    = 1e6,
         sizes    = True,
         limit    = "through",
@@ -73,11 +77,122 @@ def test_five_figures_with_a_cap_of_one_decimal_rest_1_234_56_at_1_234_6(low, fi
     )
 
     e.reset()
-    e.limit_buy(1.0, 1_234.56)
+    e.limit_buy(1.0, 99.987)
     e.limit_sell(1.0, 123_456.7)
     prices = [order["price"] for order in e.step().open_orders]
 
-    assert prices == ([123_457.0] if fills else [1_234.6, 123_457.0])
+    assert prices == ([123_457.0] if fills else [100.0, 123_457.0])
+
+
+@pytest.mark.parametrize("exempt", [False, True])
+def test_a_minimum_of_10_refuses_0_05_at_150_and_a_maximum_of_1_0005_holds_5_to_1(exempt):
+    e = probatum.Engine(
+        bars((150.0, 150.0, 150.0, 150.0, 1e6),
+             (150.0, 150.0, 150.0, 150.0, 1e6)),
+        market             = "perp",
+        sizes              = True,
+        lot                = 0.001,
+        min_notional       = 10.0,
+        max_qty            = 1.0005,
+        reduce_only_exempt = exempt,
+        report             = True,
+    )
+
+    e.reset()
+
+    assert e.market_buy(0.05) is None
+
+    spared = e.stop("sell", 0.05, 100.0, reduce_only=True)
+
+    assert (spared is not None) is exempt
+
+    held = e.market_buy(5.0)
+    [clamp] = [event for event in e.order_log() if event["kind"] == "clamped"]
+
+    assert (clamp["order"], clamp["size"]) == (held, 1.0)
+
+
+def test_a_sell_under_through_needs_half_a_tick_above_it():
+    for high, fills in [(100.60, False), (100.604, False), (100.606, True)]:
+        e = probatum.Engine(
+            bars((100.0, 100.0, 100.0, 100.0, 1e6),
+                 (100.2, high, 100.0, 100.4, 1e6)),
+            market = "perp",
+            limit  = "through",
+            tick   = 0.01,
+        )
+
+        e.reset()
+        e.limit_sell(1.0, 100.60)
+        assert (e.step().position == -1.0) is fills, high
+
+
+def test_an_inverse_limit_takes_half_a_dollar_tick_through():
+    # a dollar buy at 49 needs a dollar low of 48.5 under a tick of 1, and a dollar
+    # sell at 51 a high of 51.5, each read on the dollar price quoted
+    cases = [("buy", 49.0, (50.0, 50.0, 48.6, 50.0), 0.0),
+             ("buy", 49.0, (50.0, 50.0, 48.5, 50.0), 10.0),
+             ("sell", 51.0, (50.0, 51.4, 50.0, 50.0), 0.0),
+             ("sell", 51.0, (50.0, 51.5, 50.0, 50.0), -10.0)]
+
+    for side, price, bar, position in cases:
+        e = probatum.Engine(
+            bars((50.0, 50.0, 50.0, 50.0, 1e6), (*bar, 1e6)),
+            market   = "inverse",
+            contract = 100.0,
+            quote    = 1.0,
+            leverage = 0.0,
+            limit    = "through",
+            tick     = 1.0,
+        )
+        e.reset()
+        (e.limit_buy if side == "buy" else e.limit_sell)(10.0, price)
+        assert e.step().position == position, (side, bar)
+
+
+def test_a_tick_rounds_a_price_at_half_a_tick_to_even():
+    e = probatum.Engine(
+        bars((100.0, 100.0, 100.0, 100.0, 1e6),
+             (100.0, 100.0, 100.0, 100.0, 1e6)),
+        market = "perp",
+        sizes  = True,
+        tick   = 0.5,
+    )
+    e.reset()
+    e.limit_buy(1.0, 98.25)
+    e.limit_sell(1.0, 102.75)
+    prices = sorted(order["price"] for order in e.step().open_orders)
+
+    assert prices == [98.0, 103.0]
+
+
+def test_a_replace_and_a_bracket_take_the_grid_and_a_target_its_lot_and_transfer():
+    e = probatum.Engine(
+        bars(*[(100.0, 100.0, 100.0, 100.0, 1e6)] * 3),
+        market    = "spot",
+        quote     = {"spot": 1_000.0, "margin": 9_000.0},
+        fee_taker = 0.0,
+        sizes     = True,
+        tick      = 0.01,
+        lot       = 0.001,
+        max_qty   = 1.0,
+        report    = True,
+    )
+
+    e.reset()
+    order = e.limit_buy(0.5, 90.004)
+
+    assert e.replace(order, price=90.106) == order
+
+    # a target of half the equity wants 50 at the close of 100, which the maximum
+    # holds to 1, so the spot wallet's 1,000 covers it and nothing moves across
+    e.target(0.5, transfer=True)
+    state = e.step()
+
+    assert (state.position, state.spot_cash, state.margin_cash) == (1.0, 900.0, 9_000.0)
+
+    [resting] = state.open_orders
+    assert resting["price"] == pytest.approx(90.11, abs=1e-12)
 
 
 def test_an_inverse_lot_is_in_contracts_and_its_minimum_notional_in_the_coin():
@@ -114,6 +229,7 @@ def test_an_inverse_lot_is_in_contracts_and_its_minimum_notional_in_the_coin():
     (dict(min_notional=-5.0),
      "min_notional: -5; give the smallest notional an order may have, from 0"),
     (dict(max_qty=0.0), "max_qty: 0; give the largest size an order may have, above 0"),
+    (dict(lot=1.0, max_qty=0.5), "max_qty: 0.5; give a maximum of at least the lot of 1"),
     (dict(sigfigs=0, decimals=1), "sigfigs: 0; give a whole number from 1 to 22"),
     (dict(sigfigs=5, decimals=2.0), "decimals: 2.0; give a whole number from 0 to 22"),
     (dict(sigfigs=5), "sigfigs: 5 without decimals; give the decimal cap with it"),

@@ -130,8 +130,8 @@ impl Engine {
             }
             let q = self.account.positions[i].qty.get();
             let mut leg = weight * equity / close - q;
-            let sizes = self.candles.sizes(i);
-            if self.config.sizes {
+            let rules = self.config.sizes.then(|| self.candles.sizes(i));
+            if let Some(sizes) = rules {
                 leg = sizes.down(leg.abs()).copysign(leg);
             }
             if leg.abs() <= DUST || leg.abs() * close < tolerance * equity {
@@ -140,9 +140,10 @@ impl Engine {
             // with sizes on, a part below the minimum notional is skipped, a reducing
             // one only where the venue does not spare reduce-only orders
             let small = |size: f64, reduce_only: bool| {
-                self.config.sizes
-                    && size.abs() * close < sizes.min_notional
-                    && !(reduce_only && sizes.reduce_only_exempt)
+                rules.is_some_and(|sizes| {
+                    size.abs() * close < sizes.min_notional
+                        && !(reduce_only && sizes.reduce_only_exempt)
+                })
             };
             let grow = if q != 0.0 && (q + leg) * q < 0.0 {
                 if !small(q, true) {
@@ -602,6 +603,7 @@ mod tests {
             let config = EngineConfig {
                 quote: 10_000.0,
                 sizes: true,
+                report: true,
                 ..perp_cfg()
             };
             let mut e = Engine::new(Candles::new(vec![at, at]).with_sizes(sizes), config);
@@ -611,6 +613,9 @@ mod tests {
                 .expect("a perp may be targeted");
             let bought = legs.first().map(|_| e.pending[0].size.get());
             assert_eq!(bought.map(|size| (size * 1e6).round() / 1e6), buys);
+            // the target skips the part, where the queue would have logged a refusal
+            let events = e.reporter().expect("reporting is on").events();
+            assert!(events.iter().all(|event| event.kind != EventKind::Refused));
         }
     }
 }

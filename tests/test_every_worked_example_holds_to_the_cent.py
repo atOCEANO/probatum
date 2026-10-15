@@ -9,7 +9,8 @@ import math
 
 import pytest
 
-from reference.simulator import Bar, Instrument, Venue, edge, periods_per_year, run
+from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, periods_per_year,
+                                 run)
 
 HOUR = 3_600 * 10**9
 DAY  = 24 * HOUR
@@ -302,8 +303,10 @@ def test_a_post_only_buy_at_the_close_and_a_buy_crossing_its_own_sell_are_refuse
 
 @pytest.mark.parametrize("limit, low, fills", [("touch", 99.40, True),
                                                ("through", 99.40, False),
+                                               ("through", 99.398, False),
+                                               ("through", 99.394, True),
                                                ("through", 99.39, True)])
-def test_a_buy_limit_at_99_40_fills_on_touch_and_through_only_a_tick_past(limit, low,
+def test_a_buy_limit_at_99_40_fills_on_touch_and_through_half_a_tick_past(limit, low,
                                                                           fills):
     sim = run(hourly(2), [[flat(100.0)], [Bar(100.0, 100.2, low, 99.8, 1_000.0)]],
               [Instrument("BTCUSDT", tick=0.01)], Venue(limit=limit),
@@ -489,11 +492,12 @@ def test_six_bars_estimate_a_spread_of_0_1027_percent():
 
 
 def test_with_sizes_on_a_budget_cut_fill_rounds_down_to_the_lot():
-    bars  = [[flat(100.0, volume=0.0754)]] + [[Bar(100.0, 100.5, 98.5, 99.5, 0.0754)]]
+    # 0.0756 and 0.0006 round down where the nearest lot would round them up
+    bars  = [[flat(100.0, volume=0.0756)]] + [[Bar(100.0, 100.5, 98.5, 99.5, 0.0756)]]
     venue = Venue(sizes=True)
     sim   = run(hourly(2), bars, [Instrument("BTCUSDT", lot=0.001)], venue,
                 script={0: [("buy", dict(instrument=0, size=0.2, limit=99.0)),
-                            ("buy", dict(instrument=0, size=0.0004))]})
+                            ("buy", dict(instrument=0, size=0.0006))]})
     [fill] = sim.fills
 
     assert fill["size"] == pytest.approx(0.075, abs=1e-12)
@@ -504,18 +508,49 @@ def test_with_sizes_on_a_budget_cut_fill_rounds_down_to_the_lot():
     assert sim.orders[2]["status"] == "refused"
 
 
-@pytest.mark.parametrize("low, fills", [(1_234.6, False), (1_234.5, True)])
-def test_five_figures_with_a_cap_of_one_decimal_rest_1_234_56_at_1_234_6(low, fills):
-    bars  = [[flat(1_300.0)], [Bar(1_300.0, 1_300.0, low, 1_250.0, 1_000.0)]]
+@pytest.mark.parametrize("low, fills", [(99.98, False), (99.9, True)])
+def test_five_figures_with_a_cap_of_one_decimal_rest_99_987_at_100_0(low, fills):
+    # the cap leaves a step of 0.1 at 100.0, where five figures alone would keep
+    # 99.987 and step by 0.001
+    bars  = [[flat(101.0)], [Bar(101.0, 101.0, low, 100.5, 1_000.0)]]
     venue = Venue(sizes=True, limit="through")
     btc   = Instrument("BTC", sigfigs=5, decimals=1)
     sim   = run(hourly(2), bars, [btc], venue,
-                script={0: [("buy", dict(instrument=0, size=1.0, limit=1_234.56)),
-                            ("buy", dict(instrument=0, size=1.0, limit=123_456.7))]})
+                script={0: [("buy", dict(instrument=0, size=1.0, limit=99.987)),
+                            ("sell", dict(instrument=0, size=1.0, limit=123_456.7))]})
 
-    assert (sim.orders[1]["price"], sim.orders[2]["price"]) == (1_234.6, 123_457.0)
-    assert [fill["order"] for fill in sim.fills if fill["price"] == 1_234.6] == (
-        [1] if fills else [])
+    assert (sim.orders[1]["price"], sim.orders[2]["price"]) == (100.0, 123_457.0)
+    assert [fill["order"] for fill in sim.fills] == ([1] if fills else [])
+
+
+@pytest.mark.parametrize("exempt", [False, True])
+def test_a_minimum_of_10_refuses_0_05_at_150_and_a_maximum_of_1_0005_holds_5_to_1(exempt):
+    inst = Instrument(
+        "X",
+        lot                = 0.001,
+        min_notional       = 10.0,
+        max_qty            = 1.0005,
+        reduce_only_exempt = exempt,
+    )
+    sim = run(hourly(2), [[flat(150.0)], [flat(150.0)]], [inst], Venue(sizes=True),
+              script={0: [("buy", dict(instrument=0, size=0.05)),
+                          ("sell", dict(instrument=0, size=0.05, reduce_only=True)),
+                          ("buy", dict(instrument=0, size=5.0))]})
+
+    assert sim.orders[1]["status"] == "refused"
+    assert (sim.orders[2]["status"] != "refused") is exempt
+    assert sim.orders[3]["size"] == pytest.approx(1.0, abs=1e-12)
+
+
+def test_a_holding_of_0_0004_under_a_lot_of_0_001_is_swept_at_250_as_dust_of_0_1():
+    bars = [[flat(150.0)], [Bar(200.0, 260.0, 190.0, 250.0, 1_000.0)]]
+    sim  = Simulator(hourly(2), bars, [Instrument("X", kind="spot", lot=0.001)],
+                     Venue(sizes=True))
+    sim.position[0], sim.entry[0] = 0.0004, 100.0
+    sim.step()
+
+    assert sim.position[0]        == 0.0
+    assert sim.ledger[-1]["dust"] == pytest.approx(0.1, abs=1e-12)
 
 
 def test_a_bar_that_carries_half_a_bitcoin_and_buys_a_tenth_gains_266_0815():

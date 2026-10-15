@@ -99,7 +99,7 @@ From bar `t` to bar `t + 1`, in this order:
 6. Under the pessimistic setting, the perpetual fills that would reduce the position they meet, with their reference on the favourable side of where that position started on the bar, are held back when the path without them still reaches the trigger.
 7. The liquidation check runs along the path for the account as it now stands, and a liquidation cancels every perpetual order still standing. An ioc or fok limit the check leaves standing then expires, its one bar over.
 8. Funding owned by the bar is charged at the closes on the positions still held.
-9. Every position is marked at its close, and the ledger row is written.
+9. Every position is marked at its close, a position below half a lot is swept as dust where sizes hold ([Sizes and dust](#sizes-and-dust)), and the ledger row is written.
 
 An order decided at the close of bar `t` never fills on bar `t`.
 
@@ -192,14 +192,14 @@ Every rule is chosen in the venue. A preset uses the realistic option in each ro
 
 | Rule | Options | Plain default |
 | :--- | :--- | :--- |
-| limit fill | `touch`, or `through`, which needs the market to trade a step of the price rule past the limit | `touch` |
+| limit fill | `touch`, or `through`, which needs the market to trade half a step of the instrument's price rule past the limit, whether or not sizes hold | `touch` |
 | window | the bars the volume, the volatility and the spread estimate are read over | 24 |
 | liquidity | `budget(f)`, a share `f` of the trailing volume per bar and instrument, shared by every order | `budget(1.0)` |
 | spread | `none`, `fixed(bps)` or `estimated` | `none` |
 | slippage | `fixed(bps)` | 0 |
 | impact | `none`, `linear(k)` or `sqrt(k)` | `none` |
 | fees | maker and taker rates | maker 0.02%, taker 0.06% |
-| sizes | lot, price rule, minimum notional and maximum order quantity, or `off` | `off` |
+| sizes | rounding to the lot and the price rule, the minimum notional and the maximum order quantity, or `off` | `off` |
 
 ### The window
 
@@ -219,9 +219,9 @@ price = ref * (1 + side * (s / 2 + slip + imp)), held inside [low, high]
 
 ### Limits
 
-A limit fills at its own price, unless no trade from the last close through its bar reached that price, as when it was placed through the market or a bar that filled nothing left it there: then a buy fills at the highest of those trades and a sell at the lowest. Under `touch` a buy fills when the bar's low reaches its price; under `through` the low must reach half a step of the price rule below it, a whole step where the market's prices sit on the rule's grid, and with no price rule `through` is `touch` ([Sizes and dust](#sizes-and-dust)). A sell is the mirror, and on an inverse contract the step and the prices are in dollars.
+A limit fills at its own price, unless no trade from the last close through its bar reached that price, as when it was placed through the market or a bar that filled nothing left it there: then a buy fills at the highest of those trades and a sell at the lowest. Under `touch` a buy fills when the bar's low reaches its price; under `through` the low must reach half a step of the instrument's price rule below it, the step taken at the limit's price whether or not sizes hold, and with no price rule `through` is `touch` ([Sizes and dust](#sizes-and-dust)). A sell is the mirror, and on an inverse contract the step and the prices are in dollars.
 
-**Worked example.** A buy limit at 99.40, with a tick of 0.01, fills under `touch` on a low of 99.40, and under `through` only on a low of 99.39 or lower. A buy limit at 110 placed at a close of 100 fills as a taker on a next bar that opens at 96 with a high of 98, and since no trade from that close through the bar reached 110, it fills at 100.
+**Worked example.** A buy limit at 99.40, with a tick of 0.01, fills under `touch` on a low of 99.40, and under `through` only on a low of 99.395 or lower, 99.39 where prices sit on the tick. A buy limit at 110 placed at a close of 100 fills as a taker on a next bar that opens at 96 with a high of 98, and since no trade from that close through the bar reached 110, it fills at 100.
 
 ### The liquidity budget
 
@@ -273,18 +273,18 @@ give `s2 = 1.0553e-6`, a spread of 0.1027% of the price. A buy whose reference i
 
 ### Sizes and dust
 
-With sizes on, an order's size is rounded down to the lot when it is placed, and so is every fill's size after its clamps, and a limit or a trigger is rounded to the instrument's price rule: a fixed tick, or Hyperliquid's five significant figures within its decimal cap, where a whole-number price is always allowed. An order below the minimum notional at the last close is refused, a reducing one exempt where the venue exempts it; one above the maximum order quantity is clamped to it; and an order retires when what remains of it rounds down to no lot. A position that floating-point sums leave below half a lot is zeroed at the bar's close with no fee, and its value there is recorded as a dust adjustment. With sizes off, a fill of 1e-9 base units or less, or of 1e-9 dollars of contracts on an inverse contract, moves nothing, and an order retires at that remainder.
+With sizes on, an order's size is rounded down to the lot when it is placed, and so is every fill's size after its clamps, and a limit or a trigger is rounded to the instrument's price rule: a fixed tick, or Hyperliquid's five significant figures within its decimal cap, where a whole-number price is always allowed. An order below the minimum notional at the last close is refused, a reduce-only one exempt where the venue exempts it, and one given in the quote currency is judged by its amount. An order above the maximum order quantity is held to that maximum rounded down to the lot, and one given in the quote currency fills no more than that; a maximum below a lot is refused where the venue is built. A placement that leaves less than a lot to fill is refused, and an order retires when what remains of it rounds down to no lot. A replace is held to these as a placement, its size what it filled and the new size together. A bracket's legs, which close the position they find, take the price rule but not the lot or the bounds when they are placed. A position that floating-point sums leave below half a lot is zeroed at the bar's close with no fee: its value there, the holding's on spot and its unrealized profit on a perpetual, is recorded as a dust adjustment, and its round trip ends with the reason `dust`, its bracket with it. With no lot, a fill of 1e-9 base units or less, or of 1e-9 dollars of contracts on an inverse contract, moves nothing, and an order retires at that remainder.
 
 ```text
 lot       q = lot * floor(q / lot + 1e-9)
 tick      p = tick * round_half_even(p / tick)
 figures   p = round_half_even(p * 10^d) / 10^d,  d = min(max(figures - 1 - e, 0), cap),
-          where 10^e <= abs(p) < 10^(e + 1)
+          where 10^e <= abs(p) < 10^(e + 1), e from -22 to 22
 ```
 
-The `1e-9` keeps a size that floating point left a hair under a whole number of lots at that number, and a target's leg is rounded the same way toward zero. `10^k` is exact for `k >= 0` and is `1 / 10^-k` below zero. The step of a price rule at a price is its tick, or `10^-d` under significant figures. The significant-figure rule is Hyperliquid's, whose perpetuals are linear, so an inverse contract takes a tick, in dollars; its lot and maximum order quantity are in contracts and its minimum notional in the coin.
+The `1e-9` keeps a size that floating point left a hair under a whole number of lots at that number, and a target's leg is rounded the same way toward zero. It can so carry a fill a billionth of a lot past what its clamps allowed: on spot the wallet takes that back ([Wallets](#wallets)), and on a perpetual it can leave the position that far past a cap or a tier's bound. `10^k` is exact for `k >= 0` and is `1 / 10^-k` below zero. The step of a price rule at a price is its tick, or `10^-d` under significant figures, taken at the limit's own price even where the grid below it is finer. The significant-figure rule is Hyperliquid's, whose perpetuals are linear: its cap is 6 decimals less the asset's size decimals on a perpetual and 8 less on spot, and its lot is `10^-szDecimals`. An inverse contract takes a tick, in dollars, its lot and maximum order quantity are in contracts and its minimum notional in the coin, and a limit or a trigger rounded to zero, which has no reciprocal, is refused.
 
-**Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0754 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0004 is refused when it is placed, since it rounds to nothing. Under five significant figures with a cap of one decimal, a limit at 1,234.56 rests at 1,234.6, where the step is 0.1, so under `through` a buy there fills only on a low of 1,234.5 or lower; one at 123,456.7 rests at 123,457, a whole number.
+**Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0756 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0006 is refused when it is placed, since it rounds to nothing. With a minimum notional of 10 at a close of 150, a buy of 0.05 is refused, and a reduce-only sale of 0.05 is placed where the venue spares those; with a maximum of 1.0005, a buy of 5 is held to 1.000. Under five significant figures with a cap of one decimal, a limit at 99.987 rests at 100.0, where the cap leaves a step of 0.1, so under `through` a buy there fills on a low of 99.9 but not of 99.98; one at 123,456.7 rests at 123,457, a whole number. A holding of 0.0004 that floating point leaves under a lot of 0.001 is zeroed at a close of 250, and its 0.1 is recorded as dust.
 
 <br>
 <br>
@@ -327,7 +327,7 @@ Six fills make two closed round trips and an open one, and `num_trades` is 2.
 
 ## Wallets
 
-- The spot wallet holds cash and spot holdings. A buy is clamped to what its cash pays for, fee included, and a sell to its holding; it never borrows and is never liquidated.
+- The spot wallet holds cash and spot holdings. A buy is clamped to what its cash pays for, fee included, and a sell to its holding; it never borrows and is never liquidated. A fill that floating point leaves a hair below zero, as a cash clamp or a lot's tolerance can, by no more than a hundred-millionth of its notional, leaves the wallet at zero, the difference recorded as a negative dust adjustment.
 - The margin wallet holds the collateral behind every perpetual, in cross margin.
 - A transfer is applied at the start of the bar after it was decided, before any fill. A transfer out of the margin wallet is clamped to the cash the wallet holds, so unrealized profit cannot be moved, and so that the margin left still covers the cap's requirement; one out of the spot wallet is clamped to its cash; a clamped transfer is an order-log event. With the cap off nothing is required, so a transfer can take a margin wallet holding an unrealized loss to zero equity, at or past its trigger, and the account is then liquidated at the last marks, before the bar opens.
 - Account equity is the sum of both wallets. An account whose equity is at or below zero is terminal.

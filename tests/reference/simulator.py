@@ -114,6 +114,10 @@ class Instrument:
 
         # Sizes and dust: the significant-figure rule is Hyperliquid's, whose
         # perpetuals are linear, and it comes with its cap on decimals
+        if lot and max_qty < lot:
+            raise ValueError(f"max_qty: {max_qty}; give a maximum of at least the lot "
+                             f"of {lot}")
+
         if sigfigs is not None and (kind == "inverse" or tick or decimals is None):
             raise ValueError(f"sigfigs: {sigfigs!r} beside kind {kind!r}, tick {tick!r} "
                              f"and decimals {decimals!r}; give a linear or spot "
@@ -811,10 +815,28 @@ class Simulator:
         if not self.venue.sizes or price is None or not math.isfinite(price):
             return price
 
-        rounded = self.instruments[i].on_grid(price)
+        inst    = self.instruments[i]
+        rounded = inst.on_grid(price)
         if rounded != price:
-            self.hit("a price put on its rule's grid")
+            self.hit("a price put on significant figures" if inst.sigfigs is not None
+                     else "a price put on a tick")
         return rounded
+
+
+    def largest(self, i):
+        """Fills, Sizes and dust: the maximum order quantity rounded down to the lot."""
+        inst = self.instruments[i]
+        if inst.lot <= 0.0 or math.isinf(inst.max_qty):
+            return inst.max_qty
+        return lots(inst.max_qty, inst.lot) * inst.lot
+
+
+    def held(self, i, wanted):
+        """A value order's size, no more than the largest order where sizes hold."""
+        if self.venue.sizes and wanted > self.largest(i):
+            self.hit("an order held to the maximum quantity")
+            return self.largest(i)
+        return wanted
 
 
     def remainder_done(self, i, remaining):
@@ -858,8 +880,9 @@ class Simulator:
 
     def size_refusal(self, order):
         """Orders and Sizes: why an order's size cannot be placed, or None. With sizes
-        on it is rounded down to the lot, held to the maximum order quantity and
-        checked against the minimum notional at the last close."""
+        on it is rounded down to the lot, held to the maximum order quantity rounded
+        down to the lot and checked against the minimum notional at the last close,
+        and an order given in the quote currency is judged by its amount."""
         i    = order["instrument"]
         inst = self.instruments[i]
         if not self.listed[i]:
@@ -869,6 +892,11 @@ class Simulator:
             return "the instrument is delisted"
 
         if order["size"] is None:
+            amount = order["value"]
+            if self.venue.sizes and amount is not None and amount < inst.min_notional:
+                self.hit("an order below the minimum notional refused")
+                return (f"amount: {amount} is below the minimum notional of "
+                        f"{inst.min_notional}")
             return None
 
         if not math.isfinite(order["size"]) or order["size"] <= 0.0:
@@ -879,20 +907,28 @@ class Simulator:
 
         rounded = self.lot_down(i, order["size"])
         if rounded <= 0.0:
+            self.hit("a size rounded to no lot refused")
             return f"size: {order['size']} rounds to nothing at a lot of {inst.lot}"
-        if rounded > inst.max_qty:
+
+        most = self.largest(i)
+        if rounded > most:
             self.hit("an order held to the maximum quantity")
-            self.log("clamped", order, f"size: {rounded} held to {inst.max_qty}",
-                     size=inst.max_qty)
-            rounded = inst.max_qty
+            self.log("clamped", order, f"size: {rounded} held to {most}", size=most)
+            rounded = most
 
         order["size"] = rounded
-        exempt = order["reduce_only"] and inst.reduce_only_exempt
-        if abs(inst.notional(rounded, self.mark[i])) < inst.min_notional and not exempt:
-            self.hit("an order below the minimum notional refused")
-            return (f"size: {rounded} is below the minimum notional of "
-                    f"{inst.min_notional}")
 
+        if abs(inst.notional(rounded, self.mark[i])) < inst.min_notional:
+            if not (order["reduce_only"] and inst.reduce_only_exempt):
+                self.hit("an order below the minimum notional refused")
+                return (f"size: {rounded} is below the minimum notional of "
+                        f"{inst.min_notional}")
+            self.hit("a reduce-only order spared the minimum notional")
+
+        # a replace held to the maximum can leave less than a lot to fill
+        left = rounded - order["filled"]
+        if self.remainder_done(i, left):
+            return f"size: {left} cannot fill"
         return None
 
 
@@ -943,10 +979,15 @@ class Simulator:
         if why is not None:
             return why
 
-        if order["kind"] == "limit" and not math.isfinite(order["price"]):
+        # Sizes and dust: an inverse price rounded to zero has no reciprocal
+        def tradable(price):
+            inverse = self.instruments[i].kind == "inverse"
+            return math.isfinite(price) and (not inverse or price > 0.0)
+
+        if order["kind"] == "limit" and not tradable(order["price"]):
             return f"limit: {order['price']} is not a price"
 
-        if order["kind"] == "stop" and not math.isfinite(order["trigger"]):
+        if order["kind"] == "stop" and not tradable(order["trigger"]):
             return f"stop: {order['trigger']} is not a price"
 
         others = [o for o in self.resting(i) if o is not replacing]
@@ -1282,10 +1323,17 @@ class Simulator:
                 return (self.venue.sizes and abs(size) * unit < inst.min_notional
                         and not exempt)
 
-            if reduce != 0.0 and not small(reduce, True):
-                reducing.append((i, reduce))
-            if abs(grow) > self.dust(i) and not small(grow, False):
-                growing.append((i, grow))
+            if reduce != 0.0:
+                if small(reduce, True):
+                    self.hit("a target part skipped below the minimum notional")
+                else:
+                    reducing.append((i, reduce))
+
+            if abs(grow) > self.dust(i):
+                if small(grow, False):
+                    self.hit("a target part skipped below the minimum notional")
+                else:
+                    growing.append((i, grow))
 
         placed = []
         for legs, reduce_only in ((reducing, True), (growing, False)):
@@ -2247,14 +2295,14 @@ class Simulator:
             inst   = self.instruments[i]
             budget = self.budget_left.get(i, 0.0)
             if order["value"] is not None:
-                wanted = inst.units(order["value"], bar.open)
+                wanted = self.held(i, inst.units(order["value"], bar.open))
             else:
                 wanted = order["size"] - order["filled"]
 
             allowed = min(wanted, budget)
             price, costs = self.taker_price(i, side, bar.open, allowed, bar)
             if order["value"] is not None:
-                wanted  = inst.units(order["value"], price)
+                wanted  = self.held(i, inst.units(order["value"], price))
                 allowed = min(wanted, budget)
             if budget < wanted:
                 self.hit("the liquidity budget")
@@ -2600,7 +2648,10 @@ class Simulator:
                     self.cancel(order["id"], "its position closed")
                 done = self.position[i] == 0.0 and order["status"] == "resting"
             else:
-                done = self.remainder_done(i, order["size"] - order["filled"])
+                left = order["size"] - order["filled"]
+                done = self.remainder_done(i, left)
+                if done and left > self.dust(i):
+                    self.hit("an order retired below a lot")
             if done:
                 order["status"] = "filled"
                 self.slots[self.slots.index(order)] = None
@@ -2959,6 +3010,11 @@ class Simulator:
         if inst.kind == "spot":
             self.spot_cash -= fee
             self.spot_cash -= inst.notional(signed, price)
+            # Wallets: a hair below zero that floating point leaves is set to zero
+            if -1e-8 * abs(inst.notional(size, price)) <= self.spot_cash < 0.0:
+                self.hit("a spot wallet a fill left a hair below zero set to zero")
+                self.costs["dust"] += self.spot_cash
+                self.spot_cash = 0.0
         else:
             self.margin_cash -= fee
             self.margin_cash += realized

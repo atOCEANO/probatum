@@ -68,7 +68,7 @@ RULES = [
     "a position's exits reordered",
     "a post_only limit its first bar opened through",
     "a post_only order refused at the last close",
-    "a price put on its rule's grid",
+    "a price put on a tick",
     "a reduce_only order held to the position",
     "a reduce_only order with nothing to reduce",
     "a reducing fill bounded at a fee of its own",
@@ -76,10 +76,12 @@ RULES = [
     "a round trip closed",
     "a sale on the book and its backstop level both reached",
     "a size rounded down to the lot",
+    "a size rounded to no lot refused",
     "a sized leg gone with the position its fill closed",
     "a sizeless leg sized at a position the bar's fills moved",
     "a spot buy held to its cash",
     "a spot sale held to the holding",
+    "a spot wallet a fill left a hair below zero set to zero",
     "a stop triggered",
     "a take-profit cancelled as it armed against the account's own",
     "a takeover",
@@ -87,6 +89,7 @@ RULES = [
     "a target",
     "a target leg on an instrument yet to print",
     "a target leg skipped below the tolerance",
+    "a target part skipped below the minimum notional",
     "a target replaced in its decision",
     "a target's shortfall taken back",
     "a target's spot shortfall moved across",
@@ -109,6 +112,7 @@ RULES = [
     "an ioc or fok limit expiring after one bar",
     "an order below the minimum notional refused",
     "an order held to the maximum quantity",
+    "an order retired below a lot",
     "an order trading against the account's own refused",
     "an order waiting for its instrument's next bar",
     "book then backstop falling back to takeover",
@@ -150,11 +154,13 @@ SEVERAL_ONLY = {
     "the margin bound beside another perp",
 }
 ONE_ONLY = {"an inverse contract filled"}
-# with sizes on every fill is a whole number of lots, so no position the reference
-# books is left between the dust threshold and half a lot; and every instrument here
-# prints its first bar on the first row, so no target names one yet to print, which
-# the comparison over universes reaches
-UNREACHABLE = {"dust swept at the close", "a target leg on an instrument yet to print"}
+# with sizes on every fill is a whole number of lots, so neither a position the
+# reference books nor what an order has left to fill is ever between the dust
+# threshold and a lot; and every instrument here prints its first bar on the first
+# row, so no target names one yet to print, which the comparison over universes
+# reaches
+UNREACHABLE = {"dust swept at the close", "an order retired below a lot",
+               "a target leg on an instrument yet to print"}
 # random accounts seldom reach these, so a case built for each reaches it in the
 # comparison with the engine
 BUILT = {

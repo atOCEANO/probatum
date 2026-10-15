@@ -164,8 +164,6 @@ pub enum EventReason {
     /// A target's leg cancelled by a later target in the same decision.
     Retargeted,
     Liquidation,
-    /// A position below half a lot, zeroed at the close.
-    Dust,
 }
 
 /// One event in an order's life (ADR 0022).

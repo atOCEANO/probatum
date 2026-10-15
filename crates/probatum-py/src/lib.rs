@@ -665,6 +665,11 @@ fn rules_of(
             )))
         }
     };
+    if lot > 0.0 && max_qty < lot {
+        return Err(PyValueError::new_err(format!(
+            "{at}max_qty: {max_qty}; give a maximum of at least the lot of {lot}"
+        )));
+    }
     let figures = sigfigs
         .map(|value| whole(at, "sigfigs", value, 1, 22))
         .transpose()?;
@@ -1398,7 +1403,6 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::PositionClosed => "its position closed".to_string(),
         EventReason::PartnerFilled => "its OCO partner filled".to_string(),
         EventReason::Liquidation => "liquidation".to_string(),
-        EventReason::Dust => "dust".to_string(),
     }
 }
 

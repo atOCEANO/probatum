@@ -131,6 +131,8 @@ impl Engine {
                 price: fill.price.get(),
                 opened: applied - closed,
             });
+        } else if self.account.spot_cash < 0.0 {
+            self.spot_hair(applied * fill.price.get());
         }
         // where the position now stands started on the bar, and whether a fill inside
         // the bar opened it, a resting order's at a price the open had not reached,
@@ -211,7 +213,7 @@ impl Engine {
             FillReason::TakeProfit => EventReason::TakeProfit,
             FillReason::Rebalance => EventReason::Rebalance,
             FillReason::Liquidation => EventReason::Liquidation,
-            FillReason::Dust => EventReason::Dust,
+            FillReason::Dust => unreachable!("dust is swept at the close, never filled"),
         };
         self.log_event(
             EventKind::Filled,
@@ -320,6 +322,21 @@ impl Engine {
         }
     }
 
+    /// Set a spot wallet that a fill of `notional` left a hair below zero, as a cash
+    /// clamp or a lot's tolerance can, by no more than a hundred-millionth of that
+    /// notional, to zero, the hair booked as a negative dust adjustment, so the wallet
+    /// never borrows (Specification, Wallets).
+    #[cold]
+    fn spot_hair(&mut self, notional: f64) {
+        let cash = self.account.spot_cash;
+        if cash >= -1e-8 * notional.abs() {
+            if let Some(reporter) = self.reporter.as_mut() {
+                reporter.costs_mut().dust += cash;
+            }
+            self.account.spot_cash = 0.0;
+        }
+    }
+
     /// Zero each position floating-point sums left below half a lot, at the close
     /// and with no fee, its value at the close booked as the dust adjustment and its
     /// round trip and its bracket ended with it (Specification, Sizes and dust).
@@ -347,6 +364,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use super::Moment;
     use crate::candles::Candles;
     use crate::engine::fixtures::{
         cfg, crash_series, flat_series, levered, ohlc, perp_cfg, report_cfg, series,
@@ -1310,5 +1328,79 @@ mod tests {
         assert_eq!(state.quote, 10_000.0);
         let row = e.reporter().expect("reporting is on").ledger()[1];
         assert!((row.costs.dust - 0.1).abs() < 1e-12, "{}", row.costs.dust);
+    }
+
+    #[test]
+    fn a_perp_below_half_a_lot_is_swept_with_its_profit_and_its_round_trip() {
+        // a long of 0.0004 from 150 under a lot of 0.001 is zeroed at a close of 250,
+        // its 0.04 of profit there booked as dust and its round trip ended as dust,
+        // and with sizes off it stays
+        for on in [true, false] {
+            let sizes = Sizes {
+                lot: 0.001,
+                ..Sizes::default()
+            };
+            let config = EngineConfig {
+                sizes: on,
+                report: true,
+                quote: 10_000.0,
+                ..perp_cfg()
+            };
+            let mut e = Engine::new(series().with_sizes(sizes), config);
+            e.reset();
+            let fill = Fill {
+                side: Side::Buy,
+                size: Qty(0.0004),
+                price: Price(150.0),
+                is_taker: true,
+            };
+            let before = e.before_fill(0);
+            e.account.apply_fill(0, &fill, 0.0);
+            e.book_fill(
+                0,
+                0.0004,
+                150.0,
+                0.0,
+                before,
+                FillReason::Market,
+                Moment::InBar,
+            );
+            let state = e.step();
+            if !on {
+                assert_eq!(state.position, 0.0004);
+                continue;
+            }
+            assert_eq!((state.position, e.account.perps_held()), (0.0, 0));
+            let dust = e.reporter().expect("reporting is on").ledger()[1]
+                .costs
+                .dust;
+            assert!((dust - 0.04).abs() < 1e-12, "{dust}");
+            assert_eq!(e.round_trips()[0].reason, Some(FillReason::Dust));
+        }
+    }
+
+    #[test]
+    fn a_spot_buy_the_lot_rounds_up_past_its_cash_leaves_the_wallet_at_zero() {
+        // 99.99999995 of cash buys 0.9999999995 at 100, which the lot of 1 rounds up
+        // to 1, 5e-8 past the cash: the wallet ends at zero and the hair is dust
+        let sizes = Sizes {
+            lot: 1.0,
+            ..Sizes::default()
+        };
+        let config = EngineConfig {
+            sizes: true,
+            quote: 99.999_999_95,
+            ..report_cfg()
+        };
+        let at = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let mut e = Engine::new(Candles::new(vec![at, at]).with_sizes(sizes), config);
+        e.reset();
+        e.market_buy(5.0);
+        let state = e.step();
+        assert_eq!((state.position, state.quote), (1.0, 0.0));
+        let dust = e.reporter().expect("reporting is on").ledger()[1]
+            .costs
+            .dust;
+        assert!((dust + 5e-8).abs() < 1e-12, "{dust}");
     }
 }
