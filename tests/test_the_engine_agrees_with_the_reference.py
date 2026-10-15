@@ -95,10 +95,10 @@ SHARED = [
 
 
 def built(*actions, shaped):
-    """A case built by hand: three quiet bars at 100 and then `shaped`, an (open,
-    high, low, close), on a perpetual with 100 of margin at 10x and no fees,
-    slippage or funding, with an action decided at each quiet bar's close."""
-    bars  = [Bar(100.0, 100.0, 100.0, 100.0, 1e6)] * 3 + [Bar(*shaped, 1e6)]
+    """A case built by hand: a quiet bar at 100 for each action, decided at its close,
+    and then `shaped`, an (open, high, low, close), on a perpetual with 100 of margin
+    at 10x and no fees, slippage or funding."""
+    bars  = [Bar(100.0, 100.0, 100.0, 100.0, 1e6)] * len(actions) + [Bar(*shaped, 1e6)]
     times = [k * differential.HOUR for k in range(len(bars))]
     cfg   = dict(market="perp", quote=100.0, idle=0.0, fee_taker=0.0, fee_maker=0.0,
                  slippage_bps=0.0, max_open_orders=8, leverage=10.0, funding=("none",),
@@ -162,6 +162,23 @@ def joined_past_its_trigger():
                                       at("stop", "sell", 10.0, 90.0),
                                       shaped=(100.0, 100.0, 85.0, 92.0))
     cfg.update(quote=55.0, leverage=0.0, tiers=[(1e12, 50.0, 0.01, 0.0)])
+    return bars, times, cfg, actions
+
+
+def lifted_past_its_start():
+    """12 of margin at 50x and 1% maintenance, and a sell limit at 120 that holds the
+    first slot until it is cancelled, so a buy limit at 110 placed last fills ahead of
+    a buy stop at 102 and a reduce-only stop selling 2 at 105. On a bar from 100 up to
+    110 and down to 80 the limit fills at the open at 110 and the stop at 102 inside
+    the bar, where the long it grew now starts; the path from both fills reaches the
+    trigger where the first has fallen to about 104.24, and the bar is clipped there.
+    The stop at 105 meets the part after the fill at 102 opening at that clip, above
+    where the long started, so it is held back, and the liquidation cancels it."""
+    bars, times, cfg, actions = built(
+        at("limit", "sell", 1.0, 120.0), at("stop_entry", "buy", 1.0, 102.0),
+        at("stop", "sell", 2.0, 105.0), ("cancel", None, None, None),
+        at("limit", "buy", 1.0, 110.0), shaped=(100.0, 110.0, 80.0, 85.0))
+    cfg.update(quote=12.0, leverage=0.0, tiers=[(1e12, 50.0, 0.01, 0.0)])
     return bars, times, cfg, actions
 
 
@@ -353,6 +370,10 @@ BUILT = {
     # reaches before the reduce-only stop beyond it
     "a long opened inside the bar past its trigger before its stop": (
         "a bar clipped for a leg that joined it", joined_past_its_trigger()),
+    # a stop whose price the bar's orders put no further than where its long
+    # started, until a clip a fill sets lifts the part of the bar it meets past that
+    "a stop a clip lifts above where its long started": (
+        "a favourable exit held back on a liquidating bar", lifted_past_its_start()),
     # a long bought at the open already past its trigger, where the check's path
     # starts
     "a long past its trigger where it opened": (

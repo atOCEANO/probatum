@@ -1457,7 +1457,10 @@ class Simulator:
         """Whether the bar reaches a resting perpetual order that could be held back:
         one favourable to the position the resting orders find, or one priced beyond
         an order on the other side of its instrument, which could open the position
-        it would then reduce."""
+        it would then reduce. Where a perpetual keeps maintenance, an order beside
+        one on the other side of its instrument is enough, priced anywhere: that
+        order's fill can clip the bars, and the clip can lift the price the first
+        meets past where its position started (Liquidation, The rule, 3)."""
         offers = []
         for order in self.resting():
             i   = order["instrument"]
@@ -1474,8 +1477,10 @@ class Simulator:
                 continue
             offers.append((order, i, side, found[0]))
 
+        clips = any(self.has_maintenance(i) for i in self.perps())
+
         def beyond(side, price, at):
-            return price > at if side == "sell" else price < at
+            return clips or (price > at if side == "sell" else price < at)
 
         return any(self.favourable(order, price, t)
                    or any(j == i and other != side and beyond(side, price, at)
