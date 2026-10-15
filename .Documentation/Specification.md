@@ -95,7 +95,7 @@ From bar `t` to bar `t + 1`, in this order:
 2. Funding stamped after bar `t`'s end and up to bar `t + 1`'s open is charged at the last marks ([Funding](#funding)).
 3. The liquidation path is solved for the positions carried in ([Liquidation](#liquidation)): the account is liquidated before the bar opens, or every held perpetual's bar is clipped at the clip point, or nothing happens.
 4. Pending market orders fill at the open of the clipped bars, in the order they were placed. Where they opened, grew or flipped a perpetual of an account with maintenance, the bars are clipped again for the resting orders ([The rule](#the-rule), 3), as they are after each such fill of a resting order for the orders after it.
-5. Resting limits and stops resolve against the clipped bars in slot order. The exits of the position each fill meets, as the fills before it left that position, are reordered by the PnL per unit each would realize at its fill price, a stop's slippage included, worst first under the pessimistic setting, among the slots those exits hold, so a position the bar's own fills open has its exits ordered as a carried one's are; exits on different instruments are never reordered. An order that can only reduce meets a position a fill inside the bar opened, flipped or grew on the part of the bar after the last such fill ([What a bar cannot show](#what-a-bar-cannot-show)). Every reducing fill passes the margin bound.
+5. Resting limits and stops resolve against the clipped bars in slot order. The exits of the position each fill meets, as the fills before it left that position, are reordered by the PnL per unit each would realize at its fill price for all it asks, a stop's costs included, worst first under the pessimistic setting, among the slots those exits hold, so a position the bar's own fills open has its exits ordered as a carried one's are; exits on different instruments are never reordered. An order that can only reduce meets a position a fill inside the bar opened, flipped or grew on the part of the bar after the last such fill ([What a bar cannot show](#what-a-bar-cannot-show)). Every reducing fill passes the margin bound.
 6. Under the pessimistic setting, the perpetual fills that would reduce the position they meet, with their reference on the favourable side of where that position started on the bar, are held back when the path without them still reaches the trigger.
 7. The liquidation check runs along the path for the account as it now stands, and a liquidation cancels every perpetual order still standing. An ioc or fok limit the check leaves standing then expires, its one bar over.
 8. Funding owned by the bar is charged at the closes on the positions still held.
@@ -203,7 +203,7 @@ Every rule is chosen in the venue. A preset uses the realistic option in each ro
 
 ### The window
 
-For a fill on bar `t`, the window is the instrument's last `W` bars before `t`, or all of them when it has fewer. The trailing volume `V` is their mean volume. The volatility `sigma` is the sample standard deviation of their log returns from close to close, each measured from the bar before it, and zero when there are fewer than two.
+For a fill on bar `t`, the window is the instrument's last `W` bars before `t`, or all of them when it has fewer. The trailing volume `V` is their mean volume, in the units an order's size is in: base units, or contracts on an inverse instrument. The volatility `sigma` is the sample standard deviation of their log returns from close to close, each measured from the bar before it, and zero when there are fewer than two.
 
 ### A taker's price
 
@@ -213,7 +213,7 @@ price = ref * (1 + side * (s / 2 + slip + imp)), held inside [low, high]
 
 `ref` is the open, or for a stop the worse of its trigger and the open; `side` is +1 for a buy and -1 for a sell; `s` is the spread as a fraction of the price; `slip` the slippage; `imp` the impact; and `low` and `high` are the bar's range, clipped where the bar is clipped. `slip` and `imp` are floored at zero, and `s / 2 + slip + imp` is held at 0.99 at most. A buy never fills above the high and a sell never below the low. On an inverse contract the rates move the reciprocal of the price, `1 / price = (1 / ref) * (1 - side * (s / 2 + slip + imp))`, so each costs its rate of the coin notional at the reference, as a fee costs its rate of the notional at the fill ([Inverse contracts](#inverse-contracts)).
 
-`imp = k * sigma * sqrt(q / V)` under `sqrt(k)` and `k * sigma * q / V` under `linear(k)`, where `q` is the size the liquidity budget allows the fill, before the wallet's clamps, which then apply at the price that size set.
+`imp = k * sigma * sqrt(q / V)` under `sqrt(k)` and `k * sigma * q / V` under `linear(k)`, where `q` is the size the liquidity budget allows the fill, before the wallet's clamps, which then apply at the price that size set; an order given in the quote currency is sized for this at its reference. With `V` at zero the budget fills nothing, so only a sale on the book ([The forced close](#the-forced-close)) can fill there, and it pays no impact.
 
 **Worked example.** A buy of 0.141 BTC on a bar that opens at 21,012.00. An estimated spread of 0.6 bps adds 0.63, a slippage of 1 bp adds 2.10, and impact under `sqrt(0.1)`, with `sigma` 0.004 and `V` 24,800 BTC, adds `0.1 * 0.004 * sqrt(0.141 / 24,800) * 21,012 = 0.02`. The fill is at 21,014.75, below the bar's high, and the taker fee of 0.05% on 2,963.08 is 1.48.
 
@@ -225,7 +225,7 @@ A limit fills at its own price, unless no trade from the last close through its 
 
 ### The liquidity budget
 
-On each bar an instrument's fills may take `f * V` in all, consumed in resolution order: market orders in placement order, then resting orders by slot, buys and sells together. A forced close is not limited by it, even on a bar that printed no volume, where every other order fills nothing.
+On each bar an instrument's fills may take `f * V` in all, consumed in resolution order: market orders in placement order, then resting orders in the order they resolve ([The order of events](#the-order-of-events), 5), buys and sells together. A forced close is not limited by it, even on a bar that printed no volume, where every other order fills nothing.
 
 **Worked example.** Under `budget(0.1)` with a trailing volume of 50 BTC, the bar holds 5 BTC. Five market orders of 2 BTC fill 2, 2 and 1 BTC, and the last two fill nothing; each market order's unfilled part is cancelled, as a market order lives one bar.
 
@@ -256,7 +256,7 @@ s2 = (v2 * e1 + v1 * e2) / (v1 + v2), or (e1 + e2) / 2 when v1 + v2 is not posit
 s  = sqrt(max(s2, 0))
 ```
 
-`[a]` is 1 when `a` holds and 0 otherwise. The estimate is undefined with fewer than three bars, with fewer than two pairs where `tau` is 1, or with `po` or `pc` at zero, and an undefined estimate is a spread of zero, which the fill log records.
+`[a]` is 1 when `a` holds and 0 otherwise. The estimate is undefined with fewer than three bars, with fewer than two pairs where `tau` is 1, or with `po` or `pc` at zero, and an undefined estimate is a spread of zero. So is a negative `s2`, where the authors' published code returns the root of its magnitude.
 
 **Worked example.** Six bars:
 
@@ -289,7 +289,7 @@ A fill of size `s` at price `p` pays `s * p * f`, at the maker or the taker rate
 
 ### Positions
 
-A fill that crosses zero closes the old side at its average entry, realizing the PnL on that part, and opens the remainder at the fill price. A same-side add volume-weights the entry. Cash moves only with the position, and money is float64, updated in event order.
+A fill that crosses zero closes the old side at its average entry, realizing the PnL on that part, and opens the remainder at the fill price. A same-side add volume-weights the entry. Cash moves only with the position, and money is float64, updated in event order, a fill's fee before the cash its trade moves.
 
 **Worked example.** A long of 1.0 at an average of 100 sells 1.5 at 110: the long closes, realizing 10.00 before fees, and a short of 0.5 opens at 110.
 
