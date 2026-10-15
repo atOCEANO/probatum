@@ -201,8 +201,12 @@ impl Engine {
             );
         }
         let fills = self.offers();
-        let hold = self.unseen.hold && self.may_hold(&fills) && self.liquidates_without(&fills);
-        self.fill_offers(fills, hold);
+        let (hold, decide) = if self.unseen.hold && self.may_hold(&fills) {
+            (self.liquidates_without(&fills), false)
+        } else {
+            (false, self.unseen.hold)
+        };
+        self.fill_offers(fills, hold, decide);
     }
 
     /// The end of the bar for the resting orders the check left standing, which a
@@ -460,7 +464,7 @@ impl Engine {
         let (entered, clips, clipped) = (self.entered.clone(), self.clips.clone(), self.clipped);
         let budget = self.budget.clone();
         let reporter = self.reporter.take();
-        let held = self.fill_offers(fills.to_vec(), true);
+        let held = self.fill_offers(fills.to_vec(), true, false);
         let liquidates = held && self.reaches_trigger();
         self.account = account;
         self.book = book;
@@ -539,8 +543,10 @@ impl Engine {
     /// Fill the offers in turn, each clamped against the account the ones before it
     /// left and the exits among them ordered as each comes up, with `hold` holding
     /// back each that would reduce the position it meets on the favourable side of
-    /// where that position started. Returns whether any was held back.
-    fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool) -> bool {
+    /// where that position started. With `decide`, the first clip a fill sets decides
+    /// that for the offers left, as the dry run decides it for a bar whose offers
+    /// could be held back from the start. Returns whether any was held back.
+    fn fill_offers(&mut self, mut fills: Vec<Offer>, hold: bool, decide: bool) -> bool {
         let mut held = false;
         // the instrument the last fill traded, whose offers alone it can have changed,
         // and whether it moved where the position there started
@@ -738,6 +744,13 @@ impl Engine {
                     if let Some(order) = self.book.get(offer.id) {
                         *offer = self.offer(order, &self.bar_for(offer.instrument));
                     }
+                }
+                // nothing before the clip could be held back, but the clip can lift
+                // what an exit meets past where its position started (The rule, 4)
+                if decide {
+                    let left = fills.split_off(k);
+                    let hold = self.liquidates_without(&left);
+                    return self.fill_offers(left, hold, false);
                 }
             }
         }

@@ -2191,6 +2191,56 @@ mod tests {
     }
 
     #[test]
+    fn a_pessimistic_bar_holds_back_a_stop_a_later_clip_lifts_above_its_longs_start() {
+        // the bar above under the pessimistic setting: the stop's reference, the clip
+        // at about 104.30, lies above where the long started, 102, so the bar first
+        // resolves without it; the long of 2 then reaches its trigger, and the
+        // liquidation closes it at the clip point and cancels the stop
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 50.0,
+            rate: 0.01,
+            amount: 0.0,
+        };
+        let candles = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 110.0, 80.0, 85.0, 1e6),
+        ])
+        .with_tiers(Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"));
+        let config = EngineConfig {
+            quote: 12.0,
+            slippage_bps: 50.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.stop(Side::Buy, 1.0, 102.0, false);
+        e.limit_buy(1.0, 110.0);
+        let stop = e.stop(Side::Sell, 2.0, 105.0, true);
+        let last = e.step();
+        // each of the long's two legs closes at its own price at the clip point
+        let reasons: Vec<FillReason> = priced(&e).iter().map(|&(reason, _)| reason).collect();
+        let closed = FillReason::Liquidation;
+        assert_eq!(
+            reasons,
+            [FillReason::Stop, FillReason::Limit, closed, closed]
+        );
+        assert_eq!((last.position, last.margin_cash), (0.0, 0.0));
+        let ended = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .iter()
+            .rev()
+            .find(|event| event.order == stop);
+        assert_eq!(
+            ended.map(|event| (event.kind, event.reason)),
+            Some((EventKind::Cancelled, EventReason::Liquidation))
+        );
+    }
+
+    #[test]
     fn a_gap_through_the_clip_point_liquidates_the_account_before_the_bar_opens() {
         // the last mark is 40,500 and the next bar opens at 40,010, so the gap
         // crosses the close point, 40,020.01, before the bar opens: the account is
