@@ -48,9 +48,9 @@ impl Engine {
         let mut equity = self.margin_equity_with(i, mark, s);
         if flipping {
             let rate = if fill.is_taker {
-                self.cost.fee_taker
+                self.costs[i].fee_taker
             } else {
-                self.cost.fee_maker
+                self.costs[i].fee_maker
             };
             equity -= pos.abs() * mark * rate;
         }
@@ -166,11 +166,11 @@ impl Engine {
     }
 
     /// The wallet a close of perp `i` at `price` is solved against: the margin
-    /// wallet's cash, and every other perp's unrealized PnL less the `fee` its own
-    /// close would pay, each at the fraction of its own bar's adverse move that
-    /// `price` sits at on the path of `i`'s position, so the account stays at or
-    /// above its close level.
-    pub(super) fn wallet_beside(&self, i: usize, fee: f64, price: f64) -> f64 {
+    /// wallet's cash, and every other perp's unrealized PnL less the fee its own
+    /// close would pay at its taker rate, each at the fraction of its own bar's
+    /// adverse move that `price` sits at on the path of `i`'s position, so the
+    /// account stays at or above its close level.
+    pub(super) fn wallet_beside(&self, i: usize, price: f64) -> f64 {
         let own = usize::from(!self.account.positions[i].is_flat());
         if self.account.perps_held() <= own {
             return self.account.margin_cash;
@@ -183,7 +183,7 @@ impl Engine {
                 continue;
             }
             let at = self.at_fraction(j, s);
-            wallet += position.unrealized(Price(at)) - qty.abs() * at * fee;
+            wallet += position.unrealized(Price(at)) - qty.abs() * at * self.costs[j].fee_taker;
         }
         wallet
     }
@@ -291,9 +291,9 @@ impl Engine {
             return;
         }
         let fee_rate = if fill.is_taker {
-            self.cost.fee_taker
+            self.costs[i].fee_taker
         } else {
-            self.cost.fee_maker
+            self.costs[i].fee_maker
         };
         let affordable = self.account.spot_cash / (price * (1.0 + fee_rate));
         if fill.size.get() > affordable {

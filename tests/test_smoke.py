@@ -531,6 +531,20 @@ def test_a_universe_s_instruments_take_the_venue_s_tiers_by_where_they_name_none
     assert played["fills"][0]["size"] == 10.0
 
 
+def test_a_spot_instrument_pays_its_own_rate_beside_a_perp_at_the_venues():
+    pair  = np.full((2, 2, 5), 60_000.0)
+    venue = dict(quote={"spot": 40_000.0, "margin": 40_000.0}, fee_taker=0.0005,
+                 fee_maker=0.0002,
+                 instruments=[dict(market="spot", fee_maker=0.001, fee_taker=0.001),
+                              dict(market="perp")])
+
+    played = probatum._probatum.run(pair, venue, {
+        0: [("buy", {"instrument": 0, "size": 0.5}),
+            ("sell", {"instrument": 1, "size": 0.5})]})
+
+    assert [fill["fee"] for fill in played["fills"]] == pytest.approx([30.0, 15.0])
+
+
 def test_a_universe_of_one_keeps_an_instrument_column_per_instrument():
     played = probatum._probatum.run(series()[:, None, :], None, {})
 
@@ -559,6 +573,10 @@ def test_a_universe_of_one_keeps_an_instrument_column_per_instrument():
      "instruments[1]: tiers 3.0 is not a list of rows"),
     (None, {"instruments": [{"tiers_by": "contracts"}, {}]}, {},
      'instruments[0]: tiers_by "contracts" is not a basis; use notional or quantity'),
+    (None, {"instruments": [{"fee_taker": -1.5}, {}]}, {},
+     "instruments[0]: fee_taker must be greater than -1.0"),
+    (None, {"instruments": [{}, {"fee_maker": "low"}]}, {},
+     "instruments[1]: fee_maker: 'low'; give a number"),
     (None, {"funding_instruments": [None]}, {}, "given without funding_times"),
     (None, {"funding_instruments": [-1]}, {}, "row 0 names instrument -1, of 2"),
     (None, {"fee": 0.001}, {}, "Engine.__new__() got an unexpected keyword argument 'fee'"),
@@ -1008,6 +1026,28 @@ def test_per_env_cost_randomization_varies_costs_across_envs():
 
     assert states[0]["quote"] == 9_800.0  # 10000 - 200
     assert states[1]["quote"] == 9_798.0  # 10000 - 200 - 0.01 * 200
+
+
+@pytest.mark.parametrize("own, quotes", [
+    ({}, [10_000.0, 9_998.0]),
+    ({"fee_taker": 0.001}, [9_999.8, 9_999.8]),
+])
+def test_a_per_env_fee_sets_the_venues_rate_and_not_an_instruments_own(own, quotes):
+    # every env buys 1 of the first perp at bar 1 open 200; env1's override of the
+    # venue's taker rate reaches it only where it charges the venue's rate
+    b = probatum.Batch(
+        np.stack([series(), series()], axis=1),
+        num_envs          = 2,
+        market            = "perp",
+        fee_taker         = 0.0,
+        fee_taker_per_env = np.array([0.0, 0.01], dtype=np.float64),
+        instruments       = [dict(market="perp", **own), dict(market="perp")],
+    )
+
+    b.reset_all()
+    states = b.step_all(np.array([1.0, 1.0], dtype=np.float64))
+
+    assert [state["quote"] for state in states] == pytest.approx(quotes)
 
 
 def test_per_env_cost_override_length_must_match_num_envs():

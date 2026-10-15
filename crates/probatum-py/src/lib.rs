@@ -862,8 +862,8 @@ fn in_units(units: Units, tiers: Tiers) -> PyResult<Tiers> {
 }
 
 /// Each instrument of a universe of `width` as `instruments` gives it, a dict per
-/// instrument with its `market` and its `tiers` and `tiers_by`, the venue's `market`
-/// and `tiers_by` where it names none.
+/// instrument with its `market`, its `tiers` and `tiers_by`, its size rules and its
+/// fee rates, the venue's where it names none.
 fn instruments_from(
     given: Vec<Bound<'_, PyDict>>,
     width: usize,
@@ -973,17 +973,30 @@ fn instruments_from(
             most,
             exempt,
         )?;
+        // a rate the instrument leaves out is the venue's, so the per-env fees of a
+        // batch reach it
+        let rate = |name: &str| -> PyResult<Option<f64>> {
+            match given(name)? {
+                Some(_) => {
+                    let rate = number(name, 0.0)?;
+                    a_rebate(&format!("instruments[{i}]: {name}"), rate).map(Some)
+                }
+                None => Ok(None),
+            }
+        };
         out.push(Instrument {
             market: Some(market),
             tiers,
             sizes: rules.sizes,
+            maker: rate("fee_maker")?,
+            taker: rate("fee_taker")?,
         });
     }
     Ok(out)
 }
 
 /// The settings an instrument of a universe takes by name.
-const SETTINGS: [&str; 10] = [
+const SETTINGS: [&str; 12] = [
     "market",
     "tiers",
     "tiers_by",
@@ -994,6 +1007,8 @@ const SETTINGS: [&str; 10] = [
     "min_notional",
     "max_qty",
     "reduce_only_exempt",
+    "fee_maker",
+    "fee_taker",
 ];
 
 /// Reject a fee rate at or below -1. A rebate larger than the notional turns the
@@ -3580,6 +3595,7 @@ fn build_series(
                     market: Some(named),
                     tiers,
                     sizes: rules.sizes,
+                    ..Instrument::default()
                 };
                 width
             ]

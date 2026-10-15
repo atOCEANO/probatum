@@ -216,7 +216,9 @@ pub struct Engine {
     candles: Candles,
     config: EngineConfig,
     fill_model: FillModel,
-    cost: FlatCostModel,
+    /// Each instrument's fee rates, its own where the venue gives it some and the
+    /// venue's otherwise (Specification, Fees).
+    costs: Box<[FlatCostModel]>,
     account: Account,
     book: RestingOrderBook,
     reporter: Option<Reporter>,
@@ -319,6 +321,11 @@ impl Engine {
         let capped = (0..width)
             .map(|i| config.max_leverage > 0.0 || !candles.tiers(i).rows().is_empty())
             .collect();
+        let venue = FlatCostModel {
+            fee_taker: config.fee_taker,
+            fee_maker: config.fee_maker,
+        };
+        let costs = (0..width).map(|i| candles.fees(i, venue)).collect();
         let mut engine = Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
@@ -326,10 +333,7 @@ impl Engine {
                 impact_model: config.impact_model,
                 spread: config.spread,
             },
-            cost: FlatCostModel {
-                fee_taker: config.fee_taker,
-                fee_maker: config.fee_maker,
-            },
+            costs,
             account: Account::universe(markets, spot, margin),
             book: RestingOrderBook::new(width * config.max_open_orders),
             reporter: if config.report {

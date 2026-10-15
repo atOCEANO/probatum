@@ -179,7 +179,7 @@ impl Engine {
                 if self.account.markets[i] == Market::Spot {
                     let placed = self.pending.last().map_or(0.0, |order| order.size.get());
                     let cost = placed.copysign(leg) * self.marks[i];
-                    needed += cost + cost.abs() * self.cost.fee_taker;
+                    needed += cost + cost.abs() * self.costs[i].fee_taker;
                 }
             }
         }

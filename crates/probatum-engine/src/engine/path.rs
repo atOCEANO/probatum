@@ -98,12 +98,13 @@ impl CheckLeg {
     }
 }
 
-/// Margin equity, the maintenance requirement and the notional held, at a point.
+/// Margin equity, the maintenance requirement and the fee closing every position
+/// would pay at its instrument's taker rate, at a point.
 #[derive(Clone, Copy, Debug)]
 struct Level {
     equity: f64,
     maintenance: f64,
-    notional: f64,
+    closing: f64,
 }
 
 impl Engine {
@@ -129,7 +130,7 @@ impl Engine {
     fn level(&self, legs: &[PathLeg], u: f64, wallet: f64) -> Level {
         let mut equity = wallet;
         let mut maintenance = 0.0;
-        let mut notional = 0.0;
+        let mut closing = 0.0;
         let mut k = 0;
         while k < legs.len() {
             let i = legs[k].i;
@@ -145,12 +146,12 @@ impl Engine {
             if self.maintains[i] {
                 maintenance += self.maintenance_of(i, size, held);
             }
-            notional += held;
+            closing += held * self.costs[i].fee_taker;
         }
         Level {
             equity,
             maintenance,
-            notional,
+            closing,
         }
     }
 
@@ -307,10 +308,9 @@ impl Engine {
         if maintained {
             return Some((trigger, trigger));
         }
-        let fee = self.cost.fee_taker;
         let close = |k: usize, u: f64| {
             let at = self.level(legs(k), u, wallet(k));
-            at.equity - fee * at.notional
+            at.equity - at.closing
         };
         let (mut k, mut s) = (trigger.piece, trigger.at);
         loop {

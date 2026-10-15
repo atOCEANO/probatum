@@ -374,13 +374,12 @@ impl Engine {
         trigger: Point,
         share: f64,
     ) -> bool {
-        let fee = self.cost.fee_taker;
         let mut kept = wallet(trigger.piece);
         for &(i, q, price) in closes {
             let (fill, _) = self.sale(closes, i, q, price, moment);
             let sold = fill.price.get();
             kept += q * (sold - self.account.positions[i].avg_entry.get());
-            kept -= (q * sold).abs() * fee;
+            kept -= (q * sold).abs() * self.costs[i].fee_taker;
         }
         let (_, requirement) = self.level_at(path, trigger, wallet(trigger.piece));
         kept >= share * requirement && !(self.unseen.backstop && self.reaches(path, &wallet, share))
@@ -439,7 +438,7 @@ impl Engine {
                 size: Qty(size),
                 ..fill
             };
-            let fee = size * sold * self.cost.fee_taker;
+            let fee = size * sold * self.costs[i].fee_taker;
             let before = self.before_fill(i);
             self.account.apply_fill(i, &fill, fee);
             self.book_fill(i, size, sold, fee, before, FillReason::Liquidation, moment);
@@ -485,7 +484,6 @@ impl Engine {
                 && self.account.positions[i].qty.get() != 0.0
                 && self.has_maintenance(i)
         });
-        let rate = if maintained { 0.0 } else { self.cost.fee_taker };
         for (k, &(i, q, price)) in closes.iter().enumerate() {
             // an instrument's last close takes what its position still holds, which
             // the closes of its other legs can leave a hair off their own size
@@ -504,6 +502,11 @@ impl Engine {
                 size: Qty(size),
                 price: Price(price),
                 is_taker: false,
+            };
+            let rate = if maintained {
+                0.0
+            } else {
+                self.costs[i].fee_taker
             };
             let fee = size * price * rate;
             let before = self.before_fill(i);
@@ -617,14 +620,14 @@ impl Engine {
         if !reduces {
             return 0.0;
         }
-        let fee = self.cost.fee_taker;
+        let fee = self.costs[i].fee_taker;
         let price = fill.price.get();
-        let wallet = self.wallet_beside(i, fee, price);
+        let wallet = self.wallet_beside(i, price);
         let closed = fill.size.get().min(position.abs());
         let rate = if fill.is_taker {
-            self.cost.fee_taker
+            self.costs[i].fee_taker
         } else {
-            self.cost.fee_maker
+            self.costs[i].fee_maker
         };
         // the size the fill closes pays its own fee and the rest of the position the
         // closing fee, so a maker's exit is held to the close point its own fee sets
@@ -2537,7 +2540,7 @@ mod tests {
         // short of 20 ETH, on a bar where BTC falls to 54,000 and ETH rises to 3,300.
         // Equity on the path is 10,000 - 12,000s and the closing fee a constant 60,
         // so both close where s is 0.8283, at 55,030.00 and 3,248.50
-        let mut e = bitcoin_and_ether((57_000.0, 3_150.0), Intrabar::Pessimistic);
+        let mut e = bitcoin_and_ether((57_000.0, 3_150.0), Intrabar::Pessimistic, None);
         let last = e.step();
         let reporter = e.reporter().expect("reporting is on");
         let closes: Vec<(usize, f64)> = reporter
@@ -2556,13 +2559,36 @@ mod tests {
     }
 
     #[test]
+    fn an_ether_short_at_its_own_taker_rate_moves_the_close_point_to_0_8256() {
+        // the same account with ETH at its own taker rate of 0.1%: the closing fee is
+        // 0.0005 * (60,000 - 6,000s) + 0.001 * 20 * (3,000 + 300s) = 90 + 3s, so both
+        // close where s is 9,910 / 12,003, at 55,046.24 and 3,247.69, for 92.48
+        let mut e = bitcoin_and_ether((57_000.0, 3_150.0), Intrabar::Pessimistic, Some(0.001));
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let closes: Vec<f64> = reporter
+            .fills()
+            .iter()
+            .filter(|fill| fill.reason == FillReason::Liquidation)
+            .map(|fill| fill.price)
+            .collect();
+        let [btc, eth] = closes.as_slice() else {
+            panic!("BTC and ETH closed: {closes:?}");
+        };
+        assert!((btc - 55_046.24).abs() < 0.005, "BTC closed at {btc}");
+        assert!((eth - 3_247.69).abs() < 0.005, "ETH closed at {eth}");
+        assert!((reporter.ledger()[2].costs.fees - 92.48).abs() < 0.005);
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
     fn the_optimistic_setting_liquidates_bitcoin_and_ether_only_where_every_path_does() {
         // the corners are BTC at 54,000 beside ETH at its low of 3,000 and ETH at
         // 3,300 beside BTC at its high of 60,000, and equity is 4,000 at each and at
         // closes of 57,000 and 3,150: a path exists that never reaches the trigger,
         // and the account survives the bar. Closing at 55,000 and 3,250 every path
         // ends at zero, so it is closed at the synchronous path's clip
-        let mut e = bitcoin_and_ether((57_000.0, 3_150.0), Intrabar::Optimistic);
+        let mut e = bitcoin_and_ether((57_000.0, 3_150.0), Intrabar::Optimistic, None);
         let last = e.step();
         assert_eq!(e.num_fills(), 2, "nothing but the two entries");
         assert!(
@@ -2570,7 +2596,7 @@ mod tests {
             "equity {}",
             last.equity
         );
-        let mut e = bitcoin_and_ether((55_000.0, 3_250.0), Intrabar::Optimistic);
+        let mut e = bitcoin_and_ether((55_000.0, 3_250.0), Intrabar::Optimistic, None);
         let last = e.step();
         let reporter = e.reporter().expect("reporting is on");
         let closes: Vec<f64> = reporter
@@ -2591,7 +2617,7 @@ mod tests {
     /// BTC at 60,000 and selling 20 ETH at 3,000 for fees of 30 each, then a bar
     /// where BTC falls to 54,000 and ETH rises to 3,300 and they close at `closes`;
     /// returned after the entry, the bar to come.
-    fn bitcoin_and_ether(closes: (f64, f64), intrabar: Intrabar) -> Engine {
+    fn bitcoin_and_ether(closes: (f64, f64), intrabar: Intrabar, ether: Option<f64>) -> Engine {
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let rows = [
             vec![flat(60_000.0), flat(3_000.0)],
@@ -2602,7 +2628,7 @@ mod tests {
             ],
         ]
         .concat();
-        let at = |leverage| Instrument {
+        let at = |leverage, taker| Instrument {
             market: Some(Market::Perp),
             tiers: Tiers::new(
                 TierBasis::Notional,
@@ -2614,11 +2640,14 @@ mod tests {
                 }],
             )
             .expect("a table"),
+            taker,
             ..Instrument::default()
         };
-        let bars = Candles::universe(rows, 2, None).with_instruments(vec![at(20.0), at(10.0)]);
+        let bars = Candles::universe(rows, 2, None)
+            .with_instruments(vec![at(20.0, None), at(10.0, ether)]);
         let config = EngineConfig {
-            quote: 10_060.0,
+            // the entries' fees leave 10,000
+            quote: 10_030.0 + 60_000.0 * ether.unwrap_or(0.0005),
             fee_taker: 0.0005,
             report: true,
             intrabar,

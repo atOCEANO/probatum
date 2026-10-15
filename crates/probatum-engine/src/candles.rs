@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use probatum_core::{Candle, Market, Tiers};
+use probatum_core::{Candle, FlatCostModel, Market, Tiers};
 
 use crate::clock::Clock;
 use crate::inverse::Units;
@@ -22,6 +22,10 @@ pub struct Instrument {
     pub tiers: Tiers,
     /// What the venue's sizes hold its orders to, and the grid its prices sit on.
     pub sizes: Sizes,
+    /// Its own maker rate, or `None` for the venue's.
+    pub maker: Option<f64>,
+    /// Its own taker rate, or `None` for the venue's.
+    pub taker: Option<f64>,
 }
 
 /// An immutable OHLCV series, or a universe of them, shared cheaply across envs.
@@ -155,6 +159,16 @@ impl Candles {
     /// Instrument `i`'s size and price rules.
     pub fn sizes(&self, i: usize) -> Sizes {
         self.instruments[i].sizes
+    }
+
+    /// Instrument `i`'s fee rates, each its own where it has one and the venue's
+    /// otherwise (Specification, Fees).
+    pub fn fees(&self, i: usize, venue: FlatCostModel) -> FlatCostModel {
+        let instrument = &self.instruments[i];
+        FlatCostModel {
+            fee_taker: instrument.taker.unwrap_or(venue.fee_taker),
+            fee_maker: instrument.maker.unwrap_or(venue.fee_maker),
+        }
     }
 
     /// The same series with each row's window of the last `bars` bars read for every

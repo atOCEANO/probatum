@@ -90,7 +90,7 @@ impl Engine {
         let priced = fill.price.get();
         let credit = self.bound_by_margin(i, &mut fill, candle);
         let applied = fill.size.get();
-        let fee = self.cost.fee(&fill);
+        let fee = self.costs[i].fee(&fill);
         let before = self.before_fill(i);
         // read once, before the account moves: after it, every read loads it again
         let perp = self.account.markets[i] == Market::Perp;
@@ -365,7 +365,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::Moment;
-    use crate::candles::Candles;
+    use crate::candles::{Candles, Instrument};
     use crate::engine::fixtures::{
         cfg, crash_series, flat_series, levered, ohlc, perp_cfg, report_cfg, series,
     };
@@ -374,7 +374,9 @@ mod tests {
     use crate::execution::FillCosts;
     use crate::reporter::{BarCosts, EventKind, FillReason, FillRecord, RoundTrip};
     use crate::sizes::Sizes;
-    use probatum_core::{Candle, Fill, Market, OrderId, Price, Qty, Side, Wallet};
+    use probatum_core::{
+        Candle, Fill, Market, OrderId, OrderType, Price, Qty, Side, TimeInForce, Wallet,
+    };
 
     fn fills(e: &Engine) -> &[FillRecord] {
         e.reporter().expect("reporting is on").fills()
@@ -1402,5 +1404,43 @@ mod tests {
             .costs
             .dust;
         assert!((dust + 5e-8).abs() < 1e-12, "{dust}");
+    }
+
+    #[test]
+    fn a_spot_buy_pays_its_own_rate_beside_a_perp_at_the_venues() {
+        // BTC on spot at its own 0.1% beside BTC on a perp at the venue's 0.05%: a
+        // taker buy of 0.5 on spot at 60,000 pays 30, and a sale of 0.5 on the perp 15
+        let at = ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6);
+        let spot = Instrument {
+            market: Some(Market::Spot),
+            maker: Some(0.001),
+            taker: Some(0.001),
+            ..Instrument::default()
+        };
+        let perp = Instrument {
+            market: Some(Market::Perp),
+            ..Instrument::default()
+        };
+        let bars = Candles::universe(vec![at; 4], 2, None).with_instruments(vec![spot, perp]);
+        let config = EngineConfig {
+            quote: 40_000.0,
+            idle_cash: 40_000.0,
+            fee_taker: 0.0005,
+            fee_maker: 0.0002,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let (market, ioc) = (OrderType::Market, TimeInForce::Ioc);
+        e.order_on(0, Side::Buy, 0.5, market, None, None, false, false, ioc);
+        e.order_on(1, Side::Sell, 0.5, market, None, None, false, false, ioc);
+        e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        let fees: Vec<f64> = fills.iter().map(|fill| fill.fee).collect();
+        assert!(
+            (fees[0] - 30.0).abs() < 1e-9 && (fees[1] - 15.0).abs() < 1e-9,
+            "{fees:?}"
+        );
     }
 }
