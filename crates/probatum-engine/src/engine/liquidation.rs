@@ -2144,6 +2144,53 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_through_at_the_fill_that_opened_its_long_fills_at_a_later_clip() {
+        // 12 of margin, at 50x and 1% maintenance, buys 1 on a stop at 102 inside a
+        // bar from 100, at 102.51 after 50 bps, then 1 more at 110 on a limit the
+        // open reached. The path from both fills reaches the trigger where the
+        // second has fallen to about 104.30, and the bar is clipped there. A
+        // reduce-only stop at 105, through at the first fill, meets the part of the
+        // bar after it, which opens at that clip, so the stop fills there with the
+        // clip as its reference and pays nothing
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 50.0,
+            rate: 0.01,
+            amount: 0.0,
+        };
+        let candles = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 110.0, 80.0, 85.0, 1e6),
+        ])
+        .with_tiers(Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"));
+        let config = EngineConfig {
+            quote: 12.0,
+            slippage_bps: 50.0,
+            intrabar: Intrabar::Optimistic,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.stop(Side::Buy, 1.0, 102.0, false);
+        e.limit_buy(1.0, 110.0);
+        e.stop(Side::Sell, 2.0, 105.0, true);
+        let last = e.step();
+        // both legs fall to 80 from their fills, and equity meets 1% of the notional
+        let first = 102.0 * 1.005;
+        let at = (12.0 - 0.01 * (first + 110.0)) / (0.99 * (first - 50.0));
+        let clip = 110.0 - 30.0 * at;
+        let reporter = e.reporter().expect("reporting is on");
+        let exit = reporter.fills()[2];
+        assert_eq!(exit.reason, FillReason::Stop);
+        assert!((exit.price - clip).abs() < 1e-9, "filled at {}", exit.price);
+        assert_eq!(exit.costs.reference, exit.price);
+        let slippage = reporter.ledger()[1].costs.slippage;
+        assert!((slippage - 0.51).abs() < 1e-9, "paid {slippage}");
+        assert_eq!(last.position, 0.0);
+    }
+
+    #[test]
     fn a_gap_through_the_clip_point_liquidates_the_account_before_the_bar_opens() {
         // the last mark is 40,500 and the next bar opens at 40,010, so the gap
         // crosses the close point, 40,020.01, before the bar opens: the account is

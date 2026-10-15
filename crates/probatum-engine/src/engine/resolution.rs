@@ -353,13 +353,20 @@ impl Engine {
     }
 
     /// The part of `bar` after the fill inside it that opened or flipped the position
-    /// on instrument `i`: it opens at the fill's reference and closes at the close,
-    /// reaches the extreme beyond the fill, and reaches the one on the open's side
-    /// where that extreme came after the fill, going no further that way than the
-    /// fill and the close otherwise (ADR 0012).
+    /// on instrument `i`: it opens at the fill's reference, or at the clip where one
+    /// after the fill tightened past it, and closes at the close, reaches the extreme
+    /// beyond the fill, and reaches the one on the open's side where that extreme
+    /// came after the fill, going no further that way than the fill and the close
+    /// otherwise (ADR 0012).
     fn after_fill(&self, i: usize, bar: &Candle) -> Candle {
-        let start = self.starts[i];
         let long = self.account.positions[i].qty.get() > 0.0;
+        // opened past the clip, the part would give a stop it reaches a reference
+        // outside it, and the fill held inside it would gain on that reference
+        let start = if long {
+            self.starts[i].max(bar.low)
+        } else {
+            self.starts[i].min(bar.high)
+        };
         // the price came to the fill from the open, so the extreme beyond it came
         // after it. The one on the open's side favours a position a limit opened,
         // and the setting places it, before the fill the worse way; it works against
