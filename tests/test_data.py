@@ -185,6 +185,21 @@ def test_a_column_order_that_keeps_the_high_above_the_low_is_refused_too():
     assert "not a bar" in str(excinfo.value)
 
 
+@pytest.mark.parametrize("row, says", [
+    ([100.0, 101.0, 0.0, 100.0, 1000.0], "candles: a low of 0 at row 1; give prices"),
+    ([-2.0, -1.0, -3.0, -2.0, 1000.0], "candles: a low of -3 at row 1; give prices"),
+    ([100.0, 101.0, 99.0, 100.0, -5.0], "candles: a volume of -5 at row 1; give a"),
+])
+def test_a_price_at_or_below_zero_or_a_negative_volume_is_refused(row, says):
+    # the window takes the logarithm of each close and the budget and the impact
+    # read the volume as a size, so neither has a meaning to repair (ADR 0007)
+    import probatum
+    data = np.array([[100.0, 101.0, 99.0, 100.0, 1000.0], row])
+
+    with pytest.raises(ValueError, match=says):
+        probatum.Engine(data)
+
+
 def test_a_bar_that_never_moved_is_still_a_bar():
     # every price equal is a real, if dull, candle and the rule is inclusive at
     # both ends, so a dead feed must not be refused as malformed

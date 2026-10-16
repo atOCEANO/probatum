@@ -225,8 +225,9 @@ fn candles_from_array(
     }
 }
 
-/// Refuse a bar with a value that is not finite, or whose four prices are not a
-/// bar, naming `at`, where it sits.
+/// Refuse a bar with a value that is not finite, whose four prices are not a bar,
+/// whose low is at or below zero or whose volume is negative, naming `at`, where it
+/// sits.
 fn check_bar(bar: &Candle, at: &str) -> PyResult<()> {
     // A bar's values are finite: a non-finite candle would silently poison every mark
     // and equity downstream, and a series of one instrument has no row without a bar.
@@ -254,6 +255,22 @@ fn check_bar(bar: &Candle, at: &str) -> PyResult<()> {
              <= open <= high and low <= close <= high, so check the column order, which \
              is open, high, low, close, volume",
             bar.open, bar.high, bar.low, bar.close
+        )));
+    }
+    // A price at or below zero has no logarithm for the window's deviation and no
+    // notional to size a fill by, and a negative volume reads as a negative size in
+    // the budget and the impact (ADR 0007); once the four are in order the low is
+    // the least of them
+    if bar.low <= 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "candles: a low of {} at {at}; give prices above 0",
+            bar.low
+        )));
+    }
+    if bar.volume < 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "candles: a volume of {} at {at}; give a volume of 0 or more",
+            bar.volume
         )));
     }
     Ok(())
@@ -3562,8 +3579,8 @@ fn build_series(
                 .position(|bar| !units.takes(bar.low));
             if let Some(row) = low {
                 return Err(PyValueError::new_err(format!(
-                    "candles: a low of {} at row {row}, which an inverse contract cannot \
-                     trade at; give prices above 0",
+                    "candles: a low of {} at row {row}, whose reciprocal an inverse \
+                     contract cannot count; give prices above 1e-308",
                     series.as_slice()[row].low
                 )));
             }

@@ -204,9 +204,9 @@ def test_an_inverse_contract_the_engine_cannot_hold_is_refused(settings, says):
         engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)), **settings)
 
 
-def test_a_price_at_zero_a_universe_and_a_transfer_are_refused():
-    with pytest.raises(ValueError, match="candles: a low of 0 at row 1, which an"):
-        engine(bars((1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 0.0, 1.0)))
+def test_a_price_with_no_reciprocal_a_universe_and_a_transfer_are_refused():
+    with pytest.raises(ValueError, match="candles: a low of 0.0+1 at row 1, whose "):
+        engine(bars((1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 1e-310, 1.0)))
 
     with pytest.raises(ValueError, match="market: an inverse contract for a universe"):
         probatum.Engine(np.ones((2, 1, 5)), market="inverse", contract=100.0)
