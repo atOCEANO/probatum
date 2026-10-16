@@ -175,6 +175,16 @@ print(cheaper.to_dict()["fees"])            # {'maker': 0.0002, 'taker': 0.0004}
 
 **A Venue does not change.** It is hashable, and equal to any venue with the same settings, however their numbers were written. `to_dict()` gives every setting as the constructor takes it, so `probatum.Venue(**venue.to_dict())` is the same venue, and its repr is the code that builds it, `probatum.venues.binance_perp.replace(max_open_orders=16)` or `probatum.Venue(fees=...)`. `replace(**changes)` gives a variant: `fees` and `fills` merge into the venue's own, a table in `kinds` or `instruments` merges into the one it names key by key and its fees side by side, a table given `None` is dropped, which the venue must hold, `liquidation="takeover"` drops a backstop the venue held, and every other setting is replaced whole; a change every kind's table overrides, such as `fees` on a combined preset, reaches no instrument and is refused. Every setting passes the checks a preset's pass as the venue is built, the Engine's own among them, so a variant is checked as a new venue is, and a refusal opens with the setting as it was passed, such as `fees.maker` or `instruments.BTCUSDT.tick`, and the value ([ADR 0007](Decisions.md)). `name`, `taken` and `kind` give the preset's name, the day its tables were taken and the kind of the instruments it lists, each None where it is not given.
 
+**A Data runs on a venue as one account.** Each instrument takes the venue's tables by its symbol, or as `kind:SYMBOL` on a venue of several kinds, a market the Data leaves out being the venue's, and the minimum notional and largest size the router gave it, each where no table of the venue gives one. The run reads the bars before a slice, which its window warms up on, leaves out the rows none of its instruments printed, as a selection from a wider universe holds, and where the venue's funding is `"data"`, reads the Data's funding events. Refused before it runs are:
+- an empty Data, and instruments at two venues;
+- an account whose cash would be two assets: perpetuals that settle in two, or spot pairs quoted in another asset than the account's;
+- an instrument with no market on a venue of several kinds, or of a kind the venue does not list;
+- an inverse contract whose bars do not give its size, or beside other instruments;
+- one balance for an account whose spot and perpetual instruments use both wallets, and two for an inverse contract's, which has one;
+- funding from the data where the Data holds none for a perpetual, which `Data.from_router(..., funding=True)` fetches;
+- significant figures with no decimals, and where the venue's sizes are on, an instrument it gives no lot or price rule, as a preset gives none for one it does not list;
+- and where the venue books then backstops, a perpetual it gives no maintenance.
+
 <br>
 
 ## Data input

@@ -1,7 +1,9 @@
 """The venue a run is on: its rules as one immutable object, a preset's or one built by
 hand, so a setting has one place to be given (ADR 0002)."""
 
+import collections
 import copy
+import dataclasses
 import datetime
 import functools
 import json
@@ -11,6 +13,7 @@ import numbers
 import numpy as np
 
 from . import venues
+from ._data import Data
 
 # the plain option in each row, which a venue's setting left out or given as None takes
 PLAIN = {"balance": 10_000.0, "fees": {"maker": 0.0002, "taker": 0.0006},
@@ -26,6 +29,11 @@ SHARED = tuple(name for name in venues.INSTRUMENT if name != "fees")
 SETTINGS = ("balance", "fees", "leverage", "liquidation", "backstop", "liquidation_fee",
             "max_open_orders", "fills", "intrabar", "funding") + SHARED + (
             "kinds", "instruments", "kind", "name", "taken")
+
+Run         = collections.namedtuple("Run", "candles settings start")
+Run.__doc__ = """What the Engine is built from to run a Data on a venue: the candles of
+every row up to the Data's last, the bars before its first among them for its window
+to read, the Engine's settings, and the row its first bar is on."""
 
 
 class Venue:
@@ -265,6 +273,175 @@ class Venue:
 
     def __deepcopy__(self, memo):
         return self
+
+
+def _run(venue, data, seed=None):
+    """What the Engine is built from to run ``data`` on ``venue``, a Venue or a preset's
+    name, as a `Run`, with ``seed`` the stream a venue deciding what a bar cannot show
+    at random draws from. Each instrument takes its tables from the venue, keyed by its
+    symbol, or as kind:SYMBOL on a venue of several kinds, and each order limit the
+    router gave it where no table of the venue gives one; the rows none of the
+    instruments printed are left out. Refused are an empty Data; an account at two
+    venues or whose cash would be two assets; an instrument of no market or a kind the
+    venue does not list; an inverse contract of no size the bars give; one balance for
+    an account that uses both wallets, and the two of them for an inverse contract's,
+    which has one; funding from the data where it holds none for a perpetual; an
+    instrument without the lot and price rule the venue's sizes hold every order to,
+    or with significant figures and no decimals; and a perpetual with no maintenance
+    where the venue books then backstops."""
+    venue  = _venue_of(venue)
+    data   = data if isinstance(data, Data) else Data(data)
+    origin = venue.name or "venue"
+    if not len(data) or not data.available.any():
+        raise ValueError("data: no bars to run; give a Data that has some")
+
+    instruments, names = data.instruments, data.names
+    markets = [_market(instrument, name, venue, origin)
+               for instrument, name in zip(instruments, names)]
+    held = sorted({instrument.venue for instrument in instruments if instrument.venue})
+    if len(held) > 1:
+        raise ValueError(f"data: instruments at {' and '.join(held)}, and an account "
+                         f"is at one venue; run each venue's instruments on their own")
+
+    _one_cash(instruments, names, markets)
+
+    keys = [(instrument.symbol or name) if venue.kind else
+            f"{market}:{instrument.symbol or name}"
+            for instrument, name, market in zip(instruments, names, markets)]
+    inverse = markets == ["inverse"]
+    if inverse and instruments[0].contract is None:
+        raise ValueError(f"data: {names[0]} is an inverse contract whose bars do not "
+                         f"give the dollars a contract is worth; build it from frames "
+                         f"that do, as the router's do for a symbol it lists")
+
+    settings = venues._settings(venue._preset, keys,
+                                instruments[0].contract if inverse else None)
+    booked = venue._preset["defaults"]["liquidation"] == "book_then_backstop"
+
+    for spec, instrument, name in zip(settings.get("instruments", [settings]),
+                                      instruments, names):
+        # the router's limits are the venue's where no table of the venue gives one
+        for limit in ("min_notional", "max_qty"):
+            given = getattr(instrument, limit)
+            if given is not None and limit not in spec:
+                spec[limit] = given
+        _held_to_rules(spec, name, origin, settings["sizes"])
+        if booked and spec["market"] != "spot" and not any(
+                rate > 0.0 for _, _, rate, _ in spec.get("tiers", [])):
+            raise ValueError(f"venue: {origin} books then backstops, and gives {name} "
+                             f"no tier table that keeps maintenance; give {name} its "
+                             f"tiers in instruments")
+
+    perps = [k for k, market in enumerate(markets) if market != "spot"]
+    if venue._preset["defaults"]["funding"] == "data" and perps:
+        owned = set(data._root.funding["instrument"].tolist())
+        bare  = [names[k] for k in perps if data._cols[k] not in owned]
+        if bare:
+            raise ValueError(f"funding: {origin} charges the funding the data holds, "
+                             f"and the data holds none for {bare[0]}; fetch the bars "
+                             f"with funding=True, or replace(funding=\"none\")")
+
+        events = data.funding
+        settings.update(funding_times=np.ascontiguousarray(events["time"]),
+                        funding_rates=np.ascontiguousarray(events["rate"]),
+                        funding_instruments=events["instrument"].tolist())
+
+    balance = venue._balance
+    if not isinstance(balance, dict) and "spot" in markets and perps:
+        raise ValueError(f"balance: {balance}, one wallet's, and the data's spot and "
+                         f"perpetual instruments use both; replace(balance="
+                         f"{{\"spot\": s, \"margin\": m}})")
+
+    if isinstance(balance, dict) and inverse:
+        raise ValueError(f"balance: {balance}, the cash of two wallets, and an inverse "
+                         f"contract's account holds its coin in one; give the coin as "
+                         f"a number")
+
+    settings.update(quote=balance, intrabar=venue._intrabar)
+    if seed is not None:
+        settings["seed"] = seed
+
+    start, stop = data._rows
+    whole = Data._of(data._root, (0, stop), data._cols)
+
+    # a row none of these instruments printed is a row their account never sees, as
+    # a selection of a wider universe has, and the Engine takes none
+    printed = whole.available.any(axis=1)
+    settings["times"] = np.ascontiguousarray(whole.time[printed])
+    candles = np.ascontiguousarray(whole.bars[printed])
+    if inverse:
+        candles = candles[:, 0]
+
+    return Run(candles, settings, int(printed[:start].sum()))
+
+
+def _held_to_rules(spec, name, origin, sizes):
+    """Refuse instrument ``name``'s settings ``spec`` where they hold it to no whole
+    price rule, significant figures needing their decimals, and with the venue's
+    ``sizes`` on, to no lot or no price rule."""
+    if spec.get("sigfigs") is not None and spec.get("decimals") is None:
+        raise ValueError(f"venue: {origin} gives {name} significant figures and no "
+                         f"decimals, the cap its price rule needs; give {name} its "
+                         f"decimals in instruments")
+
+    rule    = spec.get("tick") or spec.get("sigfigs") is not None
+    missing = [part for part, there in (("lot", spec.get("lot")), ("tick", rule))
+               if not there]
+
+    if sizes and missing:
+        raise ValueError(f"venue: {origin} gives {name} no {' and no '.join(missing)}, "
+                         f"and its sizes hold every order to them; give {name} its own "
+                         f"in instruments, or replace(fills={{\"sizes\": \"off\"}})")
+
+
+def _venue_of(venue):
+    """``venue`` as a Venue: itself, or the preset of that name."""
+    if isinstance(venue, Venue):
+        return venue
+
+    if isinstance(venue, str):
+        venues._preset(venue)
+        return venues._venue(venue)
+
+    raise TypeError(f"venue: {venue!r}; pass a Venue, or a preset's name such as "
+                    f"\"binance_perp\"")
+
+
+def _market(instrument, name, venue, origin):
+    """The kind of ``instrument``, its own or else ``venue``'s, refused where neither
+    says, or where it is not a kind the venue lists: its one kind, or, on a venue of
+    several, the kinds its tables name, a venue that names none taking every kind."""
+    market = instrument.market or venue.kind
+    if market is None:
+        raise ValueError(f"data: {name} names no market, and {origin} is not of one "
+                         f"kind; build the Data with market=")
+
+    kinds = [venue.kind] if venue.kind else list(venue._preset["kinds"])
+    if kinds and market not in kinds:
+        raise ValueError(f"venue: {origin} lists {' and '.join(kinds)} instruments, "
+                         f"and {name} is {market}; run it on a venue of its kind")
+
+    return market
+
+
+def _one_cash(instruments, names, markets):
+    """Refuse an account whose cash would be two assets, where the instruments say: a
+    perpetual settles in its quote, an inverse contract in its coin, and a spot pair
+    is bought with its quote."""
+    first = None
+    held  = sorted(zip(instruments, names, markets), key=lambda item: item[2] == "spot")
+
+    for instrument, name, market in held:
+        asset = dataclasses.replace(instrument, market=market).settlement
+        said  = f"{name} {'is quoted' if market == 'spot' else 'settles'} in {asset}"
+        if asset is None:
+            continue
+
+        if first is None:
+            first = (asset, said)
+        elif asset != first[0]:
+            raise ValueError(f"data: {first[1]} and {said}, and an account's cash is "
+                             f"one asset; run them on their own")
 
 
 @functools.cache
