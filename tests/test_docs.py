@@ -73,9 +73,10 @@ _API.update({name: getattr(metrics, name) for name in metrics.__all__
 _API.update({name: getattr(ta, name) for name in ta.__all__
              if callable(getattr(ta, name)) and not isinstance(getattr(ta, name), type)})
 
-# a bare name, or an attribute hanging off one of these, is the library function.
-# self.log.at_bar is Recorder.at_bar, which takes **values and shares its name
-# with the module-level helper, so matching on the last word alone is wrong
+# a bare name, or an attribute hanging off one of these or off probatum.Data, is
+# the library function. self.log.at_bar is Recorder.at_bar, which takes **values
+# and shares its name with the module-level helper, so matching on the last word
+# alone is wrong
 _ROOTS = {"probatum", "plot", "metrics", "ta"}
 
 
@@ -116,7 +117,7 @@ def called(func):
     if isinstance(base, ast.Name) and base.id in _ROOTS:
         return func.attr
 
-    if (isinstance(base, ast.Attribute) and base.attr in _ROOTS
+    if (isinstance(base, ast.Attribute) and base.attr in _ROOTS | {"Data"}
             and isinstance(base.value, ast.Name) and base.value.id in _ROOTS):
         return func.attr
 
