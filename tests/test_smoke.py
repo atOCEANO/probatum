@@ -1280,6 +1280,8 @@ def test_out_of_range_config_scalars_are_rejected():
         {"fee_taker": -2.0},
         {"max_open_orders": 0},
         {"max_open_orders": 10_000},
+        {"max_open_orders": -1},  # pyo3's own refusal would be an OverflowError
+        {"funding_interval": -3},
     ):
         with pytest.raises(ValueError):
             probatum.Engine(series(), **kwargs)

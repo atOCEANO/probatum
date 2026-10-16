@@ -592,6 +592,42 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Window {
     }
 }
 
+/// The slots `max_open_orders` gives each instrument's book: refused here as a whole
+/// number rather than left to pyo3, whose own refusal of a negative is an
+/// OverflowError and of a float a TypeError.
+struct Slots(usize);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Slots {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Slots> {
+        obj.extract().map(Slots).map_err(|_| {
+            PyValueError::new_err(format!(
+                "max_open_orders must be between 1 and {MAX_OPEN_ORDERS_LIMIT}, got {}",
+                shown(&obj)
+            ))
+        })
+    }
+}
+
+/// The bars between funding events, as `funding_interval` takes them: refused here
+/// as a whole number rather than left to pyo3, whose own refusal of a negative is an
+/// OverflowError and of a float a TypeError.
+struct Interval(usize);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Interval {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Interval> {
+        obj.extract().map(Interval).map_err(|_| {
+            PyValueError::new_err(format!(
+                "funding_interval: {}; pass the bars between events, or 0 for none",
+                shown(&obj)
+            ))
+        })
+    }
+}
+
 /// When a resting limit fills, as `limit` names it, case-insensitively.
 fn parse_limit(limit: &str) -> PyResult<Limit> {
     match limit.to_ascii_lowercase().as_str() {
@@ -1696,7 +1732,7 @@ impl Engine {
         slippage_bps = 0.0,
         budget = 1.0,
         window = Window(24),
-        max_open_orders = 8,
+        max_open_orders = Slots(8),
         report = false,
         leverage = 10.0,
         impact = 0.0,
@@ -1705,7 +1741,7 @@ impl Engine {
         limit = "touch",
         sizes = false,
         funding_rate = 0.0,
-        funding_interval = 0,
+        funding_interval = Interval(0),
         times = None,
         funding_hours = 0.0,
         funding_times = None,
@@ -1737,7 +1773,7 @@ impl Engine {
         slippage_bps: f64,
         budget: f64,
         window: Window,
-        max_open_orders: usize,
+        max_open_orders: Slots,
         report: bool,
         leverage: f64,
         impact: f64,
@@ -1746,7 +1782,7 @@ impl Engine {
         limit: &str,
         sizes: bool,
         funding_rate: f64,
-        funding_interval: usize,
+        funding_interval: Interval,
         times: Option<PyReadonlyArray1<'_, i64>>,
         funding_hours: f64,
         funding_times: Option<PyReadonlyArray1<'_, i64>>,
@@ -1777,7 +1813,7 @@ impl Engine {
             slippage_bps,
             budget,
             window.0,
-            max_open_orders,
+            max_open_orders.0,
             report,
             leverage,
             impact,
@@ -1786,7 +1822,7 @@ impl Engine {
             limit,
             sizes,
             funding_rate,
-            funding_interval,
+            funding_interval.0,
             times,
             funding_hours,
             funding_times,
@@ -2404,7 +2440,7 @@ impl Batch {
         slippage_bps = 0.0,
         budget = 1.0,
         window = Window(24),
-        max_open_orders = 8,
+        max_open_orders = Slots(8),
         report = false,
         leverage = 10.0,
         impact = 0.0,
@@ -2413,7 +2449,7 @@ impl Batch {
         limit = "touch",
         sizes = false,
         funding_rate = 0.0,
-        funding_interval = 0,
+        funding_interval = Interval(0),
         fee_taker_per_env = None,
         fee_maker_per_env = None,
         slippage_bps_per_env = None,
@@ -2450,7 +2486,7 @@ impl Batch {
         slippage_bps: f64,
         budget: f64,
         window: Window,
-        max_open_orders: usize,
+        max_open_orders: Slots,
         report: bool,
         leverage: f64,
         impact: f64,
@@ -2459,7 +2495,7 @@ impl Batch {
         limit: &str,
         sizes: bool,
         funding_rate: f64,
-        funding_interval: usize,
+        funding_interval: Interval,
         fee_taker_per_env: Option<PyReadonlyArray1<'_, f64>>,
         fee_maker_per_env: Option<PyReadonlyArray1<'_, f64>>,
         slippage_bps_per_env: Option<PyReadonlyArray1<'_, f64>>,
@@ -2494,7 +2530,7 @@ impl Batch {
             slippage_bps,
             budget,
             window.0,
-            max_open_orders,
+            max_open_orders.0,
             report,
             leverage,
             impact,
@@ -2503,7 +2539,7 @@ impl Batch {
             limit,
             sizes,
             funding_rate,
-            funding_interval,
+            funding_interval.0,
             times,
             funding_hours,
             funding_times,
