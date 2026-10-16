@@ -281,16 +281,19 @@ def test_a_combined_preset_holds_its_parts_each_at_its_own_rates():
 
     assert binance["combines"] == ["binance_spot", "binance_perp"]
 
-    linear = venues._preset("binance_perp")["instruments"]
+    parts = {kind: venues._preset(f"binance_{name}")["instruments"]
+             for kind, name in (("spot", "spot"), ("linear", "perp"))}
 
-    assert binance["instruments"] == {f"linear:{key}": table
-                                      for key, table in linear.items()}
+    assert binance["instruments"] == {f"{kind}:{key}": table
+                                      for kind, tables in parts.items()
+                                      for key, table in tables.items()}
 
     settings = venues._settings(binance, ["spot:BTCUSDT", "linear:BTCUSDT"])
     spot, perp = settings["instruments"]
 
     assert (spot["market"], spot["fee_maker"], spot["fee_taker"]) == (
         "spot", 0.001, 0.001)
+    assert spot["tick"] > 0.0 and spot["lot"] > 0.0
     assert (perp["market"], perp["fee_maker"], perp["fee_taker"]) == (
         "perp", 0.0002, 0.0005)
     assert perp["reduce_only_exempt"] and perp["tiers"]

@@ -16,3 +16,4055 @@ spread = "estimated"
 slippage = { fixed = 1.0 }
 impact = { sqrt = 0.1 }
 sizes = "on"
+
+[instruments.1INCHEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.1INCHUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.1INCHUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.2ZEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.2ZUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.2ZUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.AAVEEUR]
+tick = 0.01
+lot = 1e-06
+
+[instruments.AAVETRY]
+tick = 0.01
+lot = 1e-06
+
+[instruments.AAVEUSDC]
+tick = 0.01
+lot = 1e-06
+
+[instruments.AAVEUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.ACEEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ACEUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ACEUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ACHEUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ACHUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ACHUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ACTTRY]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ACTUSDT]
+tick = 1e-06
+lot = 0.001
+
+[instruments.ADAEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.ADATRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.ADAUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ADAUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.AEONTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.AEONUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.AEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.AEVOEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.AEVOUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.AEVOUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.AGLDEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.AGLDUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.AGLDUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.AIEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.AITRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.AIUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.AIUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.AIXBTEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.AIXBTTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.AIXBTUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.AIXBTUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ALGOEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ALGOUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ALGOUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ALLOEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.ALLOTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.ALLOUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.ALLOUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.ANIMEEUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ANIMETRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.ANIMEUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ANIMEUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.APEEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.APETRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.APEUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.APEUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.API3EUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.API3TRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.API3USDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.API3USDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.APTEUR]
+tick = 0.0001
+lot = 1e-05
+
+[instruments.APTTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.APTUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.APTUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.ARBEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ARBTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.ARBUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ARBUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.AREUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ARGEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ARGUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ARGUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ARKMEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ARKMTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.ARKMUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ARKMUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ARUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ARUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ASPEUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ASPUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ASPUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ASTEREUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ASTERTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.ASTERUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ASTERUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ASTREUR]
+tick = 1e-06
+lot = 0.001
+
+[instruments.ASTRUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ASTRUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ATHEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.ATHTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.ATHUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.ATHUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.ATOMEUR]
+tick = 0.001
+lot = 1e-05
+
+[instruments.ATOMUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ATOMUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.AUCTIONEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.AUCTIONUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.AUCTIONUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.AUDFAUD]
+tick = 0.0001
+lot = 0.001
+
+[instruments.AUDFUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.AUDMAUD]
+tick = 0.0001
+lot = 0.001
+
+[instruments.AUDMUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.AUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.AUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.AVAXEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.AVAXTRY]
+tick = 0.1
+lot = 1e-05
+
+[instruments.AVAXUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.AVAXUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.AVNTEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.AVNTUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.AVNTUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.AXSEUR]
+tick = 0.0001
+lot = 1e-05
+
+[instruments.AXSTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.AXSUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.AXSUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BABYDOGEEUR]
+tick = 1e-12
+lot = 1.0
+
+[instruments.BABYDOGEUSDC]
+tick = 1e-12
+lot = 1.0
+
+[instruments.BABYDOGEUSDT]
+tick = 1e-12
+lot = 1.0
+
+[instruments.BABYEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.BABYUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.BABYUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.BANANAEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.BANANAUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.BANANAUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.BANDEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BANDUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BANDUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BARDEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.BARDTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.BARDUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.BARDUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.BASEDEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.BASEDTRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.BASEDUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.BASEDUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.BATEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.BATUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.BATUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.BCHEUR]
+tick = 0.1
+lot = 1e-06
+
+[instruments.BCHUSDC]
+tick = 0.1
+lot = 1e-05
+
+[instruments.BCHUSDT]
+tick = 0.1
+lot = 1e-06
+
+[instruments.BERAEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.BERATRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.BERAUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.BERAUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.BETHETH]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BETHUSDT]
+tick = 0.1
+lot = 1e-06
+
+[instruments.BICOEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.BICOUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.BICOUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.BIGTIMEEUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.BIGTIMEUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.BIGTIMEUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.BIOEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.BIOTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.BIOUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.BIOUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.BLUREUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.BLURUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.BLURUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.BNBEUR]
+tick = 0.1
+lot = 1e-06
+
+[instruments.BNBUSDC]
+tick = 0.1
+lot = 1e-06
+
+[instruments.BNBUSDT]
+tick = 0.1
+lot = 1e-06
+
+[instruments.BNTEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BNTUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BNTUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.BOMEEUR]
+tick = 1e-07
+lot = 1.0
+
+[instruments.BOMEUSDC]
+tick = 1e-07
+lot = 1.0
+
+[instruments.BOMEUSDT]
+tick = 1e-07
+lot = 1.0
+
+[instruments.BONKEUR]
+tick = 1e-09
+lot = 1.0
+
+[instruments.BONKTRY]
+tick = 1e-08
+lot = 1.0
+
+[instruments.BONKUSDC]
+tick = 1e-09
+lot = 1.0
+
+[instruments.BONKUSDT]
+tick = 1e-09
+lot = 1.0
+
+[instruments.BREVEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.BREVTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.BREVUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.BREVUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.BRL1BRL]
+tick = 0.0001
+lot = 0.01
+
+[instruments.BRL1USDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.BTCAED]
+tick = 1.0
+lot = 1e-09
+
+[instruments.BTCAUD]
+tick = 0.1
+lot = 1e-07
+
+[instruments.BTCBRL]
+tick = 1.0
+lot = 1e-08
+
+[instruments.BTCEUR]
+tick = 0.1
+lot = 1e-08
+
+[instruments.BTCPLN]
+tick = 1.0
+lot = 1e-08
+
+[instruments.BTCTRY]
+tick = 1.0
+lot = 1e-09
+
+[instruments.BTCUSDC]
+tick = 0.1
+lot = 1e-08
+
+[instruments.BTCUSDT]
+tick = 0.1
+lot = 1e-08
+
+[instruments.CARDSEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.CARDSTRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.CARDSUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.CARDSUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.CATEUR]
+tick = 1e-09
+lot = 1.0
+
+[instruments.CATIEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CATIUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CATIUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CATUSDC]
+tick = 1e-09
+lot = 1.0
+
+[instruments.CATUSDT]
+tick = 1e-09
+lot = 1.0
+
+[instruments.CCEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CCTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.CCUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CCUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CELOEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CELOUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CELOUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CELREUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.CELRUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.CELRUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.CETUSUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.CETUSUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.CFGEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CFGTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.CFGUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CFGUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CFXEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CFXUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CFXUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CHIPEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CHIPTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.CHIPUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CHIPUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CHZEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.CHZTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.CHZUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CHZUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CITYEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.CITYUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.CITYUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.COMPEUR]
+tick = 0.01
+lot = 1e-06
+
+[instruments.COMPUSDC]
+tick = 0.01
+lot = 1e-06
+
+[instruments.COMPUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.COREEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CORETRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.COREUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.COREUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.CPEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.CPTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.CPUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.CPUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.CROEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.CROTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.CROUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CROUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CRVEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.CRVUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.CRVUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.CSPREUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.CSPRUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.CSPRUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.CTCEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CTCUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CTCUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CTEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.CTTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.CTUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.CTUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.CVCEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CVCUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CVCUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.CVXEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.CVXUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.CVXUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.DASHEUR]
+tick = 0.01
+lot = 0.0001
+
+[instruments.DASHUSDC]
+tick = 0.01
+lot = 0.0001
+
+[instruments.DASHUSDT]
+tick = 0.01
+lot = 0.0001
+
+[instruments.DATAEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.DATATRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.DATAUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.DATAUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.DEGENEUR]
+tick = 1e-07
+lot = 1.0
+
+[instruments.DEGENUSDC]
+tick = 1e-07
+lot = 1.0
+
+[instruments.DEGENUSDT]
+tick = 1e-07
+lot = 1.0
+
+[instruments.DGBEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.DGBUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.DGBUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.DOGEEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.DOGETRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.DOGEUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.DOGEUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.DOGSEUR]
+tick = 1e-08
+lot = 1.0
+
+[instruments.DOGSUSDC]
+tick = 1e-08
+lot = 1.0
+
+[instruments.DOGSUSDT]
+tick = 1e-08
+lot = 1.0
+
+[instruments.DOODEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.DOODUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.DOODUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.DOSEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.DOSTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.DOSUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.DOSUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.DOTEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.DOTTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.DOTUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.DOTUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.DYDXEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.DYDXUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.DYDXUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.EDGEEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.EDGETRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.EDGEUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.EDGEUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.EGLDEUR]
+tick = 0.001
+lot = 1e-05
+
+[instruments.EGLDUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.EGLDUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.EIGENEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.EIGENTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.EIGENUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.EIGENUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ENAEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.ENATRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.ENAUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.ENAUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.ENJEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ENJTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.ENJUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ENJUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ENSEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ENSUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ENSUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ETCEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ETCUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ETCUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ETHAED]
+tick = 0.1
+lot = 1e-08
+
+[instruments.ETHAUD]
+tick = 0.01
+lot = 1e-07
+
+[instruments.ETHBRL]
+tick = 0.1
+lot = 1e-07
+
+[instruments.ETHBTC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ETHEUR]
+tick = 0.01
+lot = 1e-06
+
+[instruments.ETHFIEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.ETHFITRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.ETHFIUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.ETHFIUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.ETHPLN]
+tick = 1.0
+lot = 1e-07
+
+[instruments.ETHTRY]
+tick = 1.0
+lot = 1e-08
+
+[instruments.ETHUSDC]
+tick = 0.01
+lot = 1e-06
+
+[instruments.ETHUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.ETHWEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.ETHWUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.ETHWUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.EURCUSDC]
+tick = 0.001
+lot = 0.001
+
+[instruments.FETEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.FETTRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.FETUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.FETUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.FILEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.FILTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.FILUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.FILUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.FLOKIEUR]
+tick = 1e-08
+lot = 1.0
+
+[instruments.FLOKITRY]
+tick = 1e-06
+lot = 1.0
+
+[instruments.FLOKIUSDC]
+tick = 1e-08
+lot = 1.0
+
+[instruments.FLOKIUSDT]
+tick = 1e-08
+lot = 1.0
+
+[instruments.FLOWEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.FLOWUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.FLOWUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.FLREUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.FLRUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.FLRUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.FLUIDEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.FLUIDUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.FLUIDUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.FOGOEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.FOGOTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.FOGOUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.FOGOUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.GALAEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.GALATRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.GALAUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.GALAUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.GALFTUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.GASEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.GASUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.GASUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.GEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.GLMEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.GLMUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.GLMUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.GMTEUR]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.GMTUSDC]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.GMTUSDT]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.GMXUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.GOATEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.GOATUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.GOATUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.GRAMEUR]
+tick = 0.001
+lot = 0.001
+
+[instruments.GRAMTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.GRAMUSDC]
+tick = 0.001
+lot = 0.001
+
+[instruments.GRAMUSDT]
+tick = 0.001
+lot = 0.001
+
+[instruments.GRASSEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.GRASSTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.GRASSUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.GRASSUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.GRTEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.GRTUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.GRTUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.GRVTEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.GRVTTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.GRVTUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.GRVTUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.GUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.GUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.HBAREUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.HBARTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.HBARUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.HBARUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.HMSTREUR]
+tick = 1e-07
+lot = 0.1
+
+[instruments.HMSTRTRY]
+tick = 1e-06
+lot = 1.0
+
+[instruments.HMSTRUSDC]
+tick = 1e-07
+lot = 0.1
+
+[instruments.HMSTRUSDT]
+tick = 1e-07
+lot = 0.1
+
+[instruments.HUMAEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.HUMATRY]
+tick = 0.0001
+lot = 0.001
+
+[instruments.HUMAUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.HUMAUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.HYPEEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.HYPETRY]
+tick = 0.01
+lot = 1e-06
+
+[instruments.HYPEUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.HYPEUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.ICPEUR]
+tick = 0.001
+lot = 1e-05
+
+[instruments.ICPTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.ICPUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ICPUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.IDEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.IDUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.IDUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ILVEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ILVUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.ILVUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.IMXEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.IMXUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.IMXUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.INJEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.INJUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.INJUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.IOSTEUR]
+tick = 1e-07
+lot = 1e-05
+
+[instruments.IOSTUSDC]
+tick = 1e-07
+lot = 1e-05
+
+[instruments.IOSTUSDT]
+tick = 1e-07
+lot = 1e-05
+
+[instruments.IOTAEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.IOTAUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.IOTAUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.IRYSEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.IRYSTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.IRYSUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.IRYSUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.JITOSOLUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.JOEEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.JOEUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.JOEUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.JTOEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.JTOUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.JTOUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.JUPEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.JUPTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.JUPUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.JUPUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.KAIAEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.KAIAUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.KAIAUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.KAITOEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.KAITOTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.KAITOUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.KAITOUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.KATEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.KATTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.KATUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.KATUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.KITEEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.KITETRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.KITEUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.KITEUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.KMNOEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.KMNOUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.KMNOUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.KNCEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.KNCUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.KNCUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.KSMEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.KSMUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.KSMUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LATUSDC]
+tick = 1e-07
+lot = 1.0
+
+[instruments.LATUSDT]
+tick = 1e-07
+lot = 1e-05
+
+[instruments.LAYEREUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.LAYERTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.LAYERUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.LAYERUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.LDOEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.LDOUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.LDOUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.LEOEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LEOUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LEOUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LINEAEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.LINEATRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.LINEAUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.LINEAUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.LINKEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LINKTRY]
+tick = 0.01
+lot = 1e-05
+
+[instruments.LINKUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.LINKUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LITEUR]
+tick = 0.001
+lot = 0.001
+
+[instruments.LITTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.LITUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.LITUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.LPTEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LPTUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LPTUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.LQTYEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.LQTYUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.LQTYUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.LRCEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.LRCUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.LRCUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.LSKEUR]
+tick = 1e-05
+lot = 1e-07
+
+[instruments.LSKUSDC]
+tick = 1e-05
+lot = 1e-07
+
+[instruments.LSKUSDT]
+tick = 1e-05
+lot = 1e-07
+
+[instruments.LTCEUR]
+tick = 0.01
+lot = 1e-06
+
+[instruments.LTCTRY]
+tick = 0.01
+lot = 1e-06
+
+[instruments.LTCUSDC]
+tick = 0.01
+lot = 1e-05
+
+[instruments.LTCUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.LUNAEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.LUNATRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.LUNAUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.LUNAUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.MAGICEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.MAGICTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.MAGICUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.MAGICUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.MANAEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.MANAUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.MANAUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.MASKEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.MASKUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.MASKUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.MEEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.MEGAEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.MEGAUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.MEGAUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.MEMEEUR]
+tick = 1e-07
+lot = 0.1
+
+[instruments.MEMEUSDC]
+tick = 1e-07
+lot = 0.1
+
+[instruments.MEMEUSDT]
+tick = 1e-07
+lot = 0.1
+
+[instruments.MENGOEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.MENGOUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.MENGOUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.MERLEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.MERLTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.MERLUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.MERLUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.METISEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.METISUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.METISUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.METUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.MEUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.MEUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.MEWEUR]
+tick = 1e-07
+lot = 1.0
+
+[instruments.MEWUSDC]
+tick = 1e-07
+lot = 1.0
+
+[instruments.MEWUSDT]
+tick = 1e-07
+lot = 1.0
+
+[instruments.MINAEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.MINAUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.MINAUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.MMTEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.MMTUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.MMTUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.MONEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.MONTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.MONUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.MONUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.MOODENGEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.MOODENGUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.MOODENGUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.MORPHOEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.MORPHOUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.MORPHOUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.MOVEEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.MOVEUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.MOVEUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.NAVXEUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.NAVXUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.NAVXUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.NEAREUR]
+tick = 0.001
+lot = 1e-08
+
+[instruments.NEARTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.NEARUSDC]
+tick = 0.001
+lot = 1e-08
+
+[instruments.NEARUSDT]
+tick = 0.001
+lot = 1e-08
+
+[instruments.NEIROEUR]
+tick = 1e-08
+lot = 1.0
+
+[instruments.NEIROTRY]
+tick = 1e-06
+lot = 1.0
+
+[instruments.NEIROUSDC]
+tick = 1e-08
+lot = 1.0
+
+[instruments.NEIROUSDT]
+tick = 1e-08
+lot = 1.0
+
+[instruments.NEOEUR]
+tick = 0.001
+lot = 0.001
+
+[instruments.NEOUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.NEOUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.NESEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.NESTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.NESUSDC]
+tick = 0.0001
+lot = 0.01
+
+[instruments.NESUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.NFTUSDT]
+tick = 1e-10
+lot = 1.0
+
+[instruments.NIGHTEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.NIGHTTRY]
+tick = 0.0001
+lot = 0.001
+
+[instruments.NIGHTUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.NIGHTUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.NMREUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.NMRUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.NMRUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.NOTEUR]
+tick = 1e-07
+lot = 0.1
+
+[instruments.NOTUSDC]
+tick = 1e-07
+lot = 0.1
+
+[instruments.NOTUSDT]
+tick = 1e-07
+lot = 0.1
+
+[instruments.OFCEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.OFCTRY]
+tick = 0.0001
+lot = 0.001
+
+[instruments.OFCUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.OFCUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.OKBBTC]
+tick = 1e-07
+lot = 0.0001
+
+[instruments.OKBEUR]
+tick = 0.01
+lot = 1e-05
+
+[instruments.OKBTRY]
+tick = 1.0
+lot = 1e-06
+
+[instruments.OKBUSDC]
+tick = 0.01
+lot = 1e-05
+
+[instruments.OKBUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.OKSOLSOL]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.OKSOLUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.OLEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.OLUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.OLUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.OMIEUR]
+tick = 1e-07
+lot = 0.001
+
+[instruments.OMIUSDC]
+tick = 1e-07
+lot = 0.001
+
+[instruments.OMIUSDT]
+tick = 1e-07
+lot = 0.001
+
+[instruments.ONDOEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ONDOTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.ONDOUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ONDOUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ONEEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ONEUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ONEUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ONTEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ONTTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.ONTUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ONTUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.OPEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.OPTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.OPUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.OPUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.ORBSEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ORBSTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.ORBSUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ORBSUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ORDIEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.ORDITRY]
+tick = 0.1
+lot = 1e-05
+
+[instruments.ORDIUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.ORDIUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.PARTIEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PARTITRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.PARTIUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PARTIUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PENDLEEUR]
+tick = 0.001
+lot = 0.001
+
+[instruments.PENDLEUSDC]
+tick = 0.001
+lot = 0.001
+
+[instruments.PENDLEUSDT]
+tick = 0.001
+lot = 0.001
+
+[instruments.PENGUEUR]
+tick = 1e-06
+lot = 1.0
+
+[instruments.PENGUTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.PENGUUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.PENGUUSDT]
+tick = 1e-06
+lot = 1.0
+
+[instruments.PEOPLEEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.PEOPLEUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.PEOPLEUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.PEPEBRL]
+tick = 1e-08
+lot = 1.0
+
+[instruments.PEPEEUR]
+tick = 1e-09
+lot = 1.0
+
+[instruments.PEPETRY]
+tick = 1e-08
+lot = 1.0
+
+[instruments.PEPEUSDC]
+tick = 1e-09
+lot = 1.0
+
+[instruments.PEPEUSDT]
+tick = 1e-09
+lot = 1.0
+
+[instruments.PHATRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.PHAUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.PIBRL]
+tick = 0.0001
+lot = 0.001
+
+[instruments.PIEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.PITRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.PIUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PIUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.PIXELTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.PIXELUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.PNUTEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PNUTTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.PNUTUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PNUTUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.POLEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.POLTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.POLUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.POLUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PONSTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.PONSUSDT]
+tick = 0.0001
+lot = 0.01
+
+[instruments.POREUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.PORUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.PORUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.PROMPTEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.PROMPTUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.PROMPTUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.PROSEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.PROSTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.PROSUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.PROSUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.PROVEEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.PROVEUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.PROVEUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.PUMPEUR]
+tick = 1e-06
+lot = 1.0
+
+[instruments.PUMPTRY]
+tick = 1e-05
+lot = 0.01
+
+[instruments.PUMPUSDC]
+tick = 1e-06
+lot = 1.0
+
+[instruments.PUMPUSDT]
+tick = 1e-06
+lot = 1.0
+
+[instruments.PYTHEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.PYTHUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.PYTHUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.PYUSDUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.QTUMEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.QTUMUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.QTUMUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.RAYEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.RAYUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.RAYUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.REEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.RENDEREUR]
+tick = 0.001
+lot = 0.001
+
+[instruments.RENDERTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.RENDERUSDC]
+tick = 0.001
+lot = 0.001
+
+[instruments.RENDERUSDT]
+tick = 0.001
+lot = 0.001
+
+[instruments.RESOLVEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.RESOLVTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.RESOLVUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.RESOLVUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.RETRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.REUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.REUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.RLUSDUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ROBOEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.ROBOTRY]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ROBOUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.ROBOUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.RONEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.RONUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.RONUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.RPLEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.RPLUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.RPLUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.RSREUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.RSRUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.RSRUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.RVNEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.RVNUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.RVNUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SAFEEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SAFEUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SAFEUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SAHARAEUR]
+tick = 1e-06
+lot = 0.1
+
+[instruments.SAHARATRY]
+tick = 0.0001
+lot = 0.001
+
+[instruments.SAHARAUSDC]
+tick = 1e-06
+lot = 0.1
+
+[instruments.SAHARAUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.SANDEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.SANDTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.SANDUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.SANDUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.SATSEUR]
+tick = 1e-12
+lot = 1.0
+
+[instruments.SATSUSDC]
+tick = 1e-12
+lot = 1.0
+
+[instruments.SATSUSDT]
+tick = 1e-12
+lot = 1.0
+
+[instruments.SCREUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SCRUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SCRUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SDUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.SEIEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SEITRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.SEIUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SEIUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SENTEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SENTTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.SENTUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SENTUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SHIBEUR]
+tick = 1e-09
+lot = 1.0
+
+[instruments.SHIBTRY]
+tick = 1e-07
+lot = 1.0
+
+[instruments.SHIBUSDC]
+tick = 1e-09
+lot = 1.0
+
+[instruments.SHIBUSDT]
+tick = 1e-09
+lot = 1.0
+
+[instruments.SKLEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SKLUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SKLUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SKYEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SKYUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SKYUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SLPUSDT]
+tick = 1e-07
+lot = 1e-06
+
+[instruments.SLXEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SLXTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.SLXUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SLXUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SNTEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SNTUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SNTUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SNXEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.SNXTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.SNXUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.SNXUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.SOLAED]
+tick = 0.1
+lot = 1e-07
+
+[instruments.SOLAUD]
+tick = 0.01
+lot = 1e-06
+
+[instruments.SOLBRL]
+tick = 0.1
+lot = 1e-06
+
+[instruments.SOLBTC]
+tick = 1e-07
+lot = 0.0001
+
+[instruments.SOLEUR]
+tick = 0.01
+lot = 1e-06
+
+[instruments.SOLTRY]
+tick = 0.1
+lot = 1e-07
+
+[instruments.SOLUSDC]
+tick = 0.01
+lot = 1e-05
+
+[instruments.SOLUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.SONICEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SONICUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SONICUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.SOPHEUR]
+tick = 1e-06
+lot = 1.0
+
+[instruments.SOPHUSDC]
+tick = 1e-06
+lot = 1.0
+
+[instruments.SOPHUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.SPACEEUR]
+tick = 1e-06
+lot = 1.0
+
+[instruments.SPACETRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.SPACEUSDC]
+tick = 1e-06
+lot = 1.0
+
+[instruments.SPACEUSDT]
+tick = 1e-06
+lot = 1.0
+
+[instruments.SPKEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SPKUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SPKUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.SPURSEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.SPURSUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.SPURSUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.SSVEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.SSVUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.SSVUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.STETHETH]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.STETHUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.STRKEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.STRKTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.STRKUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.STRKUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.STXEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.STXTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.STXUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.STXUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.SUIEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.SUITRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.SUIUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.SUIUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.SUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.SUSHIEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.SUSHIUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.SUSHIUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.SWFTCEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SWFTCUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.SWFTCUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.TAOEUR]
+tick = 0.1
+lot = 1e-05
+
+[instruments.TAOTRY]
+tick = 0.1
+lot = 1e-06
+
+[instruments.TAOUSDC]
+tick = 0.1
+lot = 1e-05
+
+[instruments.TAOUSDT]
+tick = 0.1
+lot = 1e-05
+
+[instruments.TEUR]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.THETAEUR]
+tick = 0.0001
+lot = 0.01
+
+[instruments.THETAUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.THETAUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.TIAEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.TIATRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.TIAUSDC]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.TIAUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.TNSREUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.TNSRTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.TNSRUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.TNSRUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.TOSHIEUR]
+tick = 1e-08
+lot = 1.0
+
+[instruments.TOSHIUSDC]
+tick = 1e-08
+lot = 1.0
+
+[instruments.TOSHIUSDT]
+tick = 1e-08
+lot = 1.0
+
+[instruments.TRAEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.TRAUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.TRAUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.TRBEUR]
+tick = 0.01
+lot = 1e-06
+
+[instruments.TRBUSDC]
+tick = 0.01
+lot = 1e-06
+
+[instruments.TRBUSDT]
+tick = 0.01
+lot = 1e-06
+
+[instruments.TRUMPAUD]
+tick = 0.001
+lot = 0.0001
+
+[instruments.TRUMPBRL]
+tick = 0.01
+lot = 0.0001
+
+[instruments.TRUMPEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.TRUMPTRY]
+tick = 0.1
+lot = 1e-07
+
+[instruments.TRUMPUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.TRUMPUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.TRXEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.TRXTRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.TRXUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.TRXUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.TURBOEUR]
+tick = 1e-07
+lot = 0.01
+
+[instruments.TURBOTRY]
+tick = 1e-05
+lot = 0.1
+
+[instruments.TURBOUSDC]
+tick = 1e-07
+lot = 0.01
+
+[instruments.TURBOUSDT]
+tick = 1e-07
+lot = 0.01
+
+[instruments.TUSDC]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.TUSDT]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.UMAEUR]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.UMAUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.UMAUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.UNIEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.UNITRY]
+tick = 0.01
+lot = 1e-05
+
+[instruments.UNIUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.UNIUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.USATUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.USD1USDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.USDCAUD]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.USDCBRL]
+tick = 0.0001
+lot = 1e-05
+
+[instruments.USDCEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.USDCPLN]
+tick = 0.001
+lot = 0.001
+
+[instruments.USDCSGD]
+tick = 0.0001
+lot = 0.001
+
+[instruments.USDCTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.USDCUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.USDGBRL]
+tick = 0.0001
+lot = 1e-05
+
+[instruments.USDGEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.USDGSGD]
+tick = 0.0001
+lot = 0.001
+
+[instruments.USDGUSDT]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.USDSUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.USDTAED]
+tick = 0.001
+lot = 0.0001
+
+[instruments.USDTAUD]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.USDTBRL]
+tick = 0.0001
+lot = 1e-05
+
+[instruments.USDTEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.USDTSGD]
+tick = 0.0001
+lot = 0.001
+
+[instruments.USDTTRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.USDTUSD]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.VELODROMEEUR]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.VELODROMEUSDC]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.VELODROMEUSDT]
+tick = 1e-05
+lot = 0.0001
+
+[instruments.VELOEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.VELOUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.VELOUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.VINEUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.VIRTUALEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.VIRTUALUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.VIRTUALUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.VVVTRY]
+tick = 0.1
+lot = 1e-05
+
+[instruments.VVVUSDT]
+tick = 0.01
+lot = 0.0001
+
+[instruments.WAXPEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.WAXPUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.WAXPUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.WCTEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.WCTTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.WCTUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.WCTUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.WETUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.WEUR]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.WIFEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.WIFTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.WIFUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.WIFUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.WINEUR]
+tick = 1e-08
+lot = 1.0
+
+[instruments.WINUSDC]
+tick = 1e-08
+lot = 1.0
+
+[instruments.WINUSDT]
+tick = 1e-08
+lot = 1.0
+
+[instruments.WLDEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.WLDTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.WLDUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.WLDUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.WLFIEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.WLFITRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.WLFIUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.WLFIUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.WOOEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.WOOUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.WOOUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.WTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.WUSDC]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.WUSDT]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.XCHEUR]
+tick = 0.001
+lot = 1e-06
+
+[instruments.XCHUSDC]
+tick = 0.001
+lot = 1e-06
+
+[instruments.XCHUSDT]
+tick = 0.001
+lot = 1e-06
+
+[instruments.XDPEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.XDPTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.XDPUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.XDPUSDT]
+tick = 1e-06
+lot = 1.0
+
+[instruments.XLMEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.XLMTRY]
+tick = 0.001
+lot = 0.0001
+
+[instruments.XLMUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.XLMUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.XPLEUR]
+tick = 1e-05
+lot = 0.01
+
+[instruments.XPLTRY]
+tick = 0.001
+lot = 0.001
+
+[instruments.XPLUSDC]
+tick = 1e-05
+lot = 0.01
+
+[instruments.XPLUSDT]
+tick = 1e-05
+lot = 0.01
+
+[instruments.XRPAED]
+tick = 0.001
+lot = 0.0001
+
+[instruments.XRPAUD]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.XRPBRL]
+tick = 0.001
+lot = 1e-05
+
+[instruments.XRPEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.XRPTRY]
+tick = 0.01
+lot = 1e-05
+
+[instruments.XRPUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.XRPUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.XTZEUR]
+tick = 0.0001
+lot = 0.0001
+
+[instruments.XTZUSDC]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.XTZUSDT]
+tick = 0.0001
+lot = 1e-06
+
+[instruments.YBEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.YBUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.YBUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.YFIEUR]
+tick = 1.0
+lot = 1e-06
+
+[instruments.YFIUSDC]
+tick = 1.0
+lot = 1e-06
+
+[instruments.YFIUSDT]
+tick = 1.0
+lot = 1e-06
+
+[instruments.YGGEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.YGGUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.YGGUSDT]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ZAMAEUR]
+tick = 1e-05
+lot = 0.1
+
+[instruments.ZAMATRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.ZAMAUSDC]
+tick = 1e-05
+lot = 0.1
+
+[instruments.ZAMAUSDT]
+tick = 1e-05
+lot = 0.1
+
+[instruments.ZBCNEUR]
+tick = 1e-07
+lot = 1.0
+
+[instruments.ZBCNUSDC]
+tick = 1e-07
+lot = 1.0
+
+[instruments.ZBCNUSDT]
+tick = 1e-07
+lot = 1.0
+
+[instruments.ZECEUR]
+tick = 0.01
+lot = 1e-05
+
+[instruments.ZECUSDC]
+tick = 0.01
+lot = 1e-05
+
+[instruments.ZECUSDT]
+tick = 0.01
+lot = 1e-05
+
+[instruments.ZENEUR]
+tick = 0.001
+lot = 0.0001
+
+[instruments.ZENTEUR]
+tick = 1e-06
+lot = 1.0
+
+[instruments.ZENTUSDC]
+tick = 1e-06
+lot = 1.0
+
+[instruments.ZENTUSDT]
+tick = 1e-06
+lot = 0.1
+
+[instruments.ZENUSDC]
+tick = 0.001
+lot = 0.0001
+
+[instruments.ZENUSDT]
+tick = 0.001
+lot = 0.0001
+
+[instruments.ZETAEUR]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ZETAUSDC]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ZETAUSDT]
+tick = 1e-05
+lot = 0.001
+
+[instruments.ZILEUR]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ZILTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.ZILUSDC]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ZILUSDT]
+tick = 1e-06
+lot = 1e-06
+
+[instruments.ZKEUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ZKJUSDT]
+tick = 1e-06
+lot = 0.0001
+
+[instruments.ZKTRY]
+tick = 0.0001
+lot = 0.01
+
+[instruments.ZKUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ZKUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ZORAEUR]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ZORAUSDC]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ZORAUSDT]
+tick = 1e-06
+lot = 0.01
+
+[instruments.ZROEUR]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ZROTRY]
+tick = 0.01
+lot = 0.0001
+
+[instruments.ZROUSDC]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ZROUSDT]
+tick = 0.0001
+lot = 0.001
+
+[instruments.ZRXEUR]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ZRXUSDC]
+tick = 1e-05
+lot = 1e-06
+
+[instruments.ZRXUSDT]
+tick = 1e-05
+lot = 1e-06

@@ -34,9 +34,11 @@ FILLS = {
 BINANCE           = "https://www.binance.com/bapi/futures/v1/friendly"
 BINANCE_LINEAR    = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_INVERSE   = "https://dapi.binance.com/dapi/v1/exchangeInfo"
+BINANCE_SPOT      = "https://api.binance.com/api/v3/exchangeInfo"
 BYBIT_INSTRUMENTS = "https://api.bybit.com/v5/market/instruments-info"
 BYBIT_TIERS       = "https://api.bybit.com/v5/market/risk-limit"
 OKX_INSTRUMENTS   = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
+OKX_SPOT          = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
 OKX_TIERS         = "https://www.okx.com/api/v5/public/position-tiers"
 HYPERLIQUID       = "https://api.hyperliquid.xyz/info"
 
@@ -115,6 +117,23 @@ def binance(market):
     return out
 
 
+def binance_spot():
+    """Binance's spot pairs as the router names them: each one trading, its tick and
+    its lot."""
+    out = {}
+    for symbol in fetch(BINANCE_SPOT)["symbols"]:
+        if symbol["status"] != "TRADING":
+            continue
+
+        rules = {f["filterType"]: f for f in symbol["filters"]}
+        out[symbol["symbol"]] = {
+            "tick": printed(rules["PRICE_FILTER"]["tickSize"]),
+            "lot":  printed(rules["LOT_SIZE"]["stepSize"]),
+        }
+
+    return out
+
+
 def bybit(category):
     """Bybit's perpetuals of ``category``, linear or inverse, as the router names them:
     each crypto one trading, its tick, its lot, in contracts on an inverse
@@ -158,6 +177,16 @@ def bybit(category):
     return out
 
 
+def bybit_spot():
+    """Bybit's spot pairs as the router names them: each crypto one trading, its tick
+    and its lot, the precision of its base coin. The list comes in one page."""
+    pairs = fetch(f"{BYBIT_INSTRUMENTS}?category=spot")["result"]["list"]
+    return {pair["symbol"]: {"tick": printed(pair["priceFilter"]["tickSize"]),
+                             "lot": printed(pair["lotSizeFilter"]["basePrecision"])}
+            for pair in pairs if pair["status"] == "Trading"
+            and pair.get("symbolType", "") in ("", "innovation", "adventure")}
+
+
 def okx(kind):
     """OKX's swaps of ``kind``, linear or inverse, as the router names them: each crypto
     one live and out of pre-market, its tick, its lot and its cross-margin position
@@ -189,6 +218,15 @@ def okx(kind):
                        0.0) for t in rows]}
 
     return out
+
+
+def okx_spot():
+    """OKX's spot pairs as the router names them: each crypto one live and out of
+    pre-market, its tick and its lot."""
+    return {pair["instId"].replace("-", ""): {"tick": printed(pair["tickSz"]),
+                                              "lot": printed(pair["lotSz"])}
+            for pair in fetch(OKX_SPOT)["data"] if pair["state"] == "live"
+            and pair["instCategory"] == "1" and pair["ruleType"] == "normal"}
 
 
 def hyperliquid():
@@ -303,7 +341,8 @@ def main():
     write("binance_inverse", "inverse",
           dict(fees={"maker": 0.0002, "taker": 0.0005}, **perp), binance("inverse"))
     write("binance_spot", "spot", dict(fees={"maker": 0.001, "taker": 0.001},
-                                       funding="none"))
+                                       funding="none"),
+          binance_spot())
     combine("binance", ["binance_spot", "binance_perp"])
 
     write("bybit_perp", "linear",
@@ -311,7 +350,8 @@ def main():
     write("bybit_inverse", "inverse",
           dict(fees={"maker": 0.0002, "taker": 0.00055}, **perp), bybit("inverse"))
     write("bybit_spot", "spot", dict(fees={"maker": 0.001, "taker": 0.001},
-                                     funding="none"))
+                                     funding="none"),
+          bybit_spot())
     combine("bybit", ["bybit_spot", "bybit_perp"])
 
     write("okx_perp", "linear",
@@ -319,7 +359,8 @@ def main():
     write("okx_inverse", "inverse",
           dict(fees={"maker": 0.0002, "taker": 0.0005}, **perp), okx("inverse"))
     write("okx_spot", "spot", dict(fees={"maker": 0.0008, "taker": 0.001},
-                                   funding="none"))
+                                   funding="none"),
+          okx_spot())
     combine("okx", ["okx_spot", "okx_perp"])
 
     write("hyperliquid_perp", "linear",
