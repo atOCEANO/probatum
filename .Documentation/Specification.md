@@ -76,7 +76,7 @@ Inverse perpetuals count in their own quantities ([Inverse contracts](#inverse-c
 
 ### Coarser bars and outside series
 
-- `resample(interval)` needs a whole multiple of the Data's interval. A coarse bar takes the first open, the highest high, the lowest low and the last close of its bars and the sum of their volumes, and is available if any of them was. Coarse bars align to 00:00 UTC and weeks to Monday, shifted by the Data's own offset when its bars open off the hour. A coarse bar the data does not cover to its end is dropped.
+- `resample(interval)` needs a whole multiple of the Data's interval. A coarse bar takes the first open, the highest high, the lowest low and the last close of its bars and the sum of their volumes, and is available if any of them was. Coarse bars align to 00:00 UTC and weeks to Monday, moved by the offset of the Data's own steps from that grid, so that every bar lies inside one coarse bar: hourly bars that open at half past the hour give coarse bars that do too, and 4-hour bars that open at 02:00 give days that start at 02:00. A coarse bar the data does not cover to its end is dropped, and the first holds the bars from the data's first, wherever in it the data begins.
 - `asof(values, when)` puts on row `t` the last value known by the end of row `t`, and NaN before the first. A value from a coarser Data is known at the end of its bar.
 
 **Worked example.** Hourly bars, and 4-hour bars that open at 00:00 and 04:00. The 00:00 bar ends at 04:00, as the hourly bar that opens at 03:00 does, so its value first appears on the 03:00 row; the 04:00 to 06:00 rows keep it, and the 04:00 bar's value arrives on the 07:00 row.
