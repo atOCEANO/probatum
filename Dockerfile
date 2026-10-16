@@ -59,7 +59,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+    numpy gymnasium pandas pyarrow polars optuna cloudpickle pytest \
     && python -c "import probatum; print('py313 wheel import OK')" \
     && pytest -q /tests
 
@@ -72,7 +72,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+    numpy gymnasium pandas pyarrow polars optuna cloudpickle pytest \
     && python -c "import probatum; print('py314 wheel import OK')" \
     && pytest -q /tests
 
@@ -123,7 +123,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+    numpy gymnasium pandas pyarrow polars optuna cloudpickle pytest \
     && pytest -q --slow -m slow /tests
 
 # The chart layer's other half. Every assertion in the correctness gate reads the
@@ -232,7 +232,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 WORKDIR /
 RUN PIP_CONSTRAINT=/constraints.txt pip install --no-cache-dir /sdist/*.tar.gz \
-    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+    numpy gymnasium pandas pyarrow polars optuna cloudpickle pytest \
     && pytest -q -p no:cacheprovider /tests
 
 # Mutation testing of the two pure-Rust crates: cargo-mutants changes one line at a

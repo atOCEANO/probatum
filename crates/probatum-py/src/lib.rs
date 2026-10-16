@@ -10,6 +10,8 @@
 //! The conversion is the macro's, not ours.
 #![allow(clippy::useless_conversion)]
 
+mod arrow;
+
 use numpy::ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 use numpy::npyffi::flags::NPY_ARRAY_WRITEABLE;
 use numpy::{
@@ -3823,5 +3825,6 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyState>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
     m.add_function(wrap_pyfunction!(run_script, m)?)?;
+    m.add_function(wrap_pyfunction!(arrow::arrow_columns, m)?)?;
     Ok(())
 }
