@@ -16,7 +16,9 @@ import collections
 import copy
 import dataclasses
 import datetime
+import inspect
 import re
+import time
 import warnings
 import zoneinfo
 
@@ -389,6 +391,152 @@ class Data:
         return view
 
 
+    @classmethod
+    def from_router(cls, router, exchange, market, interval, symbols, start, end=None,
+                    funding=False):
+        """The bars of ``symbols`` on ``exchange``'s ``market`` at ``interval``, from
+        the first bar at or after ``start`` to the last at or before ``end`` that has
+        closed, fetched through ``router``, an exchange-router ``Router``, and with
+        ``funding`` the funding events that charge them. ``start`` and ``end`` are
+        times or the text of one, a text end taking in the whole period it names.
+
+        One router call walks back from its newest bar for at most a hundred requests
+        to the venue, so the calls are chained back to ``start``. A call that brings
+        nothing earlier is asked once more, and where it brings nothing again the
+        venue's history is taken to begin there, which the provenance records and a
+        warning names, as another names bars that end before ``end``. A symbol the
+        router failed on is refused rather than left out, and so is a funding series
+        that misses part of its instrument's span: one that begins more than a cycle
+        after its first bar, ends more than a cycle before its last bar ends, misses
+        events between or holds one with no rate, so a run never charges nothing in
+        silence."""
+        fetch = getattr(router, "get_candles", None)
+        if fetch is None:
+            raise TypeError(f"router: {type(router).__name__}, which has no "
+                            f"get_candles; pass an exchange-router Router")
+
+        if inspect.iscoroutinefunction(fetch):
+            raise TypeError("router: an AsyncRouter, whose calls return coroutines; "
+                            "pass Router.local(...) or Router.service(...)")
+
+        if market not in MARKETS:
+            raise ValueError(f"market: {market!r}; use {', '.join(MARKETS)}")
+        if interval not in INTERVALS:
+            raise ValueError(f"interval: {interval!r}; use one of "
+                             f"{', '.join(INTERVALS)}")
+
+        if isinstance(symbols, str) or not hasattr(symbols, "__iter__"):
+            raise TypeError(f"symbols: {symbols!r}; give a list of symbols")
+
+        symbols = list(symbols)
+        if not symbols:
+            raise ValueError("symbols: none; name at least one symbol")
+
+        twice = [symbol for symbol in symbols if symbols.count(symbol) > 1]
+        if twice:
+            raise ValueError(f"symbols: {symbols!r} names {twice[0]} twice; name each "
+                             f"once")
+
+        if funding and market == "spot":
+            raise ValueError("funding: True for the spot market, which charges none; "
+                             "leave it out")
+
+        step  = INTERVALS[interval]
+        now   = _now()
+        first = _period(start, "start")[0]
+
+        # a venue serves the bar still open as though it were done, so the newest bar
+        # taken is the last to have closed whatever the end
+        last = now - step
+        if end is not None:
+            stop = _period(end, "end")[1] - 1
+            if stop < first:
+                raise ValueError(f"end: {end!r}, before the start, {start!r}; give an "
+                                 f"end after the start")
+            last = min(last, stop)
+
+        if last < first:
+            raise ValueError(f"start: {start!r}, where no {interval} bar has closed "
+                             f"yet; give an earlier start")
+
+        initial = {}
+        if len(symbols) > 1:
+            batch = router.candles_many(exchange, market, symbols, interval=interval,
+                                        limit=(last - first) // step + 1,
+                                        start=last // 1_000_000, verbose=False)
+
+            if batch.failed:
+                symbol, error = next(iter(batch.failed.items()))
+                raise ValueError(f"symbols: the router failed on {symbol}: "
+                                 f"{getattr(error, 'detail', error)}; leave it out, or "
+                                 f"fetch it again once the router can serve it")
+
+            initial = batch.data()
+
+        parts, begins, ends, notes = [], {}, {}, []
+        for symbol in symbols:
+            def call(upper, pieces, symbol=symbol):
+                if symbol in initial:
+                    return initial.pop(symbol)
+                return router.get_candles(exchange, market, symbol, interval=interval,
+                                          limit=(upper - first) // step + 1,
+                                          start=upper // 1_000_000, verbose=False)
+
+            pieces, begun = _walk(call, first, last,
+                                  lambda frame: _bars_of(frame, symbol, market))
+            if not pieces:
+                raise ValueError(f"symbols: {symbol} has no {interval} bars on "
+                                 f"{exchange} {market} over the span asked; check the "
+                                 f"symbol, the market and the span")
+            if begun is not None and begun > first:
+                begins[symbol] = _when(begun)
+
+            times, bars = _joined(pieces)
+            if times[-1] + step <= last:
+                ends[symbol] = _when(times[-1])
+            parts.append(pieces[0][2]._replace(times=times, bars=bars))
+            notes += [w for piece in pieces for w in piece[2].attrs.get("warnings", [])]
+
+        root = _clock(parts, interval)
+
+        if funding:
+            events, told = _funding(router, exchange, market, root, step)
+            root.funding = _frozen(events)
+            notes += told
+
+        root.provenance = dict(source="router", venue=exchange, interval=interval,
+                               fetched=_when(now), warnings=list(dict.fromkeys(notes)))
+        if begins:
+            root.provenance["history"] = begins
+
+        data = cls._of(root, (0, len(root.time)), range(len(root.instruments)))
+
+        if begins:
+            symbol, when = next(iter(begins.items()))
+            more = (f", and those of {_count(len(begins) - 1, 'more instrument')} "
+                    f"begin late too" if len(begins) > 1 else "")
+            warnings.warn(f"data: {symbol}'s bars begin at {when}, after the "
+                          f"start{more}; the venue serves none earlier, see "
+                          f"data.provenance[\"history\"]", stacklevel=2)
+
+        if ends:
+            symbol, when = next(iter(ends.items()))
+            more = (f", and those of {_count(len(ends) - 1, 'more instrument')} end "
+                    f"early too" if len(ends) > 1 else "")
+            warnings.warn(f"data: {symbol}'s bars end at {when}, before the "
+                          f"end{more}; the venue served none later", stacklevel=2)
+
+        gaps = data.gaps()
+        if gaps:
+            gap  = gaps[0]
+            more = f", one of {len(gaps)} gaps" if len(gaps) > 1 else ""
+            warnings.warn(f"data: {gap.instrument} misses {_count(gap.missing, 'bar')} "
+                          f"after {_when(gap.after.astype(np.int64))}{more}; see "
+                          f"data.gaps()", stacklevel=2)
+
+        return data
+
+
     def _take(self, array):
         # a run of instruments in order is a view of the buffer, any other choice a
         # read-only copy
@@ -721,6 +869,11 @@ def _display(instruments):
 
 def _venues(root):
     return ", ".join(sorted({i.venue for i in root.instruments if i.venue})) or None
+
+
+def _count(n, noun):
+    """``n`` of ``noun``, such as 1 bar or 2 bars."""
+    return f"{n} {noun}{'s' * (n != 1)}"
 
 
 def _when(ns):
@@ -1238,3 +1391,157 @@ def features(data, values, fill=None):
             out[rows, instrument, feature] = series
 
     return _frozen(out[start:])
+
+
+def _now():
+    """Nanoseconds since 1970, now."""
+    return time.time_ns()
+
+
+def _walk(call, first, upper, read):
+    """Every row from ``first`` to ``upper``, in nanoseconds since 1970, that ``call``
+    gives walking back from ``upper``, as the pieces the calls brought, newest first,
+    and the earliest row where the venue's history begins after ``first``. ``call``
+    takes the newest time wanted and the pieces brought so far, and ``read`` turns
+    what it returns into the rows' times, their values and what else the frame says.
+    A call that brings nothing earlier is asked once more, and where it brings
+    nothing again the venue's history begins at the earliest row."""
+    pieces, asked = [], False
+    while upper >= first:
+        times, values, carried = read(call(upper, pieces))
+        kept = (times >= first) & (times <= upper)
+        if not kept.any():
+            if asked:
+                break
+            asked = True
+            continue
+
+        asked = False
+        pieces.append((times[kept], values[kept], carried))
+        upper = int(times[kept].min()) - 1_000_000
+
+    begun = None
+    if pieces and upper >= first:
+        begun = min(int(piece[0].min()) for piece in pieces)
+
+    return pieces, begun
+
+
+def _joined(pieces):
+    """The rows a walk's ``pieces`` hold, in time order, a row two calls both brought
+    taken once."""
+    times  = np.concatenate([piece[0] for piece in pieces])
+    values = np.concatenate([piece[1] for piece in pieces])
+    order  = np.argsort(times, kind="stable")
+    times, values = times[order], values[order]
+
+    once = np.concatenate([[True], np.diff(times) != 0])
+    return times[once], values[once]
+
+
+def _bars_of(frame, symbol, market):
+    """The open times and the bars of a router candle frame, with its `Part`."""
+    if not len(frame):
+        return np.zeros(0, dtype=np.int64), np.zeros((0, 5)), None
+
+    [part] = _parts(frame, symbol, market, None)
+    return np.asarray(part.times, dtype=np.int64), part.bars, part
+
+
+def _rates_of(frame):
+    """The times and the rates of a router funding frame, and the warnings it came
+    with."""
+    told = list(frame.attrs.get("warnings", []))
+    if not len(frame):
+        return np.zeros(0, dtype=np.int64), np.zeros(0), told
+
+    columns = None
+    if hasattr(frame, "__arrow_c_stream__"):
+        try:
+            columns = arrow_columns(frame)
+        except ImportError:
+            pass
+
+    if columns is None:
+        times, _ = _times(frame.index)
+        rates = frame["rate"].to_numpy(dtype=np.float64, na_value=np.nan)
+        return times, rates, told
+
+    times = [values for _, kind, values, _ in columns if kind == "time"]
+    rates = [values for name, kind, values, _ in columns
+             if name == "rate" and kind in ("float", "int")]
+    if len(times) != 1 or not rates:
+        raise ValueError("data: a funding frame without one time column and a rate; "
+                         "pass the router's own frame")
+
+    return times[0], np.asarray(rates[0], dtype=np.float64), told
+
+
+def _funding(router, exchange, market, root, step):
+    """The funding events that charge each instrument of ``root``, fetched back as
+    its bars were and owned by its bars, and the warnings the router gave with them;
+    refused where the series misses part of its instrument's span, which a run would
+    otherwise charge nothing for."""
+    events, notes = [], []
+    for column, (instrument, name) in enumerate(zip(root.instruments, root.names)):
+        printed = root.time[root.available[:, column]]
+        opened, ended = int(printed[0]), int(printed[-1]) + step
+
+        def call(upper, pieces, symbol=instrument.symbol):
+            # the events the span holds at the cycle the last ones brought, or at eight
+            # hours before any came: Binance reads the count as a window of that many
+            # cycles and returns the oldest events in it, and a paging venue reports a
+            # count it cannot fill as a short result
+            gaps  = np.diff(pieces[-1][0]) if pieces else ()
+            cycle = max(_median(gaps), HOUR) if len(gaps) else 8 * HOUR
+            return router.get_funding_rate(exchange, market, symbol,
+                                           limit=(upper - opened) // cycle + 1,
+                                           start=upper // 1_000_000, verbose=False)
+
+        pieces, _ = _walk(call, opened, ended + SECOND, _rates_of)
+        notes += [w for piece in pieces for w in piece[2]]
+        times, rates = (_joined(pieces) if pieces
+                        else (np.zeros(0, np.int64), np.zeros(0)))
+        owned = (times > opened + SECOND) & (times <= ended + SECOND)
+        times, rates = times[owned], rates[owned]
+        if not len(times):
+            if ended - opened > DAY:
+                raise ValueError(f"funding: {name} has no funding events over its "
+                                 f"bars, from {_when(opened)} to {_when(ended)}; load "
+                                 f"it without funding")
+            continue
+
+        missing = np.flatnonzero(np.isnan(rates))
+        if len(missing):
+            raise ValueError(f"funding: {name}'s event at {_when(times[missing[0]])} "
+                             f"has no rate; load it without funding, or after that "
+                             f"time")
+
+        spacing = np.diff(times)
+        head, tail = (int(spacing[0]), int(spacing[-1])) if len(spacing) else (DAY, DAY)
+        if times[0] - opened > head + SECOND:
+            raise ValueError(f"funding: {name}'s funding history begins at "
+                             f"{_when(times[0])}, more than a cycle after its first "
+                             f"bar at {_when(opened)}; start the bars at "
+                             f"{_when(times[0])} or load them without funding")
+
+        if ended - times[-1] > tail + SECOND:
+            raise ValueError(f"funding: {name}'s funding history ends at "
+                             f"{_when(times[-1])}, more than a cycle before its last "
+                             f"bar ends at {_when(ended)}; end the bars by "
+                             f"{_when(times[-1])} or load them without funding")
+
+        # a cycle may change, so a hole is a spacing more than half as long again as
+        # both its neighbours
+        around = np.maximum(np.concatenate([[0], spacing[:-1]]),
+                            np.concatenate([spacing[1:], [0]]))
+        hole = np.flatnonzero(spacing > 1.5 * around) if len(spacing) > 1 else []
+        if len(hole):
+            k = hole[0]
+            raise ValueError(f"funding: {name}'s funding history misses the events "
+                             f"between {_when(times[k])} and {_when(times[k + 1])}; "
+                             f"load the bars before or after them, or without funding")
+
+        events += [(int(t), column, float(r)) for t, r in zip(times, rates)]
+
+    return np.sort(np.array(events, dtype=FUNDING), order="time"), notes
