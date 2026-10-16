@@ -16,7 +16,9 @@ import collections
 import copy
 import dataclasses
 import datetime
+import hashlib
 import inspect
+import json
 import re
 import time
 import warnings
@@ -377,17 +379,20 @@ class Data:
             venue=_venues(root), interval=root.interval,
             warnings=[w for part in parts for w in part.attrs.get("warnings", [])])
 
-        self._root = root
-        self._rows = (0, len(root.time))
-        self._cols = tuple(range(len(root.instruments)))
+        self._root        = root
+        self._rows        = (0, len(root.time))
+        self._cols        = tuple(range(len(root.instruments)))
+        self._fingerprint = None
 
 
     @classmethod
     def _of(cls, root, rows, cols):
-        view       = object.__new__(cls)
-        view._root = root
-        view._rows = rows
-        view._cols = tuple(cols)
+        view              = object.__new__(cls)
+        view._root        = root
+        view._rows        = rows
+        view._cols        = tuple(cols)
+        view._fingerprint = None
+
         return view
 
 
@@ -690,15 +695,30 @@ class Data:
 
 
     @property
+    def fingerprint(self):
+        """A 128-bit blake2b over everything a run on these bars can read, written as
+        ``"b2:"`` and 32 hex characters: the clock and its interval, the bars, which of
+        them printed, the funding events and the instruments (ADR 0005). A slice's
+        covers the bars before it as well, which its features and an agent's window
+        warm up on, and where it starts among them. It is taken once."""
+        if self._fingerprint is None:
+            self._fingerprint = _digest(self)
+
+        return self._fingerprint
+
+
+    @property
     def provenance(self):
         """Where the bars came from: the source, the venue, the instruments, the
-        interval, the first and the last bar, and the warnings that came with them."""
+        interval, the first and the last bar, the warnings that came with them and the
+        fingerprint."""
         out = copy.deepcopy(self._root.provenance)
         out["instruments"] = [":".join(key for key in _key(instrument) if key) or name
                               for instrument, name in zip(self.instruments, self.names)]
         if len(self):
             out.update(first=_when(self.time[0]), last=_when(self.time[-1]))
 
+        out["fingerprint"] = self.fingerprint
         return out
 
 
@@ -834,6 +854,32 @@ class Data:
 def _frozen(array):
     array.flags.writeable = False
     return array
+
+
+def _digest(data):
+    """``data``'s fingerprint: blake2b of 16 bytes over a line naming the layout, the
+    interval, the rows before ``data`` and its own and its instruments, then the clock,
+    the bars, the availability and the funding events of all those rows, as
+    little-endian arrays with every zero unsigned and the events in order of time and
+    instrument, then the instruments as JSON."""
+    start, stop = data._rows
+
+    seen   = Data._of(data._root, (0, stop), data._cols)
+    events = np.sort(seen.funding, order=["time", "instrument"])
+    out    = hashlib.blake2b(digest_size=16)
+
+    out.update(f"probatum.data 1 {data.interval} {start} {stop - start} "
+               f"{len(data._cols)}\n".encode())
+    out.update(np.ascontiguousarray(seen.time, dtype="<i8"))
+    out.update(np.ascontiguousarray(seen.bars + 0.0, dtype="<f8"))
+    out.update(np.ascontiguousarray(seen.available, dtype=np.uint8))
+    out.update(np.ascontiguousarray(events["time"], dtype="<i8"))
+    out.update(np.ascontiguousarray(events["instrument"], dtype="<i8"))
+    out.update(np.ascontiguousarray(events["rate"] + 0.0, dtype="<f8"))
+    out.update(json.dumps([dataclasses.astuple(i) for i in data.instruments],
+                          separators=(",", ":")).encode())
+
+    return "b2:" + out.hexdigest()
 
 
 def _key(instrument):

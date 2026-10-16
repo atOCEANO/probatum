@@ -237,6 +237,35 @@ def test_a_view_and_a_join_keep_each_event_on_its_instrument():
     np.testing.assert_array_equal(joined.funding_rate, both.funding_rate)
 
 
+def test_a_funding_event_is_part_of_the_fingerprint_and_the_time_of_the_fetch_is_not(
+        monkeypatch):
+    times, rates = settlements()
+    moved = rates.copy()
+    moved[2] = 0.0002
+
+    first = fetch(Router({"BTCUSDT": bars(48)}, {"BTCUSDT": (times, rates)}),
+                  funding=True)
+
+    monkeypatch.setattr(probatum._data, "_now",
+                        lambda: probatum._data.time.time_ns() + HOUR)
+    again = fetch(Router({"BTCUSDT": bars(48)}, {"BTCUSDT": (times, rates)}),
+                  funding=True)
+    changed = fetch(Router({"BTCUSDT": bars(48)}, {"BTCUSDT": (times, moved)}),
+                    funding=True)
+
+    assert first.provenance["fetched"] != again.provenance["fetched"]
+    assert first.fingerprint == again.fingerprint != changed.fingerprint
+
+
+def test_events_at_one_time_give_one_fingerprint_whatever_the_instruments_order():
+    held    = {"BTCUSDT": bars(48), "ETHUSDT": bars(48, close=10.0)}
+    funding = {"BTCUSDT": settlements(), "ETHUSDT": settlements(rate=-0.0002)}
+    both    = fetch(Router(held, funding), held, funding=True)
+    swapped = fetch(Router(held, funding), ["ETHUSDT", "BTCUSDT"], funding=True)
+
+    assert both.select(["ETHUSDT", "BTCUSDT"]).fingerprint == swapped.fingerprint
+
+
 def test_a_settlement_stamped_within_a_second_of_a_bar_s_end_is_charged_at_it():
     times, rates = settlements()
     times[0] += 200_000_000
