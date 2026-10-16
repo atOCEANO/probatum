@@ -7,12 +7,14 @@ many independent envs over one shared series and steps them in parallel with the
 GIL released. The Python wrappers (rl, backtest) layer on top of these, and ``tune``
 searches a strategy's parameters by running many backtests across cores. ``chart``
 renders a frame, your own arrays and a run into one self-contained HTML document
-for a notebook cell or a file, computing nothing itself.
+for a notebook cell or a file, computing nothing itself. ``Venue`` holds a venue's
+rules, and ``venues`` the presets, each one a Venue.
 """
 
 from ._probatum import Batch, Engine
 from ._data import Data, Instrument, to_ohlcv
-from . import backtest, metrics, plot, rl, ta
+from ._venue import Venue
+from . import backtest, metrics, plot, rl, ta, venues
 from .backtest import Strategy
 from .market import Market
 from ._tune import tune
@@ -20,9 +22,9 @@ from ._walk import walk_forward
 from ._chart import chart, chart_defaults
 
 __all__ = [
-    "Batch", "Data", "Engine", "Instrument", "Market", "Strategy", "chart",
+    "Batch", "Data", "Engine", "Instrument", "Market", "Strategy", "Venue", "chart",
     "chart_defaults", "to_ohlcv", "tune", "walk_forward", "backtest", "metrics", "plot",
-    "rl", "ta",
+    "rl", "ta", "venues",
 ]
 
 try:

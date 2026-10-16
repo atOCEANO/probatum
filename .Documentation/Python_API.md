@@ -33,6 +33,8 @@ Everything the package exports, and where each piece is documented in full:
 | :--- | :--- |
 | `probatum.Data` | N instruments over T bars on one clock, read from any frame or array, every field and slice a read-only view of the bars it owns. [Below](#data). |
 | `probatum.Instrument` | One instrument of a Data: its symbol, market and venue, its quote and base assets and the one it settles in, an inverse contract's size, and the venue's limits on an order. [Below](#data). |
+| `probatum.Venue` | A venue's rules for a run, every one in one immutable object. [Below](#venue). |
+| `probatum.venues` | The presets, each a Venue: `binance_perp`, `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
 | `probatum.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `probatum.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
@@ -139,6 +141,39 @@ universe = probatum.Data.load("data/thirty")    # the same bars, next session
 ```
 
 `save(path)` makes the directory where it is missing and writes three Arrow IPC files that any Arrow reader opens: `bars.arrow`, one row for each bar and instrument with its time, the instrument as its row of `instruments.arrow`, and the five values, null where the instrument printed no bar, with the interval, the provenance and the fingerprint in its schema's metadata; `instruments.arrow`, one row for each instrument with its name and every field of its `Instrument` but `settlement`, which follows from them; and `funding.arrow`, one row for each funding event. A slice saves the bars before it as well, which its features warm up on, and loads back as the same slice. Each file is written under another name and then put in place, the bars last. `probatum.Data.load(path)` reads them back, checks the bars as a Data checks its bars, and refuses them where they do not give the fingerprint they were saved under, so bars fetched once can be studied many times, and a result's fingerprint can be checked against the files it came from. probatum writes and reads the files itself, so saving needs no pyarrow.
+
+<br>
+
+## Venue
+
+A `probatum.Venue` holds a venue's rules for a run in one object, so a setting has one place to be given ([ADR 0002](Decisions.md)). The presets are Venues, each reached as `probatum.venues.NAME` and read when first asked for ([ADR 0028](Decisions.md)), and a venue built by hand starts from the plain option in each row: a setting it leaves out, or gives as `None`, takes the plain option, and `None` inside a table leaves that key out.
+
+```python
+import probatum
+
+perp = probatum.venues.binance_perp
+cheaper = perp.replace(fees={"taker": 0.0004}, max_open_orders=16)
+both = probatum.venues.binance.replace(balance={"spot": 5_000.0, "margin": 5_000.0})
+mine = probatum.Venue(fees={"maker": 0.0, "taker": 0.0005},
+                      funding={"every_bars": 8, "rate": 0.0001})
+print(cheaper.to_dict()["fees"])            # {'maker': 0.0002, 'taker': 0.0004}
+```
+
+| Setting | What it is | Plain |
+| :--- | :--- | :--- |
+| `balance` | the opening cash: a number for an account of one wallet, `{"spot": s, "margin": m}` for one of both | `10_000.0` |
+| `fees` | `{"maker": r, "taker": r}`, each a share of the notional | `{"maker": 0.0002, "taker": 0.0006}` |
+| `leverage` | the most a perpetual is levered where no tier table caps it; `0.0` removes the cap | `10.0` |
+| `liquidation` | `"takeover"`, or `"book_then_backstop"` with `backstop`, the share of the requirement at which the backstop takes over | `"takeover"` |
+| `liquidation_fee` | the rate a close at the close point pays where no maintenance is kept | the taker rate |
+| `max_open_orders` | the orders each instrument may rest | `8` |
+| `fills` | the fill model: `limit`, `"touch"` or `"through"`; `window`, the bars before a fill it reads; `liquidity`, `{"budget": share}`; `spread`, `"none"`, `"estimated"` or `{"fixed": bps}`; `slippage`, `"none"` or `{"fixed": bps}`; `impact`, `"none"`, `{"linear": k}` or `{"sqrt": k}`; and `sizes`, `"on"` or `"off"` | `"touch"`, `24`, `{"budget": 1.0}`, `"none"`, `"none"`, `"none"`, `"off"` |
+| `intrabar` | how what a bar cannot show is decided: `"pessimistic"`, `"optimistic"`, or `"random"`, which draws from the run's seed | `"pessimistic"` |
+| `funding` | `"none"`, `"data"`, read from the Data, `{"every": hours, "rate": r}` or `{"every_bars": n, "rate": r}` | `"none"` |
+
+**Every instrument takes** the venue's `tiers`, `tiers_by`, `tick`, `lot`, `sigfigs`, `decimals`, `min_notional`, `max_qty` and `reduce_only_exempt`, where it gives them, unless its kind's table in `kinds` or its own in `instruments` gives another, and its fees side by side over the venue's. `instruments` keys a table by its symbol where `kind` names the kind of every instrument the venue lists, and as `kind:SYMBOL` where `kind` is None, as in the presets that combine a venue's spot and perpetual markets, which keep their rates in each kind's table. Each table is written as a preset file writes it, a tier table as a list of `{"up_to": n, "leverage": x, "rate": m, "amount": c}`, an amount left out being 0, and every word in lowercase ([Contributor Guide](Contributor_Guide.md#adding-a-preset)).
+
+**A Venue does not change.** It is hashable, and equal to any venue with the same settings, however their numbers were written. `to_dict()` gives every setting as the constructor takes it, so `probatum.Venue(**venue.to_dict())` is the same venue, and its repr is the code that builds it, `probatum.venues.binance_perp.replace(max_open_orders=16)` or `probatum.Venue(fees=...)`. `replace(**changes)` gives a variant: `fees` and `fills` merge into the venue's own, a table in `kinds` or `instruments` merges into the one it names key by key and its fees side by side, a table given `None` is dropped, which the venue must hold, `liquidation="takeover"` drops a backstop the venue held, and every other setting is replaced whole; a change every kind's table overrides, such as `fees` on a combined preset, reaches no instrument and is refused. Every setting passes the checks a preset's pass as the venue is built, the Engine's own among them, so a variant is checked as a new venue is, and a refusal opens with the setting as it was passed, such as `fees.maker` or `instruments.BTCUSDT.tick`, and the value ([ADR 0007](Decisions.md)). `name`, `taken` and `kind` give the preset's name, the day its tables were taken and the kind of the instruments it lists, each None where it is not given.
 
 <br>
 

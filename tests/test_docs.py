@@ -42,28 +42,30 @@ _GATE = (
 _INTERNAL_STAGES = {"builder"}
 
 _API = {
-    "chart":          probatum.chart,
+    "chart": probatum.chart,
     "chart_defaults": probatum.chart_defaults,
-    "to_ohlcv":       probatum.to_ohlcv,
-    "Backtester":     Backtester,
-    "Line":           plot.Line,
-    "Histogram":      plot.Histogram,
-    "Band":           plot.Band,
-    "Level":          plot.Level,
-    "Marker":         plot.Marker,
-    "Markers":        plot.Markers,
-    "Background":     plot.Background,
-    "Panel":          plot.Panel,
-    "Recorder":       plot.Recorder,
-    "ramp":           plot.ramp,
-    "at_bar":         plot.at_bar,
-    "at_next":        plot.at_next,
-    "tune":           probatum.tune,
-    "walk_forward":   probatum.walk_forward,
-    "Market":         probatum.Market,
-    "Data":           probatum.Data,
-    "from_router":    probatum.Data.from_router,
-    "load":           probatum.Data.load,
+    "to_ohlcv": probatum.to_ohlcv,
+    "Backtester": Backtester,
+    "Line": plot.Line,
+    "Histogram": plot.Histogram,
+    "Band": plot.Band,
+    "Level": plot.Level,
+    "Marker": plot.Marker,
+    "Markers": plot.Markers,
+    "Background": plot.Background,
+    "Panel": plot.Panel,
+    "Recorder": plot.Recorder,
+    "ramp": plot.ramp,
+    "at_bar": plot.at_bar,
+    "at_next": plot.at_next,
+    "tune": probatum.tune,
+    "walk_forward": probatum.walk_forward,
+    "Market": probatum.Market,
+    "Data": probatum.Data,
+    "from_router": probatum.Data.from_router,
+    "load": probatum.Data.load,
+    # a preset's replace takes the settings the constructor does
+    "Venue": probatum.Venue,
 }
 # every public function of the two modules whose examples are all calls. Listed by
 # reflection rather than by hand: the hand-written dict above had gone four
@@ -120,6 +122,10 @@ def called(func):
     if (isinstance(base, ast.Attribute) and base.attr in _ROOTS | {"Data"}
             and isinstance(base.value, ast.Name) and base.value.id in _ROOTS):
         return func.attr
+
+    if (func.attr == "replace" and isinstance(base, ast.Attribute)
+            and isinstance(base.value, ast.Attribute) and base.value.attr == "venues"):
+        return "Venue"
 
     return None
 

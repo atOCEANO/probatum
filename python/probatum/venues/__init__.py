@@ -1,7 +1,7 @@
 """The venue presets: each a TOML file in this package, dated, read and checked when it
-loads (ADR 0028). A preset holds the venue's defaults, each instrument's own tables, and
-each kind's settings where it mixes spot and perpetual markets, or names the presets
-it combines.
+loads (ADR 0028), and reached as a `Venue`, ``probatum.venues.binance_perp``. A preset
+holds the venue's defaults, each instrument's own tables, and each kind's settings
+where it mixes spot and perpetual markets, or names the presets it combines.
 """
 
 import datetime
@@ -16,22 +16,64 @@ from .._probatum import Engine
 
 KINDS = ("spot", "linear", "inverse")
 # what a venue sets for the whole account, and what an instrument may set apart
-VENUE = ("fees", "liquidation", "backstop", "funding", "leverage", "max_open_orders",
-         "fills")
+VENUE = ("fees", "liquidation", "backstop", "liquidation_fee", "funding", "leverage",
+         "max_open_orders", "fills")
 INSTRUMENT = ("fees", "tiers", "tiers_by", "tick", "lot", "sigfigs", "decimals",
               "min_notional", "max_qty", "reduce_only_exempt")
 FILLS = ("limit", "window", "liquidity", "spread", "slippage", "impact", "sizes")
 TIER  = ("up_to", "leverage", "rate", "amount")
 # each setting's type in a file, the values themselves the Engine's to check
-NUMBERS = ("backstop", "leverage", "tick", "lot", "min_notional", "max_qty")
-WHOLE   = ("max_open_orders", "sigfigs", "decimals")
-WORDS   = ("liquidation", "tiers_by", "limit")
+NUMBERS = ("backstop", "liquidation_fee", "leverage", "tick", "lot", "min_notional",
+           "max_qty")
+WHOLE = ("max_open_orders", "sigfigs", "decimals")
+WORDS = ("liquidation", "tiers_by", "limit")
+# the Engine's keywords as a Venue names them, for the refusals of one
+SPOKEN = {
+    "fee_maker":        "fees.maker",
+    "fee_taker":        "fees.taker",
+    "slippage_bps":     "fills.slippage",
+    "budget":           "fills.liquidity.budget",
+    "window":           "fills.window",
+    "spread":           "fills.spread",
+    "impact":           "fills.impact",
+    "impact_model":     "fills.impact",
+    "limit":            "fills.limit",
+    "funding_rate":     "funding.rate",
+    "funding_interval": "funding.every_bars",
+    "funding_hours":    "funding.every",
+    "quote":            "balance",
+}
+
+# the presets are reached by name, so the module exports nothing for a star import
+__all__ = []
 
 
+@functools.cache
 def _names():
     """The packaged presets' names."""
     files = importlib.resources.files(__name__).iterdir()
-    return sorted(path.name[:-5] for path in files if path.name.endswith(".toml"))
+    return tuple(sorted(path.name[:-5] for path in files
+                        if path.name.endswith(".toml")))
+
+
+def _said(origin, where):
+    """What a refusal of the setting at ``where`` opens with: the preset and the
+    setting's path in its file, or, for a Venue built in Python, which ``origin``
+    None marks, the setting's path in what was passed."""
+    if origin is None:
+        return where.removeprefix("defaults").removeprefix(".")
+    return f"{origin}: {where}"
+
+
+def _origin(preset):
+    """Who a refusal of ``preset`` names: None for a Venue built in Python, whose
+    refusals speak the caller's terms, and the preset's name otherwise."""
+    return None if preset.get("python") else preset["name"]
+
+
+def _noun(origin):
+    """What a table is called where ``origin`` gives it: a dict in Python."""
+    return "dict" if origin is None else "table"
 
 
 @functools.cache
@@ -63,9 +105,11 @@ def _preset(name):
 
 
 def _table(origin, where, value):
-    """``value`` where a TOML table belongs, at ``where`` in ``origin``."""
+    """``value`` where a table belongs, at ``where`` in ``origin``."""
     if not isinstance(value, dict):
-        raise ValueError(f"{origin}: {where}: {value!r} is not a table; give a table")
+        noun = _noun(origin)
+        raise ValueError(f"{_said(origin, where)}: {value!r} is not a {noun}; give a "
+                         f"{noun}")
 
     return value
 
@@ -74,7 +118,7 @@ def _known(origin, where, table, allowed):
     """``table`` at ``where``, every key of it one of ``allowed``."""
     for key in table:
         if key not in allowed:
-            raise ValueError(f"{origin}: {where}: {key!r} is not a setting; give "
+            raise ValueError(f"{_said(origin, where)}: {key!r} is not a setting; give "
                              f"{', '.join(allowed)}")
 
     return table
@@ -85,7 +129,8 @@ def _number(origin, where, value, whole=False):
     kinds = (int,) if whole else (int, float)
     if isinstance(value, bool) or not isinstance(value, kinds):
         need = "a whole number" if whole else "a number"
-        raise ValueError(f"{origin}: {where}: {value!r} is not {need}; give {need}")
+        raise ValueError(f"{_said(origin, where)}: {value!r} is not {need}; give "
+                         f"{need}")
 
     return value
 
@@ -99,11 +144,17 @@ def _typed(origin, where, name, value):
         return _number(origin, f"{where}.{name}", value, whole=True)
 
     if name in WORDS and not isinstance(value, str):
-        raise ValueError(f"{origin}: {where}.{name}: {value!r} is not a word; give "
-                         f"its name")
+        raise ValueError(f"{_said(origin, f'{where}.{name}')}: {value!r} is not a "
+                         f"word; give its name")
+
+    if name in WORDS and value != value.lower():
+        # the loader and the Venue compare the words as written
+        raise ValueError(f"{_said(origin, f'{where}.{name}')}: {value!r}; write it "
+                         f"in lowercase, {value.lower()!r}")
 
     if name == "reduce_only_exempt" and not isinstance(value, bool):
-        raise ValueError(f"{origin}: {where}.{name}: {value!r}; give true or false")
+        said = "True or False" if origin is None else "true or false"
+        raise ValueError(f"{_said(origin, f'{where}.{name}')}: {value!r}; give {said}")
 
     return value
 
@@ -154,6 +205,14 @@ def _read(text, origin):
         raise ValueError(f"{origin}: venue: combines {combines!r} beside settings of "
                          f"its own; give a combining preset its venue alone")
 
+    return dict(name=name, taken=taken, kind=kind, combines=combines,
+                **_tables(origin, data, kind))
+
+
+def _tables(origin, data, kind):
+    """The defaults, kinds and instruments of ``data``, a preset whose instruments are
+    all of ``kind``, or of several kinds where it is None, as a file gives them or a
+    Venue is built: the shape of each table and the type of every setting checked."""
     defaults = _known(origin, "defaults",
                       _table(origin, "defaults", data.get("defaults", {})),
                       tuple(dict.fromkeys(VENUE + INSTRUMENT)))
@@ -161,7 +220,12 @@ def _read(text, origin):
                    _table(origin, "defaults.fills", defaults.get("fills", {})), FILLS)
     kinds = _known(origin, "kinds", _table(origin, "kinds", data.get("kinds", {})),
                    KINDS)
+
     if kind is not None and kinds:
+        if origin is None:
+            raise ValueError(f"kinds: {', '.join(kinds)}, beside kind={kind!r}; give "
+                             f"every instrument's settings with the venue's, or "
+                             f"leave kind out")
         raise ValueError(f"{origin}: kinds: {', '.join(kinds)}, in a preset of one "
                          f"kind, {kind}; give every instrument's settings in defaults")
 
@@ -173,8 +237,13 @@ def _read(text, origin):
 
     instruments = _table(origin, "instruments", data.get("instruments", {}))
     for key, table in instruments.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{_said(origin, 'instruments')}: a key of {key!r}; key "
+                             f"each instrument by its symbol as text")
+
         _kind_of(origin, key, kind)
-        tables[key] = _known(origin, key, _table(origin, key, table), INSTRUMENT)
+        where = _where(origin, key)
+        tables[where] = _known(origin, where, _table(origin, where, table), INSTRUMENT)
 
     for where, table in tables.items():
         for setting, value in table.items():
@@ -183,10 +252,18 @@ def _read(text, origin):
             _rates(origin, f"{where}.fees", table["fees"])
         if "tiers" in table:
             _rows(origin, f"{where}.tiers", table["tiers"])
+            # an amount left out is 0, as the Engine takes it, and is held so
+            for row in table["tiers"]:
+                row.setdefault("amount", 0.0)
 
-    return dict(name=name, taken=taken, kind=kind, combines=combines,
-                defaults=dict(defaults, fills=fills), kinds=kinds,
+    return dict(defaults=dict(defaults, fills=fills), kinds=kinds,
                 instruments=instruments)
+
+
+def _where(origin, key):
+    """Where instrument ``key``'s own table sits: under its key in a file, which a
+    preset's refusals name it by, and in a Venue's ``instruments``."""
+    return f"instruments.{key}" if origin is None else key
 
 
 def _combine(preset, parts):
@@ -230,6 +307,10 @@ def _kind_of(origin, key, kind):
 
     found = re.fullmatch(r"(spot|linear|inverse):(.+)", key)
     if found is None:
+        if origin is None:
+            raise ValueError(f"instruments: {key!r} names no kind; key it as "
+                             f"kind:SYMBOL, with kind one of {', '.join(KINDS)}, or "
+                             f"give the venue's kind with kind=")
         raise ValueError(f"{origin}: {key!r} names no kind; name an instrument of a "
                          f"preset that mixes kinds as kind:SYMBOL, with kind one of "
                          f"{', '.join(KINDS)}")
@@ -248,17 +329,22 @@ def _rates(origin, where, fees):
 def _rows(origin, where, tiers):
     """A tier table's rows as the Engine takes them: each a table of up_to, leverage,
     rate and amount, an amount left out being 0."""
+    noun = _noun(origin)
     if not isinstance(tiers, list):
-        raise ValueError(f"{origin}: {where}: {tiers!r} is not a list; give a list of "
-                         f"tables of {', '.join(TIER)}")
+        raise ValueError(f"{_said(origin, where)}: {tiers!r} is not a list; give a "
+                         f"list of {noun}s of {', '.join(TIER)}")
 
     rows = []
     for k, row in enumerate(tiers):
         at = f"{where}[{k}]"
-        _known(origin, at, _table(origin, at, row), TIER)
+        if not isinstance(row, dict):
+            raise ValueError(f"{_said(origin, at)}: {row!r} is not a {noun}; give a "
+                             f"{noun} of {', '.join(TIER)}")
+        _known(origin, at, row, TIER)
         for name in ("up_to", "leverage", "rate"):
             if name not in row:
-                raise ValueError(f"{origin}: {at}: no {name}; give {', '.join(TIER)}")
+                raise ValueError(f"{_said(origin, at)}: no {name}; give "
+                                 f"{', '.join(TIER)}")
 
         rows.append(tuple(_number(origin, f"{at}.{name}", row.get(name, 0.0))
                           for name in TIER))
@@ -276,28 +362,32 @@ def _choice(origin, where, value, plain, given):
         [(key, number)] = value.items()
         return key, _number(origin, f"{where}.{key}", number)
 
-    shapes = [repr(word) for word in plain] + [f"{{ {key} = n }}" for key in given]
-    raise ValueError(f"{origin}: {where}: {value!r}; use {' or '.join(shapes)}")
+    shape  = "{{\"{}\": n}}" if origin is None else "{{ {} = n }}"
+    shapes = [repr(word) for word in plain] + [shape.format(key) for key in given]
+    raise ValueError(f"{_said(origin, where)}: {value!r}; use {' or '.join(shapes)}")
 
 
 def _venue_settings(preset):
     """The Engine's settings for the whole account of ``preset``. Funding from the
     data is the caller's to give, with the data."""
-    origin, defaults = preset["name"], preset["defaults"]
+    origin, defaults = _origin(preset), preset["defaults"]
+
     out = {}
     if "fees" in defaults:
         out.update(_rates(origin, "defaults.fees", defaults["fees"]))
 
-    for name in ("liquidation", "backstop", "leverage", "max_open_orders"):
+    for name in ("liquidation", "backstop", "liquidation_fee", "leverage",
+                 "max_open_orders"):
         if name in defaults:
             out[name] = defaults[name]
 
     funding = defaults.get("funding", "none")
+    said    = _said(origin, "defaults.funding")
     if isinstance(funding, dict):
         _known(origin, "defaults.funding", funding, ("every", "every_bars", "rate"))
         if ("every" in funding) == ("every_bars" in funding) or "rate" not in funding:
-            raise ValueError(f"{origin}: defaults.funding: {funding!r}; give every, in "
-                             f"hours, or every_bars, and the rate")
+            raise ValueError(f"{said}: {funding!r}; give every, in hours, or "
+                             f"every_bars, and the rate")
 
         if "every" in funding:
             out["funding_hours"] = _number(origin, "defaults.funding.every",
@@ -307,9 +397,11 @@ def _venue_settings(preset):
                                               funding["every_bars"], whole=True)
         out["funding_rate"] = _number(origin, "defaults.funding.rate", funding["rate"])
     elif funding not in ("none", "data"):
-        raise ValueError(f"{origin}: defaults.funding: {funding!r}; use 'none', "
-                         f"'data', {{ every = hours, rate = r }} or "
-                         f"{{ every_bars = n, rate = r }}")
+        shapes = (('{"every": hours, "rate": r}', '{"every_bars": n, "rate": r}')
+                  if origin is None else
+                  ("{ every = hours, rate = r }", "{ every_bars = n, rate = r }"))
+        raise ValueError(f"{said}: {funding!r}; use 'none', 'data', {shapes[0]} or "
+                         f"{shapes[1]}")
 
     fills = defaults["fills"]
     if "limit" in fills:
@@ -348,7 +440,7 @@ def _instrument_settings(preset, key):
     """Instrument ``key``'s settings as the Engine takes them for an instrument of a
     universe: the defaults, then its kind's, then its own, and its rates side by
     side, a side it gives no rate for keeping its kind's, or the venue's."""
-    origin = preset["name"]
+    origin = _origin(preset)
     kind, _ = _kind_of(origin, key, preset["kind"])
 
     given = {name: value for name, value in preset["defaults"].items()
@@ -360,11 +452,12 @@ def _instrument_settings(preset, key):
 
     given.pop("fees", None)
 
-    out = {"market": {"spot": "spot", "linear": "perp", "inverse": "inverse"}[kind]}
-    out.update(_rates(origin, f"{key}.fees", fees))
+    out   = {"market": {"spot": "spot", "linear": "perp", "inverse": "inverse"}[kind]}
+    where = _where(origin, key)
+    out.update(_rates(origin, f"{where}.fees", fees))
     for name, value in given.items():
         if name == "tiers":
-            out["tiers"] = _rows(origin, f"{key}.tiers", value)
+            out["tiers"] = _rows(origin, f"{where}.tiers", value)
         else:
             out[name] = value
 
@@ -379,8 +472,8 @@ def _settings(preset, keys, contract=None):
     out   = _venue_settings(preset)
     specs = [_instrument_settings(preset, key) for key in keys]
     if all(spec["market"] == "spot" for spec in specs):
-        out.pop("liquidation", None)
-        out.pop("backstop", None)
+        for name in ("liquidation", "backstop", "liquidation_fee"):
+            out.pop(name, None)
 
     if len(specs) == 1:
         [spec] = specs
@@ -390,7 +483,8 @@ def _settings(preset, keys, contract=None):
         return out
 
     if any(spec["market"] == "inverse" for spec in specs):
-        raise ValueError(f"{preset['name']}: an inverse contract among {len(keys)} "
+        origin = _origin(preset) or "data"
+        raise ValueError(f"{origin}: an inverse contract among {len(keys)} "
                          f"instruments; run it alone, as its account holds it")
 
     out["market"]      = "perp"
@@ -404,31 +498,39 @@ def _check(preset):
     placeholder bars, so a preset passes exactly what a venue built by hand does: its
     spot and linear instruments as one universe, and each inverse contract alone, as
     its account holds it. A kind it holds but lists no instrument of is checked on a
-    placeholder of that kind, and a preset of no kind that lists none on one of each.
-    Where the venue books then backstops, every perpetual keeps maintenance, so that
-    any of its instruments runs without the others."""
-    origin = preset["name"]
-    keys   = list(preset["instruments"])
+    placeholder of that kind, and a preset of no kind that lists none on one of each;
+    a refusal of a placeholder names its kind's table where the preset gives one. The
+    universe holds each instrument with one order slot, and the venue's own count is
+    checked on one of them, so a preset's size never bounds it, and a venue of spot
+    markets alone has its liquidation settings checked on a perpetual of their own,
+    which nothing else would read. Where the venue books then backstops, every
+    perpetual keeps maintenance, so that any of its instruments runs without the
+    others."""
+    origin = _origin(preset)
+    listed = list(preset["instruments"])
 
     if preset["kind"] is not None:
-        missing = [] if keys else ["placeholder"]
+        missing = [] if listed else ["placeholder"]
     else:
-        held    = {_kind_of(origin, key, None)[0] for key in keys}
-        kinds   = list(preset["kinds"]) or ([] if keys else list(KINDS))
+        held    = {_kind_of(origin, key, None)[0] for key in listed}
+        kinds   = list(preset["kinds"]) or ([] if listed else list(KINDS))
         missing = [f"{kind}:placeholder" for kind in kinds if kind not in held]
 
-    shown   = keys + [None] * len(missing)
-    keys    = keys + missing
+    keys    = listed + missing
     checked = dict(preset, instruments={key: preset["instruments"].get(key, {})
                                         for key in keys})
     kinds = [_kind_of(origin, key, preset["kind"])[0] for key in keys]
+    shown = [_where(origin, key) for key in listed] + [
+        f"kinds.{kind}" if kind in preset["kinds"] else None
+        for kind in kinds[len(listed):]]
 
-    def refused(chosen, tables):
-        """What the Engine says, if anything, to the instruments at ``chosen`` given
-        the tables ``tables``."""
+    def refused(chosen, variant):
+        """What the Engine says, if anything, to the instruments at ``chosen`` of the
+        preset ``variant``."""
         inverse  = kinds[chosen[0]] == "inverse"
-        settings = _settings(dict(checked, instruments=tables),
-                             [keys[k] for k in chosen], 1.0 if inverse else None)
+        settings = _settings(variant, [keys[k] for k in chosen],
+                             1.0 if inverse else None)
+
         if inverse:
             settings["quote"] = 1.0
         elif {"spot", "linear"} <= {kinds[k] for k in chosen}:
@@ -436,6 +538,8 @@ def _check(preset):
         if "funding_hours" in settings:
             # funding by the hour stamps its events on the clock
             settings["times"] = np.zeros(1, dtype=np.int64)
+        if len(chosen) > 1:
+            settings["max_open_orders"] = 1
 
         try:
             Engine(np.ones((1, 5) if len(chosen) == 1 else (1, len(chosen), 5)),
@@ -445,8 +549,19 @@ def _check(preset):
 
         return None
 
+    def raised(name, said):
+        """Refuse with what the Engine said, of the table ``name`` names or of the
+        venue, in a Venue's own terms where it was built in Python."""
+        if origin is None:
+            found = re.match(r"([a-z_]+)(\W.*)", said, re.DOTALL)
+            if found is not None and found.group(1) in SPOKEN:
+                said = SPOKEN[found.group(1)] + found.group(2)
+            raise ValueError(said if name is None else f"{name}: {said}")
+
+        raise ValueError(f"{origin if name is None else f'{origin}: {name}'}: {said}")
+
     def run(chosen):
-        said = refused(chosen, checked["instruments"])
+        said = refused(chosen, checked)
         if said is None:
             return
 
@@ -456,26 +571,56 @@ def _check(preset):
             name, said = shown[chosen[int(found.group(1))]], found.group(2)
         elif len(chosen) == 1 and shown[chosen[0]] is not None:
             # one instrument's refusal is the venue's where the venue's settings meet
-            # the same one without the instrument's own table
-            bare = {**checked["instruments"], keys[chosen[0]]: {}}
+            # the same one without the instrument's own table, or its kind's
+            k    = chosen[0]
+            bare = (dict(checked, instruments={**checked["instruments"], keys[k]: {}})
+                    if k < len(listed) else
+                    dict(checked, kinds={**checked["kinds"], kinds[k]: {}}))
             if refused(chosen, bare) != said:
-                name = shown[chosen[0]]
+                name = shown[k]
 
-        where = origin if name is None else f"{origin}: {name}"
-        raise ValueError(f"{where}: {said}")
+        raised(name, said)
 
     if preset["defaults"].get("liquidation") == "book_then_backstop":
         for k, kind in enumerate(kinds):
             tiers = _instrument_settings(checked, keys[k]).get("tiers", [])
             if kind != "spot" and not any(rate > 0.0 for _, _, rate, _ in tiers):
-                where = origin if shown[k] is None else f"{origin}: {shown[k]}"
-                raise ValueError(f"{where}: tiers: no maintenance, where the venue "
-                                 f"books then backstops; give a maintenance rate")
+                raised(shown[k], "tiers: no maintenance, where the venue books then "
+                                 "backstops; give a maintenance rate")
 
     shared = [k for k, kind in enumerate(kinds) if kind != "inverse"]
     if shared:
         run(shared)
+    if len(shared) > 1:
+        run(shared[:1])
 
     for k, kind in enumerate(kinds):
         if kind == "inverse":
             run([k])
+
+    if all(kind == "spot" for kind in kinds):
+        settings = dict(_venue_settings(checked), market="perp",
+                        tiers=[(float("inf"), 10.0, 0.01, 0.0)])
+        if "funding_hours" in settings:
+            settings["times"] = np.zeros(1, dtype=np.int64)
+        try:
+            Engine(np.ones((1, 5)), **settings)
+        except (ValueError, TypeError) as error:
+            raised(None, str(error))
+
+
+@functools.cache
+def _venue(name):
+    """The packaged preset ``name`` as a Venue, built once."""
+    from .._venue import Venue
+    return Venue._of(_preset(name), source=name)
+
+
+def __getattr__(name):
+    if name in _names():
+        return _venue(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_names()))
