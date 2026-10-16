@@ -4,6 +4,8 @@ on time, by text naming a period or by position, and on instruments, by their sh
 names, and joins two markets on one clock.
 """
 
+import copy
+import pickle
 import re
 
 import numpy as np
@@ -47,6 +49,20 @@ def test_the_bars_are_copied_once_and_every_view_is_read_only():
     for field in (data.time, data.bars, data.closes, data.close, data.available,
                   data[1:5].close, universe().select(["ETHUSDT", "BTCUSDT"]).closes):
         assert not field.flags.writeable
+        with pytest.raises(ValueError):
+            field[0] = 0
+
+
+def test_a_copy_or_a_pickle_of_a_data_is_as_read_only_as_the_data():
+    data = universe()
+
+    assert copy.copy(data) is data and copy.deepcopy(data) is data
+
+    again = pickle.loads(pickle.dumps(data))
+
+    assert again.fingerprint == data.fingerprint
+
+    for field in (again.bars, again.closes, again.time, again.available):
         with pytest.raises(ValueError):
             field[0] = 0
 

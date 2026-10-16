@@ -326,6 +326,15 @@ class _Root:
         self.rates       = None
 
 
+    def __setstate__(self, state):
+        # an array comes back from a pickle writable, and the bars must not be
+        self.__dict__.update(state)
+
+        for name in ("time", "bars", "available", "funding", "rates"):
+            if state.get(name) is not None:
+                _frozen(state[name])
+
+
 class Data:
     """N instruments over T bars on one clock, from a frame, a dict of frames keyed
     by symbol, or arrays with ``time=``, each bar's open time.
@@ -397,6 +406,16 @@ class Data:
         view._fingerprint = None
 
         return view
+
+
+    def __copy__(self):
+        return self
+
+
+    def __deepcopy__(self, memo):
+        # a Data never changes, so a copy of one is the one itself; a deep copy of its
+        # arrays would be writable under the fingerprint taken of them
+        return self
 
 
     @classmethod
