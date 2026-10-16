@@ -121,6 +121,16 @@ print(universe.gaps())                         # where the bars jump past the in
 
 A text bound names a year, a month, a day, an hour, a minute or a second, and a slice runs from the start of the first to the end of the second; a time names itself and a whole number is a position. `split` and `after` take the same, a period starting the later part where it starts. `join` puts two Datas on one clock, such as a venue's spot and perpetual markets, and `gaps()` lists every place an instrument's bars jump by more than the interval, each as the instrument, the bar before the jump, the bar after it and how many bars are missing between them: on a market that never closes, an outage or a hole in the data.
 
+**Coarser bars and outside series** reach a Data only from the moment each was known ([ADR 0006](Decisions.md), [Specification](Specification.md#coarser-bars-and-outside-series)).
+
+```python
+daily = btc.resample("1d")
+trend = btc.asof(probatum.ta.sma(daily.close, 50), daily)   # known at each day's end
+oi = btc.asof(open_interest)                                 # by its own timestamps
+```
+
+`resample(interval)` gives the same instruments at a whole multiple of the interval: each coarse bar takes the first open, the highest high, the lowest low and the last close of its bars and the sum of their volumes, is available where any of them was, and the funding events keep their stamps. Coarse bars align to 00:00 UTC and weeks to Monday, moved onto the Data's own steps, so hourly bars that open at half past the hour give coarse bars that do too; a coarse bar the bars do not cover to its end is dropped, since its close would be a price still trading, and the first holds the bars from the Data's first, wherever in it they begin. The instruments keep their names, and a slice's coarse bars keep the ones before it, as the slice keeps its bars, and read nothing after its end. `asof(values, when)` puts on row t the last value known by the end of bar t, and NaN before the first. `when` is a Data, or anything a Data is built from, whose values are known at the ends of its bars, or the time each row of `values` became known; where `values` holds a column for each of its instruments, an instrument that printed no bar on a row gave no new value there, so its last one stands. A frame passes alone: a frame of bars is read as a Data is, each value known at its bar's end, a column of a router candle frame at its candle's end, and any other frame or series at its datetime index or its one time column, or a `timestamp` column of milliseconds, its numeric columns being the values. A column of bars from elsewhere carries nothing that says so, so it comes with `when=`, its bars as a Data. A daily bar on this clock ends at the next midnight UTC, after the close of any session that ends by then, a stock's among them; the bars of a day that ends later, such as an FX day from 17:00 New York, belong in UTC or at a finer interval, where their ends are their own.
+
 <br>
 
 ## Data input

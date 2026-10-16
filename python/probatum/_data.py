@@ -842,6 +842,138 @@ class Data:
         return Data._of(root, (0, len(root.time)), range(len(root.instruments)))
 
 
+    def resample(self, interval):
+        """These instruments' bars at ``interval``, a whole multiple of this Data's
+        (ADR 0006): each coarse bar the first open, the highest high, the lowest low and
+        the last close of its bars and the sum of their volumes, available where any of
+        them was. Coarse bars align to 00:00 UTC and weeks to Monday, moved onto this
+        Data's own steps, and one these bars do not cover to its end is dropped, since
+        its close is not yet a close, while the first holds the bars from these bars'
+        first, wherever in it they begin. Funding events keep their stamps, the
+        instruments their names, and a slice's coarse bars keep the ones before it as
+        the slice keeps its bars, reading nothing after its end."""
+        root = self._root
+        if interval not in INTERVALS:
+            raise ValueError(f"interval: {interval!r}; use one of "
+                             f"{', '.join(INTERVALS)}")
+
+        coarse = INTERVALS[interval]
+        if coarse % root.step:
+            raise ValueError(f"interval: {interval!r} for {root.interval} bars; give a "
+                             f"whole multiple of {root.interval}")
+
+        start, stop = self._rows
+        if not self.available.any():
+            raise ValueError("data: no bars to resample; resample a Data that has some")
+
+        origin  = 4 * DAY if interval == "1w" else 0
+        anchor  = origin + (int(root.time[0]) - origin) % root.step
+        covered = int(root.time[stop - 1]) + root.step
+        parts   = []
+        for k in self._cols:
+            printed = root.available[:stop, k]
+            times, bars = root.time[:stop][printed], root.bars[:stop, k][printed]
+            ids   = (times - anchor) // coarse
+            whole = anchor + (ids + 1) * coarse <= covered
+            times, bars, ids = times[whole], bars[whole], ids[whole]
+            if len(ids):
+                first = np.flatnonzero(np.diff(ids, prepend=ids[0] - 1))
+                last  = np.append(first[1:], len(ids)) - 1
+                bars  = np.column_stack([bars[first, 0],
+                                         np.maximum.reduceat(bars[:, 1], first),
+                                         np.minimum.reduceat(bars[:, 2], first),
+                                         bars[last, 3],
+                                         np.add.reduceat(bars[:, 4], first)])
+                times = anchor + ids[first] * coarse
+
+            parts.append(Part(times, bars, root.instruments[k], {}, "", "resample"))
+
+        if not any(len(part.times) for part in parts):
+            raise ValueError(f"interval: {interval!r}, and these bars cover no "
+                             f"{interval} bar to its end; resample bars that do")
+
+        out       = _clock(parts, interval, placed=True)
+        out.names = self.names
+        events    = Data._of(root, (0, stop), self._cols).funding
+        events    = np.sort(events[_owners(out, events["time"]) < len(out.time)],
+                            order=["time", "instrument"])
+
+        out.funding    = _frozen(events)
+        out.provenance = copy.deepcopy(root.provenance)
+        out.provenance.update(interval=interval, resampled_from=root.interval)
+
+        # the coarse bar a slice opens inside began among the bars before it, so it is
+        # one of those the slice keeps behind it
+        cut = anchor + (int(root.time[start]) - anchor) // coarse * coarse
+        if start and root.time[start - 1] >= cut:
+            cut += coarse
+
+        first = int(np.searchsorted(out.time, cut, side="left"))
+        return Data._of(out, (first, len(out.time)), range(len(out.instruments)))
+
+
+    def asof(self, values, when=None):
+        """``values`` from another clock put on this Data's: row t holds the last of
+        them known by the end of bar t, and NaN before the first (ADR 0006). ``when``
+        is a Data, or anything a Data is built from, whose values are known at the ends
+        of its bars, or the times at which each row of ``values`` became known; left
+        out, ``values`` is a frame or a series. A frame of bars is read as a Data is,
+        each value known at its bar's end, a column of a router candle frame at its
+        candle's end, and any other frame or series at its index or its time column.
+        Where ``values`` holds a column for each of ``when``'s instruments, an
+        instrument that printed no bar there gave no new value, so its last one
+        stands."""
+        named, shift = "when", 0
+        if when is None:
+            named = "values"
+            values, known, shift = _stamped(values)
+        else:
+            if hasattr(when, "columns"):
+                when = Data(when)
+            if isinstance(when, Data):
+                known, shift = when.time, when._root.step
+            else:
+                known, _ = _times(when, "when")
+
+        values = np.asarray(values, dtype=np.float64)
+        if values.ndim == 0 or len(values) != len(known):
+            raise ValueError(f"values: {len(values) if values.ndim else 'one value'} "
+                             f"for {len(known)} times; give one row of values per time")
+
+        missing = np.flatnonzero(known == np.iinfo(np.int64).min)
+        if len(missing):
+            raise ValueError(f"{named}: no time at row {missing[0]}; give each row the "
+                             f"time it became known")
+
+        back = np.flatnonzero(np.diff(known) < 0)
+        if len(back):
+            raise ValueError(f"{named}: times that fall back at row {back[0] + 1}; "
+                             f"sort the rows by the time each became known")
+
+        known = known + shift
+        ends  = self.time + self._root.step
+        out   = np.full((len(self),) + values.shape[1:], np.nan)
+        width = len(when._cols) if isinstance(when, Data) else 0
+
+        if width and (values.ndim == 1 and width == 1
+                      or values.ndim > 1 and values.shape[1] == width):
+            printed = when.available
+            for k in range(width):
+                own  = np.flatnonzero(printed[:, k])
+                rows = np.searchsorted(known[own], ends, side="right") - 1
+                hit  = rows >= 0
+                if values.ndim == 1:
+                    out[hit] = values[own[rows[hit]]]
+                else:
+                    out[hit, k] = values[own[rows[hit]], k]
+
+            return out
+
+        rows = np.searchsorted(known, ends, side="right") - 1
+        out[rows >= 0] = values[rows[rows >= 0]]
+        return out
+
+
     def __repr__(self):
         what = (self.names[0] if len(self._cols) == 1
                 else f"{len(self._cols)} instruments")
@@ -1174,9 +1306,9 @@ def _five(columns, values, numeric, kind):
                             for name in _OHLCV])
 
 
-def _times(time):
-    """``time=`` as int64 nanoseconds since 1970, and the zone it carries, which a
-    pandas index or series holds on its array."""
+def _times(time, name="time"):
+    """``time``, the argument ``name``, as int64 nanoseconds since 1970, and the zone it
+    carries, which a pandas index or series holds on its array."""
     zone = ""
     time = getattr(time, "array", time)
     if getattr(time, "tz", None) is not None:
@@ -1195,8 +1327,81 @@ def _times(time):
 
     if values.dtype.kind in "iu":
         return values.astype(np.int64), zone
-    raise TypeError(f"time: values of {values.dtype}; give datetimes or int64 "
+
+    raise TypeError(f"{name}: values of {values.dtype}; give datetimes or int64 "
                     f"nanoseconds since 1970")
+
+
+def _stamped(source):
+    """The values a frame or a series holds, ``(K,)`` for one column and ``(K, C)`` for
+    C, the time at which each row became known and what to add to reach it: a frame of
+    bars is read as a Data is, each bar known at its end, and a column of a router
+    candle frame at its candle's end; anything else at its datetime index or its one
+    time column, or a ``timestamp`` column of milliseconds where it has neither."""
+    pandas = type(source).__module__.split(".")[0] == "pandas"
+    if not (pandas or hasattr(source, "columns")):
+        raise TypeError(f"values: a {type(source).__name__}, which carries no times; "
+                        f"pass when=, the time each row became known")
+
+    attrs = getattr(source, "attrs", None)
+    attrs = attrs if isinstance(attrs, dict) else {}
+
+    # a router candle frame, or a column of one, says what its volume is counted in
+    if "volume_unit" in attrs and attrs.get("interval") not in INTERVALS:
+        raise ValueError(f"values: candles of {attrs.get('interval')!r}, an interval "
+                         f"no Data runs on; give them on one of {', '.join(INTERVALS)}")
+
+    clocks, numbers = {}, {}
+    if pandas:
+        if getattr(source.index.dtype, "kind", "") == "M":
+            clocks["the index"] = _times(source.index)[0]
+        columns = ({name: source[name] for name in source.columns}
+                   if hasattr(source, "columns") else {source.name: source})
+        for name, column in columns.items():
+            if column.dtype.kind == "M":
+                clocks[name] = _times(column)[0]
+            elif column.dtype.kind in "iu" and not column.hasnans:
+                numbers[name] = column.to_numpy(dtype=np.int64)
+            elif column.dtype.kind in "fiu":
+                numbers[name] = column.to_numpy(dtype=np.float64, na_value=np.nan)
+    else:
+        for name, kind, values, _ in arrow_columns(source):
+            if kind in ("time", "date"):
+                clocks[name] = values
+            elif kind in ("float", "int"):
+                numbers[name] = values
+
+    if hasattr(source, "columns") and {"open", "high", "low", "close"} <= set(numbers):
+        # bars' times are their opens, and what a bar holds is known at its end
+        bars    = Data(source)
+        printed = ~np.isnan(np.column_stack([np.asarray(numbers[name], dtype=np.float64)
+                                             for name in _OHLCV])).all(axis=1)
+        if not clocks:
+            numbers.pop("timestamp", None)
+        values = np.column_stack([np.asarray(column, dtype=np.float64)[printed]
+                                  for column in numbers.values()])
+        values = values[:, 0] if values.shape[1] == 1 else values
+        return values, bars.time, bars._root.step
+
+    if len(clocks) > 1:
+        raise ValueError(f"values: times in {', '.join(map(str, clocks))}; keep the "
+                         f"time each row became known alone, or pass when=")
+
+    if clocks:
+        known = next(iter(clocks.values()))
+    elif getattr(numbers.get("timestamp"), "dtype", np.dtype(float)).kind == "i":
+        known = numbers.pop("timestamp") * 1_000_000
+    else:
+        raise ValueError("values: no times; give the time each row became known in a "
+                         "datetime index or column, or pass when=")
+
+    if not numbers:
+        raise ValueError("values: no column of numbers; give one beside the times")
+
+    values = np.column_stack([np.asarray(column, dtype=np.float64)
+                              for column in numbers.values()])
+    shift = INTERVALS[attrs["interval"]] if "volume_unit" in attrs else 0
+    return (values[:, 0] if values.shape[1] == 1 else values), known, shift
 
 
 def _clock(parts, interval, placed=False):

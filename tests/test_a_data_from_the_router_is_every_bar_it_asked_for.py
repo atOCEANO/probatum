@@ -266,6 +266,31 @@ def test_events_at_one_time_give_one_fingerprint_whatever_the_instruments_order(
     assert both.select(["ETHUSDT", "BTCUSDT"]).fingerprint == swapped.fingerprint
 
 
+def test_coarser_bars_keep_each_funding_event_at_its_stamp():
+    held    = {"BTCUSDT": bars(48), "ETHUSDT": bars(48, close=10.0)}
+    funding = {"BTCUSDT": settlements(), "ETHUSDT": settlements(rate=-0.0002)}
+    data    = fetch(Router(held, funding), held, funding=True)
+    four    = data.resample("4h")
+
+    np.testing.assert_array_equal(four.funding, data.funding)
+    assert np.isnan(four.funding_rate[0, 0]) and four.funding_rate[1, 0] == 0.0001
+
+    flipped = data.select(["ETHUSDT", "BTCUSDT"]).resample("4h").funding
+
+    assert flipped["instrument"][flipped["rate"] < 0].tolist() == [0] * 6
+
+    # the event at 08:00 belongs to the bar from 04:00, which the slice keeps behind it
+    late = data["2024-01-01 06:00":].resample("4h").funding
+
+    assert sorted(set(late["time"].tolist())) == [START + h * HOUR
+                                                  for h in (16, 24, 32, 40, 48)]
+
+    # the bar from 44:00 is not covered to its end, and its event goes with it
+    short = data[:"2024-01-02 21:00"].resample("4h").funding
+
+    assert short["time"].max() == START + 40 * HOUR
+
+
 def test_a_settlement_stamped_within_a_second_of_a_bar_s_end_is_charged_at_it():
     times, rates = settlements()
     times[0] += 200_000_000
