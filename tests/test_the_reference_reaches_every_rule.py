@@ -39,6 +39,7 @@ RULES = [
     "a delisting",
     "a favourable exit held back on a liquidating bar",
     "a fee at its instrument's own rate",
+    "a fill leaving no maintenance bounded at the liquidation fee",
     "a fill held at a tier's bound",
     "a fill held at the last tier's bound",
     "a fill held to the margin cap",
@@ -156,6 +157,7 @@ SEVERAL_ONLY = {
     "a corner or the closes reaching the trigger",
     "a held perp read at its last mark",
     "the margin bound beside another perp",
+    "a fill leaving no maintenance bounded at the liquidation fee",
 }
 ONE_ONLY = {"an inverse contract filled"}
 # with sizes on every fill is a whole number of lots, so neither a position the
@@ -168,6 +170,7 @@ UNREACHABLE = {"dust swept at the close", "an order retired below a lot",
 # random accounts seldom reach these, so a case built for each reaches it in the
 # comparison with the engine
 BUILT = {
+    "a fill leaving no maintenance bounded at the liquidation fee",
     "an exit the bar reached only before its position's fill",
     "a leg a resting fill armed held back on a liquidating bar",
     "a sized leg gone with the position its fill closed",

@@ -55,6 +55,7 @@ fn spot_config() -> EngineConfig {
         spread: Spread::None,
         limit: Limit::Touch,
         sizes: false,
+        liquidation_fee: None,
     }
 }
 

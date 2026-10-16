@@ -218,6 +218,33 @@ def beside(first, actions, margin=100.0):
     return times, ["linear", "linear"], columns, cfg, actions
 
 
+def beside_one_without_maintenance(first, second, stops, margin, liquidation_fee):
+    """A long of 1 on a perpetual from 100, at one tier of 20x keeping 0.5%
+    maintenance, beside a long of 10 on one from 10 keeping none, on `margin` once the
+    taker fee of 0.1% on each is paid, and `stops` on the first, each a kind, a side,
+    a size and a trigger, decided one a row before the bar where the two trade `first`
+    and `second`, at a venue charging `liquidation_fee`."""
+    def flat(price):
+        return Bar(price, price, price, price, 1e6)
+
+    quiet   = 2 + len(stops)
+    columns = [[flat(100.0)] * quiet + [Bar(*first, 1e6)],
+               [flat(10.0)] * quiet + [Bar(*second, 1e6)]]
+
+    times = [k * differential.HOUR for k in range(quiet + 1)]
+    cfg   = dict(kinds=["linear", "linear"], quote=margin + 0.2, balance=margin + 0.2,
+                 fee_taker=0.001, fee_maker=0.0, slippage_bps=0.0, max_open_orders=8,
+                 leverage=0.0, funding=("none",),
+                 tiers=[([(1e12, 20.0, 0.005, 0.0)], "notional"), (None, "notional")],
+                 intrabar="pessimistic", liquidation_fee=liquidation_fee)
+
+    actions = [(0, "market", "buy", 1.0, 0.0), (1, "market", "buy", 10.0, 0.0)]
+    actions += [(0, kind, side, size, (trigger / 100.0 - 0.8) / 0.4)
+                for kind, side, size, trigger in stops]
+
+    return times, ["linear", "linear"], columns, cfg, actions + [None]
+
+
 # universes built where random ones seldom reach a rule, each with the rule it reaches
 BUILT = {
     "a target naming an instrument before its first bar": (
@@ -255,6 +282,12 @@ BUILT = {
         beside((100.0, 100.0, 85.0, 86.0),
                [(0, "market", "buy", 7.0, 0.0), (1, "market", "buy", 5.0, 0.0),
                 (0, "limit", "buy", 2.0, (0.95 - 0.8) / 0.21)])),
+    # a stop that closes the one perp keeping maintenance leaves the other's close at
+    # the venue's liquidation fee of 3%, to which the bound lifts the stop
+    "a stop closing the perp with maintenance beside one without": (
+        "a fill leaving no maintenance bounded at the liquidation fee",
+        beside_one_without_maintenance((100.0, 100.0, 80.0, 80.0), (10.0,) * 4,
+                                       [("stop", "sell", 1.0, 81.0)], 20.0, 0.03)),
 }
 
 

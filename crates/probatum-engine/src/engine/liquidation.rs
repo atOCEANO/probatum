@@ -161,12 +161,7 @@ impl Engine {
     /// only tightens: fenced again, a bar keeps the tighter of its fences. Returns
     /// whether it clipped.
     pub(super) fn clip_joined(&mut self) -> bool {
-        let maintained = (0..self.account.positions.len()).any(|i| {
-            self.account.markets[i] == Market::Perp
-                && self.account.positions[i].qty.get() != 0.0
-                && self.maintains[i]
-        });
-        if !maintained {
+        if !self.account_maintained() {
             return false;
         }
         let Found::Clip(clip) = self.check_point() else {
@@ -479,11 +474,7 @@ impl Engine {
     /// close point leaves exactly nothing; with maintenance it pays none. Whatever
     /// the margin wallet then holds, positive or negative, is the liquidation charge.
     pub(super) fn take_over(&mut self, closes: &[(usize, f64, f64)], moment: Moment) {
-        let maintained = (0..self.account.positions.len()).any(|i| {
-            self.account.markets[i] == Market::Perp
-                && self.account.positions[i].qty.get() != 0.0
-                && self.has_maintenance(i)
-        });
+        let maintained = self.account_maintained();
         for (k, &(i, q, price)) in closes.iter().enumerate() {
             // an instrument's last close takes what its position still holds, which
             // the closes of its other legs can leave a hair off their own size
@@ -506,7 +497,9 @@ impl Engine {
             let rate = if maintained {
                 0.0
             } else {
-                self.costs[i].fee_taker
+                self.config
+                    .liquidation_fee
+                    .unwrap_or(self.costs[i].fee_taker)
             };
             let fee = size * price * rate;
             let before = self.before_fill(i);
@@ -598,11 +591,11 @@ impl Engine {
     ///
     /// Closing at the bankruptcy price leaves the account exactly at its close level
     /// AT that price, the size the fill closes paying its own fee and the rest the
-    /// closing fee, so no ordering of fills within a bar can book past it. With other
-    /// perps held, the price is solved against the wallet with what they hold beyond
-    /// their own closing fees, each at the fraction of its own bar the fill sits at
-    /// on its path, so no reducing fill on one leg overdraws the account its other
-    /// legs still stand in.
+    /// closing fee of the account the fill leaves, so no ordering of fills within a
+    /// bar can book past it. With other perps held, the price is solved against the
+    /// wallet with what they hold beyond their own closing fees, each at the fraction
+    /// of its own bar the fill sits at on its path, so no reducing fill on one leg
+    /// overdraws the account its other legs still stand in.
     ///
     /// The lift stops at the position's average entry, past which the close owes
     /// nothing, and inside `candle`, the bar the fill was priced on: a price the bar
@@ -620,9 +613,10 @@ impl Engine {
         if !reduces {
             return 0.0;
         }
-        let fee = self.costs[i].fee_taker;
+        let closing = self.liquidation_rate(i, fill.size.get());
+        let fee = closing.unwrap_or(self.costs[i].fee_taker);
         let price = fill.price.get();
-        let wallet = self.wallet_beside(i, price);
+        let wallet = self.wallet_beside(i, price, closing);
         let closed = fill.size.get().min(position.abs());
         let rate = if fill.is_taker {
             self.costs[i].fee_taker
@@ -1631,6 +1625,16 @@ mod tests {
     /// the trigger, 94.95; returned after that bar, with `next` to come and a maker's
     /// fee of `maker`.
     fn between_the_close_point_and_the_trigger(next: Candle, maker: f64) -> Engine {
+        between_the_close_point_and_the_trigger_charging(next, maker, None)
+    }
+
+    /// `between_the_close_point_and_the_trigger` at a venue whose `liquidation_fee`
+    /// places the close point.
+    fn between_the_close_point_and_the_trigger_charging(
+        next: Candle,
+        maker: f64,
+        liquidation_fee: Option<f64>,
+    ) -> Engine {
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let bars = vec![
             flat(100.0),
@@ -1642,6 +1646,7 @@ mod tests {
             quote: 51.5,
             fee_taker: 0.001,
             fee_maker: maker,
+            liquidation_fee,
             report: true,
             ..perp_cfg()
         };
@@ -1724,6 +1729,27 @@ mod tests {
         let paid = 10.0 * 0.998 * (949.5 / 9.98 - 95.1);
         assert!((charge + paid).abs() < 1e-9, "the charge was {charge}");
         assert!(last.margin_cash.abs() < 1e-9, "kept {}", last.margin_cash);
+    }
+
+    #[test]
+    fn a_partial_exit_holds_the_rest_to_the_venues_liquidation_fee() {
+        // the maker's sale of 5 at 94.99 at a venue charging 1% to liquidate: the 5
+        // left pay 1% in place of the taker's 0.1%, so the equity is zero at
+        // 949.5 / 9.95, past the bar's high of 95.10, where the sale fills, and the
+        // part of the lift the bar cannot hold is paid in
+        let bar = ohlc(94.98, 95.1, 94.97, 95.0, 1e6);
+        let mut e = between_the_close_point_and_the_trigger_charging(bar, 0.0, Some(0.01));
+        e.limit_sell(5.0, 94.99);
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let fill = *reporter.fills().last().expect("the sale");
+        assert!((fill.price - 95.1).abs() < 1e-9, "sold at {}", fill.price);
+        let charge = reporter.ledger()[3].costs.liquidation;
+        let zero = 949.5 / 9.95;
+        assert!(
+            (charge + 5.0 * (zero - 94.99)).abs() < 1e-9,
+            "the charge was {charge}"
+        );
     }
 
     const HOUR: i64 = 3_600 * 1_000_000_000;
@@ -1822,6 +1848,143 @@ mod tests {
         assert!((close.fee - 10.005).abs() < 5e-4, "paid {}", close.fee);
         assert!(reporter.ledger()[2].costs.liquidation.abs() < 1e-6);
         assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn a_liquidation_fee_of_1_percent_closes_the_account_at_40_404_04() {
+        // the same account at a venue charging 1% to liquidate: equity 0.5p - 20,000
+        // meets the fee 0.005p at 20,000 / 0.495, where the 202.02 left pays it
+        let config = EngineConfig {
+            liquidation_fee: Some(0.01),
+            ..specification()
+        };
+        let mut e = half_a_bitcoin_on(Candles::new(bitcoin(&[FALL])), config);
+        let last = e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let close = reporter.fills().last().expect("the close");
+        assert_eq!(close.reason, FillReason::Liquidation);
+        let (point, price, fee) = (20_000.0 / 0.495, close.price, close.fee);
+        assert!((price - point).abs() < 1e-6, "closed at {price}");
+        assert!((fee - 0.005 * point).abs() < 1e-6, "paid {fee}");
+        assert!(reporter.ledger()[2].costs.liquidation.abs() < 1e-6);
+        assert_eq!(last.margin_cash, 0.0);
+    }
+
+    #[test]
+    fn with_maintenance_the_liquidation_fee_moves_neither_the_close_nor_the_charge() {
+        // the account leaves at its trigger and its takeover pays no fee of its own
+        let closed = |liquidation_fee| {
+            let bars = Candles::new(bitcoin(&[FALL])).with_tiers(maintained());
+            let config = EngineConfig {
+                liquidation_fee,
+                ..specification()
+            };
+            let mut e = half_a_bitcoin_on(bars, config);
+            let last = e.step();
+            let reporter = e.reporter().expect("reporting is on");
+            let close = *reporter.fills().last().expect("the close");
+            assert_eq!(close.reason, FillReason::Liquidation);
+            let charge = reporter.ledger()[2].costs.liquidation;
+            (close.price, close.fee, charge, last.margin_cash)
+        };
+        assert_eq!(closed(Some(0.01)), closed(None));
+    }
+
+    /// A long of 1 on A from 100, one tier at 20x keeping 0.5% maintenance, beside a
+    /// long of 10 on B from 10 keeping none, on `margin` once the taker fee of 0.1% on
+    /// each is paid, and `stops` on A, each a side, a size, a trigger and whether it
+    /// can only reduce; returned after the bar where A trades `a` and B trades `b`, at
+    /// a venue charging `liquidation_fee`.
+    fn stops_beside_a_perp_without_maintenance(
+        a: Candle,
+        b: Candle,
+        stops: &[(Side, f64, f64, bool)],
+        margin: f64,
+        liquidation_fee: Option<f64>,
+    ) -> Engine {
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = [
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), flat(10.0)],
+            vec![a, b],
+        ]
+        .concat();
+        let tier = Tier {
+            up_to: 1e12,
+            leverage: 20.0,
+            rate: 0.005,
+            amount: 0.0,
+        };
+        let maintained = Instrument {
+            market: Some(Market::Perp),
+            tiers: Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"),
+            ..Instrument::default()
+        };
+        let bare = Instrument {
+            market: Some(Market::Perp),
+            ..Instrument::default()
+        };
+        let bars = Candles::universe(rows, 2, None).with_instruments(vec![maintained, bare]);
+        let config = EngineConfig {
+            quote: margin + 0.2,
+            fee_taker: 0.001,
+            report: true,
+            liquidation_fee,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        e.order_on(
+            1,
+            Side::Buy,
+            10.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            TimeInForce::Ioc,
+        );
+        e.step();
+        for &(side, size, trigger, reduce_only) in stops {
+            e.stop(side, size, trigger, reduce_only);
+        }
+        e.step();
+        e
+    }
+
+    #[test]
+    fn a_fill_closing_the_last_perp_with_maintenance_holds_the_rest_to_the_fee() {
+        // at a venue charging 3% to liquidate, the stop at 81 on a bar where A falls
+        // to 80 closes A and leaves B alone, whose close then pays 3 of its 100. At B's
+        // flat 10 the account stands at that close level where 0.999p - 83 is zero, so
+        // the stop is lifted to 83 / 0.999 and the wallet keeps exactly 3
+        let a = ohlc(100.0, 100.0, 80.0, 80.0, 1e6);
+        let b = ohlc(10.0, 10.0, 10.0, 10.0, 1e6);
+        let stop = [(Side::Sell, 1.0, 81.0, true)];
+        let e = stops_beside_a_perp_without_maintenance(a, b, &stop, 20.0, Some(0.03));
+        let reporter = e.reporter().expect("reporting is on");
+        let stop = reporter
+            .fills()
+            .iter()
+            .find(|fill| fill.reason == FillReason::Stop)
+            .expect("the stop");
+        let lifted = 83.0 / 0.999;
+        assert!((stop.price - lifted).abs() < 1e-9, "sold at {}", stop.price);
+        let row = reporter.ledger()[3];
+        assert!(
+            (row.margin_cash - 3.0).abs() < 1e-9,
+            "kept {}",
+            row.margin_cash
+        );
+        let charge = row.costs.liquidation;
+        assert!(
+            (charge + lifted - 81.0).abs() < 1e-9,
+            "the charge was {charge}"
+        );
     }
 
     #[test]

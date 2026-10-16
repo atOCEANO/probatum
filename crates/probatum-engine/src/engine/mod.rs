@@ -177,6 +177,10 @@ pub struct EngineConfig {
     pub intrabar: Intrabar,
     /// How an account that reaches its trigger is closed out (ADR 0019).
     pub liquidation: Liquidation,
+    /// The rate a close at the close point pays where the account keeps no
+    /// maintenance; with `None` each pays its instrument's taker rate (Specification,
+    /// The trigger, close and clip points).
+    pub liquidation_fee: Option<f64>,
 }
 
 impl Default for EngineConfig {
@@ -202,6 +206,7 @@ impl Default for EngineConfig {
             funding_interval: 0,
             intrabar: Intrabar::Pessimistic,
             liquidation: Liquidation::Takeover,
+            liquidation_fee: None,
         }
     }
 }
@@ -1281,6 +1286,7 @@ mod tests {
             spread: Spread::None,
             limit: Limit::Touch,
             sizes: false,
+            liquidation_fee: None,
         }
     }
 

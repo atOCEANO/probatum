@@ -30,10 +30,10 @@ import numpy as np
 import probatum
 from .differential import (KINDS, Script, before, bracket, clock, close_enough,
                            closed_before, cut, engine_fills, engine_liquidation, fees,
-                           fills, limit_price, liquidation, live, log_difference,
-                           opened, prune, reference_rules, resting, setting, settings,
-                           sizes, stamps, stop_price, tally, tier_table, walk, weight,
-                           worded)
+                           fills, limit_price, liquidation, liquidation_fee, live,
+                           log_difference, opened, prune, reference_rules, resting,
+                           setting, settings, sizes, stamps, stop_price, tally,
+                           tier_table, walk, weight, worded)
 from .simulator import Bar, Instrument, Simulator, Venue
 
 # the kinds a shaped universe places, which a narrower KINDS leaves out
@@ -180,7 +180,9 @@ def take_profit(rng, band):
 
     beside = None
     if band:
-        cfg.update(slippage_bps=0.0, fee_taker=0.002, leverage=0.0, funding=("none",))
+        # steered between the close point the taker rate places and the trigger
+        cfg.update(slippage_bps=0.0, fee_taker=0.002, leverage=0.0, funding=("none",),
+                   liquidation_fee=None)
         cfg["tiers"][0] = (None, "notional")
 
         size    = worth * rng.uniform(2.0, 6.0)
@@ -342,8 +344,9 @@ def shared_margin(rng, own):
     maintained = rng.random() < 2.0 / 3.0
     if not maintained:
         # nothing but the fee then moves the account between its close point and its
-        # trigger, where it is steered
-        cfg.update(slippage_bps=0.0, fee_taker=0.002, funding=("none",))
+        # trigger, where it is steered, the close point at each leg's taker rate
+        cfg.update(slippage_bps=0.0, fee_taker=0.002, funding=("none",),
+                   liquidation_fee=None)
 
     tiers = []
     for w, x, leverage, column in zip(weights, near, leverages, columns):
@@ -807,6 +810,7 @@ def make_reference(times, kinds, columns, cfg, start=0):
         impact          = cfg.get("impact"),
         limit           = cfg.get("limit", "touch"),
         sizes           = cfg.get("sizes", False),
+        liquidation_fee = cfg.get("liquidation_fee"),
     )
 
     own         = cfg.get("fees") or [{}] * len(kinds)
@@ -833,7 +837,7 @@ def venue(cfg):
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
         max_open_orders=cfg["max_open_orders"], leverage=cfg["leverage"],
         intrabar=cfg["intrabar"], limit=cfg.get("limit", "touch"),
-        sizes=cfg.get("sizes", False),
+        sizes=cfg.get("sizes", False), liquidation_fee=cfg.get("liquidation_fee"),
         **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
         instruments=[dict(market="spot" if kind == "spot" else "perp", tiers=rows,
                           tiers_by=by, **rule, **fee)
@@ -982,6 +986,7 @@ def compare(cases, seed):
         case[3].setdefault("intrabar", setting(seed, number))
         tables = [rows for rows, _ in case[3]["tiers"]]
         case[3].setdefault("liquidation", liquidation(seed, number, tables))
+        case[3].setdefault("liquidation_fee", liquidation_fee(seed, number))
 
         counted = collections.defaultdict(collections.Counter)
         try:

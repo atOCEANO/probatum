@@ -359,7 +359,7 @@ def venue(cfg):
         tiers=cfg["tiers"], tiers_by=cfg["tiers_by"], intrabar=cfg["intrabar"],
         contract=cfg.get("contract"), **engine_funding(cfg["funding"]),
         **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
-        **engine_sizes(cfg),
+        **engine_sizes(cfg), liquidation_fee=cfg.get("liquidation_fee"),
     )
 
 
@@ -403,6 +403,7 @@ def make_reference(bars, cfg, times, interval=None, events=None, start=0):
         impact          = cfg.get("impact"),
         limit           = cfg.get("limit", "touch"),
         sizes           = cfg.get("sizes", False),
+        liquidation_fee = cfg.get("liquidation_fee"),
     )
 
     if events is not None:
@@ -888,6 +889,14 @@ def liquidation(seed, case, tables):
     return ("book_then_backstop", draw.choice([0.5, 2.0 / 3.0]))
 
 
+def liquidation_fee(seed, case):
+    """The fee case `case` of `seed` closes an account with no maintenance out at, or
+    none for each instrument's taker rate, drawn apart from the stream the cases come
+    from."""
+    draw = random.Random(f"liquidation fee {seed} {case}")
+    return draw.choice([None, None, 0.0, 0.01, 0.03])
+
+
 def compare(cases, seed):
     """`cases` random cases from `seed` through both: how many were compared whole
     and agreed, the disagreements, the rules each case was cut at, and the rules and
@@ -908,8 +917,9 @@ def compare(cases, seed):
         times = clock(draw, len(bars))
         cfg   = config(draw, times, inverse=case >= cases)
 
-        cfg["intrabar"]    = setting(seed, case)
-        cfg["liquidation"] = liquidation(seed, case, [cfg["tiers"]])
+        cfg["intrabar"]        = setting(seed, case)
+        cfg["liquidation"]     = liquidation(seed, case, [cfg["tiers"]])
+        cfg["liquidation_fee"] = liquidation_fee(seed, case)
         [cfg["tiers"]] = opened(seed, case, [cfg["tiers"]])
         cfg.update(fills(seed, case))
         cfg.update(sizes(seed, case, cfg["quote"], [bars[0].open], cfg.get("contract")))

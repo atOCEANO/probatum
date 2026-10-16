@@ -99,7 +99,7 @@ impl CheckLeg {
 }
 
 /// Margin equity, the maintenance requirement and the fee closing every position
-/// would pay at its instrument's taker rate, at a point.
+/// would pay on an account with no maintenance, at a point.
 #[derive(Clone, Copy, Debug)]
 struct Level {
     equity: f64,
@@ -111,6 +111,31 @@ impl Engine {
     /// Whether instrument `i`'s tier table asks any maintenance.
     pub(super) fn has_maintenance(&self, i: usize) -> bool {
         self.maintains[i]
+    }
+
+    /// Whether any perp the account holds keeps maintenance.
+    pub(super) fn account_maintained(&self) -> bool {
+        (0..self.account.positions.len()).any(|i| {
+            self.account.markets[i] == Market::Perp
+                && self.account.positions[i].qty.get() != 0.0
+                && self.maintains[i]
+        })
+    }
+
+    /// The rate every close at the close point pays in place of its instrument's
+    /// taker rate once a reducing fill of `size` on perp `i` lands: the venue's
+    /// liquidation fee, where it sets one and no perp the account then holds keeps
+    /// maintenance, `i` gone where the fill closes all of it (The margin bound).
+    pub(super) fn liquidation_rate(&self, i: usize, size: f64) -> Option<f64> {
+        self.config.liquidation_fee.filter(|_| {
+            !(0..self.account.positions.len()).any(|j| {
+                let q = self.account.positions[j].qty.get();
+                self.account.markets[j] == Market::Perp
+                    && q != 0.0
+                    && self.maintains[j]
+                    && (j != i || size != q.abs())
+            })
+        })
     }
 
     /// The maintenance a position of `size` and `notional` on instrument `i` keeps:
@@ -146,7 +171,11 @@ impl Engine {
             if self.maintains[i] {
                 maintenance += self.maintenance_of(i, size, held);
             }
-            closing += held * self.costs[i].fee_taker;
+            let fee = self
+                .config
+                .liquidation_fee
+                .unwrap_or(self.costs[i].fee_taker);
+            closing += held * fee;
         }
         Level {
             equity,

@@ -166,11 +166,12 @@ impl Engine {
     }
 
     /// The wallet a close of perp `i` at `price` is solved against: the margin
-    /// wallet's cash, and every other perp's unrealized PnL less the fee its own
-    /// close would pay at its taker rate, each at the fraction of its own bar's
-    /// adverse move that `price` sits at on the path of `i`'s position, so the
-    /// account stays at or above its close level.
-    pub(super) fn wallet_beside(&self, i: usize, price: f64) -> f64 {
+    /// wallet's cash, and every other perp's unrealized PnL less the closing fee its
+    /// own close would pay, `rate` where the venue's liquidation fee applies and its
+    /// taker rate otherwise, each at the fraction of its own bar's adverse move that
+    /// `price` sits at on the path of `i`'s position, so the account stays at or
+    /// above its close level.
+    pub(super) fn wallet_beside(&self, i: usize, price: f64, rate: Option<f64>) -> f64 {
         let own = usize::from(!self.account.positions[i].is_flat());
         if self.account.perps_held() <= own {
             return self.account.margin_cash;
@@ -183,7 +184,8 @@ impl Engine {
                 continue;
             }
             let at = self.at_fraction(j, s);
-            wallet += position.unrealized(Price(at)) - qty.abs() * at * self.costs[j].fee_taker;
+            let fee = rate.unwrap_or(self.costs[j].fee_taker);
+            wallet += position.unrealized(Price(at)) - qty.abs() * at * fee;
         }
         wallet
     }

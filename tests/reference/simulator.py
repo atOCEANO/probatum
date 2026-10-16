@@ -690,6 +690,15 @@ class Simulator:
                    if self.position[i] != 0.0)
 
 
+    def maintained_after(self, i, size):
+        """Liquidation, The margin bound: whether the account keeps maintenance once a
+        reducing fill of `size` on perpetual `i` lands, `i` gone where the fill closes
+        all of it."""
+        left = size != abs(self.position[i])
+        return any(self.has_maintenance(j) for j in self.perps()
+                   if self.position[j] != 0.0 and (j != i or left))
+
+
     def resting(self, instrument=None):
         return [o for o in self.slots if o is not None
                 and (instrument is None or o["instrument"] == instrument)]
@@ -2907,7 +2916,7 @@ class Simulator:
 
         closed     = min(size, abs(q))
         part       = math.copysign(closed, q)    # what the fill closes, signed
-        maintained = self.account_maintained()
+        maintained = self.maintained_after(i, size)
         fee        = self.closing_fee(i, maintained)
         others     = self.others_at(self.fraction(i, q > 0.0, price, self.t), self.t,
                                     skip=i)
@@ -2957,6 +2966,9 @@ class Simulator:
         if level(price) >= 0.0:
             return price, costs
 
+        if (self.venue.liquidation_fee is not None and not maintained
+                and self.account_maintained()):
+            self.hit("a fill leaving no maintenance bounded at the liquidation fee")
         if any(self.bars[self.t][j] is None for j in others):
             self.hit("a held perp read at its last mark")
         if lifted != price:

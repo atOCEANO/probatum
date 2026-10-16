@@ -29,8 +29,9 @@ import probatum
 from . import universe_differential
 from .differential import (balance, before, clock, close_enough, closed_before, config,
                            cut, drawn, engine_fills, engine_funding, engine_sizes, fees,
-                           fills, liquidation, log_difference, make_reference, money,
-                           set_aside, setting, sizes, walk, worded)
+                           fills, liquidation, liquidation_fee, log_difference,
+                           make_reference, money, set_aside, setting, sizes, walk,
+                           worded)
 
 
 def offsets_for(rng, bars, num_envs):
@@ -71,11 +72,11 @@ def drive_batch(bars, times, cfg, offsets, actions):
         report          = False,
         intrabar        = cfg["intrabar"],
         contract        = cfg.get("contract"),
+        liquidation_fee = cfg.get("liquidation_fee"),
         **engine_funding(cfg["funding"]),
         **engine_fills(cfg),
         **engine_sizes(cfg),
     )
-
     batch.reset_at_each(np.array(offsets, dtype=np.int64))
 
     seen = []
@@ -190,7 +191,8 @@ def compare(cases, seed):
 
         # tier tables are compared over universes, which `compare_universes` runs
         cfg = dict(config(draw, times, inverse=case >= cases), tiers=None,
-                   intrabar=setting(seed, case), **fills(seed, case))
+                   intrabar=setting(seed, case),
+                   liquidation_fee=liquidation_fee(seed, case), **fills(seed, case))
         cfg.update(sizes(seed, case, cfg["quote"], [bars[0].open], cfg.get("contract")))
 
         num_envs = draw.randint(2, 5)
@@ -302,8 +304,9 @@ def compare_universes(cases, seed):
     for case in range(cases):
         times, kinds, columns = universe_differential.universe(rng)
         cfg = universe_differential.config(rng, times, kinds, columns)
-        cfg["intrabar"]    = setting(seed, case)
-        cfg["liquidation"] = liquidation(seed, case, [rows for rows, _ in cfg["tiers"]])
+        cfg["intrabar"]        = setting(seed, case)
+        cfg["liquidation"]     = liquidation(seed, case, [rows for rows, _ in cfg["tiers"]])
+        cfg["liquidation_fee"] = liquidation_fee(seed, case)
         cfg.update(fills(seed, case))
         opens = universe_differential.opens(columns)
         cfg.update(sizes(seed, case, cfg["quote"], opens))

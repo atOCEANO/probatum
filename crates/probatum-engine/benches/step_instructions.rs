@@ -48,6 +48,7 @@ fn engine(bars: usize) -> Engine {
         spread: Spread::None,
         limit: Limit::Touch,
         sizes: false,
+        liquidation_fee: None,
     };
     Engine::new(Candles::new(candles), config)
 }

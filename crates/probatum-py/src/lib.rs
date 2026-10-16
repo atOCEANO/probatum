@@ -1113,6 +1113,7 @@ fn build_config(
     seed: Option<u128>,
     liquidation: &str,
     backstop: Option<f64>,
+    liquidation_fee: Option<f64>,
 ) -> PyResult<EngineConfig> {
     if max_open_orders == 0 || max_open_orders > MAX_OPEN_ORDERS_LIMIT {
         return Err(PyValueError::new_err(format!(
@@ -1164,6 +1165,17 @@ fn build_config(
         funding_interval,
         intrabar: parse_intrabar(intrabar, seed)?,
         liquidation: parse_liquidation(liquidation, backstop)?,
+        liquidation_fee: match liquidation_fee {
+            // a fee of minus zero is no fee, and the fill log keeps no sign for it
+            Some(fee) if (0.0..1.0).contains(&fee) => Some(fee + 0.0),
+            Some(fee) => {
+                return Err(PyValueError::new_err(format!(
+                    "liquidation_fee: {fee}; give the rate on its notional a close at the \
+                     close point pays, from 0 and below 1"
+                )))
+            }
+            None => None,
+        },
     })
 }
 
@@ -1781,6 +1793,7 @@ impl Engine {
         contract = None,
         liquidation = "takeover",
         backstop = None,
+        liquidation_fee = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1822,6 +1835,7 @@ impl Engine {
         contract: Option<f64>,
         liquidation: &str,
         backstop: Option<f64>,
+        liquidation_fee: Option<f64>,
     ) -> PyResult<Engine> {
         let (series, config, universe, units) = build_series(
             &candles,
@@ -1865,6 +1879,7 @@ impl Engine {
             contract,
             liquidation,
             backstop,
+            liquidation_fee,
         )?;
         Ok(Engine {
             inner: BarEngine::new(series, config),
@@ -2493,6 +2508,7 @@ impl Batch {
         contract = None,
         liquidation = "takeover",
         backstop = None,
+        liquidation_fee = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2539,6 +2555,7 @@ impl Batch {
         contract: Option<f64>,
         liquidation: &str,
         backstop: Option<f64>,
+        liquidation_fee: Option<f64>,
     ) -> PyResult<Batch> {
         let (series, config, universe, units) = build_series(
             &candles,
@@ -2582,6 +2599,7 @@ impl Batch {
             contract,
             liquidation,
             backstop,
+            liquidation_fee,
         )?;
 
         // Per-env cost randomization (ADR 0038): each override, if given, replaces
@@ -3502,6 +3520,7 @@ fn build_series(
     contract: Option<f64>,
     liquidation: &str,
     backstop: Option<f64>,
+    liquidation_fee: Option<f64>,
 ) -> PyResult<(Candles, EngineConfig, bool, Units)> {
     let seed = seed_of(seed)?;
     let Ok(array) = candles.cast::<PyUntypedArray>() else {
@@ -3568,6 +3587,7 @@ fn build_series(
             seed,
             liquidation,
             backstop,
+            liquidation_fee,
         )?;
         let config = EngineConfig {
             funding_rate: units.signed(config.funding_rate),
@@ -3699,6 +3719,7 @@ fn build_series(
         seed,
         liquidation,
         backstop,
+        liquidation_fee,
     )?;
     let series = place_funding(
         series.with_instruments(specs),

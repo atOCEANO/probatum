@@ -65,6 +65,7 @@ pub(super) fn cfg() -> EngineConfig {
         spread: Spread::None,
         limit: Limit::Touch,
         sizes: false,
+        liquidation_fee: None,
     }
 }
 

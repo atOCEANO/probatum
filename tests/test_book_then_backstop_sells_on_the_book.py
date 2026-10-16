@@ -96,6 +96,11 @@ def test_a_debit_at_the_close_that_reaches_the_trigger_sells_the_long_there(
     (dict(backstop=0.5), 'backstop: 0.5 for takeover; give it with liquidation='),
     (dict(BOOKED, tiers=None),
      "liquidation: book_then_backstop with no maintenance in any perp's tier table"),
+    (dict(liquidation_fee=-0.001),
+     "liquidation_fee: -0.001; give the rate on its notional a close at the close "
+     "point pays, from 0 and below 1"),
+    (dict(liquidation_fee=1.0), "liquidation_fee: 1; give the rate on its notional"),
+    (dict(liquidation_fee=float("nan")), "liquidation_fee: NaN; give the rate"),
 ])
 def test_a_liquidation_the_venue_cannot_hold_is_refused(settings, says):
     venue = dict(market="perp", tiers=MAINTAINED)

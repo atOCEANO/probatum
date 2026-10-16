@@ -206,6 +206,7 @@ mod tests {
             spread: Spread::None,
             limit: Limit::Touch,
             sizes: false,
+            liquidation_fee: None,
         };
         Engine::new(Candles::new(vec![bar; 4]), config)
     }

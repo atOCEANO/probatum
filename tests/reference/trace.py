@@ -129,8 +129,9 @@ def main():
         times = D.clock(draw, len(bars))
         cfg   = D.config(draw, times, inverse=case >= cases)
 
-        cfg["intrabar"]    = D.setting(seed, case)
-        cfg["liquidation"] = D.liquidation(seed, case, [cfg["tiers"]])
+        cfg["intrabar"]        = D.setting(seed, case)
+        cfg["liquidation"]     = D.liquidation(seed, case, [cfg["tiers"]])
+        cfg["liquidation_fee"] = D.liquidation_fee(seed, case)
         cfg.update(D.fills(seed, case))
         opens = [bars[0].open]
         cfg.update(D.sizes(seed, case, cfg["quote"], opens, cfg.get("contract")))
