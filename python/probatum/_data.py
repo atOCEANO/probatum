@@ -19,6 +19,8 @@ import datetime
 import hashlib
 import inspect
 import json
+import os
+import pathlib
 import re
 import time
 import warnings
@@ -26,6 +28,7 @@ import zoneinfo
 
 import numpy as np
 
+from . import _ipc
 from ._probatum import arrow_columns, periods_per_year
 
 _OHLCV = ["open", "high", "low", "close", "volume"]
@@ -974,6 +977,144 @@ class Data:
         return out
 
 
+    def save(self, path):
+        """Write these bars into the directory ``path``, made where it is missing, as
+        three Arrow IPC files any Arrow reader opens (ADR 0005): ``bars.arrow``, a row
+        for each bar and instrument, the instrument given as its row of
+        ``instruments.arrow`` and the values null where it printed no bar, with the
+        interval, the provenance and the fingerprint on its schema;
+        ``instruments.arrow``; and ``funding.arrow``. A slice saves the bars before it
+        as well, which its features warm up on, and loads back as the same slice. Each
+        file is written under another name and then put in place, the bars last."""
+        if not len(self):
+            raise ValueError("data: no bars to save; save a Data that has some")
+
+        folder = pathlib.Path(path)
+        if folder.exists() and not folder.is_dir():
+            raise ValueError(f"path: {str(path)!r} is a file; name a directory")
+        folder.mkdir(parents=True, exist_ok=True)
+
+        start, stop = self._rows
+        seen, width = Data._of(self._root, (0, stop), self._cols), len(self._cols)
+        bars    = seen.bars.reshape(stop * width, 5)
+        printed = seen.available.reshape(-1)
+        record  = dict(format=1, interval=self.interval, start=start,
+                       fingerprint=self.fingerprint, provenance=self._root.provenance)
+
+        listed = [("name", "text", list(self.names), None)]
+        for field in ("symbol", "market", "venue", "quote"):
+            values = [getattr(instrument, field) for instrument in self.instruments]
+            listed.append((field, "text", values,
+                           np.array([value is not None for value in values])))
+
+        contracts = [instrument.contract for instrument in self.instruments]
+        listed.append(("contract", "float",
+                       np.array([np.nan if c is None else c for c in contracts]),
+                       np.array([c is not None for c in contracts])))
+
+        events    = seen.funding
+        positions = np.tile(np.arange(width), stop)
+        files     = {
+            "instruments.arrow": (listed, {}),
+            "funding.arrow":     ([("time", "time", events["time"], None),
+                                   ("instrument", "int", events["instrument"], None),
+                                   ("rate", "float", events["rate"], None)], {}),
+            "bars.arrow":        ([("time", "time", np.repeat(seen.time, width), None),
+                                   ("instrument", "int", positions, None)]
+                                  + [(field, "float", bars[:, k], printed)
+                                     for k, field in enumerate(_OHLCV)],
+                                  {"probatum": json.dumps(record)}),
+        }
+
+        for name, (columns, metadata) in files.items():
+            _ipc.write(folder / f"{name}.partial", columns, metadata)
+
+        for name in files:
+            os.replace(folder / f"{name}.partial", folder / name)
+
+
+    @classmethod
+    def load(cls, path):
+        """The Data ``save`` wrote into the directory ``path``, a slice with the bars
+        before it, its bars checked as a Data's are, and refused where they do not give
+        the fingerprint they were saved under (ADR 0005)."""
+        folder = pathlib.Path(path)
+        bars, metadata = _saved(path, folder, "bars.arrow", dict(
+            time="time", instrument="int", **{field: "float" for field in _OHLCV}))
+        listed, _ = _saved(path, folder, "instruments.arrow", dict(
+            name="text", symbol="text", market="text", venue="text", quote="text",
+            contract="float"))
+        events, _ = _saved(path, folder, "funding.arrow",
+                           dict(time="time", instrument="int", rate="float"))
+
+        fix = "give a directory a Data was saved into"
+        try:
+            record = json.loads(metadata.get("probatum", ""))
+        except ValueError:
+            record = None
+
+        if (not isinstance(record, dict) or record.get("format") != 1
+                or record.get("interval") not in INTERVALS
+                or not isinstance(record.get("start"), int)
+                or not isinstance(record.get("provenance"), dict)):
+            raise ValueError(f"path: {str(path)!r} holds bars this version of probatum "
+                             f"did not save; {fix}")
+
+        names, time = listed["name"][1], bars["time"][1]
+        width = len(names)
+        rows  = len(time) // width if width else 0
+
+        if (not width or len(time) != rows * width or not 0 <= record["start"] < rows
+                or not bars["time"][2].all()
+                or not np.array_equal(bars["instrument"][1],
+                                      np.tile(np.arange(width), rows))
+                or not (time.reshape(rows, width) == time[::width, None]).all()):
+            raise ValueError(f"path: the rows of {str(path)!r}'s bars.arrow are not "
+                             f"the ones save writes; {fix}")
+
+        instruments = [Instrument(*(listed[field][1][k] for field in
+                                    ("symbol", "market", "venue", "quote")),
+                                  contract=(float(listed["contract"][1][k])
+                                            if listed["contract"][2][k] else None))
+                       for k in range(width)]
+        values = np.stack([np.where(bars[field][2], bars[field][1], np.nan)
+                           for field in _OHLCV], axis=1).reshape(rows, width, 5)
+        clock = np.ascontiguousarray(time[::width])
+        for k in range(width):
+            _check(names[k], clock, values[:, k])
+
+        off = np.flatnonzero((clock - clock[0]) % INTERVALS[record["interval"]])
+        if len(off):
+            raise ValueError(f"path: the bars in {str(path)!r} open at "
+                             f"{_when(clock[off[0]])}, between the "
+                             f"{record['interval']} steps from {_when(clock[0])}; {fix}")
+
+        owners = events["instrument"][1]
+        if (np.any((owners < 0) | (owners >= width)) or not events["time"][2].all()
+                or np.any(events["time"][1] == np.iinfo(np.int64).min)
+                or not np.isfinite(events["rate"][1]).all()):
+            raise ValueError(f"path: {str(path)!r}'s funding.arrow holds an event with "
+                             f"no time, rate or instrument of these bars; {fix}")
+
+        root       = _Root(clock, values, instruments, record["interval"])
+        root.names = tuple(names)
+        funding    = np.zeros(len(owners), dtype=FUNDING)
+        funding["time"], funding["instrument"] = events["time"][1], owners
+        funding["rate"] = events["rate"][1]
+        root.funding    = _frozen(funding)
+        root.provenance = record["provenance"]
+        data            = cls._of(root, (record["start"], rows), range(width))
+
+        if data.fingerprint != record.get("fingerprint"):
+            raise ValueError(f"path: the bars in {str(path)!r} give the fingerprint "
+                             f"{data.fingerprint}, not the {record.get('fingerprint')} "
+                             f"they were saved under, so they changed since or another "
+                             f"version of probatum saved them; build the Data again "
+                             f"from where its bars came from")
+
+        return data
+
+
     def __repr__(self):
         what = (self.names[0] if len(self._cols) == 1
                 else f"{len(self._cols)} instruments")
@@ -1012,6 +1153,27 @@ def _digest(data):
                           separators=(",", ":")).encode())
 
     return "b2:" + out.hexdigest()
+
+
+def _saved(path, folder, name, kinds):
+    """The columns and the metadata of the file ``name`` in ``folder``, the directory
+    ``path`` names, refused where it is missing, unreadable or without the columns of
+    ``kinds`` that save writes."""
+    fix = "give a directory a Data was saved into"
+    if not (folder / name).is_file():
+        raise ValueError(f"path: {str(path)!r} holds no {name}; {fix}")
+
+    try:
+        columns, metadata = _ipc.read(folder / name)
+    except _ipc.Refused as error:
+        raise ValueError(f"path: {str(path)!r}'s {name} {error}; {fix}") from None
+
+    for column, kind in kinds.items():
+        if columns.get(column, ("",))[0] != kind:
+            raise ValueError(f"path: {str(path)!r}'s {name} has no {kind} column "
+                             f"{column}; {fix}")
+
+    return columns, metadata
 
 
 def _key(instrument):

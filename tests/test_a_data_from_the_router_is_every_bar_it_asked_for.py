@@ -13,6 +13,8 @@ import warnings
 
 import numpy as np
 import pandas as pd
+import polars
+import pyarrow as pa
 import pytest
 
 import probatum
@@ -289,6 +291,33 @@ def test_coarser_bars_keep_each_funding_event_at_its_stamp():
     short = data[:"2024-01-02 21:00"].resample("4h").funding
 
     assert short["time"].max() == START + 40 * HOUR
+
+
+def test_funding_events_are_saved_and_loaded_with_their_bars(tmp_path):
+    held    = {"BTCUSDT": bars(48), "ETHUSDT": bars(48, close=10.0)}
+    funding = {"BTCUSDT": settlements(), "ETHUSDT": settlements(rate=-0.0002)}
+    data    = fetch(Router(held, funding), held, funding=True)
+
+    data.save(tmp_path / "pair")
+    loaded = probatum.Data.load(tmp_path / "pair")
+
+    assert loaded.fingerprint == data.fingerprint
+    np.testing.assert_array_equal(loaded.funding, data.funding)
+    assert loaded.provenance == data.provenance
+
+    events = pa.ipc.open_file(tmp_path / "pair" / "funding.arrow").read_all()
+
+    assert events.num_rows == 12 and events["instrument"].to_pylist()[:2] == [0, 1]
+    assert polars.read_ipc(tmp_path / "pair" / "funding.arrow")["rate"].min() < 0
+
+    # a slice keeps the rate known before it, which the bars before it carry
+    late = data["2024-01-02":]
+    late.save(tmp_path / "late")
+    again = probatum.Data.load(tmp_path / "late")
+
+    assert again.fingerprint == late.fingerprint and len(again) == 24
+    np.testing.assert_array_equal(again.funding_rate, late.funding_rate)
+    assert not np.isnan(again.funding_rate[0]).any()
 
 
 def test_a_settlement_stamped_within_a_second_of_a_bar_s_end_is_charged_at_it():
