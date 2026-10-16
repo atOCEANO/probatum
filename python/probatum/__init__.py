@@ -11,7 +11,7 @@ for a notebook cell or a file, computing nothing itself.
 """
 
 from ._probatum import Batch, Engine
-from ._data import to_ohlcv
+from ._data import Data, Instrument, to_ohlcv
 from . import backtest, metrics, plot, rl, ta
 from .backtest import Strategy
 from .market import Market
@@ -20,8 +20,9 @@ from ._walk import walk_forward
 from ._chart import chart, chart_defaults
 
 __all__ = [
-    "Batch", "Engine", "Market", "Strategy", "chart", "chart_defaults", "to_ohlcv",
-    "tune", "walk_forward", "backtest", "metrics", "plot", "rl", "ta",
+    "Batch", "Data", "Engine", "Instrument", "Market", "Strategy", "chart",
+    "chart_defaults", "to_ohlcv", "tune", "walk_forward", "backtest", "metrics", "plot",
+    "rl", "ta",
 ]
 
 try:

@@ -31,6 +31,8 @@ Everything the package exports, and where each piece is documented in full:
 
 | Import | What it is |
 | :--- | :--- |
+| `probatum.Data` | N instruments over T bars on one clock, read from any frame or array, every field and slice a read-only view of the bars it owns. [Below](#data). |
+| `probatum.Instrument` | One instrument of a Data: its symbol, market, venue, the asset it settles in and an inverse contract's size. [Below](#data). |
 | `probatum.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `probatum.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
@@ -71,6 +73,48 @@ while not eng.done():
 
 print(state["equity"], state["position"])      # account value and position at the end
 ```
+
+<br>
+
+## Data
+
+A `probatum.Data` is a universe: N instruments over T bars on one clock. It copies its bars once into a buffer it owns, bar-major, and every field and every slice is a read-only view of that buffer, or a read-only copy where a selection puts the instruments in another order, so no later edit to the frame it came from can change the bars it holds ([ADR 0005](Decisions.md)).
+
+```python
+import pandas
+import probatum
+
+btc = probatum.Data(pandas.read_parquet("btc.parquet"), symbol="BTCUSDT",
+                    market="linear")
+pair = probatum.Data({"BTCUSDT": btc_frame, "ETHUSDT": eth_frame})
+bars = probatum.Data(ohlcv, time=times, symbol="BTCUSDT")
+```
+
+**What it reads.** A frame is anything that exports the Arrow C stream or array interface, as polars, pyarrow, DuckDB and pandas with pyarrow do, read in the binding so that no frame library is imported to read it, or a pandas frame read by its own methods where pyarrow is missing or cannot convert one of its columns. It needs `open`, `high`, `low`, `close` and `volume` columns, and the bars' open times in its one datetime index or column, or in a `timestamp` column of milliseconds since 1970; a frame with times in more than one is refused, naming them, unless `time=` gives the open times. An array is `(T, 5)` for one instrument or `(T, N, 5)` for N, NaN in all five values where an instrument printed no bar, with `time=` the open time of each row, as datetimes or int64 nanoseconds since 1970. A dict of frames keys each by its symbol. A frame from exchange-router names itself: its venue, market, symbol and interval come from its `attrs`, and a `symbol=` or `market=` that says otherwise is refused.
+
+**Naming.** `symbol` names an instrument, or with an array of N a list of N names, and `market` is `"spot"`, `"linear"` or `"inverse"`, left for the venue to give when the Data runs where it is left out. An instrument is keyed by its venue, market and symbol, and `data.names` gives each a short name by which the Data is indexed: its symbol, with its market before it where another market holds the same symbol (`spot:BTCUSDT`, `linear:BTCUSDT`), and its venue before that where another venue does, a market or venue the bars do not say left out; an instrument with no symbol is named by its position, `"0"`, `"1"` and so on. `data.instruments` holds each one's `probatum.Instrument`: its `symbol`, `market`, `venue`, `quote`, the currency its price is quoted in, and `contract`, the dollars an inverse contract is worth, each `None` where the bars do not say.
+
+**The clock** is the open times at which any instrument printed a bar ([Specification](Specification.md#the-clock)). Its `interval` is the one a router frame declares, which an `interval=` that says otherwise cannot change, or the one `interval=` gives, or else the one the median gap between bars gives, the shortest among the instruments, since one that prints seldom still prints on the clock's steps, and measured between dates for days, which across a change of clocks are an hour short or long; it is one of `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d` and `1w`. Every row is a whole number of intervals from the first, so instruments whose bars open at different minutes are refused, and a daily or longer bar is placed at 00:00 UTC on the date it carries in its own time zone.
+
+**Every bar is checked as it arrives**, as the engine checks it: a row holds all five values or none, each finite, the low at or below the open and the close and the high at or above both, the low above zero and the volume not below it, and an instrument's times are all there and rise, each once ([ADR 0007](Decisions.md)). A refusal names the instrument and the time of the bar.
+
+**The fields.** `data.time` is `(T,)` int64 nanoseconds since 1970, UTC; `opens`, `highs`, `lows`, `closes` and `volumes` are `(T, N)`, NaN where an instrument printed no bar, and `bars` holds all five as `(T, N, 5)`; `available` is `(T, N)` bool; `funding` holds the funding events the bars own, at their real times, as a structured array of `time`, `instrument` and `rate`, and `funding_rate` is `(T, N)`, the last rate known at each bar's end; `interval` names the clock; and `provenance` says where the bars came from: the source, the venue, the instruments, the interval, the first and the last bar, and the warnings that came with them. With one instrument the singular names read `(T,)`, as `data.close`; with several they are refused, naming the plural and the instrument's own view, `data.closes` and `data["ETHUSDT"].close`.
+
+**Slicing.** A Data slices on time and on instruments, and every slice is a read-only view that keeps the bars before it, so features and an agent's window can warm up on them.
+
+```python
+recent = btc["2025-06":"2025-12"]              # June to December, both included
+first = btc[:1_000]                            # by position
+train, test = universe.split("2026-01-01")     # before it, and from it on
+train, test = universe.split(8_000)            # the first 8,000 bars, and the rest
+late = universe.after("2026-01-01")
+eth = universe["ETHUSDT"]                      # one instrument
+pair = universe.select(["ETHUSDT", "BTCUSDT"])
+both = spot.join(perp)                         # two markets on one clock
+print(universe.gaps())                         # where the bars jump past the interval
+```
+
+A text bound names a year, a month, a day, an hour, a minute or a second, and a slice runs from the start of the first to the end of the second; a time names itself and a whole number is a position. `split` and `after` take the same, a period starting the later part where it starts. `join` puts two Datas on one clock, such as a venue's spot and perpetual markets, and `gaps()` lists every place an instrument's bars jump by more than the interval, each as the instrument, the bar before the jump, the bar after it and how many bars are missing between them: on a market that never closes, an outage or a hole in the data.
 
 <br>
 

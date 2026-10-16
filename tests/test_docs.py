@@ -61,6 +61,7 @@ _API = {
     "tune":           probatum.tune,
     "walk_forward":   probatum.walk_forward,
     "Market":         probatum.Market,
+    "Data":           probatum.Data,
 }
 # every public function of the two modules whose examples are all calls. Listed by
 # reflection rather than by hand: the hand-written dict above had gone four
