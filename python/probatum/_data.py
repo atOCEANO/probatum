@@ -285,6 +285,17 @@ ARROW = {
     "C":  "integers",
 }
 FUNDING = np.dtype([("time", np.int64), ("instrument", np.int64), ("rate", np.float64)])
+# an instrument's fields as instruments.arrow holds them
+FIELDS = {
+    "symbol":       "text",
+    "market":       "text",
+    "venue":        "text",
+    "quote":        "text",
+    "contract":     "float",
+    "base":         "text",
+    "min_notional": "float",
+    "max_qty":      "float",
+}
 
 Gap         = collections.namedtuple("Gap", "instrument after before missing")
 Gap.__doc__ = """A place an instrument's bars jump by more than the interval: its bar
@@ -298,15 +309,31 @@ Part = collections.namedtuple("Part", "times bars instrument attrs zone source")
 @dataclasses.dataclass(frozen=True)
 class Instrument:
     """One instrument of a Data, keyed by its venue, its market and its symbol, with
-    the currency its price is quoted in and, for an inverse contract, the dollars one
-    contract is worth. A field the bars do not say is None, and a market left None is
-    the venue's to give when the Data runs."""
+    the currency its price is quoted in, for an inverse contract the dollars one
+    contract is worth, and from the router's symbol information its base asset, the
+    smallest notional the venue takes in an order, in the quote currency, and the
+    largest size it takes in a limit order, in base units, or contracts on an inverse
+    contract. A field the source does not say is None, and a market left None is the
+    venue's to give when the Data runs."""
 
     symbol: str | None = None
     market: str | None = None
     venue: str | None = None
     quote: str | None = None
     contract: float | None = None
+    base: str | None = None
+    min_notional: float | None = None
+    max_qty: float | None = None
+
+
+    @property
+    def settlement(self):
+        """The asset its account settles in: its base asset for an inverse contract,
+        which is settled in its coin, its quote on any other market, and None where
+        its market is the venue's to give."""
+        if self.market is None:
+            return None
+        return self.base if self.market == "inverse" else self.quote
 
 
 class _Root:
@@ -426,6 +453,10 @@ class Data:
         closed, fetched through ``router``, an exchange-router ``Router``, and with
         ``funding`` the funding events that charge them. ``start`` and ``end`` are
         times or the text of one, a text end taking in the whole period it names.
+        Each instrument takes the router's own name for its symbol, its base asset and
+        its order limits from the router's symbol information, which a symbol the
+        router does not list now goes without, as a warning names; two symbols the
+        router names as one are refused.
 
         One router call walks back from its newest bar for at most a hundred requests
         to the venue, so the calls are chained back to ``start``. A call that brings
@@ -445,6 +476,10 @@ class Data:
         if inspect.iscoroutinefunction(fetch):
             raise TypeError("router: an AsyncRouter, whose calls return coroutines; "
                             "pass Router.local(...) or Router.service(...)")
+
+        if getattr(router, "get_symbol_info", None) is None:
+            raise TypeError(f"router: {type(router).__name__}, which has no "
+                            f"get_symbol_info; pass an exchange-router Router")
 
         if market not in MARKETS:
             raise ValueError(f"market: {market!r}; use {', '.join(MARKETS)}")
@@ -500,7 +535,7 @@ class Data:
 
             initial = batch.data()
 
-        parts, begins, ends, notes = [], {}, {}, []
+        parts, begins, ends, unlisted, notes = [], {}, {}, [], []
         for symbol in symbols:
             def call(upper, pieces, symbol=symbol):
                 if symbol in initial:
@@ -515,14 +550,31 @@ class Data:
                 raise ValueError(f"symbols: {symbol} has no {interval} bars on "
                                  f"{exchange} {market} over the span asked; check the "
                                  f"symbol, the market and the span")
+
+            part = pieces[0][2]
+            listed, said = _listed(router, exchange, market, symbol)
+            if listed is None:
+                unlisted.append((symbol, said))
+            else:
+                part = part._replace(instrument=dataclasses.replace(part.instrument,
+                                                                    **listed))
+
+            name = part.instrument.symbol
             if begun is not None and begun > first:
-                begins[symbol] = _when(begun)
+                begins[name] = _when(begun)
 
             times, bars = _joined(pieces)
             if times[-1] + step <= last:
-                ends[symbol] = _when(times[-1])
-            parts.append(pieces[0][2]._replace(times=times, bars=bars))
+                ends[name] = _when(times[-1])
+
+            parts.append(part._replace(times=times, bars=bars))
             notes += [w for piece in pieces for w in piece[2].attrs.get("warnings", [])]
+
+        held = [part.instrument.symbol for part in parts]
+        same = [typed for typed, name in zip(symbols, held) if held.count(name) > 1]
+        if same:
+            raise ValueError(f"symbols: {same[0]!r} and {same[1]!r} are one "
+                             f"instrument, {held[symbols.index(same[0])]}; name it once")
 
         root = _clock(parts, interval)
 
@@ -552,6 +604,15 @@ class Data:
                     f"early too" if len(ends) > 1 else "")
             warnings.warn(f"data: {symbol}'s bars end at {when}, before the "
                           f"end{more}; the venue served none later", stacklevel=2)
+
+        if unlisted:
+            (symbol, said), more = unlisted[0], len(unlisted) - 1
+            others = f", nor {_count(more, 'more instrument')}" if more else ""
+            whose  = "their base assets" if more else "its base asset"
+            warnings.warn(f"data: the router does not list {symbol} now, saying "
+                          f"{said!r}{others}, as for a symbol delisted or paused, so "
+                          f"{whose} and order limits are unknown; see data.instruments",
+                          stacklevel=2)
 
         gaps = data.gaps()
         if gaps:
@@ -1021,15 +1082,12 @@ class Data:
                        fingerprint=self.fingerprint, provenance=self._root.provenance)
 
         listed = [("name", "text", list(self.names), None)]
-        for field in ("symbol", "market", "venue", "quote"):
+        for field, kind in FIELDS.items():
             values = [getattr(instrument, field) for instrument in self.instruments]
-            listed.append((field, "text", values,
-                           np.array([value is not None for value in values])))
-
-        contracts = [instrument.contract for instrument in self.instruments]
-        listed.append(("contract", "float",
-                       np.array([np.nan if c is None else c for c in contracts]),
-                       np.array([c is not None for c in contracts])))
+            given  = np.array([value is not None for value in values])
+            if kind == "float":
+                values = np.array([np.nan if v is None else v for v in values])
+            listed.append((field, kind, values, given))
 
         events    = seen.funding
         positions = np.tile(np.arange(width), stop)
@@ -1060,9 +1118,8 @@ class Data:
         folder = pathlib.Path(path)
         bars, metadata = _saved(path, folder, "bars.arrow", dict(
             time="time", instrument="int", **{field: "float" for field in _OHLCV}))
-        listed, _ = _saved(path, folder, "instruments.arrow", dict(
-            name="text", symbol="text", market="text", venue="text", quote="text",
-            contract="float"))
+        listed, _ = _saved(path, folder, "instruments.arrow",
+                           dict(name="text", **FIELDS))
         events, _ = _saved(path, folder, "funding.arrow",
                            dict(time="time", instrument="int", rate="float"))
 
@@ -1091,10 +1148,13 @@ class Data:
             raise ValueError(f"path: the rows of {str(path)!r}'s bars.arrow are not "
                              f"the ones save writes; {fix}")
 
-        instruments = [Instrument(*(listed[field][1][k] for field in
-                                    ("symbol", "market", "venue", "quote")),
-                                  contract=(float(listed["contract"][1][k])
-                                            if listed["contract"][2][k] else None))
+        def value_of(name, k):
+            kind, values, present = listed[name]
+            if not present[k]:
+                return None
+            return float(values[k]) if kind == "float" else values[k]
+
+        instruments = [Instrument(**{name: value_of(name, k) for name in FIELDS})
                        for k in range(width)]
         values = np.stack([np.where(bars[field][2], bars[field][1], np.nan)
                            for field in _OHLCV], axis=1).reshape(rows, width, 5)
@@ -1389,12 +1449,13 @@ def _part(times, bars, zone, symbol, market, attrs, origin):
         raise ValueError(f"time: {len(times)} times for {len(bars)} bars; give each "
                          f"bar its open time")
 
-    contract   = attrs.get("contract_size") if market == "inverse" else None
+    # the router writes an empty quote or size where it holds no symbol information
+    contract   = attrs.get("contract_size") or None if market == "inverse" else None
     instrument = Instrument(
         symbol   = symbol,
         market   = market,
         venue    = attrs.get("exchange"),
-        quote    = attrs.get("quote"),
+        quote    = attrs.get("quote") or None,
         contract = None if contract is None else float(contract),
     )
 
@@ -1878,6 +1939,31 @@ def _bars_of(frame, symbol, market):
 
     [part] = _parts(frame, symbol, market, None)
     return np.asarray(part.times, dtype=np.int64), part.bars, part
+
+
+def _listed(router, exchange, market, symbol):
+    """What the router's symbol information says of ``symbol``, and None: the router's
+    own name for it, which the presets key it by however it was typed; its base asset;
+    the smallest notional the venue takes in an order, in the quote currency, left out
+    on an inverse contract, whose minimum the router gives in dollars where the engine
+    counts one in the coin; and the largest size it takes in a limit order, in base
+    units, or contracts there. Where the router does not list the symbol now, which it
+    answers as a bad request, it is None and what the router said."""
+    try:
+        info = router.get_symbol_info(exchange, market, symbol)
+    except Exception as error:
+        if getattr(error, "status", None) != 400:
+            raise
+        return None, getattr(error, "detail", str(error))
+
+    def number(name):
+        value = info.get(name)
+        return None if value is None else float(value)
+
+    return dict(symbol=info.get("symbol") or symbol,
+                base=info.get("base_asset") or None,
+                min_notional=None if market == "inverse" else number("min_notional"),
+                max_qty=number("max_qty")), None
 
 
 def _rates_of(frame):

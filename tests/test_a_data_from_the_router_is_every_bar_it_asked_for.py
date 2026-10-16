@@ -4,7 +4,8 @@ walks back only so far. A call that brings nothing earlier is asked once more, a
 where it brings nothing again the venue's history begins there, which the provenance
 records and a warning names. A symbol the router fails on is refused, not left out,
 and so is a funding series that misses part of its instrument's span, at its head, at
-its tail or between, so a run never charges nothing in silence.
+its tail or between, so a run never charges nothing in silence. Each instrument takes
+its base asset and order limits from the router's symbol information.
 """
 
 import asyncio
@@ -55,18 +56,29 @@ class Batch:
         return {**self.ok, **{s: f for s, (f, _) in self.degraded.items()}}
 
 
+class Answered(Exception):
+    """An exchange-router error, which carries the status the service answered."""
+
+
+    def __init__(self, detail, status):
+        super().__init__(detail)
+        self.detail, self.status = detail, status
+
+
 class Router:
     """A router serving frames shaped as exchange-router 3.0.0 builds them, walking
     back from each call's start at most `cap` rows. Its funding walks back the same
     way, or with `window`, the cycle it believes, answers as Binance does: with the
-    oldest `limit` events of the `limit` cycles before the start."""
+    oldest `limit` events of the `limit` cycles before the start. It lists every
+    symbol it holds but those `unlisted`, as for one delisted since its bars."""
 
 
     def __init__(self, held, funding=None, cap=1_000, market="linear", silent=0,
-                 failing=(), window=None):
+                 failing=(), window=None, unlisted=()):
         self.held, self.funding = held, funding or {}
         self.cap, self.market, self.window = cap, market, window
         self.silent, self.failing, self.calls = silent, failing, []
+        self.unlisted = unlisted
 
 
     def frame(self, symbol, times, values, columns, attrs):
@@ -102,9 +114,29 @@ class Router:
             rows = rows[:0]
 
         values = np.column_stack([values[rows], values[rows][:, 3] * 1_000.0])
+        attrs  = dict(quote="USDT", volume_unit="base")
+        if self.market == "inverse":
+            attrs = dict(quote="USD", volume_unit="contract", contract_size=100.0)
+        if symbol in self.unlisted:
+            # the router writes an empty quote for a symbol it holds no information on
+            attrs["quote"] = ""
+
         return self.frame(symbol, times[rows], values, CANDLES,
-                          dict(quote="USDT", interval=interval, volume_unit="base",
-                               warnings=[f"served {symbol}"]))
+                          dict(attrs, interval=interval, warnings=[f"served {symbol}"]))
+
+
+    def get_symbol_info(self, exchange, market_type, symbol):
+        if symbol in self.unlisted:
+            raise Answered(f"Symbol {symbol} not found on Binance {market_type}", 400)
+
+        # its own name for the symbol however it was typed, an inverse contract's
+        # minimum in dollars and its sizes in contracts
+        inverse = market_type == "inverse"
+        return dict(symbol=symbol.upper(), base_asset=symbol[:3].upper(),
+                    quote_asset="USD" if inverse else "USDT",
+                    min_notional=100.0 if inverse else 5.0, max_qty=1_000.0,
+                    qty_unit="contract" if inverse else "base",
+                    contract_size=100.0 if inverse else None)
 
 
     def candles_many(self, exchange, market_type, symbols, interval="1h", limit=100,
@@ -197,6 +229,59 @@ def test_several_symbols_come_from_one_batch_and_a_failed_one_is_refused():
             "symbols: the router failed on ETHUSDT: upstream 503; leave it out, or "
             "fetch it again once the router can serve it")):
         fetch(Router(held, failing=("ETHUSDT",)), held)
+
+
+def test_each_instrument_takes_its_base_asset_and_order_limits_from_the_router():
+    held = {"BTCUSDT": bars(48), "ETHUSDT": bars(48, close=10.0)}
+    btc, eth = fetch(Router(held), held).instruments
+
+    assert (btc.base, btc.quote, btc.settlement)     == ("BTC", "USDT", "USDT")
+    assert (btc.min_notional, btc.max_qty, eth.base) == (5.0, 1_000.0, "ETH")
+
+    [coin] = probatum.Data.from_router(
+        Router({"BTCUSD": bars(48)}, market="inverse"), "binance", "inverse", "1h",
+        ["BTCUSD"], start="2024-01-01", end="2024-01-02 23:00").instruments
+
+    assert (coin.base, coin.quote, coin.settlement)         == ("BTC", "USD", "BTC")
+    assert (coin.contract, coin.min_notional, coin.max_qty) == (100.0, None, 1_000.0)
+
+
+def test_a_symbol_the_router_no_longer_lists_keeps_its_bars_without_its_limits():
+    held = {"BTCUSDT": bars(48), "LUNAUSDT": bars(48, close=10.0)}
+
+    with pytest.warns(UserWarning, match=re.escape(
+            "data: the router does not list LUNAUSDT now, saying 'Symbol LUNAUSDT not "
+            "found on Binance linear', as for a symbol delisted or paused, so its base "
+            "asset and order limits are unknown; see data.instruments")):
+        data = fetch(Router(held, unlisted=("LUNAUSDT",)), held)
+
+    luna = data.instruments[1]
+    assert len(data) == 48 and data.instruments[0].base == "BTC"
+    assert (luna.base, luna.min_notional, luna.max_qty, luna.quote) == (
+        None, None, None, None)
+
+
+def test_an_instrument_takes_the_router_s_name_for_its_symbol_however_typed():
+    data = fetch(Router({"btcusdt": bars(48)}), ["btcusdt"])
+
+    assert data.names == ("BTCUSDT",) and data.instruments[0].symbol == "BTCUSDT"
+
+    held = {"btcusdt": bars(48), "BTCUSDT": bars(48)}
+    with pytest.raises(ValueError, match=re.escape(
+            "symbols: 'btcusdt' and 'BTCUSDT' are one instrument, BTCUSDT; name it "
+            "once")):
+        fetch(Router(held), held)
+
+
+@pytest.mark.parametrize("status", [503, 404])
+def test_a_router_that_cannot_answer_for_a_symbol_raises_its_own_error(status):
+    class Down(Router):
+
+        def get_symbol_info(self, exchange, market_type, symbol):
+            raise Answered(f"upstream {status}", status)
+
+    with pytest.raises(Answered, match=f"upstream {status}"):
+        fetch(Down({"BTCUSDT": bars(48)}))
 
 
 def test_the_bar_still_open_is_left_out_whatever_the_end(monkeypatch):
@@ -303,7 +388,9 @@ def test_funding_events_are_saved_and_loaded_with_their_bars(tmp_path):
 
     assert loaded.fingerprint == data.fingerprint
     np.testing.assert_array_equal(loaded.funding, data.funding)
-    assert loaded.provenance == data.provenance
+    assert loaded.provenance  == data.provenance
+    assert loaded.instruments == data.instruments
+    assert loaded.instruments[1].base == "ETH" and loaded.instruments[1].max_qty == 1e3
 
     events = pa.ipc.open_file(tmp_path / "pair" / "funding.arrow").read_all()
 
@@ -411,9 +498,16 @@ class Async:
         await asyncio.sleep(0)
 
 
+class Candles:
+
+    def get_candles(self, *args, **kwargs):
+        pass
+
+
 @pytest.mark.parametrize("router, settings, error, says", [
     (Async(), {}, TypeError, "router: an AsyncRouter, whose calls return coroutines"),
     (object(), {}, TypeError, "router: object, which has no get_candles"),
+    (Candles(), {}, TypeError, "router: Candles, which has no get_symbol_info"),
     (Router({}), dict(symbols="BTCUSDT"), TypeError, "symbols: 'BTCUSDT'; give a list"),
     (Router({}), dict(symbols=5), TypeError, "symbols: 5; give a list of symbols"),
     (Router({}), dict(symbols=[]), ValueError, "symbols: none; name at least one"),
