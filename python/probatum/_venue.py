@@ -233,13 +233,26 @@ class Venue:
         source = self._source
         start  = (venues._venue(source) if source is not None else _plain())._view()
         shown  = []
+
         for setting, value in self._view().items():
             before = start[setting]
             if value == before:
                 continue
+
             if setting in ("kinds", "instruments") and source is not None:
-                value = {key: value.get(key) for key in {**before, **value}
-                         if value.get(key) != before.get(key)}
+                changed = {}
+                for key in {**before, **value}:
+                    table, was = value.get(key), before.get(key)
+                    if table == was:
+                        continue
+                    if isinstance(table, dict) and isinstance(was, dict):
+                        # replace merges a table key by key, so a key the variant
+                        # dropped is shown as None, which drops it again
+                        table = {**{name: None for name in was if name not in table},
+                                 **table}
+                    changed[key] = table
+                value = changed
+
             shown.append(f"{setting}={value!r}")
 
         if source is None:

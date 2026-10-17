@@ -191,6 +191,11 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
 
     assert shown.startswith("probatum.venues.binance_perp.replace(instruments="
                             "{'BTCUSDT': ")
+
+    for variant in (perp.replace(instruments={"BTCUSDT": {"tick": 0.5}}),
+                    perp.replace(instruments={"BTCUSDT": {"tiers": None}})):
+        assert eval(repr(variant), {"probatum": probatum}) == variant
+
     assert repr(Venue()) == "probatum.Venue()"
     assert (repr(Venue(fees={"maker": 0.0, "taker": 0.0005}, kind="spot"))
             == "probatum.Venue(fees={'maker': 0.0, 'taker': 0.0005}, kind='spot')")
