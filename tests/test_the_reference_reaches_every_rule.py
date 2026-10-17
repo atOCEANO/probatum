@@ -1,4 +1,5 @@
-"""Random accounts through the reference, at one instrument and at several.
+"""Random accounts through the reference, at one instrument and at several, and a
+third as many again run as arrays with their barriers.
 
 Every run keeps the reference's invariants: the ledger identity holds on every bar,
 no margin wallet ends a bar owing money, no fill is priced outside what its market
@@ -15,7 +16,7 @@ import random
 
 import pytest
 
-from reference.simulator import Bar, Instrument, Venue, run
+from reference.simulator import Bar, Instrument, Simulator, Venue, play_array, run
 
 HOUR = 3_600 * 10**9
 SHORT, LONG = 600, 6_000
@@ -31,6 +32,7 @@ RULES = [
     "a bracket cancelled by another's leg",
     "a bracket cancelled with its position",
     "a bracket leg filled",
+    "a bracket leg filled in part",
     "a bracket leg filled on the bar a resting fill armed it",
     "a bracket leg filled on the bar it armed",
     "a bracket waiting through a row without its bar",
@@ -93,6 +95,7 @@ RULES = [
     "a takeover",
     "a taker's price held inside the bar",
     "a target",
+    "a target in quantities",
     "a target leg on an instrument yet to print",
     "a target leg skipped below the tolerance",
     "a target part skipped below the minimum notional",
@@ -110,6 +113,11 @@ RULES = [
     "a window cut to its last bars",
     "an OCO partner cancelled",
     "an account over the cap kept from growing",
+    "an array's barrier at or below zero left out",
+    "an array's bracket moved with its entry",
+    "an array's bracket placed at its entry",
+    "an array's instrument held flat after its barrier",
+    "an array's instrument named again after its barrier",
     "an estimated spread paid",
     "an exit held back from a position the bar's orders opened",
     "an exit priced from its position's fill",
@@ -471,13 +479,64 @@ def broken(sim):
     return None
 
 
+def array(rng, instruments, rows):
+    """An array run's rows, its sizing and its barriers: a NaN holding now and then and
+    a zero now and then, a spot weight from 0 and a perpetual's either side of it, or
+    as many base units or contracts, and each barrier a number or rows of its own with
+    a NaN or a return of exactly 1 or more among them."""
+    sizing = rng.choice(["weight", "weight", "quantity"])
+    # an inverse instrument's quantities are contracts, ten to a linear one's unit,
+    # as its decisions size them
+    scale = [3.0 * (10.0 if inst.kind == "inverse" else 1.0) if sizing == "quantity"
+             else 1.5 for inst in instruments]
+
+    def value(inst, k):
+        u = rng.random()
+        if u < 0.3:
+            return math.nan
+
+        if u < 0.45:
+            return 0.0
+
+        low = 0.0 if inst.kind == "spot" else -scale[k]
+        return rng.uniform(low, scale[k])
+
+    values = [[value(inst, k) for k, inst in enumerate(instruments)]
+              for _ in range(rows)]
+
+    def barrier():
+        u = rng.random()
+        if u < 0.3:
+            return None
+
+        if u < 0.6:
+            return rng.uniform(0.002, 0.05)
+
+        return [[math.nan if rng.random() < 0.2 else
+                 rng.choice([1.0, 1.5]) if rng.random() < 0.1 else
+                 rng.uniform(0.002, 0.05) for _ in instruments] for _ in range(rows)]
+
+    return values, sizing, rng.choice([0.0, 0.0, 0.2]), barrier(), barrier()
+
+
 def accounts(count, several):
-    """`count` seeded accounts through the reference: the rules they reached and the
-    runs that broke an invariant."""
+    """`count` seeded accounts through the reference, and a third as many again run
+    as arrays: the rules they reached and the runs that broke an invariant."""
     reached, failures = collections.Counter(), []
     for seed in range(count):
         times, bars, instruments, venue, script, events = account(seed, several)
         sim = run(times, bars, instruments, venue, script=script, funding=events)
+        reached.update(sim.reached)
+        why = broken(sim)
+        if why is not None:
+            failures.append((seed, why))
+
+    for seed in range(count, count + count // 3):
+        times, bars, instruments, venue, _, events = account(seed, several)
+        values, sizing, tolerance, stop, take_profit = array(
+            random.Random(f"array {seed} {several}"), instruments, len(times))
+        sim = play_array(Simulator(times, bars, instruments, venue, funding=events),
+                         values, sizing, tolerance, stop, take_profit)
         reached.update(sim.reached)
         why = broken(sim)
         if why is not None:

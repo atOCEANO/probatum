@@ -23,7 +23,7 @@ its trigger, close and clip points, a flip's two sides on the check, the optimis
 corners, the liquidation rule, takeover and book then backstop, the margin bound,
 the cap and the bound with every other leg at the fill's fraction, exits held on a
 liquidating bar, inverse contracts settled in their coin, listing and delisting,
-round trips and the ledger.
+round trips and the ledger, and an array's rows in either unit with their barriers.
 """
 
 import collections
@@ -528,10 +528,13 @@ class Simulator:
         self.decided     = -1                      # the row whose close the last `target` came from
         self.target_legs = []
 
-        # Orders, Target: the weight the latest target asked of each instrument, and
-        # what they were before the decision's first target, which a second replaces
+        # Orders, Target: the weight the latest target asked of each instrument, or
+        # the position an array's quantity wanted, and what they were before the
+        # decision's first target, which a second replaces
         self.asked           = [None] * n
+        self.wanted          = [None] * n
         self.asked_before    = list(self.asked)
+        self.wanted_before   = list(self.wanted)
         self.target_transfer = None                   # where this decision's shortfall was queued
         self.paid_in         = 0.0                    # what the last bound paid into the wallet
         self.reach           = 0.0                    # what the bar's perpetual fills put at stake
@@ -817,8 +820,13 @@ class Simulator:
                 out["maintenance"] += self.maintenance_of(i, abs(q), abs(exposure))
 
             weight = exposure / equity if held and equity > 0.0 else 0.0
-            # Orders, Target: the weight the latest target asked less the one held
-            asked = self.asked[i]
+            # Orders, Target: the weight the latest target asked less the one held;
+            # An array: a wanted position asks its notional at this close over equity
+            asked, wanted = self.asked[i], self.wanted[i]
+            if wanted is not None:
+                asked = (math.nan if mark is None else
+                         inst.notional(wanted, mark) / equity if equity > 0.0 else 0.0)
+
             out["instruments"].append(dict(
                 position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
                 upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
@@ -1273,10 +1281,11 @@ class Simulator:
         return old["id"]
 
 
-    def target(self, weights, tolerance=0.0, transfer=False):
+    def target(self, weights, tolerance=0.0, transfer=False, quantities=False):
         """Orders, Target: the legs that bring each named instrument to its weight,
         with `transfer` moving the spot legs' shortfall across from the margin wallet
-        at the start of the next bar."""
+        at the start of the next bar; An array: with `quantities`, to the position
+        each value wants, in base units or contracts."""
         if not isinstance(weights, dict):
             if isinstance(weights, (int, float)):
                 weights = [weights]
@@ -1298,9 +1307,11 @@ class Simulator:
             if self.target_transfer is not None:
                 self.hit("a target's shortfall taken back", self.t + 1)
                 del self.transfers[self.target_transfer]
-            self.asked = list(self.asked_before)
+            self.asked  = list(self.asked_before)
+            self.wanted = list(self.wanted_before)
         else:
-            self.asked_before = list(self.asked)
+            self.asked_before  = list(self.asked)
+            self.wanted_before = list(self.wanted)
 
         self.target_transfer = None
 
@@ -1313,9 +1324,15 @@ class Simulator:
                 self.cancel(order["id"], "replaced by a later target")
 
         self.hit("a target", self.t + 1)
+        if quantities:
+            self.hit("a target in quantities", self.t + 1)
+
         self.decided, self.target_legs = self.t, []
         for i, weight in weights.items():
-            self.asked[i] = weight
+            if quantities:
+                self.asked[i], self.wanted[i] = None, weight
+            else:
+                self.asked[i], self.wanted[i] = weight, None
 
         equity = self.equity()
         reducing, growing = [], []
@@ -1335,8 +1352,9 @@ class Simulator:
                     growing.append((i, math.nan))
                 continue
 
-            unit = inst.notional(1.0, close)
-            leg  = weight * equity / unit - self.position[i]
+            unit   = inst.notional(1.0, close)
+            wanted = weight if quantities else weight * equity / unit
+            leg    = wanted - self.position[i]
             if self.venue.sizes and inst.lot > 0.0:
                 leg = math.copysign(lots(abs(leg), inst.lot) * inst.lot, leg)
 
@@ -2686,6 +2704,8 @@ class Simulator:
             self.zero_rounding(i, cash, self.paid_in, size, price)
             order["filled"] += size
 
+            if order["leg"] and self.position[i] != 0.0 and was * self.position[i] > 0.0:
+                self.hit("a bracket leg filled in part")
             if order["pair"] is not None:
                 if self.cancel(order["pair"], "its OCO partner filled"):
                     self.hit("an OCO partner cancelled")
@@ -3190,3 +3210,100 @@ def run(times, bars, instruments, venue=None, script=None, interval=None,
             getattr(sim, verb)(**kwargs)
         if not sim.step():
             return sim
+
+
+def returns(barrier, k, i):
+    """Barriers on an array: the return `barrier` sets for instrument `i` on row `k`,
+    a number for every row or rows of their own, None where it sets none."""
+    value = barrier if barrier is None or isinstance(barrier, (int, float)) else (
+        barrier[k][i])
+    return None if value is None or math.isnan(value) else float(value)
+
+
+def levels(sim, entry, long, stop, take_profit):
+    """Barriers on an array: a round trip's stop and take-profit at those returns
+    from its average entry, each left out where it sets none or at or below zero."""
+    out = {}
+    if stop is not None:
+        out["stop"] = entry * (1.0 - stop) if long else entry * (1.0 + stop)
+    if take_profit is not None:
+        out["take_profit"] = (entry * (1.0 + take_profit) if long
+                              else entry * (1.0 - take_profit))
+
+    for name, price in list(out.items()):
+        if price <= 0.0:
+            sim.hit("an array's barrier at or below zero left out")
+            del out[name]
+
+    return out
+
+
+def play_array(sim, rows, sizing="weight", tolerance=0.0, stop=None, take_profit=None):
+    """Orders, An array and Barriers on an array: `rows` through `sim` from the row its
+    account opened at, row k of them the values it asks of its instruments at its kth
+    close in the unit `sizing` names, a NaN holding and the last row never read.
+    `stop` and `take_profit` are each None, a number or rows like `rows`, returns from
+    the average entry that give every round trip its bracket at the close of the bar
+    it opened on, and a barrier's fill holds its instrument flat until a row asks for
+    zero or for the other side. Returns `sim`."""
+    n       = len(sim.instruments)
+    barred  = stop is not None or take_profit is not None
+    held    = list(sim.position)      # each position at the last close
+    decided = [None] * n              # the row whose decision last named each instrument
+    opened  = [None] * n              # the row whose decision opened its round trip
+    legs    = [{} for _ in range(n)]  # its bracket's legs, by name
+    priced  = [None] * n              # the average entry they were priced at
+    latched = [0.0] * n               # the side a barrier filled on, 0.0 for none
+
+    for k, row in enumerate(rows[:-1]):
+        t = sim.t
+
+        # the brackets, instrument by instrument, before the row's target
+        for i in range(n if barred else 0):
+            q   = sim.position[i]
+            ids = set(legs[i].values())
+            if ids and any(fill["bar"] == t and fill["order"] in ids
+                           for fill in sim.fills):
+                latched[i] = math.copysign(1.0, held[i])
+            if q == 0.0:
+                legs[i] = {}
+            elif held[i] == 0.0 or held[i] * q < 0.0:
+                opened[i] = decided[i]
+                priced[i] = sim.entry[i]
+                at = levels(sim, priced[i], q > 0.0, returns(stop, opened[i], i),
+                            returns(take_profit, opened[i], i))
+                legs[i] = {}
+                if at:
+                    sim.hit("an array's bracket placed at its entry")
+                    placed = sim.bracket(i, stop=at.get("stop"),
+                                         take_profit=at.get("take_profit"))
+                    legs[i] = {sim.orders[order]["leg"]: order for order in placed}
+            elif legs[i] and sim.entry[i] != priced[i]:
+                priced[i] = sim.entry[i]
+                at = levels(sim, priced[i], q > 0.0, returns(stop, opened[i], i),
+                            returns(take_profit, opened[i], i))
+                sim.hit("an array's bracket moved with its entry")
+                if "stop" in legs[i]:
+                    sim.replace(legs[i]["stop"], trigger=at["stop"])
+                if "take_profit" in legs[i]:
+                    sim.replace(legs[i]["take_profit"], price=at["take_profit"])
+            held[i] = q
+
+        named = {}
+        for i, value in enumerate(row):
+            if math.isnan(value):
+                continue
+            if latched[i]:
+                if value != 0.0 and math.copysign(1.0, value) == latched[i]:
+                    sim.hit("an array's instrument held flat after its barrier")
+                    continue
+                sim.hit("an array's instrument named again after its barrier")
+                latched[i] = 0.0
+            named[i]   = float(value)
+            decided[i] = k
+
+        if named:
+            sim.target(named, tolerance, quantities=sizing == "quantity")
+        sim.step()
+
+    return sim
