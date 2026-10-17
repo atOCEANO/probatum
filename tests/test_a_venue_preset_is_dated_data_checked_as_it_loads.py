@@ -36,7 +36,7 @@ def test_every_preset_loads_named_and_dated():
 def test_the_frictionless_preset_charges_a_round_trip_nothing():
     settings = venues._settings(venues._preset("frictionless"), ["linear:BTCUSDT"])
     candles  = np.array([(100.0, 101.0, 99.0, 100.0, 1e6)] * 3)
-    e        = probatum.Engine(candles, report=True, **settings)
+    e        = probatum._probatum.Engine(candles, report=True, **settings)
 
     e.reset()
     e.market_buy(1.0)
@@ -160,7 +160,7 @@ tiers = [{ up_to = 100.0, leverage = 10.0, rate = 0.01 }]
 
     assert "liquidation" not in settings and "backstop" not in settings
 
-    probatum.Engine(np.ones((1, 5)), **settings)
+    probatum._probatum.Engine(np.ones((1, 5)), **settings)
 
 
 def test_two_inverse_contracts_are_refused_together_since_each_runs_alone():

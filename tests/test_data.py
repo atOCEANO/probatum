@@ -158,7 +158,7 @@ def test_a_row_whose_prices_are_not_a_bar_is_refused():
     ])
 
     with pytest.raises(ValueError) as excinfo:
-        probatum.Engine(data)
+        probatum._probatum.Engine(data)
 
     said = str(excinfo.value)
     assert "row 1" in said
@@ -180,7 +180,7 @@ def test_a_column_order_that_keeps_the_high_above_the_low_is_refused_too():
     assert (shuffled[:, 1] >= shuffled[:, 2]).all()      # the naive check passes
 
     with pytest.raises(ValueError) as excinfo:
-        probatum.Engine(shuffled)
+        probatum._probatum.Engine(shuffled)
 
     assert "not a bar" in str(excinfo.value)
 
@@ -197,7 +197,7 @@ def test_a_price_at_or_below_zero_or_a_negative_volume_is_refused(row, says):
     data = np.array([[100.0, 101.0, 99.0, 100.0, 1000.0], row])
 
     with pytest.raises(ValueError, match=says):
-        probatum.Engine(data)
+        probatum._probatum.Engine(data)
 
 
 def test_a_bar_that_never_moved_is_still_a_bar():
@@ -209,6 +209,6 @@ def test_a_bar_that_never_moved_is_still_a_bar():
         [100.0, 100.0, 100.0, 100.0, 0.0],
     ])
 
-    engine = probatum.Engine(flat)
+    engine = probatum._probatum.Engine(flat)
 
     assert engine.reset()["equity"] > 0.0

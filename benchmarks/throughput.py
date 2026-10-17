@@ -15,7 +15,8 @@ import time
 
 import numpy as np
 
-from probatum import Batch, Engine
+from probatum import Batch
+from probatum._probatum import Engine
 
 
 def synthetic(bars):

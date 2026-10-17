@@ -83,7 +83,7 @@ class Targets(probatum.Strategy):
 def through_account(candles, times, venue, markets, strategy):
     """The Engine after ``strategy`` decided at each close of a Data of the candles, every
     row of which an instrument printed, through its account."""
-    engine = probatum.Engine(candles, times=times, report=True, **venue)
+    engine = probatum._probatum.Engine(candles, times=times, report=True, **venue)
     _play(strategy, _Run(engine, probatum.Data(candles, time=times), 0, markets))
 
     return engine
@@ -104,7 +104,7 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
     assert any(run["fills"] for run in played)
 
     for weights, run in zip(envs, played):
-        engine = probatum.Engine(candles, times=times, report=True, **venue)
+        engine = probatum._probatum.Engine(candles, times=times, report=True, **venue)
         engine.reset()
         for t in range(rows):
             engine.target(weights[t])
@@ -113,7 +113,7 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
         assert same(records(engine), run)
 
         # the last row is never read, so it holds
-        array = probatum.Engine(candles, times=times, report=True, **venue)
+        array = probatum._probatum.Engine(candles, times=times, report=True, **venue)
         probatum._probatum.run_array(array,
                                      np.array(weights + [[math.nan] * len(kinds)]))
 
@@ -289,17 +289,13 @@ def barred(seed):
 
     candles  = np.array([list(bar) for bar in bars], dtype=np.float64)
     settings = differential.venue(cfg)
-    array    = probatum.Engine(candles, times=times, report=True, **settings)
+    array    = probatum._probatum.Engine(candles, times=times, report=True, **settings)
     shaped   = [b if b is None or isinstance(b, float) else np.array(b)
                 for b in (stop, take_profit)]
     probatum._probatum.run_array(array, np.array(rows)[:, None], "weight", 0.0, *shaped)
 
-    engine, counts = placed(probatum.Engine(
-        candles,
-        times  = times,
-        report = True,
-        **settings,
-    ), rows, stop, take_profit)
+    engine = probatum._probatum.Engine(candles, times=times, report=True, **settings)
+    engine, counts = placed(engine, rows, stop, take_profit)
 
     strategy = through_account(candles, times, settings, [cfg["market"]],
                                Bracketed(rows, stop, take_profit))

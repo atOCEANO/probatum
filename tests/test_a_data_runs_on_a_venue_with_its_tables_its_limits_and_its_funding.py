@@ -62,7 +62,7 @@ def test_a_universe_from_the_router_runs_on_a_preset_with_every_table_and_limit(
             run.settings["intrabar"]) == (10_000.0, "through", "estimated",
                                           "pessimistic")
 
-    engine = probatum.Engine(run.candles, **run.settings)
+    engine = probatum._probatum.Engine(run.candles, **run.settings)
     engine.reset()
     engine.market_buy(1.0)
     for _ in range(12):
@@ -97,7 +97,7 @@ def test_a_selection_runs_on_the_rows_its_instruments_printed():
     printed = data["ETHUSDT"].available[:, 0]
     np.testing.assert_array_equal(run.settings["times"], data.time[printed])
 
-    probatum.Engine(run.candles, **run.settings).reset()
+    probatum._probatum.Engine(run.candles, **run.settings).reset()
 
 
 def test_an_instrument_s_own_table_keeps_its_limit_over_the_router_s():
@@ -131,7 +131,7 @@ def test_a_venue_built_by_hand_runs_bars_from_a_file_on_its_plain_rules():
             run.settings["sizes"]) == ("spot", 0.0005, False)
     assert "liquidation" not in run.settings
 
-    probatum.Engine(run.candles, **run.settings).reset()
+    probatum._probatum.Engine(run.candles, **run.settings).reset()
 
     perp  = probatum.Data(frame(), symbol="BTCUSDT", market="linear")
     every = _run(Venue(funding={"every_bars": 8, "rate": 0.0001}), perp).settings
@@ -142,7 +142,7 @@ def test_a_venue_built_by_hand_runs_bars_from_a_file_on_its_plain_rules():
 
     assert (drawn.settings["intrabar"], drawn.settings["seed"]) == ("random", 7)
 
-    probatum.Engine(drawn.candles, **drawn.settings).reset()
+    probatum._probatum.Engine(drawn.candles, **drawn.settings).reset()
 
 
 def test_an_inverse_contract_runs_alone_on_its_own_bars_in_its_coin():
@@ -157,7 +157,7 @@ def test_an_inverse_contract_runs_alone_on_its_own_bars_in_its_coin():
     assert (run.settings["market"], run.settings["contract"],
             run.settings["quote"]) == ("inverse", 100.0, 1.0)
 
-    probatum.Engine(run.candles, **run.settings).reset()
+    probatum._probatum.Engine(run.candles, **run.settings).reset()
 
 
 def two(*frames):

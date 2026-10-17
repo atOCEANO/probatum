@@ -28,7 +28,7 @@ def engine(candles, **settings):
                  fee_maker=0.0, leverage=0.0, tiers=MAINTAINED, report=True,
                  times=np.arange(len(candles), dtype=np.int64) * HOUR)
     venue.update(settings)
-    return probatum.Engine(candles, **venue)
+    return probatum._probatum.Engine(candles, **venue)
 
 
 def test_a_coin_held_against_a_short_of_its_value_is_a_synthetic_dollar():
@@ -214,7 +214,7 @@ def test_a_price_with_no_reciprocal_a_universe_and_a_transfer_are_refused():
         engine(bars((1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 1e-310, 1.0)))
 
     with pytest.raises(ValueError, match="market: an inverse contract for a universe"):
-        probatum.Engine(np.ones((2, 1, 5)), market="inverse", contract=100.0)
+        probatum._probatum.Engine(np.ones((2, 1, 5)), market="inverse", contract=100.0)
 
     e = engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)))
     with pytest.raises(ValueError, match="transfer: an inverse contract's account"):

@@ -19,7 +19,8 @@ import time
 import numpy as np
 
 import probatum
-from probatum import Batch, Engine, tune
+from probatum import Batch, tune
+from probatum._probatum import Engine
 from probatum import Backtester, Strategy
 from probatum.rl import VectorEnv
 

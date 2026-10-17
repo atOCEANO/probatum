@@ -91,7 +91,7 @@ def from_row(drawn, start):
 
 def engine(candles, times, settings, drawn, start):
     """The engine after the array run in one call, its account opened at row `start`."""
-    run = probatum.Engine(
+    run = probatum._probatum.Engine(
         candles,
         times  = np.array(times, dtype=np.int64),
         report = True,

@@ -161,7 +161,7 @@ def test_the_windows_actually_change_hands():
             seen.append((state["tick_index"], self.fast, self.slow))
 
     composite = _Scheduled(Spy, schedule)
-    composite.init(probatum.Engine(series(n=30)))
+    composite.init(probatum._probatum.Engine(series(n=30)))
 
     assert composite.warmup == 0
 

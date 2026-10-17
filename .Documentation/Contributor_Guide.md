@@ -165,7 +165,7 @@ A venue preset is a TOML file in `python/probatum/venues/`, named for the preset
 - `[kinds.spot]`, `[kinds.linear]` and `[kinds.inverse]`, in a preset that mixes kinds: the settings every instrument of that kind carries, such as a market's own `fees`.
 - `[instruments.KEY]`, one per instrument, keyed by the router's symbol, or by `kind:SYMBOL` in a preset that mixes kinds: its `tiers`, a list of `{ up_to, leverage, rate, amount }`, its `tiers_by`, and any size rule or `fees` of its own.
 
-An instrument takes the defaults, then its kind's settings, then its own. The loader checks a file's shape and the type of every setting, and every value passes the checks the Engine runs, on one row of placeholder bars, so a preset is held to exactly what a venue built by hand is: a `probatum.Venue` passes the same checks, and each preset is reached as one, `probatum.venues.NAME`. The tests load every file in the folder, so a new preset is covered as soon as it is there.
+An instrument takes the defaults, then its kind's settings, then its own. The loader checks a file's shape and the type of every setting, and every value passes the checks the compiled engine runs, on one row of placeholder bars, so a preset is held to exactly what a venue built by hand is: a `probatum.Venue` passes the same checks, and each preset is reached as one, `probatum.venues.NAME`. The tests load every file in the folder, so a new preset is covered as soon as it is there.
 
 <br>
 

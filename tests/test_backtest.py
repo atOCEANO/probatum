@@ -98,7 +98,7 @@ def test_hourly_candles_are_annualized_hourly_without_being_told():
 
 
 def test_the_named_price_views_are_the_columns_of_data():
-    from probatum import Engine
+    from probatum._probatum import Engine
     eng = Engine(series())
 
     for name, column in (("opens", 0), ("highs", 1), ("lows", 2),
@@ -109,7 +109,7 @@ def test_the_named_price_views_are_the_columns_of_data():
 
 
 def test_a_price_view_is_read_only_and_copies_nothing():
-    from probatum import Engine
+    from probatum._probatum import Engine
     eng = Engine(series())
 
     assert not eng.closes.flags.writeable

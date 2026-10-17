@@ -36,8 +36,7 @@ def series():
 def engine(**overrides):
     params = dict(market="spot", quote=10_000.0, fee_taker=0.0, fee_maker=0.0)
     params.update(overrides)
-
-    return probatum.Engine(series(), **params)
+    return probatum._probatum.Engine(series(), **params)
 
 
 def test_reset_starts_flat_at_the_first_bar():
@@ -228,14 +227,14 @@ def test_a_tier_table_holds_a_perp_where_its_margin_stops_carrying_it():
     # 5 at 60,000 at the bound
     bars = np.full((2, 5), 60_000.0)
     bars[:, 4] = 1e6
-    e = probatum.Engine(
+
+    e = probatum._probatum.Engine(
         bars,
         market    = "perp",
         quote     = 10_000.0,
         fee_taker = 0.0,
         tiers     = [(100_000.0, 20.0, 0.0, 0.0), (1e6, 10.0, 0.0, 0.0)],
     )
-
     e.reset()
     e.market_buy(5.0)
 
@@ -249,7 +248,7 @@ def test_an_open_last_tier_holds_a_perp_by_its_leverage_alone():
     bars[:, 4] = 1e9
 
     tiers = [(150e6, 40.0, 0.0125, 0.0), (float("inf"), 20.0, 0.025, 1_875_000.0)]
-    e     = probatum.Engine(
+    e     = probatum._probatum.Engine(
         bars,
         market    = "perp",
         quote     = 20_000_000.0,
@@ -257,7 +256,6 @@ def test_an_open_last_tier_holds_a_perp_by_its_leverage_alone():
         tiers     = tiers,
         report    = True,
     )
-
     e.reset()
     e.market_buy(2_000_000.0)
 
@@ -284,20 +282,20 @@ def test_an_open_last_tier_holds_a_perp_by_its_leverage_alone():
 ])
 def test_a_tier_table_the_loader_cannot_trust_is_refused(tiers, tiers_by, says):
     with pytest.raises(ValueError, match=re.escape(says)):
-        probatum.Engine(series(), market="perp", tiers=tiers, tiers_by=tiers_by)
+        probatum._probatum.Engine(series(), market="perp", tiers=tiers, tiers_by=tiers_by)
 
 
 def test_an_intrabar_setting_it_does_not_know_is_refused():
     says = 'intrabar: "neutral" is not a setting; use pessimistic, optimistic or random'
-
-    for build in (probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
+    for build in (probatum._probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
         with pytest.raises(ValueError, match=re.escape(says)):
             build(series(), intrabar="neutral")
 
 
 def test_a_random_setting_without_a_seed_is_refused():
     says = 'seed: none, and intrabar="random" draws from a stream named from it; pass seed='
-    for build in (probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
+
+    for build in (probatum._probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
         with pytest.raises(ValueError, match=re.escape(says)):
             build(series(), intrabar="random")
 
@@ -306,7 +304,7 @@ def test_a_random_setting_without_a_seed_is_refused():
 
 
 def test_a_seed_that_is_not_a_whole_number_from_0_is_refused():
-    for build in (probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
+    for build in (probatum._probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
         for seed, shown in ((-1, "-1"), (1.5, "1.5"), ("7", "'7'")):
             says = f"seed: {shown}; give a whole number from 0"
             with pytest.raises(ValueError, match=re.escape(says)):
@@ -405,7 +403,7 @@ def test_a_script_played_in_one_call_records_what_stepping_by_hand_records():
         1: [("close", {})],
     })
 
-    e = probatum.Engine(series(), report=True, **venue)
+    e = probatum._probatum.Engine(series(), report=True, **venue)
     e.reset()
     e.market_buy(2.0)
     e.limit_sell(1.0, 255.0)
@@ -630,8 +628,7 @@ def universe_pair():
 
 def test_a_universe_engine_shows_its_candles_with_an_instrument_axis():
     pair = universe_pair()
-    eng  = probatum.Engine(pair)
-
+    eng  = probatum._probatum.Engine(pair)
     eng.reset()
     eng.step()
 
@@ -725,7 +722,7 @@ def test_a_batch_refuses_weights_it_cannot_place_before_any_env_trades(market, w
 ])
 def test_candles_the_engine_cannot_read_are_refused(candles, settings, says):
     with pytest.raises(ValueError, match=re.escape(says)):
-        probatum.Engine(candles, **settings)
+        probatum._probatum.Engine(candles, **settings)
 
 
 def test_an_empty_batch_over_a_universe_keeps_its_instrument_axis():
@@ -969,7 +966,7 @@ def test_market_impact_worsens_a_large_fill():
     sigma = np.std(np.diff(np.log(bars[:3, 3])), ddof=1)
 
     for model, share in (("linear", 0.1), ("sqrt", 0.1 ** 0.5)):
-        e = probatum.Engine(
+        e = probatum._probatum.Engine(
             bars,
             market       = "spot",
             quote        = 1_000_000.0,
@@ -991,7 +988,7 @@ def test_market_impact_worsens_a_large_fill():
 
 def test_perp_funding_charges_a_held_position():
     # funding every bar at 0.001; a held long pays it, seen as a quote debit
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         series(),
         market           = "perp",
         quote            = 10_000.0,
@@ -1000,6 +997,7 @@ def test_perp_funding_charges_a_held_position():
         funding_rate     = 0.001,
         funding_interval = 1,
     )
+
     e.reset()
     e.market_buy(1.0)
     s = e.step()  # long 1 @ 200; funding at bar 1 close 250: pay 1 * 250 * 0.001
@@ -1008,7 +1006,7 @@ def test_perp_funding_charges_a_held_position():
 
 
 def test_perp_leverage_caps_the_position():
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         series(),
         market    = "perp",
         quote     = 100.0,
@@ -1016,6 +1014,7 @@ def test_perp_leverage_caps_the_position():
         fee_maker = 0.0,
         leverage  = 2.0,
     )
+
     e.reset()
     e.market_buy(10.0)  # wants 10, but 2x on 100 equity at price 200 caps it at 1
     s = e.step()
@@ -1025,7 +1024,14 @@ def test_perp_leverage_caps_the_position():
 
 def test_perp_leverage_defaults_to_a_finite_cap():
     # no leverage kwarg: the shipped 10x default bounds an oversized perp buy
-    e = probatum.Engine(series(), market="perp", quote=100.0, fee_taker=0.0, fee_maker=0.0)
+    e = probatum._probatum.Engine(
+        series(),
+        market    = "perp",
+        quote     = 100.0,
+        fee_taker = 0.0,
+        fee_maker = 0.0,
+    )
+
     e.reset()
     e.market_buy(10.0)  # 10x on 100 equity at price 200 caps the notional at 5 units
     s = e.step()
@@ -1104,8 +1110,7 @@ def test_order_reduce_only_stop_loss_closes_a_long():
         ],
         dtype=np.float64,
     )
-    e = probatum.Engine(data, market="spot", quote=10_000.0, fee_taker=0.0, fee_maker=0.0)
-
+    e = probatum._probatum.Engine(data, market="spot", quote=10_000.0, fee_taker=0.0, fee_maker=0.0)
     e.reset()
 
     e.market_buy(1.0)
@@ -1208,12 +1213,12 @@ def test_bad_market_raises():
 
     for candles in (series(), universe_pair()):
         with pytest.raises(ValueError, match=re.escape(says)):
-            probatum.Engine(candles, market="Options")
+            probatum._probatum.Engine(candles, market="Options")
 
 
 def test_candles_must_have_five_columns():
     with pytest.raises(ValueError, match="candles: 4 columns; give 5, open, high, low"):
-        probatum.Engine(np.zeros((3, 4), dtype=np.float64))
+        probatum._probatum.Engine(np.zeros((3, 4), dtype=np.float64))
 
 
 def test_non_finite_candles_are_rejected():
@@ -1221,7 +1226,7 @@ def test_non_finite_candles_are_rejected():
     bad[1, 2] = np.nan  # a NaN low on bar 1
 
     with pytest.raises(ValueError, match="candles: NaN at row 1; clean NaN"):
-        probatum.Engine(bad)
+        probatum._probatum.Engine(bad)
 
 
 def test_non_finite_config_scalars_are_rejected():
@@ -1238,7 +1243,7 @@ def test_non_finite_config_scalars_are_rejected():
         {"funding_rate": float("nan")},
     ):
         with pytest.raises(ValueError):
-            probatum.Engine(series(), **kwargs)
+            probatum._probatum.Engine(series(), **kwargs)
         with pytest.raises(ValueError):
             probatum.Batch(series(), num_envs=2, **kwargs)
 
@@ -1284,7 +1289,7 @@ def test_out_of_range_config_scalars_are_rejected():
         {"funding_interval": -3},
     ):
         with pytest.raises(ValueError):
-            probatum.Engine(series(), **kwargs)
+            probatum._probatum.Engine(series(), **kwargs)
 
 
 def test_a_zero_window_raises_instead_of_panicking():
@@ -1365,7 +1370,7 @@ def test_funding_every_eight_hours_is_charged_at_the_close_of_the_bar_ending_the
     ]
 
     for source in sources:
-        eng = probatum.Engine(
+        eng = probatum._probatum.Engine(
             candles,
             market    = "perp",
             quote     = 10_000.0,
@@ -1388,7 +1393,7 @@ def test_funding_named_on_the_one_instrument_is_charged_as_funding_named_on_none
 
     paid = []
     for named in ({}, {"funding_instruments": [0]}, {"funding_instruments": [None]}):
-        eng = probatum.Engine(
+        eng = probatum._probatum.Engine(
             candles,
             market    = "perp",
             quote     = 10_000.0,
@@ -1397,6 +1402,7 @@ def test_funding_named_on_the_one_instrument_is_charged_as_funding_named_on_none
             **stamps,
             **named,
         )
+
         eng.reset()
         eng.market_buy(1.0)
         paid.append([eng.step()["funding_paid"] for _ in range(8)])
@@ -1404,7 +1410,7 @@ def test_funding_named_on_the_one_instrument_is_charged_as_funding_named_on_none
     assert paid[0] == paid[1] == paid[2]
 
     with pytest.raises(ValueError, match=re.escape("row 0 names instrument 1, of 1")):
-        probatum.Engine(
+        probatum._probatum.Engine(
             candles,
             market              = "perp",
             times               = times,
@@ -1417,10 +1423,10 @@ def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
     candles, times = hourly(4)
 
     with pytest.raises(ValueError, match="times: none"):
-        probatum.Engine(candles, market="perp", funding_hours=8.0)
+        probatum._probatum.Engine(candles, market="perp", funding_hours=8.0)
 
     with pytest.raises(ValueError, match="funding: more than one source"):
-        probatum.Engine(
+        probatum._probatum.Engine(
             candles,
             market           = "perp",
             times            = times,
@@ -1437,7 +1443,7 @@ def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
         )
 
     with pytest.raises(ValueError, match="funding_rates: 2 for 1 funding_times"):
-        probatum.Engine(
+        probatum._probatum.Engine(
             candles,
             market        = "perp",
             times         = times,
@@ -1516,13 +1522,13 @@ def test_stop_takes_reduce_only_so_it_cannot_open_the_other_side():
         dtype=np.float64,
     )
 
-    protective = probatum.Engine(data, market="perp", quote=10_000.0, fee_taker=0.0)
+    protective = probatum._probatum.Engine(data, market="perp", quote=10_000.0, fee_taker=0.0)
     protective.reset()
     protective.stop("sell", 1.0, 95.0, reduce_only=True)
 
     assert protective.step()["position"] == 0.0
 
-    bare = probatum.Engine(data, market="perp", quote=10_000.0, fee_taker=0.0)
+    bare = probatum._probatum.Engine(data, market="perp", quote=10_000.0, fee_taker=0.0)
     bare.reset()
     bare.stop("sell", 1.0, 95.0)
 
@@ -1558,7 +1564,7 @@ def test_a_fok_market_blocked_by_the_cash_clamp_fills_nothing():
 def test_a_trade_carries_both_sides_of_its_fee():
     # charging only the closing fill left about half the round trip attributed to
     # nothing, so the metrics built on it stayed optimistic (ADR 0023)
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         series(),
         market    = "spot",
         quote     = 10_000.0,
@@ -1599,7 +1605,7 @@ def test_stats_reproduce_from_the_trade_log():
                 if self.hold >= 2:
                     engine.close()
 
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         data,
         market    = "spot",
         quote     = 10_000.0,
@@ -1607,6 +1613,7 @@ def test_stats_reproduce_from_the_trade_log():
         fee_maker = 0.001,
         report    = True,
     )
+
     e.run(PingPong())
     st     = e.stats()
     trades = [t for t in e.trades() if not t["open"]]
@@ -1623,7 +1630,7 @@ def test_stats_reproduce_from_the_trade_log():
 
 def test_num_fills_separates_a_dead_feed_from_a_quiet_strategy():
     dead = np.array([[100.0, 100.0, 100.0, 100.0, 0.0]] * 6, dtype=np.float64)
-    e    = probatum.Engine(dead, market="spot", report=True)
+    e    = probatum._probatum.Engine(dead, market="spot", report=True)
     e.reset()
     while not e.done():
         e.market_buy(1.0)
@@ -1644,7 +1651,7 @@ def test_num_fills_separates_a_dead_feed_from_a_quiet_strategy():
 def test_replace_moves_one_order_and_will_not_arm_a_second():
     # the trailing-stop trap: stop() per bar rests a new order every time, and the
     # one that fills leaves its siblings live (ADR 0010)
-    e = probatum.Engine(series(), market="perp", quote=10_000.0, fee_taker=0.0)
+    e = probatum._probatum.Engine(series(), market="perp", quote=10_000.0, fee_taker=0.0)
     e.reset()
 
     first  = e.stop("sell", 1.0, 50.0, reduce_only=True)
@@ -1661,12 +1668,12 @@ def test_replace_moves_one_order_and_will_not_arm_a_second():
 
 
 def test_is_bust_reports_a_dead_account():
-    e = probatum.Engine(series(), market="spot", quote=10_000.0)
+    e = probatum._probatum.Engine(series(), market="spot", quote=10_000.0)
     e.reset()
 
     assert e.is_bust() is False
 
-    dead = probatum.Engine(series(), market="spot", quote=0.0)
+    dead = probatum._probatum.Engine(series(), market="spot", quote=0.0)
     dead.reset()
     dead.step()
 
@@ -1688,7 +1695,7 @@ def test_trade_metrics_are_net_of_fees():
             else:
                 engine.close()
 
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         data,
         market    = "spot",
         quote     = 10_000.0,
@@ -1696,6 +1703,7 @@ def test_trade_metrics_are_net_of_fees():
         fee_maker = 0.001,
         report    = True,
     )
+
     e.run(PingPong())
     st = e.stats()
 
@@ -1708,7 +1716,14 @@ def test_trade_metrics_are_net_of_fees():
 def test_spot_buy_cannot_spend_more_quote_than_held():
     # the Python view of the spot-buy cash clamp: a huge buy fills only what the
     # cash affords, and the balance never goes negative
-    e = probatum.Engine(series(), market="spot", quote=10_000.0, fee_taker=0.0, fee_maker=0.0)
+    e = probatum._probatum.Engine(
+        series(),
+        market    = "spot",
+        quote     = 10_000.0,
+        fee_taker = 0.0,
+        fee_maker = 0.0,
+    )
+
     e.reset()
     e.market_buy(1_000.0)  # wants 1000 base at bar 1 open 200, affords 50
     s = e.step()

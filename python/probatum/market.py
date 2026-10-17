@@ -99,7 +99,8 @@ class Market:
 
 
     def engine(self, candles, report=False):
-        """An ``Engine`` over ``candles`` at this venue."""
+        """The compiled engine, ``probatum._probatum.Engine``, over ``candles`` at this
+        venue."""
         from ._data import to_ohlcv
         from ._probatum import Engine
 

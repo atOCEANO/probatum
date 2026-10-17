@@ -65,7 +65,7 @@ def stepped(rows, data, venue=VENUE, tolerance=0.0):
     """The Engine over the same settings stepped from Python, a target at each close
     naming every instrument its row does not hold."""
     run    = _run(venue, data)
-    engine = probatum.Engine(run.candles, report=True, **run.settings)
+    engine = probatum._probatum.Engine(run.candles, report=True, **run.settings)
     engine.reset()
 
     for row in rows[:-1]:
@@ -135,7 +135,7 @@ def test_an_array_s_barriers_are_the_brackets_the_engine_stepped_from_python_pla
 
     result = probatum.backtest(rows, data, VENUE, stop=0.02, take_profit=take_profit)
     run    = _run(VENUE, data)
-    engine, counts = placed(probatum.Engine(run.candles, report=True, **run.settings),
+    engine, counts = placed(probatum._probatum.Engine(run.candles, report=True, **run.settings),
                             list(rows), 0.02, [[value] for value in take_profit])
 
     assert counts["filled"]

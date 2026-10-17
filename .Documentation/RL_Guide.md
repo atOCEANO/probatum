@@ -183,7 +183,7 @@ The observation is a window of numeric rows, shape `(num_envs, window, F)`, dtyp
 
 A window of `window` rows needs that many rows to exist first, so an env's first usable step is at index `window - 1`. Each env starts at a random offset at or after that point, so its window is always full. The series must hold at least `window + 1` rows, a full window plus one bar to step into; a shorter series is a configuration error, so the constructor raises `ValueError` rather than pad the window with zeros.
 
-The observation is a fresh array each step (the batched windows differ once envs sit at different offsets), so it is yours to keep. This differs from the single `Engine.observation`, which is a zero-copy view.
+The observation is a fresh array each step (the batched windows differ once envs sit at different offsets), so it is yours to keep. This differs from the compiled engine's `observation`, which is a zero-copy view.
 
 <br>
 

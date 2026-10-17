@@ -1,24 +1,24 @@
 """probatum: embeddable market simulation library.
 
-The compiled Rust core is exposed as ``probatum._probatum``; this package re-exports its
-public surface. ``Engine`` drives a single environment one bar at a time: build it
-from a ``(T, 5)`` OHLCV numpy array, then ``reset`` and ``step``. ``Batch`` runs
-many independent envs over one shared series and steps them in parallel with the
-GIL released. The Python wrappers (rl, Backtester) layer on top of these, and ``tune``
-searches a strategy's parameters by running many backtests across cores. ``chart``
-renders a frame, your own arrays and a run into one self-contained HTML document
-for a notebook cell or a file, computing nothing itself. ``Venue`` holds a venue's
-rules, and ``venues`` the presets, each one a Venue. ``backtest`` runs a policy on a
-Data at a venue and returns the ``Result`` it recorded, and ``Strategy`` is a policy
-that decides at each close.
+The compiled Rust core is ``probatum._probatum``, whose engine the Backtester and rl
+drive. ``Engine`` is an account at a venue on a Data for a loop the caller owns, opened
+with ``reset`` and moved one bar at a time with ``step``. ``Batch`` runs many
+independent envs over one shared series and steps them in parallel with the GIL
+released, and ``tune`` searches a strategy's parameters by running many backtests
+across cores. ``chart`` renders a frame, your own arrays and a run into one
+self-contained HTML document for a notebook cell or a file, computing nothing itself.
+``Venue`` holds a venue's rules, and ``venues`` the presets, each one a Venue.
+``backtest`` runs a policy on a Data at a venue and returns the ``Result`` it
+recorded, and ``Strategy`` is a policy that decides at each close.
 """
 
-from ._probatum import Batch, Engine
+from ._probatum import Batch
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
 from . import metrics, plot, rl, ta, venues
 from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
+from ._engine import Engine
 from ._result import Result
 from ._backtest import backtest
 from .market import Market

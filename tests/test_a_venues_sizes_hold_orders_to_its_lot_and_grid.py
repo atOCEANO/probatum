@@ -18,7 +18,7 @@ def bars(*rows):
 
 def test_a_lot_of_0_001_fills_0_075_of_a_budget_of_0_0756_and_refuses_0_0006():
     # both round down where the nearest lot would round them up
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((100.0, 100.0, 100.0, 100.0, 0.0756),
              (100.0, 100.5, 98.5, 99.5, 0.0756)),
         fee_taker = 0.0,
@@ -51,7 +51,7 @@ def test_a_lot_of_0_001_fills_0_075_of_a_budget_of_0_0756_and_refuses_0_0006():
                                                ("through", 99.39, True)])
 def test_a_buy_limit_at_99_40_fills_on_touch_and_through_half_a_tick_past(limit, low,
                                                                           fills):
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((100.0, 100.0, 100.0, 100.0, 1e6),
              (100.0, 100.2, low, 99.8, 1e6)),
         limit = limit,
@@ -66,7 +66,7 @@ def test_a_buy_limit_at_99_40_fills_on_touch_and_through_half_a_tick_past(limit,
 
 @pytest.mark.parametrize("low, fills", [(99.98, False), (99.9, True)])
 def test_five_figures_with_a_cap_of_one_decimal_rest_99_987_at_100_0(low, fills):
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((101.0, 101.0, 101.0, 101.0, 1e6),
              (101.0, 101.0, low, 100.5, 1e6)),
         quote    = 1e6,
@@ -86,7 +86,7 @@ def test_five_figures_with_a_cap_of_one_decimal_rest_99_987_at_100_0(low, fills)
 
 @pytest.mark.parametrize("exempt", [False, True])
 def test_a_minimum_of_10_refuses_0_05_at_150_and_a_maximum_of_1_0005_holds_5_to_1(exempt):
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((150.0, 150.0, 150.0, 150.0, 1e6),
              (150.0, 150.0, 150.0, 150.0, 1e6)),
         market             = "perp",
@@ -114,14 +114,13 @@ def test_a_minimum_of_10_refuses_0_05_at_150_and_a_maximum_of_1_0005_holds_5_to_
 
 def test_a_sell_under_through_needs_half_a_tick_above_it():
     for high, fills in [(100.60, False), (100.604, False), (100.606, True)]:
-        e = probatum.Engine(
+        e = probatum._probatum.Engine(
             bars((100.0, 100.0, 100.0, 100.0, 1e6),
                  (100.2, high, 100.0, 100.4, 1e6)),
             market = "perp",
             limit  = "through",
             tick   = 0.01,
         )
-
         e.reset()
         e.limit_sell(1.0, 100.60)
         assert (e.step().position == -1.0) is fills, high
@@ -136,7 +135,7 @@ def test_an_inverse_limit_takes_half_a_dollar_tick_through():
              ("sell", 51.0, (50.0, 51.5, 50.0, 50.0), -10.0)]
 
     for side, price, bar, position in cases:
-        e = probatum.Engine(
+        e = probatum._probatum.Engine(
             bars((50.0, 50.0, 50.0, 50.0, 1e6), (*bar, 1e6)),
             market   = "inverse",
             contract = 100.0,
@@ -151,13 +150,14 @@ def test_an_inverse_limit_takes_half_a_dollar_tick_through():
 
 
 def test_a_tick_rounds_a_price_at_half_a_tick_to_even():
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((100.0, 100.0, 100.0, 100.0, 1e6),
              (100.0, 100.0, 100.0, 100.0, 1e6)),
         market = "perp",
         sizes  = True,
         tick   = 0.5,
     )
+
     e.reset()
     e.limit_buy(1.0, 98.25)
     e.limit_sell(1.0, 102.75)
@@ -167,7 +167,7 @@ def test_a_tick_rounds_a_price_at_half_a_tick_to_even():
 
 
 def test_a_replace_and_a_bracket_take_the_grid_and_a_target_its_lot_and_transfer():
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars(*[(100.0, 100.0, 100.0, 100.0, 1e6)] * 3),
         market    = "spot",
         quote     = {"spot": 1_000.0, "margin": 9_000.0},
@@ -198,7 +198,7 @@ def test_a_replace_and_a_bracket_take_the_grid_and_a_target_its_lot_and_transfer
 def test_an_inverse_lot_is_in_contracts_and_its_minimum_notional_in_the_coin():
     # a buy of 0.4 contracts of 100 dollars rounds to no lot of 1, and 5 contracts at
     # 50,000 are worth 0.01 coin, below a minimum of 0.02 coin
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((50_000.0, 50_000.0, 50_000.0, 50_000.0, 1e6),
              (50_000.0, 50_000.0, 50_000.0, 50_000.0, 1e6)),
         market       = "inverse",
@@ -242,7 +242,7 @@ def test_a_rule_no_venue_could_hold_is_refused(settings, says):
     candles = bars((100.0, 100.0, 100.0, 100.0, 1.0))
 
     with pytest.raises(ValueError, match=re.escape(says)):
-        probatum.Engine(candles, **settings)
+        probatum._probatum.Engine(candles, **settings)
 
     with pytest.raises(ValueError, match=re.escape(says)):
         probatum.Batch(candles, 2, **settings)
@@ -251,7 +251,7 @@ def test_a_rule_no_venue_could_hold_is_refused(settings, says):
 def test_the_significant_figure_rule_is_refused_on_an_inverse_contract():
     with pytest.raises(ValueError, match=re.escape(
             "sigfigs: 5 for an inverse contract, whose prices take a tick; give its tick")):
-        probatum.Engine(
+        probatum._probatum.Engine(
             bars((100.0, 100.0, 100.0, 100.0, 1.0)),
             market   = "inverse",
             contract = 100.0,
@@ -275,11 +275,11 @@ def test_a_universe_takes_each_instruments_rules_in_its_own_dict():
 
     with pytest.raises(ValueError, match=re.escape(
             "lot: given beside instruments; give each instrument its own there")):
-        probatum.Engine(universe, market="perp", lot=1.0, instruments=instruments)
+        probatum._probatum.Engine(universe, market="perp", lot=1.0, instruments=instruments)
 
     with pytest.raises(ValueError, match=re.escape(
             "instruments[1]: lot: 'half'; give a number")):
-        probatum.Engine(
+        probatum._probatum.Engine(
             universe,
             market      = "perp",
             instruments = [dict(market="perp"), dict(lot="half")],

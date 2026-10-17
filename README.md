@@ -60,7 +60,7 @@ It **does not**: model the full order book (L2), latency, or queue position, and
 
 ## How it works
 
-You hand the engine a table of candles and walk it forward one bar at a time. On any bar you can place an order, a market buy or sell, a limit, or a stop, then call `step` to advance exactly one candle: it resolves whatever is pending and hands back your new account, the balances, position, and equity. Repeat to the end of the data. That loop is the whole engine; the backtester and the RL env are wrappers around it.
+You hand the engine your bars and walk it forward one bar at a time. On any bar you can place an order, a market buy or sell, a limit, or a stop, then call `step` to advance exactly one bar: it resolves whatever is pending, marks your account, its balances, position and equity, at the bar's close, and hands back that bar. Repeat to the end of the data. That loop is the whole engine; the backtester and the RL env are wrappers around it.
 
 The rule that keeps you honest is one bar of delay: you decide on the close of a bar and the order fills on the **next** one, never the bar the decision saw. That guard against same-bar lookahead is what separates a believable backtest from a fooled one.
 
@@ -73,25 +73,26 @@ with ExchangeRouterClient("http://localhost:8040") as client:
     candles = client.get_candles("binance", "spot", "BTCUSDT", interval="1h", limit=5000)
 ```
 
-Then step through it. `probatum.to_ohlcv` turns that DataFrame (or a parquet path, or a numpy array you already hold) into the `(T, 5)` array the engine takes, ignoring the router's extra `volume_usd` column and handling its datetime index for you. Here a plain momentum rule: long above the last day's average, flat below it.
+Then step through it. `probatum.Data` reads that frame, which names its venue, market, symbol and interval itself, and `probatum.Engine` opens an account on it at a venue. Here a plain momentum rule: long above the last day's average, flat below it.
 
 ```python
-from probatum import Engine, to_ohlcv
+import probatum
 
-eng = Engine(to_ohlcv(candles), market="spot", quote=10_000)
-close = eng.closes                             # zero-copy view of every close
-state = eng.reset()
-while not eng.done():
-    i = state["tick_index"]
+data = probatum.Data(candles)
+close = data.close                             # a read-only view of every close
+engine = probatum.Engine(data, "binance_spot")
+bar = engine.reset()
+while not engine.done():
+    i = bar.i
     if i >= 24:                                # a day of hourly history
-        avg = close[i - 24:i].mean()
-        if state["position"] == 0 and close[i] > avg:
-            eng.market_buy(0.1)                # decided now, fills on the next bar
-        elif state["position"] > 0 and close[i] < avg:
-            eng.close()                        # flatten below it
-    state = eng.step()
+        average = close[i - 24:i].mean()
+        if engine.position == 0.0 and close[i] > average:
+            engine.buy(0.1)                    # decided now, fills on the next bar
+        elif engine.position > 0.0 and close[i] < average:
+            engine.close()                     # flatten below it
+    bar = engine.step()
 
-print(state["equity"], state["position"])      # account value and position at the end
+print(engine.equity, engine.position)          # account value and position at the end
 ```
 
 <br>
@@ -114,7 +115,7 @@ Each method takes only what is not the venue, so a cost cannot be passed twice. 
 
 ### Raw engine
 
-The candles are readable as named zero-copy views, `engine.opens`, `engine.highs`, `engine.lows`, `engine.closes` and `engine.volumes`, so nothing has to remember that the close is column 3. `engine.data` is still the whole `(T, 5)` array.
+The Backtester and the RL env drive the compiled engine, `probatum._probatum.Engine`, built over a candle array with the engine's settings as keywords. Its candles are readable as named zero-copy views, `engine.opens`, `engine.highs`, `engine.lows`, `engine.closes` and `engine.volumes`, so nothing has to remember that the close is column 3. `engine.data` is still the whole `(T, 5)` array.
 
 The order verbs mirror a real exchange, so a strategy is written against the same calls it would use live. `market_buy` / `market_sell` (taker, fills at the next open), `limit_buy` / `limit_sell` (rests until a candle reaches it, a maker unless its first bar opens at or through it), `stop(side, size, trigger)`, `close()`, `cancel(order_id)`, and `cancel_all()`. The full `order(side, size, type=, price=, trigger=, reduce_only=, post_only=, tif=)` primitive sets the flags the shortcuts leave default (a reduce-only stop-loss, a post-only limit, an IOC or FOK fill), and `qty_from_weight` / `qty_from_quote` size an order from a fraction of equity or a cash amount. One netted position: net long, net short, or flat, never both, and never short on spot. Every `step` returns the state as a typed record, read by attribute or by key; see the [Python API](.Documentation/Python_API.md) for the full field list and order semantics.
 

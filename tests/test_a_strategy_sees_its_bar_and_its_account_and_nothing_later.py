@@ -2,7 +2,8 @@
 account sees, with the bar just closed and the account that close left. The bar is the
 Data's row and its history ends there; the account is the ledger's row; every order is
 a live handle that follows the order log, and the events since the last close are the
-log's own, and a backtest runs a copy of the Strategy.
+log's own. A backtest runs a copy of the Strategy, and the Engine stepped by hand
+records what a backtest of the same decisions records.
 """
 
 import datetime
@@ -863,3 +864,87 @@ def test_an_array_run_s_settings_and_a_bad_warmup_are_refused_beside_a_strategy(
                                                        f"whole number of bars from 0")):
             probatum.backtest(Seen(warmup=warmup), data, VENUE)
 
+
+def test_the_engine_stepped_by_hand_records_what_a_backtest_of_its_decisions_does():
+    data = pair()
+
+    def decide(bar, account):
+        if bar.i % 7 == 3:
+            return account.target({"BTCUSDT": 0.5, "ETHUSDT": -0.3})
+
+        if bar.i % 7 == 6:
+            account["ETHUSDT"].close()
+
+    class Same(probatum.Strategy):
+
+        def next(self, bar, account):
+            decide(bar, account)
+
+    engine, episodes = probatum.Engine(data, VENUE), []
+    for _ in range(2):
+        bar = engine.reset()
+        assert bar.i == 0 and not engine.done() and not engine.events
+        assert engine.equity == 10_000.0
+
+        legs = None
+        while not engine.done():
+            placed = decide(bar, engine)
+            legs   = legs or placed
+            bar    = engine.step()
+
+        assert bar.i == len(data) - 1 and engine.step().i == bar.i
+        assert {leg.status for leg in legs} == {"filled"}
+
+        episodes.append(engine.result(risk_free=0.04))
+
+    backtest = probatum.backtest(Same(), data, VENUE, risk_free=0.04)
+
+    for by_hand in episodes:
+        for name in backtest.ledger:
+            np.testing.assert_array_equal(by_hand.ledger[name], backtest.ledger[name])
+        assert by_hand.policy is None and by_hand.stats == backtest.stats
+        # ids run on across a reset, and nothing else does
+        assert [{**fill, "order": None} for fill in by_hand.fills] == [
+            {**fill, "order": None} for fill in backtest.fills]
+
+    assert (episodes[0].fills, episodes[0].orders, episodes[0].trades) == (
+        backtest.fills, backtest.orders, backtest.trades)
+
+    with pytest.raises(AttributeError, match=re.escape(
+            "engine.buy: the account holds 2 instruments; use engine[\"BTCUSDT\"].buy")):
+        engine.buy(1.0)
+
+    with pytest.raises(KeyError, match="engine: no instrument 'SOLUSDT'"):
+        engine["SOLUSDT"]
+
+
+def test_the_engine_takes_a_seed_where_backtest_refuses_a_venue_that_draws():
+    data  = one()
+    drawn = VENUE.replace(intrabar="random")
+
+    with pytest.raises(ValueError, match="venue: intrabar is \"random\", which backtest "
+                                         "refuses"):
+        probatum.backtest(Cross(), data, drawn)
+
+    # the bar after the entry reaches both legs, which the venue orders at random
+    wide = frame()
+    for column, by in (("high", 1.02), ("low", 0.98)):
+        wide.iloc[11, wide.columns.get_loc(column)] *= by
+    data = probatum.Data(wide, symbol="BTCUSDT", market="linear")
+
+    def run(seed):
+        engine = probatum.Engine(data, drawn, seed=seed)
+        bar    = engine.reset()
+
+        while not engine.done():
+            if bar.i == 10:
+                engine.buy(5.0)
+                engine.bracket(stop=bar.close * 0.995, take_profit=bar.close * 1.005)
+            bar = engine.step()
+
+        return engine.result()
+
+    assert run(1).ledger["equity"].tolist() == run(1).ledger["equity"].tolist()
+    assert run(1).provenance["seed"]        == 1
+    assert {run(seed).trades[0]["reason"] for seed in range(16)} == {"stop",
+                                                                      "take_profit"}

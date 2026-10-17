@@ -32,7 +32,7 @@ def half_a_bitcoin(*later, **settings):
                    times=np.arange(len(candles), dtype=np.int64) * HOUR)
     venue.update(settings)
 
-    e = probatum.Engine(candles, **venue)
+    e = probatum._probatum.Engine(candles, **venue)
     e.reset()
     e.limit_buy(0.5, 60_000.0)
     e.step()
@@ -107,7 +107,7 @@ def test_a_liquidation_the_venue_cannot_hold_is_refused(settings, says):
     venue.update(settings)
 
     with pytest.raises(ValueError, match=re.escape(says)):
-        probatum.Engine(bars((100.0,) * 4), **venue)
+        probatum._probatum.Engine(bars((100.0,) * 4), **venue)
 
 
 def test_a_universe_a_batch_and_a_spot_table_with_no_perp_maintenance_are_refused():
@@ -118,7 +118,7 @@ def test_a_universe_a_batch_and_a_spot_table_with_no_perp_maintenance_are_refuse
 
     for universe in (flat, spot):
         with pytest.raises(ValueError, match="liquidation: book_then_backstop with no"):
-            probatum.Engine(np.full((2, 2, 5), 100.0), **universe, **BOOKED)
+            probatum._probatum.Engine(np.full((2, 2, 5), 100.0), **universe, **BOOKED)
 
     with pytest.raises(ValueError, match="liquidation: book_then_backstop with no"):
         probatum.Batch(bars((100.0,) * 4), 2, market="perp", **BOOKED)

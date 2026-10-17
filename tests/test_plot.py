@@ -408,7 +408,8 @@ def test_a_recorder_leaves_a_bar_it_never_reached_as_a_gap():
 
 
 def test_a_recorder_reads_the_bar_off_a_state_or_takes_it_as_a_number():
-    from probatum import Engine
+    from probatum._probatum import Engine
+
     engine = Engine(np.full((4, 5), 100.0))
     engine.reset()
     log = Recorder(engine)

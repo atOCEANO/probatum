@@ -21,7 +21,7 @@ def test_a_budget_of_a_tenth_of_50_holds_5_for_five_orders_of_2():
     # five market orders of 2 BTC under budget(0.1) with a trailing volume of 50 fill
     # 2, 2 and 1, and the last two fill nothing; the 80 their own bar trades is not
     # in the window before it
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((100.0, 100.0, 100.0, 100.0, 50.0),
              (100.0, 100.0, 100.0, 100.0, 80.0)),
         fee_taker = 0.0,
@@ -44,7 +44,7 @@ def test_a_budget_of_a_tenth_of_50_holds_5_for_five_orders_of_2():
 def test_a_bar_after_a_window_that_traded_nothing_fills_nothing():
     # three bars that traded nothing leave a window of three with no volume, so the
     # fourth holds no budget, though it trades
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars(*[(100.0, 100.0, 100.0, 100.0, 0.0)] * 3,
              (100.0, 101.0, 99.0, 100.0, 1e6)),
         window = 3,
@@ -67,7 +67,7 @@ def test_the_six_bars_spread_moves_a_buy_from_100_40_up_by_0_05():
            (100.1, 100.6, 99.9, 100.4), (100.5, 100.8, 100.1, 100.1),
            (100.2, 100.7, 100.0, 100.5), (100.6, 100.9, 100.3, 100.3)]
     candles = bars(*[(*row, 1e6) for row in six], (100.40, 100.9, 100.3, 100.5, 1e6))
-    e       = probatum.Engine(
+    e       = probatum._probatum.Engine(
         candles,
         fee_taker = 0.0,
         window    = 6,
@@ -90,13 +90,14 @@ def test_the_six_bars_spread_moves_a_buy_from_100_40_up_by_0_05():
 def test_a_limit_placed_through_the_market_fills_where_it_traded():
     # a buy limit at 110 placed at a close of 100, on a next bar that opens at 96 with
     # a high of 98, fills as a taker at 100: no trade since that close reached 110
-    e = probatum.Engine(
+    e = probatum._probatum.Engine(
         bars((100.0, 100.0, 100.0, 100.0, 1e6),
              (96.0, 98.0, 95.0, 97.0, 1e6)),
         fee_taker = 0.0,
         fee_maker = 0.0,
         report    = True,
     )
+
     e.reset()
     e.limit_buy(1.0, 110.0)
     e.step()
@@ -118,7 +119,7 @@ def test_a_limit_placed_through_the_market_fills_where_it_traded():
 ])
 def test_a_fill_model_the_engine_cannot_hold_is_refused(settings, says):
     with pytest.raises(ValueError, match=re.escape(says)):
-        probatum.Engine(bars((100.0, 100.0, 100.0, 100.0, 1.0)), **settings)
+        probatum._probatum.Engine(bars((100.0, 100.0, 100.0, 100.0, 1.0)), **settings)
 
     with pytest.raises(ValueError, match=re.escape(says)):
         probatum.Batch(bars((100.0, 100.0, 100.0, 100.0, 1.0)), 2, **settings)

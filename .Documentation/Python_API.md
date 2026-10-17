@@ -35,7 +35,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Instrument` | One instrument of a Data: its symbol, market and venue, its quote and base assets and the one it settles in, an inverse contract's size, and the venue's limits on an order. [Below](#data). |
 | `probatum.Venue` | A venue's rules for a run, every one in one immutable object. [Below](#venue). |
 | `probatum.venues` | The presets, each a Venue: `binance_perp`, `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
-| `probatum.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
+| `probatum.Engine` | An account at a venue on a Data for a loop the caller owns: `reset`, `step`, and the account's state and verbs, recording the Result `backtest` records. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
 | `probatum.Result` | What a run recorded: its equity and returns, the ledger, the fill log, the order log, the round trips, its statistics and its provenance. [Below](#backtesting). |
@@ -60,23 +60,26 @@ All of it sits on the one Rust engine, so a backtest, an RL rollout, and a param
 
 ## Quickstart
 
-Build an engine over a candle array, step to the end, read the account. Everything else on this page is detail layered on top of this loop.
+Build a Data, run a policy on it at a venue, read the Result. Everything else on this page is detail layered on top of this call.
 
 ```python
-import numpy as np
-from probatum import Engine
+import numpy
+import probatum
 
-close = 100 + np.random.randn(1_000).cumsum()
-ohlcv = np.stack([close, close + 0.5, close - 0.5, close, np.full(1_000, 1000.0)], axis=1)
+close = 100.0 + numpy.random.default_rng(0).normal(0.0, 1.0, 1_000).cumsum()
+bars = numpy.column_stack([close, close + 0.5, close - 0.5, close, numpy.full(1_000, 1e3)])
+hours = numpy.arange(1_000, dtype=numpy.int64) * 3_600_000_000_000
+data = probatum.Data(bars, symbol="BTCUSDT", market="linear", time=hours)
 
-eng = Engine(ohlcv, market="spot", quote=10_000.0)
-state = eng.reset()
-while not eng.done():
-    if state["position"] == 0 and state["tick_index"] % 100 == 0:
-        eng.market_buy(0.1)                    # decided now, fills on the next bar's open
-    state = eng.step()
 
-print(state["equity"], state["position"])      # account value and position at the end
+class Hundred(probatum.Strategy):
+    def next(self, bar, account):
+        if account.position == 0.0 and bar.i % 100 == 0:
+            account.buy(0.1)                    # decided now, fills on the next bar's open
+
+
+result = probatum.backtest(Hundred(), data, "frictionless")
+print(result)                                   # the policy, the venue, the bars and the equity
 ```
 
 <br>
@@ -176,7 +179,7 @@ print(cheaper.to_dict()["fees"])            # {'maker': 0.0002, 'taker': 0.0004}
 
 **Every instrument takes** the venue's `tiers`, `tiers_by`, `tick`, `lot`, `sigfigs`, `decimals`, `min_notional`, `max_qty` and `reduce_only_exempt`, where it gives them, unless its kind's table in `kinds` or its own in `instruments` gives another, and its fees side by side over the venue's. `instruments` keys a table by its symbol where `kind` names the kind of every instrument the venue lists, and as `kind:SYMBOL` where `kind` is None, as in the presets that combine a venue's spot and perpetual markets, which keep their rates in each kind's table. Each table is written as a preset file writes it, a tier table as a list of `{"up_to": n, "leverage": x, "rate": m, "amount": c}`, an amount left out being 0, and every word in lowercase ([Contributor Guide](Contributor_Guide.md#adding-a-preset)).
 
-**A Venue does not change.** It is hashable, and equal to any venue with the same settings, however their numbers were written. `to_dict()` gives every setting as the constructor takes it, so `probatum.Venue(**venue.to_dict())` is the same venue, and its repr is the code that builds it, `probatum.venues.binance_perp.replace(max_open_orders=16)` or `probatum.Venue(fees=...)`. `replace(**changes)` gives a variant: `fees` and `fills` merge into the venue's own, a table in `kinds` or `instruments` merges into the one it names key by key and its fees side by side, a table given `None` is dropped, which the venue must hold, `liquidation="takeover"` drops a backstop the venue held, and every other setting is replaced whole; a change every kind's table overrides, such as `fees` on a combined preset, reaches no instrument and is refused. Every setting passes the checks a preset's pass as the venue is built, the Engine's own among them, so a variant is checked as a new venue is, and a refusal opens with the setting as it was passed, such as `fees.maker` or `instruments.BTCUSDT.tick`, and the value ([ADR 0007](Decisions.md)). `name`, `taken` and `kind` give the preset's name, the day its tables were taken and the kind of the instruments it lists, each None where it is not given.
+**A Venue does not change.** It is hashable, and equal to any venue with the same settings, however their numbers were written. `to_dict()` gives every setting as the constructor takes it, so `probatum.Venue(**venue.to_dict())` is the same venue, and its repr is the code that builds it, `probatum.venues.binance_perp.replace(max_open_orders=16)` or `probatum.Venue(fees=...)`. `replace(**changes)` gives a variant: `fees` and `fills` merge into the venue's own, a table in `kinds` or `instruments` merges into the one it names key by key and its fees side by side, a table given `None` is dropped, which the venue must hold, `liquidation="takeover"` drops a backstop the venue held, and every other setting is replaced whole; a change every kind's table overrides, such as `fees` on a combined preset, reaches no instrument and is refused. Every setting passes the checks a preset's pass as the venue is built, the engine's own among them, so a variant is checked as a new venue is, and a refusal opens with the setting as it was passed, such as `fees.maker` or `instruments.BTCUSDT.tick`, and the value ([ADR 0007](Decisions.md)). `name`, `taken` and `kind` give the preset's name, the day its tables were taken and the kind of the instruments it lists, each None where it is not given.
 
 **A Data runs on a venue as one account.** Each instrument takes the venue's tables by its symbol, or as `kind:SYMBOL` on a venue of several kinds, a market the Data leaves out being the venue's, and the minimum notional and largest size the router gave it, each where no table of the venue gives one. The run reads the bars before a slice, which its window warms up on, leaves out the rows none of its instruments printed, as a selection from a wider universe holds, and where the venue's funding is `"data"`, reads the Data's funding events. Refused before it runs are:
 - an empty Data, and instruments at two venues;
@@ -237,7 +240,7 @@ Each method takes only the arguments that are **not** the venue, so a knob canno
 
 | Call | Gives |
 | :--- | :--- |
-| `engine(candles, report=False)` | an `Engine`. |
+| `engine(candles, report=False)` | [the engine](#the-engine-it-drives) the strategy runner drives. |
 | `backtest(candles, periods_per_year=None, risk_free=0.0)` | a `Backtester`. |
 | `tune(strategy, space, data, **search)` | a `TuneResult`; `search` is the search controls only. |
 | `walk_forward(strategy, space, data, **rest)` | a `WalkForward`; `rest` is the layout and the search controls only. |
@@ -253,192 +256,27 @@ The keyword form is untouched and remains the right thing for a one-off: `Backte
 
 ## Engine
 
-The single environment: build it, `reset`, place orders, `step`, read the state.
+`probatum.Engine(data, venue, seed=None)` is an account at `venue`, a Venue or a preset's name, on `data`, a Data or anything one is built from, for a loop the caller owns. It is the fourth depth beside an array, a Strategy and an agent, and records the same Result ([ADR 0002](Decisions.md)).
 
 ```python
-from probatum import Engine
-
-eng = Engine(
-    candles,                 # (T, 5) float64 open, high, low, close, volume, or (T, N, 5)
-    market="spot",           # "spot", "perp", or "inverse" with contract=
-    quote=10_000.0,          # opening cash, or {"spot": s, "margin": m}
-    fee_taker=0.0006,        # taker fee, fraction of notional
-    fee_maker=0.0002,        # maker fee, fraction of notional
-    slippage_bps=0.0,        # slippage on market fills, basis points
-    budget=1.0,              # the share of the trailing volume a bar's fills may take
-    window=24,               # the bars before a fill its window reads
-    max_open_orders=8,       # resting-order slots
-    report=False,            # True keeps the equity curve, round trips and logs
-    leverage=10.0,           # perp margin cap on notional; 10x default, 0.0 = none
-    impact=0.0,              # impact coefficient on the window; 0.0 means none
-    impact_model="linear",   # or "sqrt", in the fill's share of the trailing volume
-    spread=None,             # a fixed spread in basis points, or "estimated"
-    limit="touch",           # when a resting limit fills, or "through", half a step past it
-    sizes=False,             # True holds orders to the lot, the price rule and the bounds
-    funding_rate=0.0,        # perp funding per event on notional; long pays, short receives
-    funding_interval=0,      # bars between funding events; 0 disables funding
-    times=None,              # (T,) int64 open times in UTC nanoseconds: the clock
-    funding_hours=0.0,       # or funding every this many hours from 00:00 UTC; needs times
-    funding_times=None,      # or the venue's own (K,) int64 stamps; needs times
-    funding_rates=None,      # and the (K,) rate of each stamp
-    funding_instruments=None,  # the instrument each stamp charges, or None for every perp held
-    tiers=None,              # or the venue's tiers: rows of (up_to, leverage, rate, amount)
-    tiers_by="notional",     # what the tiers' bounds measure: "notional" or "quantity"
-    lot=0.0,                 # the lot every size is a whole number of; 0.0 = none
-    tick=0.0,                # the tick prices sit on; 0.0 = none
-    sigfigs=None,            # or Hyperliquid's significant figures, with decimals=
-    decimals=None,           # the most decimals such a price keeps
-    min_notional=0.0,        # the smallest notional an order may have
-    max_qty=None,            # the largest size an order may have
-    reduce_only_exempt=False,  # True spares a reduce-only order the minimum notional
-    instruments=None,        # a universe's market, tiers, size rules and fees, a dict each
-    intrabar="pessimistic",  # how what a bar cannot show is decided, "optimistic" or "random"
-    seed=None,               # the run's seed, which "random" draws from
-    contract=None,           # the dollars one inverse contract is worth
-    liquidation="takeover",  # or "book_then_backstop", which sells on the book first
-    backstop=None,           # the share of the requirement book then backstop takes over at
-    liquidation_fee=None,    # a takeover's rate with no maintenance; None = the taker rate
-)
+engine = probatum.Engine(data, "binance_perp")
+bar = engine.reset()
+while not engine.done():
+    decision = service.decide(bar, engine)     # anything that returns weights or None
+    if decision is not None:
+        engine.target(decision)
+    bar = engine.step()
+result = engine.result()
 ```
-
-**A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound, unless that bound is `float("inf")`, left open as by a venue that sets no largest position. The table is refused where the Specification's loader refuses it: bounds that do not rise, a leverage that rises or a maintenance rate that falls from one tier to the next, a maintenance rate not below one or reaching its tier's initial rate, one over the leverage, a notional table whose first amount is not zero or whose amounts break continuity, and any value that is not finite, but a last bound left open, or is below zero ([Specification](Specification.md#maintenance)).
-
-**A venue's sizes hold every order to its instrument's grid.** With `sizes=True` a size is rounded down to the `lot` when it is placed, and so is every fill after its clamps, and an order that rounds to no lot is refused; a limit or a trigger is rounded to the `tick`, or to `sigfigs` significant figures within `decimals` decimals, Hyperliquid's rule, where a whole-number price is always allowed and an asset with `n` size decimals takes a lot of `10**-n` and `decimals` of `6 - n` on a perpetual and `8 - n` on spot; an order below `min_notional` at the last close is refused, a reduce-only one spared where `reduce_only_exempt` says the venue spares it; one above `max_qty` is held to it, rounded down to the lot; and a position floating point leaves below half a lot is zeroed at the close as dust. On an inverse contract the lot and `max_qty` are in contracts, the tick in dollars and `min_notional` in the coin. `limit="through"` fills a limit only once its bar trades half a step of the price rule past it, and with no price rule it fills on touch ([Specification](Specification.md#sizes-and-dust)).
-
-**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers`, `tiers_by`, size rules and, where it charges apart from the venue, its own `fee_maker`, `fee_taker` or both, a side it leaves out charging the venue's rate, or `market`, `tiers` and the size rules for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
-
-**An inverse contract is counted in its coin.** `market="inverse"` with `contract=`, the dollars one contract is worth, takes one instrument's `(T, 5)` candles, quoted in dollars. Sizes are contracts and prices are dollars, as the venue quotes them, while `quote`, equity, fees, funding and every other sum are in the coin, a taker's costs among them, each its rate of the coin notional ([Specification](Specification.md#inverse-contracts)). The account holds that one contract in one wallet, so there is no `transfer`, `qty_from_quote(cash)` is `cash / contract` contracts at any price, and the ledger's `equity_in_quote` values equity in dollars at each close ([ADR 0016](Decisions.md)).
-
-**A venue that books then backstops sells a closed-out account on the book.** `liquidation="book_then_backstop"` with `backstop=`, the share of the requirement at which the venue's backstop takes over, two thirds on Hyperliquid, sells every leg as a taker from its trigger price, paying the taker fee and a taker's costs, and the trader keeps what the margin wallet then holds. Where the sale would leave the wallet below the backstop level, or the path also reaches that level and the bar cannot show that the sale finished first, which `intrabar` decides, the account is taken over instead, as under the default `"takeover"`, which closes every leg where the margin ran out and books what the wallet still holds as the liquidation charge. It needs a perp whose tier table keeps maintenance, since with none the backstop level is the trigger itself ([Specification](Specification.md#the-forced-close), [ADR 0019](Decisions.md)).
-
-**A venue's liquidation fee places the close point of an account with no maintenance.** The close point is where equity would just pay the fee on closing every position, at `liquidation_fee` where it is given and each instrument's taker rate where it is not. An account with no maintenance whose path reaches its trigger leaves the market from the point where its equity stays at or below that level all the way to the trigger, and its takeover charges the fee on each close. The margin bound charges it on what a reducing fill leaves of the position and on the other perps, wherever the account the fill leaves keeps no maintenance. With maintenance the rate is not used: the account leaves at its trigger, its takeover pays no fee of its own, and the bound charges the taker rate. It is refused below 0 and from 1 ([Specification](Specification.md#the-trigger-close-and-clip-points)).
-
-`eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
-
-**The account keeps two wallets**, as a venue does. The spot wallet holds cash and spot holdings, never borrows and is never liquidated; the margin wallet holds the collateral behind a perp, and the cap, the liquidation and funding read it alone. A number for `quote` opens the wallet the market settles in, the spot wallet on spot and the margin wallet on a perp, and `{"spot": s, "margin": m}` opens each by name. Cash crosses only by `transfer`, which out of the margin wallet leaves unrealized profit and the cap's requirement behind. Equity is both wallets together, so a perp closed out with cash in the spot wallet leaves an account that is still alive ([ADR 0008](Decisions.md)).
-
-### Stepping
 
 | Call | Returns | Does |
 | :--- | :--- | :--- |
-| `reset()` | state | Reset the account and cursor to the first bar. |
-| `step()` | state | Advance one bar, resolve the orders placed since the last step, mark, return the new state. |
-| `done()` | bool | True when there is no next bar to step into. |
-| `run(strategy)` | final state | Drive a strategy over the whole series (see [below](#running-a-strategy)). |
+| `reset()` | a `Bar` | Open the account again at the Data's first bar, and return that bar. |
+| `step()` | a `Bar` | Fill on the next bar what was decided at the last close, mark the account at that bar's close and return the bar; at the last bar the account stays where it is. |
+| `done()` | bool | True at the last bar, which no bar follows to fill on. |
+| `result(risk_free=0.0)` | a `Result` | What the account has recorded from its first bar to the current one, as `backtest` returns it, with no `policy`. |
 
-### Orders
-
-| Call | Returns | Does |
-| :--- | :--- | :--- |
-| `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, half the spread, the slippage and the impact. `None` when the queue already holds `max_open_orders` for this bar, the size is not a positive finite number, or the venue's sizes refuse it. |
-| `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Limit order; rests until a later bar reaches the price, and pays the maker fee unless its first bar opens at or through it. `None` if the book is full, the size is not a positive finite number, it would trade against the account's own resting limit, or the venue's sizes refuse it; a non-finite price raises. |
-| `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. `None` if the book is full, the size is not a positive finite number, the trigger is not finite, or the venue's sizes refuse it. Pass `reduce_only=True` for a stop-loss. |
-| `bracket(stop=None, take_profit=None)` | two ids or `None`s | A stop and a take-profit as one OCO pair, each a reduce-only leg with no size of its own that closes the position it finds. A leg takes its side from the position it arms on, at once when one is held and otherwise at the first fill that opens one, so a leg in a later slot can close it on that bar; the first fill of either cancels the other, and the bracket goes when that position closes or flips. `None` for a leg not asked for or refused; a non-finite price raises ([ADR 0010](Decisions.md)). |
-| `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `post_only` and `tif`. |
-| `close()` | id or `None` | Queue a reduce-only market order sized to the whole position, held to `max_qty` where the venue's sizes are on. `None` when flat or where those sizes refuse it. |
-| `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
-| `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
-| `transfer(amount, to)` | `None` | Move cash into the `"spot"` or `"margin"` wallet from the other. It lands at the start of the next bar, before any fill, held to what the wallet it leaves can give ([ADR 0008](Decisions.md)). |
-| `target(weights, tolerance=0.0, transfer=False)` | list of ids | Queue the market orders that bring each instrument to a weight of equity at the last close, every reducing leg before every growing one. `weights` is a number with one instrument, one weight per instrument, or a dict from instrument to weight; a leg below `tolerance` of equity is skipped, and `transfer=True` moves the spot legs' shortfall across from the margin wallet. A second target in one decision replaces the first, and a later one replaces the legs earlier ones left waiting on what it names ([ADR 0009](Decisions.md)). |
-| `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order under the same id, with the same side, type and flags, into the first free slot. `None`, and nothing changed, if it is no longer resting or the moved order cannot rest ([ADR 0010](Decisions.md)). |
-| `is_bust()` | bool | True when the account died: its equity, both wallets together, reached zero, which a takeover does unless the spot wallet holds cash ([ADR 0008](Decisions.md)). The engine does not stop on it. |
-| `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
-| `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
-| `qty_from_quote(cash)` | float | Base size for a `cash` amount in quote, at the current close. |
-
-`order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` refuses a limit that would cross the last close, and cancels one its first bar, or the part of it after a fill, opens at or through, rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` unless you ask for `FOK`, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers ([ADR 0010](Decisions.md)). `FOK` is all or nothing against every clamp, not only the bar's liquidity, so a `FOK` the spot cash balance or the margin cap could only fill in part books nothing ([ADR 0010](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`, and a non-finite price or trigger is a `ValueError` too ([ADR 0007](Decisions.md)).
-
-**A bar that reaches both a stop and a take-profit books the stop.** The engine cannot see the path inside a bar, so it cannot know which the price touched first, and it used to answer with book-slot order: place the stop before the take-profit and every ambiguous bar booked a loss, swap the two lines and every one booked a win. Exits from one position are now applied worst first, so the result is a rule rather than a property of how the strategy was typed ([ADR 0012](Decisions.md)). Pessimism is the right direction because an optimistic guess about an unobservable ordering flatters a backtest. A bar that reaches only one leg is unaffected. A reduce-only exit, or a sale on spot, of a position a resting order opened or flipped inside the bar meets the bar from that fill: under the default, a take-profit the bar may have reached only before the entry rests unless the close reaches it, and under either setting a stop fills where the price crossed it after the entry. With `intrabar="optimistic"` the better exit fills first instead, and the setting decides every other event a bar cannot order the same way, so the gap between a run under each shows how much a result leans on what the bars cannot show, though the two are not a strict bound ([Specification](Specification.md#the-error-and-its-direction)). `intrabar="random"` draws each event one way or the other from a stream named from `seed`, which it needs, so a seed draws the same way on every machine; it is for training, where an agent would otherwise learn the fixed tie-break and dodge it.
-
-Three things about resting orders that are easy to get wrong. Nothing links them into an OCO group, so **re-placing a trailing stop with `stop()` each bar rests a new order every time**; the one that fills leaves its siblings live, and on a perp those open a position on the other side. Use `replace`, which cannot leave two alive and quietly does nothing once the order has filled ([ADR 0010](Decisions.md)). Pass `reduce_only=True` as well, so even a leaked stop can only shrink the position ([ADR 0010](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the budget can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
-
-```python
-#  a trailing stop that stays one order and can only ever shrink the position
-if state["position"] > 0.0:
-    wanted = state["bar_close"] * 0.94
-    if self.stop_id is None:
-        self.stop_id = engine.stop("sell", state["position"], wanted, reduce_only=True)
-    elif wanted > self.trigger:
-        #  None here means the stop already filled, so nothing is armed again
-        self.stop_id = engine.replace(self.stop_id, trigger=wanted)
-    self.trigger = wanted
-```
-
-You decide on a bar and the order fills on the next one; there is no same-bar lookahead.
-
-<br>
-
-<div align="center">
-  <img src="imgs/205316.png" alt="No same-bar lookahead" width="70%" />
-  <p style="margin: 0;"><i>An order decided at the close of bar t is resolved against bar t+1, never the bar the decision saw.</i></p>
-</div>
-
-<br>
-
-A market order crosses half the spread and fills at the next open, moved by its slippage and impact; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better, unless no trade since the last close reached it, as when it was placed through the market, where a buy fills at the highest price the market traded and a sell at the lowest ([Specification](Specification.md#limits)). A limit its first bar opens at or through is marketable, so it pays the taker fee even though it fills at your price; one that the bar has to come to, or that has rested through a bar, is on the book and pays the maker fee ([ADR 0011](Decisions.md)). A `post_only` limit that would cross the last close is refused, and one its first bar opens at or through is cancelled, rather than turned into a taker. A limit that reaches the account's own resting limit of the other side on its instrument, a buy at or above its own sell or a sell at or below its own buy, is refused, as a venue refuses a trade against the same account ([ADR 0011](Decisions.md)). Each bar holds `budget` of its instrument's trailing volume for every order on it, taken in resolution order, so splitting an order takes no more of a bar than one order would ([ADR 0013](Decisions.md)). Resting orders and the market orders waiting for the next bar each use `max_open_orders` slots, and beyond either cap a new order is rejected; the market queue empties every bar.
-
-The position is netted: net long, net short, or flat, never both. Adding on the same side averages the entries; reducing or closing books the realized PnL on the part closed; flipping through zero closes the old side and reopens the rest at the new fill. On spot the position cannot go below zero: a sell is clamped to the current long, since shorting base needs a borrow this tier does not model, so a short and a flip through zero are perp behaviors ([ADR 0008](Decisions.md)).
-
-### The state
-
-Every `reset` and `step` returns the state, a typed record read by attribute or by key: `state.position` and `state["position"]` are the same number, two states are equal when every field is, and nothing can be written to one.
-
-| Field | Type | Meaning |
-| :--- | :--- | :--- |
-| `tick_index` | int | Current bar index. |
-| `base` | float | Base-asset balance (spot; zero on a perp). |
-| `quote` | float | Cash across both wallets. |
-| `spot_cash` | float | The spot wallet's cash. |
-| `margin_cash` | float | The margin wallet's cash. |
-| `position` | float | Signed size in base units, negative is short. |
-| `avg_entry` | float | Volume-weighted entry price, zero when flat. |
-| `equity` | float | Account value, marked in quote. |
-| `mark_price` | float | Close on spot, mark on a perp. |
-| `bar_open`, `bar_high`, `bar_low`, `bar_close` | float | The current candle. |
-| `bar_volume` | float | The current candle's volume. |
-| `realized_pnl` | float | Cumulative booked PnL. |
-| `unrealized_pnl` | float | Open-position PnL at the mark. |
-| `funding_paid` | float | Funding paid since the reset: positive is paid away, negative is received. Zero on spot. |
-| `open_orders` | list | Resting limit and stop orders, each a dict. |
-
-Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `stop`), `price`, `trigger`, `size`, `filled`, `remaining`, `status` (always `resting` here, since these are the resting orders), `reduce_only`, and `post_only`. A bracket's leg has `side` `None` until it arms, and `size` and `remaining` `None` while it closes the position it finds.
-
-### Observations
-
-`observation(lookback)` returns a read-only numpy `(rows, 5)` view of the `lookback` bars ending at the current bar, straight onto the shared candle buffer with no copy. It is `rows = lookback`, or fewer early in the series. The array is read-only, and because the candle buffer is never mutated a view held across a `step()` stays a snapshot of that tick's window rather than going stale; it stays valid for the whole life of the engine (numpy keeps the engine alive as the array's base), so you never need to copy it ([ADR 0040](Decisions.md)).
-
-`eng.data` is the same kind of read-only, zero-copy view over the whole `(T, 5)` series rather than a window (columns are OHLCV by position). It is the full-series companion to `observation`, cursor-independent.
-
-`eng.opens`, `eng.highs`, `eng.lows`, `eng.closes` and `eng.volumes` are the same view one field at a time, so a strategy reads `engine.closes` rather than remembering that the close is column 3. They are strided views into the same buffer, not copies, so taking all five costs nothing.
-
-### Running a strategy
-
-`run(strategy)` resets, calls `strategy.init(engine)` if it exists, then for each bar calls `strategy.next(state, engine)` and steps, returning the final state. The strategy places orders through the engine, so it can use any order type. It should not call `step` itself; the driver does.
-
-If the strategy carries a `warmup`, read once after `init` so it can be computed there, `next` is not called until that many bars exist. The bars before it still advance and still fill whatever is resting; only the decision is skipped. It replaces the `if i < self.slow: return` a strategy would otherwise open with, and it closes what that guard is really for: on an early bar `close[i - 50]` is a **negative** index, numpy resolves it from the end of the array, and the rule reads prices from the future, reports a wonderful result, and raises nothing ([ADR 0025](Decisions.md)).
-
-```python
-class BuyAndHold:
-    def next(self, state, engine):
-        if state["position"] == 0:
-            engine.market_buy(1.0)
-
-eng = Engine(candles, report=True)
-final = eng.run(BuyAndHold())
-```
-
-### Results
-
-With `report=True`, six accessors read the recorded run (each returns `None` when reporting is off):
-
-- `stats(periods_per_year=365.0, risk_free=0.0)` returns the [stats dict](#statistics).
-- `equity_curve()` returns a numpy array, one equity value per step.
-- `trades()` returns a list of [round trips](#trades), the one still open at the end marked and flagged.
-- `ledger()` returns [the ledger](#the-ledger), a dict of numpy columns with one row per bar from the opening balance.
-- `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
-- `order_log()` returns a list of [order events](#the-order-log), every order's life in the order it happened.
-
-`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. `Engine.stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
+Between steps the engine is the account a Strategy's `next` reads, with the same state and the same verbs ([A strategy](#a-strategy)), and its `events` hold what happened to its orders since the last step. `seed` names the stream a venue whose `intrabar` is `"random"` draws from, which `backtest` refuses so that a backtest repeats without one ([Specification](Specification.md#what-a-bar-cannot-show)). emsl's engine, built over candles with keyword settings, is `probatum._probatum.Engine`, described with [the strategy runner](#the-engine-it-drives) that drives it.
 
 <br>
 
@@ -465,11 +303,11 @@ states = b.step_all(actions)                 # positive buys, negative sells, ze
 | `done()` | bool | True when the envs have reached the last bar (they step in lockstep here). |
 | `num_envs` | int | Number of envs (also `len(batch)`). |
 
-Because the envs are independent, batched stepping is bit-identical to stepping each in a loop, but under `intrabar="random"`, where env k draws from a stream named with its index as well, which an `Engine` built on its own does not ([Specification](Specification.md#what-a-bar-cannot-show)). The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`probatum.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
+Because the envs are independent, batched stepping is bit-identical to stepping each in a loop, but under `intrabar="random"`, where env k draws from a stream named with its index as well, which the engine built on its own does not ([Specification](Specification.md#what-a-bar-cannot-show)). The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`probatum.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
 
 Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer; a fee override replaces the venue's rate and leaves alone a rate an instrument charges of its own. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
 
-**A batch over a universe** takes `(T, N, 5)` candles and the same `instruments` and `funding_instruments` as `Engine`, and steps each env through `target`; the signed sizes `step_all` and `advance` take trade the first instrument. Its `observe(window)` is `(num_envs, window, N, 5)`, zero where an instrument printed no bar, and `snapshot()` adds every instrument's `positions` and `marks` as `(num_envs, N)` arrays beside its `(num_envs,)` fields, whose position, unrealized PnL and mark read the first instrument.
+**A batch over a universe** takes `(T, N, 5)` candles and the same `instruments` and `funding_instruments` as [the engine](#the-engine-it-drives), and steps each env through `target`; the signed sizes `step_all` and `advance` take trade the first instrument. Its `observe(window)` is `(num_envs, window, N, 5)`, zero where an instrument printed no bar, and `snapshot()` adds every instrument's `positions` and `marks` as `(num_envs, N)` arrays beside its `(num_envs,)` fields, whose position, unrealized PnL and mark read the first instrument.
 
 Under `intrabar="random"` each env draws from its own stream, named from `seed` and the env's index, so each env decides the bars' hidden events apart from the others.
 
@@ -636,6 +474,195 @@ class SmaWithStop(Strategy):
 ```
 
 The stop rests only once a position is held (orders fill on the next bar, so there is nothing to protect until then), and `reduce_only` keeps it from flipping the position short instead of closing it. This same class is ready for [tuning](#tuning): its `fast`, `slow`, and `stop_pct` are already constructor arguments.
+
+### The engine it drives
+
+The Backtester, `tune` and `walk_forward` drive emsl's engine, `probatum._probatum.Engine`, which `probatum.Market` hands out as well: built over a candle array with the engine's settings as keywords, it is reset, given orders, stepped and read a bar at a time, and the `Batch` and the RL environment take the same settings.
+
+```python
+import probatum
+
+eng = probatum._probatum.Engine(
+    candles,                 # (T, 5) float64 open, high, low, close, volume, or (T, N, 5)
+    market="spot",           # "spot", "perp", or "inverse" with contract=
+    quote=10_000.0,          # opening cash, or {"spot": s, "margin": m}
+    fee_taker=0.0006,        # taker fee, fraction of notional
+    fee_maker=0.0002,        # maker fee, fraction of notional
+    slippage_bps=0.0,        # slippage on market fills, basis points
+    budget=1.0,              # the share of the trailing volume a bar's fills may take
+    window=24,               # the bars before a fill its window reads
+    max_open_orders=8,       # resting-order slots
+    report=False,            # True keeps the equity curve, round trips and logs
+    leverage=10.0,           # perp margin cap on notional; 10x default, 0.0 = none
+    impact=0.0,              # impact coefficient on the window; 0.0 means none
+    impact_model="linear",   # or "sqrt", in the fill's share of the trailing volume
+    spread=None,             # a fixed spread in basis points, or "estimated"
+    limit="touch",           # when a resting limit fills, or "through", half a step past it
+    sizes=False,             # True holds orders to the lot, the price rule and the bounds
+    funding_rate=0.0,        # perp funding per event on notional; long pays, short receives
+    funding_interval=0,      # bars between funding events; 0 disables funding
+    times=None,              # (T,) int64 open times in UTC nanoseconds: the clock
+    funding_hours=0.0,       # or funding every this many hours from 00:00 UTC; needs times
+    funding_times=None,      # or the venue's own (K,) int64 stamps; needs times
+    funding_rates=None,      # and the (K,) rate of each stamp
+    funding_instruments=None,  # the instrument each stamp charges, or None for every perp held
+    tiers=None,              # or the venue's tiers: rows of (up_to, leverage, rate, amount)
+    tiers_by="notional",     # what the tiers' bounds measure: "notional" or "quantity"
+    lot=0.0,                 # the lot every size is a whole number of; 0.0 = none
+    tick=0.0,                # the tick prices sit on; 0.0 = none
+    sigfigs=None,            # or Hyperliquid's significant figures, with decimals=
+    decimals=None,           # the most decimals such a price keeps
+    min_notional=0.0,        # the smallest notional an order may have
+    max_qty=None,            # the largest size an order may have
+    reduce_only_exempt=False,  # True spares a reduce-only order the minimum notional
+    instruments=None,        # a universe's market, tiers, size rules and fees, a dict each
+    intrabar="pessimistic",  # how what a bar cannot show is decided, "optimistic" or "random"
+    seed=None,               # the run's seed, which "random" draws from
+    contract=None,           # the dollars one inverse contract is worth
+    liquidation="takeover",  # or "book_then_backstop", which sells on the book first
+    backstop=None,           # the share of the requirement book then backstop takes over at
+    liquidation_fee=None,    # a takeover's rate with no maintenance; None = the taker rate
+)
+```
+
+**A tier table caps a perp by the tier its position falls in**, in place of the one `leverage`: up to each bound of notional, or of size with `tiers_by="quantity"`, the position may be levered no further than its tier allows, and a fill is held at the table's last bound, unless that bound is `float("inf")`, left open as by a venue that sets no largest position. The table is refused where the Specification's loader refuses it: bounds that do not rise, a leverage that rises or a maintenance rate that falls from one tier to the next, a maintenance rate not below one or reaching its tier's initial rate, one over the leverage, a notional table whose first amount is not zero or whose amounts break continuity, and any value that is not finite, but a last bound left open, or is below zero ([Specification](Specification.md#maintenance)).
+
+**A venue's sizes hold every order to its instrument's grid.** With `sizes=True` a size is rounded down to the `lot` when it is placed, and so is every fill after its clamps, and an order that rounds to no lot is refused; a limit or a trigger is rounded to the `tick`, or to `sigfigs` significant figures within `decimals` decimals, Hyperliquid's rule, where a whole-number price is always allowed and an asset with `n` size decimals takes a lot of `10**-n` and `decimals` of `6 - n` on a perpetual and `8 - n` on spot; an order below `min_notional` at the last close is refused, a reduce-only one spared where `reduce_only_exempt` says the venue spares it; one above `max_qty` is held to it, rounded down to the lot; and a position floating point leaves below half a lot is zeroed at the close as dust. On an inverse contract the lot and `max_qty` are in contracts, the tick in dollars and `min_notional` in the coin. `limit="through"` fills a limit only once its bar trades half a step of the price rule past it, and with no price rule it fills on touch ([Specification](Specification.md#sizes-and-dust)).
+
+**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers`, `tiers_by`, size rules and, where it charges apart from the venue, its own `fee_maker`, `fee_taker` or both, a side it leaves out charging the venue's rate, or `market`, `tiers` and the size rules for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
+
+**An inverse contract is counted in its coin.** `market="inverse"` with `contract=`, the dollars one contract is worth, takes one instrument's `(T, 5)` candles, quoted in dollars. Sizes are contracts and prices are dollars, as the venue quotes them, while `quote`, equity, fees, funding and every other sum are in the coin, a taker's costs among them, each its rate of the coin notional ([Specification](Specification.md#inverse-contracts)). The account holds that one contract in one wallet, so there is no `transfer`, `qty_from_quote(cash)` is `cash / contract` contracts at any price, and the ledger's `equity_in_quote` values equity in dollars at each close ([ADR 0016](Decisions.md)).
+
+**A venue that books then backstops sells a closed-out account on the book.** `liquidation="book_then_backstop"` with `backstop=`, the share of the requirement at which the venue's backstop takes over, two thirds on Hyperliquid, sells every leg as a taker from its trigger price, paying the taker fee and a taker's costs, and the trader keeps what the margin wallet then holds. Where the sale would leave the wallet below the backstop level, or the path also reaches that level and the bar cannot show that the sale finished first, which `intrabar` decides, the account is taken over instead, as under the default `"takeover"`, which closes every leg where the margin ran out and books what the wallet still holds as the liquidation charge. It needs a perp whose tier table keeps maintenance, since with none the backstop level is the trigger itself ([Specification](Specification.md#the-forced-close), [ADR 0019](Decisions.md)).
+
+**A venue's liquidation fee places the close point of an account with no maintenance.** The close point is where equity would just pay the fee on closing every position, at `liquidation_fee` where it is given and each instrument's taker rate where it is not. An account with no maintenance whose path reaches its trigger leaves the market from the point where its equity stays at or below that level all the way to the trigger, and its takeover charges the fee on each close. The margin bound charges it on what a reducing fill leaves of the position and on the other perps, wherever the account the fill leaves keeps no maintenance. With maintenance the rate is not used: the account leaves at its trigger, its takeover pays no fee of its own, and the bound charges the taker rate. It is refused below 0 and from 1 ([Specification](Specification.md#the-trigger-close-and-clip-points)).
+
+`eng.shape` is `(T, 5)`, the number of candles the engine loaded; ask for 1000 and see `(873, 5)` and you know the source returned fewer, with no guessing.
+
+**The account keeps two wallets**, as a venue does. The spot wallet holds cash and spot holdings, never borrows and is never liquidated; the margin wallet holds the collateral behind a perp, and the cap, the liquidation and funding read it alone. A number for `quote` opens the wallet the market settles in, the spot wallet on spot and the margin wallet on a perp, and `{"spot": s, "margin": m}` opens each by name. Cash crosses only by `transfer`, which out of the margin wallet leaves unrealized profit and the cap's requirement behind. Equity is both wallets together, so a perp closed out with cash in the spot wallet leaves an account that is still alive ([ADR 0008](Decisions.md)).
+
+### Stepping
+
+| Call | Returns | Does |
+| :--- | :--- | :--- |
+| `reset()` | state | Reset the account and cursor to the first bar. |
+| `step()` | state | Advance one bar, resolve the orders placed since the last step, mark, return the new state. |
+| `done()` | bool | True when there is no next bar to step into. |
+| `run(strategy)` | final state | Drive a strategy over the whole series (see [below](#running-a-strategy)). |
+
+### Orders
+
+| Call | Returns | Does |
+| :--- | :--- | :--- |
+| `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, half the spread, the slippage and the impact. `None` when the queue already holds `max_open_orders` for this bar, the size is not a positive finite number, or the venue's sizes refuse it. |
+| `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Limit order; rests until a later bar reaches the price, and pays the maker fee unless its first bar opens at or through it. `None` if the book is full, the size is not a positive finite number, it would trade against the account's own resting limit, or the venue's sizes refuse it; a non-finite price raises. |
+| `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. `None` if the book is full, the size is not a positive finite number, the trigger is not finite, or the venue's sizes refuse it. Pass `reduce_only=True` for a stop-loss. |
+| `bracket(stop=None, take_profit=None)` | two ids or `None`s | A stop and a take-profit as one OCO pair, each a reduce-only leg with no size of its own that closes the position it finds. A leg takes its side from the position it arms on, at once when one is held and otherwise at the first fill that opens one, so a leg in a later slot can close it on that bar; the first fill of either cancels the other, and the bracket goes when that position closes or flips. `None` for a leg not asked for or refused; a non-finite price raises ([ADR 0010](Decisions.md)). |
+| `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `post_only` and `tif`. |
+| `close()` | id or `None` | Queue a reduce-only market order sized to the whole position, held to `max_qty` where the venue's sizes are on. `None` when flat or where those sizes refuse it. |
+| `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
+| `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
+| `transfer(amount, to)` | `None` | Move cash into the `"spot"` or `"margin"` wallet from the other. It lands at the start of the next bar, before any fill, held to what the wallet it leaves can give ([ADR 0008](Decisions.md)). |
+| `target(weights, tolerance=0.0, transfer=False)` | list of ids | Queue the market orders that bring each instrument to a weight of equity at the last close, every reducing leg before every growing one. `weights` is a number with one instrument, one weight per instrument, or a dict from instrument to weight; a leg below `tolerance` of equity is skipped, and `transfer=True` moves the spot legs' shortfall across from the margin wallet. A second target in one decision replaces the first, and a later one replaces the legs earlier ones left waiting on what it names ([ADR 0009](Decisions.md)). |
+| `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order under the same id, with the same side, type and flags, into the first free slot. `None`, and nothing changed, if it is no longer resting or the moved order cannot rest ([ADR 0010](Decisions.md)). |
+| `is_bust()` | bool | True when the account died: its equity, both wallets together, reached zero, which a takeover does unless the spot wallet holds cash ([ADR 0008](Decisions.md)). The engine does not stop on it. |
+| `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
+| `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
+| `qty_from_quote(cash)` | float | Base size for a `cash` amount in quote, at the current close. |
+
+`order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` refuses a limit that would cross the last close, and cancels one its first bar, or the part of it after a fill, opens at or through, rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` unless you ask for `FOK`, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers ([ADR 0010](Decisions.md)). `FOK` is all or nothing against every clamp, not only the bar's liquidity, so a `FOK` the spot cash balance or the margin cap could only fill in part books nothing ([ADR 0010](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`, and a non-finite price or trigger is a `ValueError` too ([ADR 0007](Decisions.md)).
+
+**A bar that reaches both a stop and a take-profit books the stop.** The engine cannot see the path inside a bar, so it cannot know which the price touched first, and it used to answer with book-slot order: place the stop before the take-profit and every ambiguous bar booked a loss, swap the two lines and every one booked a win. Exits from one position are now applied worst first, so the result is a rule rather than a property of how the strategy was typed ([ADR 0012](Decisions.md)). Pessimism is the right direction because an optimistic guess about an unobservable ordering flatters a backtest. A bar that reaches only one leg is unaffected. A reduce-only exit, or a sale on spot, of a position a resting order opened or flipped inside the bar meets the bar from that fill: under the default, a take-profit the bar may have reached only before the entry rests unless the close reaches it, and under either setting a stop fills where the price crossed it after the entry. With `intrabar="optimistic"` the better exit fills first instead, and the setting decides every other event a bar cannot order the same way, so the gap between a run under each shows how much a result leans on what the bars cannot show, though the two are not a strict bound ([Specification](Specification.md#the-error-and-its-direction)). `intrabar="random"` draws each event one way or the other from a stream named from `seed`, which it needs, so a seed draws the same way on every machine; it is for training, where an agent would otherwise learn the fixed tie-break and dodge it.
+
+Three things about resting orders that are easy to get wrong. Nothing links them into an OCO group, so **re-placing a trailing stop with `stop()` each bar rests a new order every time**; the one that fills leaves its siblings live, and on a perp those open a position on the other side. Use `replace`, which cannot leave two alive and quietly does nothing once the order has filled ([ADR 0010](Decisions.md)). Pass `reduce_only=True` as well, so even a leaked stop can only shrink the position ([ADR 0010](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the budget can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
+
+```python
+#  a trailing stop that stays one order and can only ever shrink the position
+if state["position"] > 0.0:
+    wanted = state["bar_close"] * 0.94
+    if self.stop_id is None:
+        self.stop_id = engine.stop("sell", state["position"], wanted, reduce_only=True)
+    elif wanted > self.trigger:
+        #  None here means the stop already filled, so nothing is armed again
+        self.stop_id = engine.replace(self.stop_id, trigger=wanted)
+    self.trigger = wanted
+```
+
+You decide on a bar and the order fills on the next one; there is no same-bar lookahead.
+
+<br>
+
+<div align="center">
+  <img src="imgs/205316.png" alt="No same-bar lookahead" width="70%" />
+  <p style="margin: 0;"><i>An order decided at the close of bar t is resolved against bar t+1, never the bar the decision saw.</i></p>
+</div>
+
+<br>
+
+A market order crosses half the spread and fills at the next open, moved by its slippage and impact; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better, unless no trade since the last close reached it, as when it was placed through the market, where a buy fills at the highest price the market traded and a sell at the lowest ([Specification](Specification.md#limits)). A limit its first bar opens at or through is marketable, so it pays the taker fee even though it fills at your price; one that the bar has to come to, or that has rested through a bar, is on the book and pays the maker fee ([ADR 0011](Decisions.md)). A `post_only` limit that would cross the last close is refused, and one its first bar opens at or through is cancelled, rather than turned into a taker. A limit that reaches the account's own resting limit of the other side on its instrument, a buy at or above its own sell or a sell at or below its own buy, is refused, as a venue refuses a trade against the same account ([ADR 0011](Decisions.md)). Each bar holds `budget` of its instrument's trailing volume for every order on it, taken in resolution order, so splitting an order takes no more of a bar than one order would ([ADR 0013](Decisions.md)). Resting orders and the market orders waiting for the next bar each use `max_open_orders` slots, and beyond either cap a new order is rejected; the market queue empties every bar.
+
+The position is netted: net long, net short, or flat, never both. Adding on the same side averages the entries; reducing or closing books the realized PnL on the part closed; flipping through zero closes the old side and reopens the rest at the new fill. On spot the position cannot go below zero: a sell is clamped to the current long, since shorting base needs a borrow this tier does not model, so a short and a flip through zero are perp behaviors ([ADR 0008](Decisions.md)).
+
+### The state
+
+Every `reset` and `step` returns the state, a typed record read by attribute or by key: `state.position` and `state["position"]` are the same number, two states are equal when every field is, and nothing can be written to one.
+
+| Field | Type | Meaning |
+| :--- | :--- | :--- |
+| `tick_index` | int | Current bar index. |
+| `base` | float | Base-asset balance (spot; zero on a perp). |
+| `quote` | float | Cash across both wallets. |
+| `spot_cash` | float | The spot wallet's cash. |
+| `margin_cash` | float | The margin wallet's cash. |
+| `position` | float | Signed size in base units, negative is short. |
+| `avg_entry` | float | Volume-weighted entry price, zero when flat. |
+| `equity` | float | Account value, marked in quote. |
+| `mark_price` | float | Close on spot, mark on a perp. |
+| `bar_open`, `bar_high`, `bar_low`, `bar_close` | float | The current candle. |
+| `bar_volume` | float | The current candle's volume. |
+| `realized_pnl` | float | Cumulative booked PnL. |
+| `unrealized_pnl` | float | Open-position PnL at the mark. |
+| `funding_paid` | float | Funding paid since the reset: positive is paid away, negative is received. Zero on spot. |
+| `open_orders` | list | Resting limit and stop orders, each a dict. |
+
+Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `stop`), `price`, `trigger`, `size`, `filled`, `remaining`, `status` (always `resting` here, since these are the resting orders), `reduce_only`, and `post_only`. A bracket's leg has `side` `None` until it arms, and `size` and `remaining` `None` while it closes the position it finds.
+
+### Observations
+
+`observation(lookback)` returns a read-only numpy `(rows, 5)` view of the `lookback` bars ending at the current bar, straight onto the shared candle buffer with no copy. It is `rows = lookback`, or fewer early in the series. The array is read-only, and because the candle buffer is never mutated a view held across a `step()` stays a snapshot of that tick's window rather than going stale; it stays valid for the whole life of the engine (numpy keeps the engine alive as the array's base), so you never need to copy it ([ADR 0040](Decisions.md)).
+
+`eng.data` is the same kind of read-only, zero-copy view over the whole `(T, 5)` series rather than a window (columns are OHLCV by position). It is the full-series companion to `observation`, cursor-independent.
+
+`eng.opens`, `eng.highs`, `eng.lows`, `eng.closes` and `eng.volumes` are the same view one field at a time, so a strategy reads `engine.closes` rather than remembering that the close is column 3. They are strided views into the same buffer, not copies, so taking all five costs nothing.
+
+### Running a strategy
+
+`run(strategy)` resets, calls `strategy.init(engine)` if it exists, then for each bar calls `strategy.next(state, engine)` and steps, returning the final state. The strategy places orders through the engine, so it can use any order type. It should not call `step` itself; the driver does.
+
+If the strategy carries a `warmup`, read once after `init` so it can be computed there, `next` is not called until that many bars exist. The bars before it still advance and still fill whatever is resting; only the decision is skipped. It replaces the `if i < self.slow: return` a strategy would otherwise open with, and it closes what that guard is really for: on an early bar `close[i - 50]` is a **negative** index, numpy resolves it from the end of the array, and the rule reads prices from the future, reports a wonderful result, and raises nothing ([ADR 0025](Decisions.md)).
+
+```python
+class BuyAndHold:
+    def next(self, state, engine):
+        if state["position"] == 0:
+            engine.market_buy(1.0)
+
+eng = probatum._probatum.Engine(candles, report=True)
+final = eng.run(BuyAndHold())
+```
+
+### Results
+
+With `report=True`, six accessors read the recorded run (each returns `None` when reporting is off):
+
+- `stats(periods_per_year=365.0, risk_free=0.0)` returns the [stats dict](#statistics).
+- `equity_curve()` returns a numpy array, one equity value per step.
+- `trades()` returns a list of [round trips](#trades), the one still open at the end marked and flagged.
+- `ledger()` returns [the ledger](#the-ledger), a dict of numpy columns with one row per bar from the opening balance.
+- `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
+- `order_log()` returns a list of [order events](#the-order-log), every order's life in the order it happened.
+
+`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. The engine's `stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
 
 ### Statistics
 
