@@ -174,11 +174,24 @@ inverse, V dollars  wanted = weight * equity_t * close_t / V            contract
 
 **Worked example.** A buy limit at 99 placed at a close of 100. If the next bar opens at 98.50 it fills at 99 as a taker; if it opens at 100 and trades down to 98 it fills at 99 as a maker; and if it rests through that bar and the one after opens at 98.50, it fills at 99 as a maker. A post-only buy at 100 placed at that close is refused, and a buy at 101 placed while the account rests a sell at 100.50 is refused too.
 
+### An array
+
+`backtest(array, ...)` reads row `t` of a `(T, N)` array as the decision at the close of bar `t`, in the unit `sizing` names.
+- `sizing="weight"`: each value is a weight of equity, reached as [Target](#target) reaches it, with the run's `tolerance`.
+- `sizing="quantity"`: each value is the position wanted, in base units or contracts, and the leg is `wanted - position`, rounded, split and skipped as a target's is. The weight it records as asked, for its drift, is the wanted position's notional at each row's close over that row's equity.
+- A NaN holds: the instrument goes unnamed on that row, so its position, any leg it has waiting and its drift stand.
+- The last row is never read, since no bar follows it to fill on. A row on which none of the instruments printed is one the account never sees: its values are taken at the last close before it, a later row's replacing an earlier one's, and a row before the account's first is not read.
+- A negative value on a spot instrument is refused before the run.
+
 ### Barriers on an array
 
-`backtest(weights, ..., stop=, take_profit=)` gives every position of an array run a bracket at those returns from its average entry: a long's stop at `entry * (1 - stop)` and take-profit at `entry * (1 + take_profit)`, mirrored for a short. Each is a number or a `(T, N)` array read on the row that opened the round trip, and the bracket moves when the average entry does. An instrument a barrier closed stays flat until its weight returns to zero or changes sign.
+`backtest(array, ..., stop=, take_profit=)` gives every round trip of an array run a bracket at those returns from its average entry: a long's stop at `entry * (1 - stop)` and take-profit at `entry * (1 + take_profit)`, a short's at `entry * (1 + stop)` and `entry * (1 - take_profit)`, on an inverse contract's quoted price.
+- Each is a number or a `(T, N)` array read on the row whose decision opened the round trip, where a NaN leaves that side without a barrier. A price at or below zero, a long's stop or a short's take-profit of 1 or more, is not placed.
+- The bracket is placed at the close of the bar the round trip opened on, from flat or by a flip, once its average entry is known, so the bar its entry filled on runs without it. At each later close after a fill moved the average entry, its legs still resting are replaced at the new entry, with the returns of the row that opened the round trip. A round trip keeps the bracket it opened with, so a leg its partner's fill cancelled is not placed again.
+- From the bar a barrier fills on, even in part, the instrument places nothing more on that side: a row asking for that side leaves it unnamed, and the leg's remainder closes the rest. A row asking for zero or for the other side names it again, and a NaN holds this as it holds the rest.
+- At each close the brackets are placed and moved instrument by instrument, a stop before its take-profit, and before the row's target is.
 
-**Worked example.** A long entered at an average of 20,000 with `stop=0.04` and `take_profit=0.08` rests its stop at 19,200 and its take-profit at 21,600.
+**Worked example.** A long entered at an average of 20,000 with `stop=0.04` and `take_profit=0.08` rests its stop at 19,200 and its take-profit at 21,600 from the close of the bar its entry filled on. An add of the same size that fills at 21,000 takes the average entry to 20,500 and moves them to 19,680 and 22,140 at the close of its bar, and a short entered at 20,000 rests its stop at 20,800 and its take-profit at 18,400. With a weight of 1.0 on every row, a stop that fills leaves the instrument flat until a row asks for zero or less.
 
 <br>
 <br>
