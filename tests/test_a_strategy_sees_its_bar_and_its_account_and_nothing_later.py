@@ -7,6 +7,7 @@ records what a backtest of the same decisions records.
 """
 
 import datetime
+import gc
 import math
 import random
 import re
@@ -17,6 +18,7 @@ import pytest
 
 import probatum
 from probatum import Venue
+from probatum._strategy import _Run
 from probatum._venue import _run
 from reference import universe_differential
 from test_a_data_from_the_router_is_every_bar_it_asked_for import (Router, bars, fetch,
@@ -683,6 +685,37 @@ def test_a_handle_read_after_the_run_shows_its_order_at_the_end():
     strategy = probatum.backtest(Last(), one(), VENUE).policy
 
     assert (strategy.seen, strategy.order.status) == ("pending", "filled")
+
+
+def test_a_run_that_has_ended_goes_with_nothing_but_a_handle_kept():
+    # every handle points back at its run, so a run that held its handles past its end
+    # would wait for the cycle collector with its engine and every record it kept
+    class Bought(probatum.Strategy):
+
+        def next(self, bar, account):
+            if bar.i == 3:
+                self.order = account.buy(1.0)
+
+    def runs():
+        return sum(isinstance(item, _Run) for item in gc.get_objects())
+
+    gc.collect()
+    gc.disable()
+    try:
+        before = runs()
+        kept   = probatum.backtest(Bought(), one(), VENUE).policy
+        engine = probatum.Engine(one(), VENUE)
+        engine.reset()
+        engine.buy(1.0)
+        engine.step()
+
+        assert engine.events[-1].kind == "filled"
+
+        del engine
+        assert runs() == before
+        assert kept.order.status == "filled" and kept.order.instrument == "BTCUSDT"
+    finally:
+        gc.enable()
 
 
 def test_a_bracket_leg_its_partner_cancels_on_the_bar_it_armed_shows_the_side_it_took():

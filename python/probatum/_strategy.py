@@ -119,6 +119,7 @@ def _play(strategy, run):
 
     # the account at its last bar, where a handle the copy keeps reads its order
     run.begin(len(rows) - 1)
+    run.end()
 
 
 def _number(value):
@@ -208,6 +209,19 @@ class _Run:
         self.state  = None
         self.events = None
         self.synced = False
+
+
+    def end(self):
+        """Close the run: every handle brought to its order as the run left it, then
+        pointed at the run's names alone, and the events let go, so a handle kept past
+        the run holds no engine and the run goes once nothing else holds it."""
+        self.sync()
+
+        left = _Left(self.names)
+        for handle in self.handles.values():
+            handle._run = left
+
+        self.events = None
 
 
     @property
@@ -1149,6 +1163,21 @@ class Order:
     def reason(self):
         self._run.sync()
         return self._reason
+
+
+class _Left:
+    """What a handle reads of its run once the run has ended: the names, and nothing to
+    bring the handle up to date from."""
+
+    __slots__ = ("names",)
+
+
+    def __init__(self, names):
+        self.names = names
+
+
+    def sync(self):
+        pass
 
 
 class Exits:

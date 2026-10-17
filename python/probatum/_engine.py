@@ -2,6 +2,7 @@
 bar, with the account's verbs and state on the engine itself (ADR 0002)."""
 
 import operator
+import weakref
 
 from . import _probatum
 from ._backtest import _annualised, _markets, _number
@@ -27,7 +28,7 @@ class Engine(Account):
     left off (Specification, What a bar cannot show).
     """
 
-    __slots__ = ("_venue", "_seed", "_markets")
+    __slots__ = ("_venue", "_seed", "_markets", "__weakref__")
 
 
     def __init__(self, data, venue, seed=None):
@@ -38,6 +39,9 @@ class Engine(Account):
         markets = _markets(run)
 
         super().__init__(_Run(engine, data, run.start, markets))
+
+        # a handle points back at its run, so the run is ended when the engine goes
+        weakref.finalize(self, self._run.end).atexit = False
         self._run.named = "engine"
         self._venue     = held
 
