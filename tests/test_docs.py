@@ -46,6 +46,7 @@ _API = {
     "chart_defaults": probatum.chart_defaults,
     "to_ohlcv": probatum.to_ohlcv,
     "Backtester": Backtester,
+    "backtest": probatum.backtest,
     "Line": plot.Line,
     "Histogram": plot.Histogram,
     "Band": plot.Band,

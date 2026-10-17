@@ -122,8 +122,6 @@ class Wrong:
     (pa.table({"time": pa.array([2**62], pa.timestamp("s"))}), ValueError,
      'data: column "time" holds 4611686018427387904 ticks of 1000000000 nanoseconds, '
      'past what nanoseconds since 1970 can count'),
-    (pa.chunked_array([[1.0, 2.0]]), ValueError,
-     'data: Arrow data of format "g", not a table; give a table'),
     (Spent(pa.table({"close": [1.0]})), ValueError,
      "data: an Arrow stream already released; pass the frame again"),
     (Wrong(), TypeError,
@@ -140,6 +138,16 @@ def test_the_array_interface_is_read_where_there_is_no_stream():
     got = columns(OnlyAnArray(pa.record_batch({"close": [1.0, 2.0]})))
 
     assert got["close"][1].tolist() == [1.0, 2.0]
+
+
+@pytest.mark.parametrize("data", [pa.array([1.0, None]),
+                                  pa.chunked_array([[1.0], [None]]),
+                                  OnlyAnArray(pa.array([1.0, None]))])
+def test_an_array_of_anything_but_a_table_is_one_column(data):
+    [(name, kind, values, detail)] = arrow_columns(data)
+
+    assert (name, kind, detail) == ("", "float", "")
+    assert values[0] == 1.0 and np.isnan(values[1])
 
 
 def test_a_pandas_frame_hands_its_datetime_index_over_as_a_time_column():

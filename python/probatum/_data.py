@@ -1574,6 +1574,39 @@ def _times(time, name="time"):
                     f"nanoseconds since 1970")
 
 
+def _columns(source):
+    """A pandas frame's or series' columns, or those an Arrow stream or array exports:
+    the times among them by name, a pandas datetime index as ``"the index"``, each as
+    int64 nanoseconds since 1970 and the zone it carries; the numbers, a pandas column
+    of integers with no gap as int64 and every other as float64 with NaN in its gaps;
+    and what each other column holds."""
+    clocks, numbers, others = {}, {}, {}
+    if type(source).__module__.split(".")[0] == "pandas":
+        if getattr(source.index.dtype, "kind", "") == "M":
+            clocks["the index"] = _times(source.index)
+        columns = ({name: source[name] for name in source.columns}
+                   if hasattr(source, "columns") else {source.name: source})
+        for name, column in columns.items():
+            if column.dtype.kind == "M":
+                clocks[name] = _times(column)
+            elif column.dtype.kind in "iu" and not column.hasnans:
+                numbers[name] = column.to_numpy(dtype=np.int64)
+            elif column.dtype.kind in "fiu":
+                numbers[name] = column.to_numpy(dtype=np.float64, na_value=np.nan)
+            else:
+                others[name] = f"values of {column.dtype}"
+    else:
+        for name, kind, values, detail in arrow_columns(source):
+            if kind in ("time", "date"):
+                clocks[name] = (values, detail if kind == "time" else "")
+            elif kind in ("float", "int"):
+                numbers[name] = values
+            else:
+                others[name] = _described(kind, detail)
+
+    return clocks, numbers, others
+
+
 def _stamped(source):
     """The values a frame or a series holds, ``(K,)`` for one column and ``(K, C)`` for
     C, the time at which each row became known and what to add to reach it: a frame of
@@ -1593,26 +1626,7 @@ def _stamped(source):
         raise ValueError(f"values: candles of {attrs.get('interval')!r}, an interval "
                          f"no Data runs on; give them on one of {', '.join(INTERVALS)}")
 
-    clocks, numbers = {}, {}
-    if pandas:
-        if getattr(source.index.dtype, "kind", "") == "M":
-            clocks["the index"] = _times(source.index)[0]
-        columns = ({name: source[name] for name in source.columns}
-                   if hasattr(source, "columns") else {source.name: source})
-        for name, column in columns.items():
-            if column.dtype.kind == "M":
-                clocks[name] = _times(column)[0]
-            elif column.dtype.kind in "iu" and not column.hasnans:
-                numbers[name] = column.to_numpy(dtype=np.int64)
-            elif column.dtype.kind in "fiu":
-                numbers[name] = column.to_numpy(dtype=np.float64, na_value=np.nan)
-    else:
-        for name, kind, values, _ in arrow_columns(source):
-            if kind in ("time", "date"):
-                clocks[name] = values
-            elif kind in ("float", "int"):
-                numbers[name] = values
-
+    clocks, numbers, _ = _columns(source)
     if hasattr(source, "columns") and {"open", "high", "low", "close"} <= set(numbers):
         # bars' times are their opens, and what a bar holds is known at its end
         bars    = Data(source)
@@ -1630,7 +1644,7 @@ def _stamped(source):
                          f"time each row became known alone, or pass when=")
 
     if clocks:
-        known = next(iter(clocks.values()))
+        known = next(iter(clocks.values()))[0]
     elif getattr(numbers.get("timestamp"), "dtype", np.dtype(float)).kind == "i":
         known = numbers.pop("timestamp") * 1_000_000
     else:

@@ -37,9 +37,11 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.venues` | The presets, each a Venue: `binance_perp`, `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
 | `probatum.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
-| `probatum.Backtester` | Drive a `Strategy` over one series, get stats, equity, and trades. [Below](#backtesting). |
-| `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#backtesting). |
-| `probatum.Strategy` | The base class a strategy for `Backtester` subclasses. [Below](#backtesting). |
+| `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers. [Below](#backtesting). |
+| `probatum.Result` | What a run recorded: its equity and returns, the ledger, the fill log, the order log, the round trips, its statistics and its provenance. [Below](#backtesting). |
+| `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
+| `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
+| `probatum.Strategy` | The base class a strategy for `Backtester` subclasses. [Below](#the-strategy-runner). |
 | `probatum.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
 | `probatum.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
 | `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
@@ -500,7 +502,37 @@ The full contract, every constructor argument, the observation and reward shapes
 
 ## Backtesting
 
-`probatum.Backtester` wraps the single engine into a classic strategy runner. Reporting is always on, so the result carries the stats, equity curve, and trades.
+`probatum.backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None, tolerance=0.0, risk_free=0.0)` runs a policy on a Data at a venue and returns its `Result`. `data` is a `probatum.Data` or anything one is built from, and `venue` a `probatum.Venue` or a preset's name. The policy is read in one fixed order, so no input is read two ways ([ADR 0024](Decisions.md)):
+
+| Order | Policy | How it runs |
+| :--- | :--- | :--- |
+| 1 | a table: anything exporting the Arrow C stream interface, or a pandas frame or series | its rows matched to the Data's clock by their times, in a datetime index or column or a `timestamp` column of milliseconds, and a daily Data's by their dates, and its columns to the instruments by name, then run as an array; a time or a name that does not match is refused, and a row may be left out only where no instrument printed a bar |
+| 2 | an array: anything with `__dlpack__`, the buffer protocol, `__array__` or `__arrow_c_array__` | converted once to float64 on the host and run whole in Rust |
+| 3 | a class | refused: pass an instance |
+| 4 | a `Strategy` | not run by `backtest` yet; [`probatum.Backtester`](#the-strategy-runner) runs one |
+| 5 | an object with `fit` that is not callable | refused: pass its predictions as an array |
+| 6 | an agent: a Stable-Baselines3 model, a torch module or any other callable | not run yet |
+| 7 | anything else | refused |
+
+**An array** is `(T, N)` over the Data's rows and instruments, or `(T,)` for one instrument. Row t is the decision at the close of bar t and a NaN holds, and the engine still steps every bar, so an array run is no vectorized backtest. With `sizing="weight"` each value is a weight of equity, reached as `target` reaches it, a leg below `tolerance` of equity skipped; with `sizing="quantity"` it is the position wanted, in base units, or in contracts on an inverse contract. The last row is never read, since no bar follows it to fill on. An array of booleans is refused, since False would flatten where it means to hold: 1.0 enters, 0.0 leaves and NaN holds. A negative value on a spot instrument is refused before the run, and so is a venue that decides at random what a bar cannot show, so a backtest repeats without a seed ([Specification](Specification.md#an-array)).
+
+```python
+fast = probatum.ta.ema(btc.close, 20)
+slow = probatum.ta.ema(btc.close, 80)
+weights = numpy.full(len(btc), numpy.nan)                     # NaN holds the position
+weights[probatum.ta.crossover(fast, slow)] = 1.0              # enter long
+weights[probatum.ta.crossunder(fast, slow)] = 0.0             # flatten
+venue = probatum.venues.binance_perp.replace(funding="none")  # btc holds no funding
+result = probatum.backtest(weights, btc, venue, stop=0.04, take_profit=0.08)
+```
+
+**Barriers.** `stop` and `take_profit` give each round trip of an array run a stop and a take-profit at those returns from its average entry, each a number, or a `(T, N)` array or a table of them read on the row whose decision opened the round trip, NaN for none. They rest from the close of the bar the entry filled on and move when an add moves the average entry, and a barrier that fills, even in part, holds its instrument flat until a row asks for zero or for the other side, so the rows still asking for the position do not buy it straight back ([Specification](Specification.md#barriers-on-an-array)).
+
+**The Result** holds what the run recorded, on the rows the account saw from its first: `time`, `equity` and `returns`, each `(T,)`; `ledger`, `fills`, `orders` and `trades`, the [ledger](#the-ledger), the [fill log](#fills), the [order log](#the-order-log) and the [round trips](#trades); `stats`, the [statistics](#statistics) at `risk_free` and at the annualization of the whole Data the run's instruments are drawn from, counted on the rows they printed, so every slice of it annualizes alike; `policy`, the policy's values on the Data's rows as the run read them; `bust`, whether the account's equity reached zero; `liquidations`, how many bars it was liquidated on; and `provenance`, the Data's provenance with its fingerprint, the venue, the policy and its sizing, barriers and tolerance, the annualization and the version. Every `bar` in the records counts from the Result's first row, so `result.time[bar]` is its time.
+
+### The strategy runner
+
+`probatum.Backtester` drives a `Strategy` over one series, as emsl did. Reporting is always on, so the result carries the stats, equity curve, and trades.
 
 ```python
 from probatum import Backtester, Strategy

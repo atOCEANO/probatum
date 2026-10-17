@@ -156,19 +156,35 @@ struct Column {
     wide: bool,
 }
 
-/// The columns a table's `schema` names.
+/// The columns `schema` names: a table's, or the one column an array of anything else
+/// is, which the second value says.
 ///
 /// # Safety
 /// `schema` points at a schema of the C data interface.
-unsafe fn columns_of(schema: &ArrowSchema) -> Result<Vec<Column>, String> {
+unsafe fn columns_of(schema: &ArrowSchema) -> Result<(Vec<Column>, bool), String> {
     if schema.release.is_none() {
         return Err("an Arrow schema already released; pass the frame again".to_string());
     }
-    let format = text(schema.format);
-    if format != "+s" {
-        return Err(format!(
-            "Arrow data of format {format:?}, not a table; give a table"
-        ));
+    let column = |field: &ArrowSchema| {
+        let kind = if field.dictionary.is_null() {
+            kind_of(&text(field.format))
+        } else {
+            Kind::Other(format!(
+                "dictionary of {}",
+                text((*field.dictionary).format)
+            ))
+        };
+        Column {
+            name: text(field.name),
+            kind,
+            floats: Vec::new(),
+            integers: Vec::new(),
+            present: Vec::new(),
+            wide: false,
+        }
+    };
+    if text(schema.format) != "+s" {
+        return Ok((vec![column(schema)], true));
     }
     let width = usize::try_from(schema.n_children).map_err(|_| {
         format!(
@@ -176,27 +192,12 @@ unsafe fn columns_of(schema: &ArrowSchema) -> Result<Vec<Column>, String> {
             schema.n_children
         )
     })?;
-    Ok((0..width)
-        .map(|i| {
-            let child = &**schema.children.add(i);
-            let kind = if child.dictionary.is_null() {
-                kind_of(&text(child.format))
-            } else {
-                Kind::Other(format!(
-                    "dictionary of {}",
-                    text((*child.dictionary).format)
-                ))
-            };
-            Column {
-                name: text(child.name),
-                kind,
-                floats: Vec::new(),
-                integers: Vec::new(),
-                present: Vec::new(),
-                wide: false,
-            }
-        })
-        .collect())
+    Ok((
+        (0..width)
+            .map(|i| column(&**schema.children.add(i)))
+            .collect(),
+        false,
+    ))
 }
 
 /// The text a C string holds, empty where there is none.
@@ -253,16 +254,25 @@ unsafe fn time(values: *const c_void, i: usize, bytes: usize, unit: i64) -> Resu
     })
 }
 
-/// Append `array`, a batch of the table whose columns are `columns`. A missing time
-/// is read as the int64 numpy calls NaT, so a column no one reads as the clock
-/// cannot refuse the frame.
+/// Append `array`, a batch of the table whose columns are `columns`, or with `alone`
+/// a batch of the one column they are. A missing time is read as the int64 numpy
+/// calls NaT, so a column no one reads as the clock cannot refuse the frame.
 ///
 /// # Safety
 /// `array` points at an array of the C data interface whose children hold the
-/// columns' formats.
-unsafe fn append(array: &ArrowArray, columns: &mut [Column]) -> Result<(), String> {
+/// columns' formats, or with `alone` whose format is the column's.
+unsafe fn append(array: &ArrowArray, columns: &mut [Column], alone: bool) -> Result<(), String> {
     if array.release.is_none() {
         return Err("an Arrow array already released; pass the frame again".to_string());
+    }
+    if alone {
+        let Ok(length) = usize::try_from(array.length) else {
+            return Err(format!(
+                "an Arrow array of {} values; give an array",
+                array.length
+            ));
+        };
+        return read(array, &mut columns[0], 0, length, null());
     }
     let width = usize::try_from(array.n_children).unwrap_or(0);
     if width != columns.len() {
@@ -286,93 +296,115 @@ unsafe fn append(array: &ArrowArray, columns: &mut [Column]) -> Result<(), Strin
         null()
     };
     for (i, column) in columns.iter_mut().enumerate() {
-        if matches!(column.kind, Kind::Other(_)) {
-            continue;
-        }
-        let child = &**array.children.add(i);
-        let Ok(start) = usize::try_from(child.offset) else {
-            return Err(format!(
-                "column {:?} starts at row {}; give a table",
-                column.name, child.offset
-            ));
-        };
-        if child.n_buffers < 2 {
-            return Err(format!(
-                "column {:?} has {} buffers where its values need 2; give a table",
-                column.name, child.n_buffers
-            ));
-        }
-        if usize::try_from(child.length).unwrap_or(0) < offset + length {
-            return Err(format!(
-                "column {:?} holds {} values for rows {offset} to {}; give whole columns",
-                column.name,
-                child.length,
-                offset + length
-            ));
-        }
-        let present = *child.buffers;
-        let values = *child.buffers.add(1);
-        let before = column.present.len();
-        for row in 0..length {
-            let at = start + offset + row;
-            let here = set(present, at) && set(rows_present, offset + row);
-            column.present.push(here);
-            match &column.kind {
-                Kind::Float(8) => column.floats.push(if here {
-                    (values as *const f64).add(at).read_unaligned()
-                } else {
-                    f64::NAN
-                }),
-                Kind::Float(_) => column.floats.push(if here {
-                    (values as *const f32).add(at).read_unaligned().into()
-                } else {
-                    f64::NAN
-                }),
-                Kind::Integer(bytes, signed) => {
-                    match here.then(|| integer(values, at, *bytes, *signed)) {
-                        None => {
-                            column.integers.push(0);
-                            column.floats.push(f64::NAN);
-                        }
-                        Some(Some(value)) => {
-                            column.integers.push(value);
-                            column.floats.push(value as f64);
-                        }
-                        Some(None) => {
-                            // an unsigned value past a signed 64-bit integer, which
-                            // leaves the column to come back as floats
-                            column.wide = true;
-                            column.integers.push(0);
-                            column
-                                .floats
-                                .push((values as *const u64).add(at).read_unaligned() as f64);
-                        }
+        read(
+            &**array.children.add(i),
+            column,
+            offset,
+            length,
+            rows_present,
+        )?;
+    }
+    Ok(())
+}
+
+/// Append rows `offset` to `offset + length` of `child` to `column`, each present
+/// where `child` and `rows_present`, its batch's own bitmap, both set it.
+///
+/// # Safety
+/// `child` points at an array of the C data interface of the column's format, and
+/// `rows_present` is null or holds a bit for each of those rows.
+unsafe fn read(
+    child: &ArrowArray,
+    column: &mut Column,
+    offset: usize,
+    length: usize,
+    rows_present: *const c_void,
+) -> Result<(), String> {
+    if matches!(column.kind, Kind::Other(_)) {
+        return Ok(());
+    }
+    let Ok(start) = usize::try_from(child.offset) else {
+        return Err(format!(
+            "column {:?} starts at row {}; give a table",
+            column.name, child.offset
+        ));
+    };
+    if child.n_buffers < 2 {
+        return Err(format!(
+            "column {:?} has {} buffers where its values need 2; give a table",
+            column.name, child.n_buffers
+        ));
+    }
+    if usize::try_from(child.length).unwrap_or(0) < offset + length {
+        return Err(format!(
+            "column {:?} holds {} values for rows {offset} to {}; give whole columns",
+            column.name,
+            child.length,
+            offset + length
+        ));
+    }
+    let present = *child.buffers;
+    let values = *child.buffers.add(1);
+    let before = column.present.len();
+    for row in 0..length {
+        let at = start + offset + row;
+        let here = set(present, at) && set(rows_present, offset + row);
+        column.present.push(here);
+        match &column.kind {
+            Kind::Float(8) => column.floats.push(if here {
+                (values as *const f64).add(at).read_unaligned()
+            } else {
+                f64::NAN
+            }),
+            Kind::Float(_) => column.floats.push(if here {
+                (values as *const f32).add(at).read_unaligned().into()
+            } else {
+                f64::NAN
+            }),
+            Kind::Integer(bytes, signed) => {
+                match here.then(|| integer(values, at, *bytes, *signed)) {
+                    None => {
+                        column.integers.push(0);
+                        column.floats.push(f64::NAN);
+                    }
+                    Some(Some(value)) => {
+                        column.integers.push(value);
+                        column.floats.push(value as f64);
+                    }
+                    Some(None) => {
+                        // an unsigned value past a signed 64-bit integer, which
+                        // leaves the column to come back as floats
+                        column.wide = true;
+                        column.integers.push(0);
+                        column
+                            .floats
+                            .push((values as *const u64).add(at).read_unaligned() as f64);
                     }
                 }
-                Kind::Time(unit, _) => column.integers.push(if here {
-                    time(values, at, 8, *unit).map_err(|said| {
-                        format!(
-                            "column {:?} holds {said} at row {}",
-                            column.name,
-                            before + row
-                        )
-                    })?
-                } else {
-                    i64::MIN
-                }),
-                Kind::Date(unit, bytes) => column.integers.push(if here {
-                    time(values, at, *bytes, *unit).map_err(|said| {
-                        format!(
-                            "column {:?} holds {said} at row {}",
-                            column.name,
-                            before + row
-                        )
-                    })?
-                } else {
-                    i64::MIN
-                }),
-                Kind::Other(_) => unreachable!("skipped above"),
             }
+            Kind::Time(unit, _) => column.integers.push(if here {
+                time(values, at, 8, *unit).map_err(|said| {
+                    format!(
+                        "column {:?} holds {said} at row {}",
+                        column.name,
+                        before + row
+                    )
+                })?
+            } else {
+                i64::MIN
+            }),
+            Kind::Date(unit, bytes) => column.integers.push(if here {
+                time(values, at, *bytes, *unit).map_err(|said| {
+                    format!(
+                        "column {:?} holds {said} at row {}",
+                        column.name,
+                        before + row
+                    )
+                })?
+            } else {
+                i64::MIN
+            }),
+            Kind::Other(_) => unreachable!("skipped above"),
         }
     }
     Ok(())
@@ -410,7 +442,7 @@ unsafe fn read_stream(stream: *mut ArrowArrayStream) -> Result<Vec<Column>, Stri
     if get_schema(stream, &mut schema.0) != 0 {
         return Err(last_error(stream));
     }
-    let mut columns = columns_of(&schema.0)?;
+    let (mut columns, alone) = columns_of(&schema.0)?;
     loop {
         let mut batch = OwnedArray(empty_array());
         if get_next(stream, &mut batch.0) != 0 {
@@ -419,7 +451,7 @@ unsafe fn read_stream(stream: *mut ArrowArrayStream) -> Result<Vec<Column>, Stri
         if batch.0.release.is_none() {
             return Ok(columns);
         }
-        append(&batch.0, &mut columns)?;
+        append(&batch.0, &mut columns, alone)?;
     }
 }
 
@@ -441,12 +473,12 @@ fn pointer_in(capsule: &Bound<'_, PyAny>, name: &CStr, method: &str) -> PyResult
 }
 
 /// The columns of `data`, an object that exports the Arrow C stream or array
-/// interface, each as a tuple of its name, its kind and its values: "float" with
-/// float64 values, NaN where one is missing; "int" with int64 values where an
-/// integer column misses none and fits in them, and "float" where it does not;
-/// "time" and "date" with int64 nanoseconds since 1970, NaT where one is missing,
-/// and, last, the zone a time names, empty where it names none; and "other" with no
-/// values and, last, the column's format.
+/// interface, a table's or the one an array of anything else is, each as a tuple of
+/// its name, its kind and its values: "float" with float64 values, NaN where one is
+/// missing; "int" with int64 values where an integer column misses none and fits in
+/// them, and "float" where it does not; "time" and "date" with int64 nanoseconds
+/// since 1970, NaT where one is missing, and, last, the zone a time names, empty
+/// where it names none; and "other" with no values and, last, the column's format.
 #[pyfunction]
 pub fn arrow_columns<'py>(
     py: Python<'py>,
@@ -472,8 +504,8 @@ pub fn arrow_columns<'py>(
         // SAFETY: each capsule holds its schema or array until it is dropped, after
         // this read, and its destructor releases it then
         unsafe {
-            columns_of(&*(schema as *const ArrowSchema)).and_then(|mut columns| {
-                append(&*(array as *const ArrowArray), &mut columns).map(|()| columns)
+            columns_of(&*(schema as *const ArrowSchema)).and_then(|(mut columns, alone)| {
+                append(&*(array as *const ArrowArray), &mut columns, alone).map(|()| columns)
             })
         }
     } else {
