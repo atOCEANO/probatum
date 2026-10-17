@@ -9,16 +9,13 @@ import types
 
 import numpy as np
 
-from ._backtester import _version
 from ._data import DAY, Data, _columns, _dated, _when
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
-from ._result import Result
+from ._result import Result, _provenance
 from ._strategy import Strategy, _Run, _called, _play
 from ._venue import _run, _venue_of
 
 SIZINGS = ("weight", "quantity")
-# the ledger's columns of each instrument, (T, N) whatever the run's width
-LEGS = ("position", "entry", "mark", "notional", "unrealized", "weight", "drift")
 
 
 def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
@@ -103,15 +100,14 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
 
     rate       = _annualised(data)
     stats      = None if rate is None else engine.stats(rate, float(risk_free))
-    provenance = dict(
-        data=data.provenance, venue=repr(held), policy=_described(rows, sizing),
-        sizing=sizing, tolerance=tolerance, risk_free=risk_free,
-        periods_per_year=rate, version=_version(),
+    provenance = _provenance(
+        data, held, _markets(run), _described(rows, sizing), risk_free, rate,
+        sizing=sizing, tolerance=float(tolerance),
         **{name: _shown(barrier) for name, barrier in barriers.items()})
 
     rows.flags.writeable = False
-    return Result(*_recorded(engine, run.start), stats, rows, engine.is_bust(),
-                  provenance)
+    return Result._of(engine.tables(run.start, list(names)), stats, rows,
+                      engine.is_bust(), provenance)
 
 
 def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_free):
@@ -143,11 +139,11 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
 
     rate       = _annualised(data)
     stats      = None if rate is None else engine.stats(rate, float(risk_free))
-    provenance = dict(data=data.provenance, venue=repr(held), policy=_called(strategy),
-                      risk_free=risk_free, periods_per_year=rate, version=_version())
+    provenance = _provenance(data, held, _markets(run), _called(strategy), risk_free,
+                             rate)
 
-    return Result(*_recorded(engine, run.start), stats, copied, engine.is_bust(),
-                  provenance)
+    return Result._of(engine.tables(run.start, list(data.names)), stats, copied,
+                      engine.is_bust(), provenance)
 
 
 def _repeatable(venue):
@@ -442,26 +438,6 @@ def _annualised(data):
     root    = data._root
     printed = root.available[:, list(data._cols)].any(axis=1)
     return periods_per_year(np.ascontiguousarray(root.time[printed]))
-
-
-def _recorded(engine, start):
-    """The run's ledger, fill log, order log and round trips, every bar counted from
-    the account's first row, and the ledger's columns of each instrument ``(T, N)``."""
-    ledger = engine.ledger()
-    ledger["bar"] = ledger["bar"].astype(np.int64) - start
-    for name in LEGS:
-        if ledger[name].ndim == 1:
-            ledger[name] = ledger[name][:, None]
-
-    fills, orders, trades = engine.fills(), engine.order_log(), engine.trades()
-    for record in fills + orders:
-        record["bar"] -= start
-    for trip in trades:
-        trip["open_bar"] -= start
-        if trip["close_bar"] is not None:
-            trip["close_bar"] -= start
-
-    return ledger, fills, orders, trades
 
 
 def _described(rows, sizing):

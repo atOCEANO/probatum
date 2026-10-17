@@ -11,6 +11,7 @@
 #![allow(clippy::useless_conversion)]
 
 mod arrow;
+mod table;
 
 use numpy::ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 use numpy::npyffi::flags::NPY_ARRAY_WRITEABLE;
@@ -2490,6 +2491,27 @@ impl Engine {
             .map_or(0, |reporter| reporter.events().len())
     }
 
+    /// The run's ledger, holdings, fills, order log and round trips as tables any Arrow
+    /// reader takes, in a dict under those names, every bar counted from `start`, the
+    /// account's first row, and each instrument by its name in `names`, or None when
+    /// reporting is off (ADR 0026).
+    fn tables<'py>(
+        &self,
+        py: Python<'py>,
+        start: usize,
+        names: Vec<String>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let tables = py.detach(|| table::tables(&self.inner, self.units, start, &names));
+        let Some(built) = tables? else {
+            return Ok(None);
+        };
+        let out = PyDict::new(py);
+        for (name, built) in built {
+            out.set_item(name, Bound::new(py, built)?)?;
+        }
+        Ok(Some(out))
+    }
+
     /// The account as the last close left it, in the venue's terms, or None when
     /// reporting is off: the ledger's last row, each wallet's equity, and the margin
     /// wallet's room under the cap, its equity less the margin the cap asks, floored at
@@ -4273,6 +4295,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_class::<Batch>()?;
     m.add_class::<PyState>()?;
+    m.add_class::<table::PyTable>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
     m.add_function(wrap_pyfunction!(run_script, m)?)?;
     m.add_function(wrap_pyfunction!(run_array, m)?)?;

@@ -1,11 +1,12 @@
 """``Engine``, the loop the caller owns: an account at a venue on a Data, stepped bar by
 bar, with the account's verbs and state on the engine itself (ADR 0002)."""
 
+import operator
+
 from . import _probatum
-from ._backtest import _annualised, _markets, _number, _recorded
-from ._backtester import _version
+from ._backtest import _annualised, _markets, _number
 from ._data import Data
-from ._result import Result
+from ._result import Result, _provenance
 from ._strategy import Account, Bar, _Run
 from ._venue import _run, _venue_of
 
@@ -26,19 +27,23 @@ class Engine(Account):
     left off (Specification, What a bar cannot show).
     """
 
-    __slots__ = ("_venue", "_seed")
+    __slots__ = ("_venue", "_seed", "_markets")
 
 
     def __init__(self, data, venue, seed=None):
-        data   = data if isinstance(data, Data) else Data(data)
-        held   = _venue_of(venue)
-        run    = _run(held, data, seed)
-        engine = _probatum.Engine(run.candles, report=True, **run.settings)
+        data    = data if isinstance(data, Data) else Data(data)
+        held    = _venue_of(venue)
+        run     = _run(held, data, seed)
+        engine  = _probatum.Engine(run.candles, report=True, **run.settings)
+        markets = _markets(run)
 
-        super().__init__(_Run(engine, data, run.start, _markets(run)))
+        super().__init__(_Run(engine, data, run.start, markets))
         self._run.named = "engine"
         self._venue     = held
-        self._seed      = seed
+
+        # the binding read the seed as an integer, and the provenance keeps it as one
+        self._seed    = None if seed is None else operator.index(seed)
+        self._markets = markets
 
 
     def __repr__(self):
@@ -81,9 +86,8 @@ class Engine(Account):
         run        = self._run
         rate       = _annualised(run.data)
         stats      = None if rate is None else run.engine.stats(rate, float(risk_free))
-        provenance = dict(data=run.data.provenance, venue=repr(self._venue),
-                          policy="the caller's loop", seed=self._seed,
-                          risk_free=risk_free, periods_per_year=rate, version=_version())
+        provenance = _provenance(run.data, self._venue, self._markets,
+                                 "the caller's loop", risk_free, rate, seed=self._seed)
 
-        return Result(*_recorded(run.engine, run.start), stats, None,
-                      run.engine.is_bust(), provenance)
+        return Result._of(run.engine.tables(run.start, list(run.names)), stats, None,
+                          run.engine.is_bust(), provenance)

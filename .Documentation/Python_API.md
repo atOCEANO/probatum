@@ -38,7 +38,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Engine` | An account at a venue on a Data for a loop the caller owns: `reset`, `step`, and the account's state and verbs, recording the Result `backtest` records. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
-| `probatum.Result` | What a run recorded: its equity and returns, the ledger, the fill log, the order log, the round trips, its statistics and its provenance. [Below](#backtesting). |
+| `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, its statistics and its provenance. [Below](#the-result). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
@@ -366,7 +366,7 @@ result = probatum.backtest(weights, btc, venue, stop=0.04, take_profit=0.08)
 
 **Barriers.** `stop` and `take_profit` give each round trip of an array run a stop and a take-profit at those returns from its average entry, each a number, or a `(T, N)` array or a table of them read on the row whose decision opened the round trip, NaN for none. They rest from the close of the bar the entry filled on and move when an add moves the average entry, and a barrier that fills, even in part, holds its instrument flat until a row asks for zero or for the other side, so the rows still asking for the position do not buy it straight back ([Specification](Specification.md#barriers-on-an-array)).
 
-**The Result** holds what the run recorded, on the rows the account saw from its first: `time`, `equity` and `returns`, each `(T,)`; `ledger`, `fills`, `orders` and `trades`, the [ledger](#the-ledger), the [fill log](#fills), the [order log](#the-order-log) and the [round trips](#trades); `stats`, the [statistics](#statistics) at `risk_free` and at the annualization of the whole Data the run's instruments are drawn from, counted on the rows they printed, so every slice of it annualizes alike; `policy`, an array's values on the Data's rows as the run read them, or the copy of a Strategy it ran; `bust`, whether the account's equity reached zero; `liquidations`, how many bars it was liquidated on; and `provenance`, the Data's provenance with its fingerprint, the venue, the policy, an array's sizing, barriers and tolerance, the annualization and the version. Every `bar` in the records counts from the Result's first row, so `result.time[bar]` is its time.
+**The Result** holds what the run recorded: its equity and returns, its tables, its statistics, the policy it ran and its provenance ([The Result](#the-result)).
 
 ### A strategy
 
@@ -653,7 +653,7 @@ final = eng.run(BuyAndHold())
 
 ### Results
 
-With `report=True`, six accessors read the recorded run (each returns `None` when reporting is off):
+With `report=True`, seven accessors read the recorded run (each returns `None` when reporting is off):
 
 - `stats(periods_per_year=365.0, risk_free=0.0)` returns the [stats dict](#statistics).
 - `equity_curve()` returns a numpy array, one equity value per step.
@@ -661,6 +661,7 @@ With `report=True`, six accessors read the recorded run (each returns `None` whe
 - `ledger()` returns [the ledger](#the-ledger), a dict of numpy columns with one row per bar from the opening balance.
 - `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
 - `order_log()` returns a list of [order events](#the-order-log), every order's life in the order it happened.
+- `tables(start, names)` returns the run's ledger, holdings, fill log, order log and round trips as a dict of the binding's tables under those names, which a [Result](#the-tables) wraps, each read through the Arrow C stream or by `column(name)` and `row(i)`, every bar counted from `start` and each instrument by its name in `names`; it needs an engine built with `times=`.
 
 `periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. The engine's `stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
 
@@ -768,6 +769,48 @@ Each entry in `order_log()` is one event in an order's life ([ADR 0022](Decision
 | `reason` | Why, in words: `max_open_orders: 8 already resting`, `5 of the 20 asked fits`, `ioc: one bar`, `liquidation`. |
 
 A refused placement still returns `None`, and the log holds it under the id it would have had, with its reason.
+
+<br>
+
+## The Result
+
+`backtest`, a Strategy and `probatum.Engine.result()` return the same `Result`, whatever decided the run ([ADR 0026](Decisions.md)). It holds what the run recorded on the rows its account saw from its first: `time`, each row's open in int64 nanoseconds since 1970, and `equity` and `returns`, each `(T,)` and read-only, a row's return its equity over the row before's, less one, and nothing once the equity is gone; five [tables](#the-tables); `stats`, the [statistics](#statistics) at `risk_free` and at the annualization of the whole Data the run's instruments are drawn from, counted on the rows they printed, so every slice of it annualizes alike, and None where the clock is too short; `policy`, an array's values on the Data's rows as the run read them, or the copy of a Strategy it ran; `bust`, whether the account's equity reached zero; `liquidations`, how many bars it was liquidated on; and `provenance`, what the run was given and where it ran. `to_pandas()` and `to_polars()` give the equity and the returns on the time, `to_dict()` the whole Result as plain data, a statistic infinite where it earned something against no measured risk, and a Result copies whole and pickles with its tables and an array's policy, a Strategy's copy left out.
+
+```python
+print(result.to_pandas().tail())                # equity and returns on a UTC index
+print(result.stats["total_return_pct"], result.bust, result.liquidations)
+```
+
+### The tables
+
+`ledger`, `holdings`, `fills`, `orders` and `trades` are tables the engine builds, handed to any reader through the Arrow C stream interface, so `polars.DataFrame(table)`, `pyarrow.table(table)` and a DuckDB query that names the table read them with nothing imported by probatum, and `table.to_pandas()` builds a pandas DataFrame with no pyarrow at all. Every bar counts from the Result's first row, so `result.time[bar]` is its time, every instrument is its name, and a value the run did not record is a null, never a number that stands for none ([Specification](Specification.md#tables)).
+
+| Table | A row per | Columns |
+| :--- | :--- | :--- |
+| `ledger` | bar, from the opening balance | `bar`, `time` and the account's columns of [the ledger](#the-ledger) |
+| `holdings` | bar and instrument, a bar's in the Data's order | `bar`, `time`, `instrument`, `position`, `entry`, `mark`, `notional`, `unrealized`, `weight`, `drift` |
+| `fills` | fill, in the order they landed | the [fill log](#fills)'s fields |
+| `orders` | event in an order's life | the [order log](#the-order-log)'s fields |
+| `trades` | round trip, the closed in the order they closed, then those still open | the [round trips](#trades)' fields |
+
+A table reads like the lists of records it replaced: `table[i]` is row `i` as a dict, None where a value is missing, iterating gives the rows and `len(table)` counts them. `table["pnl"]`, or `table.pnl`, is a column as a read-only numpy array: floats with NaN where a value is missing; integers and times as int64, masked where a value can be missing, so `trades.close_bar` masks the round trips still open; booleans; and text as objects. A slice, a boolean mask or an array of positions gives a table of those rows, a masked position refused, since it names no row, `orders.events(kind)` the order log's events of one kind, and `table.columns` names the columns. Two tables are equal where their columns and their values are.
+
+```python
+import duckdb
+import polars
+
+trades = result.trades
+closed = trades[~trades.open]
+print(result.time[closed.close_bar])            # when each closed round trip closed
+print(result.orders.events("filled"))           # the order log's fills alone
+fills = result.fills
+print(polars.DataFrame(fills).select("bar", "price", "fee"))
+print(duckdb.sql("select instrument, count(*), sum(fee) from fills group by 1"))
+```
+
+### The provenance
+
+`provenance` records what the run was given and where it ran: `data`, the Data's provenance with its fingerprint; `venue`, the code that builds the venue, and `venue_name`; `markets`, each instrument's market as it ran, `spot`, `linear` or `inverse`; `settlement`, the asset the account kept its cash in, None where its instruments do not say; `policy`, a description of it, beside an array's `sizing`, `tolerance`, `stop` and `take_profit`; `seed`, and `streams`, the random streams a venue that decides at random draws from; `risk_free` and `periods_per_year`; and `version`, `packages`, the version of every installed distribution behind a module the run had loaded, read from their metadata so nothing is imported to ask, `python`, `platform` and `wheel`, the tags of the wheel probatum was installed from.
 
 <br>
 

@@ -457,6 +457,17 @@ def _one_cash(instruments, names, markets):
                              f"one asset; run them on their own")
 
 
+def _settlement(instruments, markets):
+    """The asset an account trading ``instruments`` on ``markets`` keeps its cash in,
+    as the first that says settles in it, or None where none says."""
+    for instrument, market in zip(instruments, markets):
+        asset = dataclasses.replace(instrument, market=market).settlement
+        if asset is not None:
+            return asset
+
+    return None
+
+
 @functools.cache
 def _plain():
     """The venue built by hand with every setting left out."""

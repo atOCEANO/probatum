@@ -4,7 +4,7 @@ Strategy deciding them through its account, and the batch with each env given it
 over random universes, record one ledger, one fill log, one order log and one set of
 round trips; and an array run's barriers are the brackets the Engine stepped from Python
 places by the same rules, and those a Strategy places through its account's handles and
-events, at one instrument.
+events, at one instrument, whose tables hold each one's records in the venue's terms.
 """
 
 import collections
@@ -68,6 +68,58 @@ def records(engine):
     }
 
 
+# the ledger's columns of the account, in the order its table holds them
+ACCOUNT = ("equity", "spot_cash", "margin_cash", "gross_exposure", "net_exposure",
+           "leverage", "margin_used", "maintenance", "fees", "funding", "spread",
+           "slippage", "impact", "liquidation", "dust", "equity_in_quote")
+LEGS = ("position", "entry", "mark", "notional", "unrealized", "weight", "drift")
+
+
+def rows_of(engine, names, start=0):
+    """The binding's records of ``engine`` as the rows of its tables: every bar counted
+    from ``start``, each instrument by its name in ``names``, and a NaN and a None both
+    a value missing."""
+    def plain(value):
+        value = value.item() if isinstance(value, np.generic) else value
+        return None if isinstance(value, float) and math.isnan(value) else value
+
+    def named(k):
+        return None if k is None else names[k]
+
+    ledger = engine.ledger()
+    bars   = [int(bar) - start for bar in ledger["bar"]]
+    legs   = {name: np.reshape(ledger[name], (len(bars), len(names))) for name in LEGS}
+    out    = {"ledger": [dict(bar=bars[t], time=plain(ledger["time"][t]),
+                              **{name: plain(ledger[name][t]) for name in ACCOUNT})
+                         for t in range(len(bars))],
+              "holdings": [dict(bar=bars[t], time=plain(ledger["time"][t]),
+                                instrument=names[k],
+                                **{name: plain(legs[name][t, k]) for name in LEGS})
+                           for t in range(len(bars)) for k in range(len(names))]}
+
+    out["fills"] = [{**{key: plain(value) for key, value in fill.items()},
+                     "bar": fill["bar"] - start, "instrument": named(fill["instrument"])}
+                    for fill in engine.fills()]
+    out["orders"] = [{**{key: plain(value) for key, value in event.items()},
+                      "bar": event["bar"] - start,
+                      "instrument": named(event["instrument"])}
+                     for event in engine.order_log()]
+    out["trades"] = [{**{key: plain(value) for key, value in trip.items()},
+                      "instrument": names[trip["instrument"]],
+                      "open_bar": trip["open_bar"] - start,
+                      "close_bar": None if trip["close_bar"] is None
+                      else trip["close_bar"] - start}
+                     for trip in engine.trades()]
+
+    return out
+
+
+def tabled(engine, names, start=0):
+    """The rows of each table the binding builds of ``engine``'s run."""
+    return {name: list(probatum._result.Table(table))
+            for name, table in engine.tables(start, list(names)).items()}
+
+
 class Targets(probatum.Strategy):
     """A target at each close, of the weights its rows give the Data's row."""
 
@@ -103,6 +155,8 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
 
     assert any(run["fills"] for run in played)
 
+    # names of one and of three bytes a character, so each text offset counts bytes
+    names = [f"币{k}" if k % 2 else f"I{k}" for k in range(len(kinds))]
     for weights, run in zip(envs, played):
         engine = probatum._probatum.Engine(candles, times=times, report=True, **venue)
         engine.reset()
@@ -111,6 +165,7 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
             engine.step()
 
         assert same(records(engine), run)
+        assert tabled(engine, names) == rows_of(engine, names)
 
         # the last row is never read, so it holds
         array = probatum._probatum.Engine(candles, times=times, report=True, **venue)
@@ -118,10 +173,12 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
                                      np.array(weights + [[math.nan] * len(kinds)]))
 
         assert same(records(array), run)
+        assert tabled(array, names) == rows_of(array, names)
 
         strategy = through_account(candles, times, venue, kinds, Targets(weights))
 
         assert same(records(strategy), run)
+        assert tabled(strategy, names) == rows_of(strategy, names)
 
     batch = probatum.Batch(candles, len(envs), times=times, report=True, **venue)
     batch.reset_all()
@@ -322,6 +379,14 @@ def test_an_array_s_barriers_are_the_brackets_a_strategy_places_through_its_acco
     array, _, strategy, _ = cases[seed]
 
     assert same(records(array), records(strategy))
+
+
+@pytest.mark.parametrize("seed", range(16))
+def test_one_instrument_s_tables_hold_its_records_in_the_venue_s_terms(seed, cases):
+    # every fourth seed is an inverse contract, whose tables convert as its records do,
+    # and the fill models drawn charge a spread and an impact
+    for engine in cases[seed][:3]:
+        assert tabled(engine, ["X"]) == rows_of(engine, ["X"])
 
 
 def test_the_barrier_cases_fill_move_and_hold_their_brackets(cases):

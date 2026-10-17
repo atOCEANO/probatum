@@ -152,6 +152,53 @@ def test_the_account_names_the_data_s_rows_with_the_rows_none_printed_left_out(c
     assert strategy.trades.close_bar.tolist() == [printed[t["close_bar"]] for t in closed]
 
 
+def test_the_round_trips_a_strategy_reads_read_as_a_result_s_table_does():
+    data   = gapped()
+    result = probatum.backtest(Traded(), data, VENUE)
+    trades, printed = result.policy.trades, np.flatnonzero(data.available[:, 0])
+    closed = [trip for trip in result.trades if not trip["open"]][:len(trades)]
+    rows   = list(trades)
+
+    assert trades.columns[0] == "instrument"
+    assert rows[-1] == trades[-1] == trades[len(rows) - 1]
+
+    pnl = [trip["pnl"] for trip in closed]
+    assert [row["pnl"] for row in rows] == trades["pnl"].tolist() == pnl
+    assert [row["close_bar"] for row in rows] == [printed[t["close_bar"]] for t in closed]
+    assert type(rows[0]["pnl"]) is float and type(rows[0]["open_bar"]) is int
+    assert rows[0] in trades
+
+    with pytest.raises(TypeError, match=re.escape(
+            "'pnl' in trades: the round trips are rows, as dicts; ask 'pnl' in "
+            "trades.columns")):
+        "pnl" in trades
+
+    with pytest.raises(AttributeError, match="trades: no column 'symbol'; use one of "
+                                             "instrument"):
+        trades.symbol
+
+    with pytest.raises(KeyError, match="trades: no column 'symbol'; use one of instrument"):
+        trades["symbol"]
+
+    with pytest.raises(IndexError, match=f"row: {len(rows)} of {len(rows)} round trips"):
+        trades[len(rows)]
+
+    class Kept(probatum.Strategy):
+        """No order at all, and the round trips the account showed."""
+
+
+        def next(self, bar, account):
+            self.trades = account.trades
+
+    none = probatum.backtest(Kept(), data, VENUE).policy.trades
+
+    assert len(none) == 0 and list(none) == []
+
+    with pytest.raises(IndexError, match=re.escape(
+            "row: 0 of no round trips; check len(account.trades) first")):
+        none[0]
+
+
 def test_the_bar_is_the_data_s_row_and_its_history_ends_there():
     data     = pair()
     strategy = probatum.backtest(Seen(), data, VENUE).policy
@@ -900,8 +947,7 @@ def test_the_engine_stepped_by_hand_records_what_a_backtest_of_its_decisions_doe
     backtest = probatum.backtest(Same(), data, VENUE, risk_free=0.04)
 
     for by_hand in episodes:
-        for name in backtest.ledger:
-            np.testing.assert_array_equal(by_hand.ledger[name], backtest.ledger[name])
+        assert (by_hand.ledger, by_hand.holdings) == (backtest.ledger, backtest.holdings)
         assert by_hand.policy is None and by_hand.stats == backtest.stats
         # ids run on across a reset, and nothing else does
         assert [{**fill, "order": None} for fill in by_hand.fills] == [

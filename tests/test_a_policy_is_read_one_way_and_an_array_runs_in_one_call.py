@@ -96,15 +96,12 @@ def same(mine, theirs):
 
 
 def same_run(result, engine):
-    """Whether a Result holds what an engine run from the first bar recorded, the
-    engine's columns of one instrument `(T,)` where the Result's are `(T, 1)`."""
-    ledger = {name: values[:, None] if values.ndim == 1 and name in result.ledger
-              and result.ledger[name].ndim == 2 else values
-              for name, values in engine.ledger().items()}
+    """Whether a Result holds the tables an engine run from the first bar records."""
+    width = len(result.holdings) // len(result.time)
+    held  = engine.tables(0, list(result.holdings["instrument"][:width]))
 
-    assert same(result.ledger, ledger)
-    assert same([result.fills, result.orders, result.trades],
-                [engine.fills(), engine.order_log(), engine.trades()])
+    for name, table in held.items():
+        assert getattr(result, name)._held == table, name
 
 
 def test_an_array_runs_as_the_engine_stepped_with_the_same_targets():
@@ -384,9 +381,9 @@ def test_quantities_reach_the_position_each_row_wants():
     rows[[2, 10, 30]] = [3.0, -1.5, 0.0]
 
     result   = probatum.backtest(rows, one(), VENUE, sizing="quantity")
-    position = result.ledger["position"]
+    position = result.holdings["position"]
 
-    assert (position[3, 0], position[11, 0], position[31, 0]) == (3.0, -1.5, 0.0)
+    assert (position[3], position[11], position[31]) == (3.0, -1.5, 0.0)
     assert result.provenance["policy"] == "a (40, 1) array of quantities"
 
 
@@ -439,7 +436,7 @@ def test_a_slice_counts_its_bars_from_its_first_row_and_annualizes_as_the_whole(
     assert result.provenance["periods_per_year"] == whole.provenance["periods_per_year"]
 
 
-def test_an_inverse_contract_s_ledger_holds_one_column_for_its_instrument():
+def test_an_inverse_contract_s_holdings_hold_a_row_a_bar_for_its_instrument():
     frame = bars(level=50_000.0)
     frame.attrs.update(exchange="binance", market_type="inverse", symbol="BTCUSD",
                        interval="1h", quote="USD", contract_size=100.0, warnings=[],
@@ -447,8 +444,9 @@ def test_an_inverse_contract_s_ledger_holds_one_column_for_its_instrument():
 
     result = probatum.backtest(np.full(40, 0.5), probatum.Data(frame), Venue(balance=1.0))
 
-    assert result.ledger["position"].shape == (40, 1)
-    assert result.ledger["position"][2, 0] > 0.0
+    assert len(result.holdings) == 40
+    assert set(result.holdings["instrument"]) == {"BTCUSD"}
+    assert result.holdings["position"][2] > 0.0
 
 
 def test_the_result_holds_what_the_run_recorded_and_what_it_was_given():

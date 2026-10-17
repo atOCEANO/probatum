@@ -1230,9 +1230,11 @@ class Margin(Wallet):
 
 
 class Trades:
-    """The round trips closed so far, oldest first, each column of ``result.trades``
-    a read-only array, ``open_bar`` and ``close_bar`` the Data's rows and
-    ``instrument`` the names."""
+    """The round trips closed so far, oldest first, read as ``result.trades`` is: a
+    column by name, ``trades["pnl"]`` or ``trades.pnl``, as a read-only array, and a
+    row by position, ``trades[-1]``, as a dict, iterating giving the rows. Its
+    ``open_bar`` and ``close_bar`` are the Data's rows, as ``bar.i`` is, where the
+    Result's count from its own first row, and ``instrument`` the names."""
 
 
     def __init__(self, columns, length):
@@ -1244,13 +1246,56 @@ class Trades:
         return self._length
 
 
+    @property
+    def columns(self):
+        """The columns' names, in order."""
+        return tuple(self._columns)
+
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            try:
+                return self._columns[key]
+            except KeyError:
+                raise KeyError(f"trades: no column {key!r}; use one of "
+                               f"{', '.join(self._columns)}") from None
+
+        if isinstance(key, numbers.Integral) and not isinstance(key, bool):
+            at = int(key) + self._length if key < 0 else int(key)
+            if not self._length:
+                raise IndexError(f"row: {int(key)} of no round trips; check "
+                                 f"len(account.trades) first")
+            if not 0 <= at < self._length:
+                raise IndexError(f"row: {int(key)} of {self._length:,} round trips; give "
+                                 f"one from {-self._length:,} to {self._length - 1:,}")
+            return {name: column[at].item() if isinstance(column[at], np.generic)
+                    else column[at] for name, column in self._columns.items()}
+
+        raise TypeError(f"key: {key!r}; give a column's name or a row's position")
+
+
+    def __iter__(self):
+        return (self[at] for at in range(self._length))
+
+
+    def __contains__(self, item):
+        if isinstance(item, str):
+            raise TypeError(f"{item!r} in trades: the round trips are rows, as dicts; ask "
+                            f"{item!r} in trades.columns")
+
+        return any(row == item for row in self)
+
+
     def __getattr__(self, name):
-        try:
-            return self.__dict__["_columns"][name]
-        except KeyError:
-            raise AttributeError(f"trades: no column {name!r}") from None
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        columns = self.__dict__["_columns"]
+        if name not in columns:
+            raise AttributeError(f"trades: no column {name!r}; use one of "
+                                 f"{', '.join(columns)}")
+        return columns[name]
 
 
     def __repr__(self):
         return f"Trades({self._length} closed)"
-

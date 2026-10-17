@@ -1,13 +1,18 @@
 """Every worked example on the Specification page, held to the cent.
 
-Each test is one example, named for what it shows, and runs it through the
-reference simulator written from that page. The engine is held to the examples it
-models by its own tests, which name the same numbers.
+Each test is one example, named for what it shows, and runs it through the reference
+simulator written from that page, or through probatum where the rule is the Python
+layer's own, a run's tables. The engine is held to the examples it models by its own
+tests, which name the same numbers.
 """
 
 import math
 
+import numpy as np
+import pandas as pd
 import pytest
+
+import probatum
 
 from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, periods_per_year,
                                  run)
@@ -1014,3 +1019,50 @@ def test_a_value_order_buys_60_contracts_and_a_fee_is_paid_in_the_coin():
     first, second = sim.fills
     assert first["fee"]   == pytest.approx(0.0005, rel=1e-12)
     assert second["size"] == pytest.approx(60.0, rel=1e-12)
+
+
+def hourly_bars(opens, closes, hours):
+    """Bars that open and close where given, at the given hours of 1 January 2024."""
+    opens, closes = np.array(opens, dtype=np.float64), np.array(closes, dtype=np.float64)
+    index = pd.DatetimeIndex([pd.Timestamp("2024-01-01", tz="UTC") + pd.Timedelta(hours=h)
+                              for h in hours])
+
+    return pd.DataFrame({
+        "open":   opens,
+        "high":   np.maximum(opens, closes),
+        "low":    np.minimum(opens, closes),
+        "close":  closes,
+        "volume": 1e9,
+    }, index=index)
+
+
+def test_three_rows_of_two_instruments_record_six_holdings_and_null_what_they_lack():
+    data = probatum.Data({
+        "BTCUSDT": hourly_bars([100.0, 100.0, 101.0], [100.0, 101.0, 102.0], range(3)),
+        "ETHUSDT": hourly_bars([10.0, 10.0, 10.0], [10.0, 10.0, 10.0], range(3)),
+    },
+        market="linear")
+
+    class Long(probatum.Strategy):
+
+        def next(self, bar, account):
+            if bar.i == 0:
+                account.target({"BTCUSDT": 0.5})
+
+    result = probatum.backtest(Long(), data, "frictionless")
+
+    assert len(result.ledger) == 3
+
+    holdings = list(result.holdings)
+    assert [(row["bar"], row["instrument"]) for row in holdings] == [
+        (0, "BTCUSDT"), (0, "ETHUSDT"), (1, "BTCUSDT"), (1, "ETHUSDT"), (2, "BTCUSDT"),
+        (2, "ETHUSDT")]
+    assert [row["drift"] is None for row in holdings] == [True, True, False, True,
+                                                         False, True]
+
+    [fill] = list(result.fills)
+    assert fill["bar"] == 1 and fill["order"] is not None
+
+    [trip] = list(result.trades)
+    assert trip["open"] and (trip["close_bar"], trip["close_time"], trip["exit"],
+                             trip["reason"]) == (None, None, None, None)
