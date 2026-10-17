@@ -18,6 +18,7 @@ import time
 
 import numpy as np
 
+import probatum
 from probatum import Batch, Engine, tune
 from probatum import Backtester, Strategy
 from probatum.rl import VectorEnv
@@ -131,6 +132,31 @@ def bench_tune(data, n_trials, n_jobs):
     return n_trials / dt
 
 
+def bench_array(width, bars=50_000):
+    t      = np.arange(bars, dtype=np.float64)
+    closes = np.stack([100.0 + 20.0 * np.sin(t / 15.0 + k) + 0.05 * t
+                       for k in range(width)], axis=1)
+    candles = np.stack([closes, closes + 1.0, closes - 1.0, closes,
+                        np.full_like(closes, 1e6)], axis=-1)
+
+    times = np.arange(bars, dtype=np.int64) * 3_600_000_000_000
+    data  = probatum.Data(
+        candles,
+        time   = times,
+        market = "linear",
+        symbol = [f"I{k}" for k in range(width)],
+    )
+
+    weights = np.full((bars, width), np.nan)
+    for k in range(width):
+        weights[k % 50::50, k]        = 1.0 / width
+        weights[(k + 25) % 50::50, k] = 0.0
+
+    venue = probatum.Venue()
+
+    return best_rate(lambda: probatum.backtest(weights, data, venue), bars)
+
+
 def bench_vectorenv(data, num_envs, steps):
     env = VectorEnv(data, num_envs=num_envs, window=32, market="perp", quote=10_000, seed=0)
     obs, _ = env.reset(seed=0)
@@ -177,6 +203,8 @@ def main():
     tune_trials = 48
     tune_seq    = bench_tune(data, n_trials=tune_trials, n_jobs=1)
     tune_par    = bench_tune(data, n_trials=tune_trials, n_jobs=-1)
+    array_one   = bench_array(1)
+    array_fifty = bench_array(50)
 
     rl_envs, rl_steps = 1_024, 2_000
     vectorenv_eps = bench_vectorenv(data, num_envs=rl_envs, steps=rl_steps)
@@ -186,6 +214,8 @@ def main():
     print(f"engine_raw_step,bars_per_sec,{engine_raw_bps:.0f},single env no strategy")
     print(f"engine_own_loop,bars_per_sec,{engine_bps:.0f},single env python loop")
     print(f"backtester,bars_per_sec,{backtester_bps:.0f},single env reporting wrapper")
+    print(f"array,bars_per_sec,{array_one:.0f},50000 bars N=1 weights in one call")
+    print(f"array,bars_per_sec,{array_fifty:.0f},50000 bars N=50 weights in one call")
     print(f"tune,trials_per_sec,{tune_seq:.2f},n_jobs=1 {tune_trials} trials")
     print(f"tune,trials_per_sec,{tune_par:.2f},n_jobs=-1 {tune_trials} trials {cores} cores")
     print(f"vectorenv,env_steps_per_sec,{vectorenv_eps:.0f},{rl_envs} envs x {rl_steps} steps")
