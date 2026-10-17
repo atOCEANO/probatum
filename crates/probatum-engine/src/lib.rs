@@ -3,6 +3,7 @@
 //! and the batched runner. Pure Rust, no Python; it builds on probatum-core's
 //! fidelity-neutral primitives.
 
+pub mod array;
 pub mod batch;
 pub mod candles;
 pub mod clock;
@@ -19,6 +20,7 @@ pub mod streams;
 pub mod sweep;
 pub mod window;
 
+pub use array::{Array, Barrier, Sizing};
 pub use batch::{BatchSnapshot, EnvBatch};
 pub use candles::{Candles, Instrument};
 pub use clock::Clock;
@@ -30,6 +32,6 @@ pub use schedule::Schedule;
 pub use script::{Action, OrderRef, Script};
 pub use sizes::{PriceRule, Sizes};
 pub use stats::Stats;
-pub use strategy::{run, Strategy};
+pub use strategy::{run, run_from, Strategy};
 pub use sweep::{builtin_strategy, run_sweep, SmaCross, StrategyFactory};
 pub use window::Trailing;

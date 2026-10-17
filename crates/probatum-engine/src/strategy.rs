@@ -24,7 +24,12 @@ pub trait Strategy: Send {
 /// Drive `engine` with `strategy` to the end of the data, returning the final
 /// state. The strategy sees each bar and places orders that fill on the next.
 pub fn run(engine: &mut Engine, strategy: &mut dyn Strategy) -> State {
-    let mut state = engine.reset();
+    run_from(engine, strategy, 0)
+}
+
+/// `run` with the account opened at bar `start`, as `Engine::reset_at` opens it.
+pub fn run_from(engine: &mut Engine, strategy: &mut dyn Strategy, start: usize) -> State {
+    let mut state = engine.reset_at(start);
     strategy.init(&state);
     while !engine.done() {
         strategy.next(&state, engine);

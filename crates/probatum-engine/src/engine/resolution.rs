@@ -462,7 +462,7 @@ impl Engine {
         let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
         let (starts, inside, reach) = (self.starts.clone(), self.inside.clone(), self.reach);
         let (entered, clips, clipped) = (self.entered.clone(), self.clips.clone(), self.clipped);
-        let budget = self.budget.clone();
+        let (budget, leg_fills) = (self.budget.clone(), self.leg_fills.clone());
         let reporter = self.reporter.take();
         let held = self.fill_offers(fills.to_vec(), true, false);
         let liquidates = held && self.reaches_trigger();
@@ -475,6 +475,7 @@ impl Engine {
         self.clipped = clipped;
         self.reach = reach;
         self.budget = budget;
+        self.leg_fills = leg_fills;
         self.notes.truncate(notes);
         self.flipped = flipped;
         self.fills = count;
@@ -675,6 +676,9 @@ impl Engine {
                     if applied > 0.0 {
                         if let Some(order) = self.book.get_mut(id) {
                             order.filled = Qty(order.filled.get() + applied);
+                        }
+                        if leg.is_some() {
+                            self.leg_fills[i] = self.tick;
                         }
                         // the first fill of either leg of a bracket, whole or in part,
                         // cancels the other, and its own remainder keeps resting

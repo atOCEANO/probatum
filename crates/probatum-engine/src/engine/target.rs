@@ -1,8 +1,9 @@
 //! `target`: the legs that bring each instrument it names to a weight of account
 //! equity, sized at the last closes and queued as market orders for the next opens,
 //! every reducing leg before every growing one so a rebalance is funded by its own
-//! sales. The weights asked are kept, and each row records how far the weight it
-//! holds has drifted from them (Specification, Target; ADR 0009).
+//! sales, or the legs that reach the position an array's quantity wants. The weights
+//! asked are kept, and each row records how far the weight it holds has drifted from
+//! them (Specification, Target; An array; ADR 0009).
 
 use probatum_core::{Market, Order, OrderId, Side, TimeInForce, Wallet};
 
@@ -22,9 +23,12 @@ pub enum TargetError {
 pub(super) struct Targets {
     /// The weight the latest target asked of each instrument, NaN where none has.
     pub(super) asked: Vec<f64>,
-    /// `asked` as it stood before this decision's first target, which a second in
-    /// the same decision restores before it asks again.
-    before: Vec<f64>,
+    /// The position the latest target wanted of each instrument where it asked a
+    /// quantity, NaN where it asked a weight or nothing (Specification, An array).
+    pub(super) wanted: Vec<f64>,
+    /// `asked` and `wanted` as they stood before this decision's first target, which
+    /// a second in the same decision restores before it asks again.
+    before: (Vec<f64>, Vec<f64>),
     /// The bar whose close the latest target was decided at.
     decided: Option<usize>,
     /// Each leg a target queued that may still be waiting, with the bar it was
@@ -39,7 +43,8 @@ impl Targets {
     pub(super) fn new(width: usize) -> Targets {
         Targets {
             asked: vec![f64::NAN; width],
-            before: vec![f64::NAN; width],
+            wanted: vec![f64::NAN; width],
+            before: (vec![f64::NAN; width], vec![f64::NAN; width]),
             decided: None,
             legs: Vec::new(),
             moved: None,
@@ -49,6 +54,7 @@ impl Targets {
     /// Forget every target, as a reset forgets the account.
     pub(super) fn reset(&mut self) {
         self.asked.fill(f64::NAN);
+        self.wanted.fill(f64::NAN);
         self.decided = None;
         self.legs.clear();
         self.moved = None;
@@ -87,6 +93,27 @@ impl Engine {
         tolerance: f64,
         transfer: bool,
     ) -> Result<Vec<OrderId>, TargetError> {
+        self.reach(weights, tolerance, transfer, false)
+    }
+
+    /// `target` with each value the position wanted of its instrument, in base units
+    /// or contracts, rather than a weight of equity (Specification, An array).
+    pub fn target_quantities(
+        &mut self,
+        quantities: &[(usize, f64)],
+        tolerance: f64,
+        transfer: bool,
+    ) -> Result<Vec<OrderId>, TargetError> {
+        self.reach(quantities, tolerance, transfer, true)
+    }
+
+    fn reach(
+        &mut self,
+        weights: &[(usize, f64)],
+        tolerance: f64,
+        transfer: bool,
+        quantities: bool,
+    ) -> Result<Vec<OrderId>, TargetError> {
         for &(i, weight) in weights {
             if self.account.markets[i] == Market::Spot && weight < 0.0 {
                 return Err(TargetError::Short {
@@ -101,9 +128,11 @@ impl Engine {
             if let Some(k) = self.targets.moved.take() {
                 self.transfers.remove(k);
             }
-            self.targets.asked.clone_from(&self.targets.before);
+            self.targets.asked.clone_from(&self.targets.before.0);
+            self.targets.wanted.clone_from(&self.targets.before.1);
         } else {
-            self.targets.before.clone_from(&self.targets.asked);
+            self.targets.before.0.clone_from(&self.targets.asked);
+            self.targets.before.1.clone_from(&self.targets.wanted);
             self.targets.moved = None;
         }
         self.targets.decided = Some(tick);
@@ -113,7 +142,12 @@ impl Engine {
         // fill beside this one's, sized from the same position
         self.cancel_legs(|decided, at| decided != tick && named.iter().any(|&(i, _)| i == at));
         for &(i, weight) in &named {
-            self.targets.asked[i] = weight;
+            let asked = if quantities {
+                (f64::NAN, weight)
+            } else {
+                (weight, f64::NAN)
+            };
+            (self.targets.asked[i], self.targets.wanted[i]) = asked;
         }
         let equity = self.equity();
         let (mut reducing, mut growing) = (Vec::new(), Vec::new());
@@ -129,7 +163,12 @@ impl Engine {
                 continue;
             }
             let q = self.account.positions[i].qty.get();
-            let mut leg = weight * equity / close - q;
+            let wanted = if quantities {
+                weight
+            } else {
+                weight * equity / close
+            };
+            let mut leg = wanted - q;
             let rules = self.config.sizes.then(|| self.candles.sizes(i));
             if let Some(sizes) = rules {
                 leg = sizes.down(leg.abs()).copysign(leg);

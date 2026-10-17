@@ -30,9 +30,9 @@ use probatum_core::{
 use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal};
 use probatum_engine::schedule::every;
 use probatum_engine::{
-    Action, BatchSnapshot, Candles, Clock, Engine as BarEngine, EngineConfig, EnvBatch, Impact,
-    Instrument, Intrabar, Limit, Liquidation, OrderRef, PriceRule, RoundTrip, Script, Sizes,
-    Spread, Stats, TargetError, Units,
+    run_from, Action, Array, Barrier, BatchSnapshot, Candles, Clock, Engine as BarEngine,
+    EngineConfig, EnvBatch, Impact, Instrument, Intrabar, Limit, Liquidation, OrderRef, PriceRule,
+    RoundTrip, Script, Sizes, Sizing, Spread, Stats, TargetError, Units,
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
@@ -3830,6 +3830,125 @@ fn run_script<'py>(
     Ok(out)
 }
 
+/// A barrier as an array run takes it: none, one return above zero for every row, or a
+/// `(K, N)` array of them laid out as the rows are, NaN for none.
+fn barrier_of(
+    name: &str,
+    given: Option<Bound<'_, PyAny>>,
+    rows: usize,
+    width: usize,
+) -> PyResult<Barrier> {
+    let Some(given) = given else {
+        return Ok(Barrier::None);
+    };
+    let above = |value: f64| value.is_finite() && value > 0.0;
+    if let Ok(value) = given.extract::<f64>() {
+        if !above(value) {
+            return Err(PyValueError::new_err(format!(
+                "{name}: {value}; give a return from the entry above 0"
+            )));
+        }
+        return Ok(Barrier::Every(value));
+    }
+    let values: PyReadonlyArray2<'_, f64> = given.extract()?;
+    let values = values.as_array();
+    if values.dim() != (rows, width) {
+        return Err(PyValueError::new_err(format!(
+            "{name}: an array of shape {:?} for {rows} rows of {width} instruments; give \
+             one return for each row and instrument",
+            values.dim()
+        )));
+    }
+    if let Some(((k, i), value)) = values
+        .indexed_iter()
+        .find(|(_, &value)| !value.is_nan() && !above(value))
+    {
+        return Err(PyValueError::new_err(format!(
+            "{name}: {value} at row {k} for instrument {i}; give a return above 0, or NaN \
+             for none"
+        )));
+    }
+    Ok(Barrier::Rows(values.iter().copied().collect()))
+}
+
+/// An array through `engine` in one call, its account opened at bar `start`: row `k`
+/// of `rows`, `(K, N)` in the venue's terms, is what the account asks of each
+/// instrument at the close of bar `start + k`, a weight of equity or, with `sizing`
+/// "quantity", the position wanted, a NaN holding and the last row never read, and
+/// `stop` and `take_profit` are each a return from the average entry or `(K, N)` of
+/// them, NaN for none (Specification, An array; Barriers on an array). The caller reads
+/// the run's records off the engine after it.
+#[pyfunction]
+#[pyo3(signature = (
+    engine, rows, sizing = "weight", tolerance = 0.0, stop = None, take_profit = None,
+    start = 0,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_array(
+    py: Python<'_>,
+    engine: &Bound<'_, Engine>,
+    rows: PyReadonlyArray2<'_, f64>,
+    sizing: &str,
+    tolerance: f64,
+    stop: Option<Bound<'_, PyAny>>,
+    take_profit: Option<Bound<'_, PyAny>>,
+    start: usize,
+) -> PyResult<()> {
+    let mut engine = engine.borrow_mut();
+    let (bars, width, units) = (engine.inner.num_bars(), engine.inner.width(), engine.units);
+    let values = rows.as_array();
+    if start >= bars || values.dim() != (bars - start, width) {
+        return Err(PyValueError::new_err(format!(
+            "rows: an array of shape {:?} from bar {start} of {bars} over {width} \
+             instruments; give one row for each bar from the first",
+            values.dim()
+        )));
+    }
+    let sizing = match sizing {
+        "weight" => Sizing::Weight,
+        "quantity" => Sizing::Quantity,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "sizing: {sizing:?}; use \"weight\" or \"quantity\""
+            )))
+        }
+    };
+    let tolerance = read_tolerance("", tolerance)?;
+    if let Some(((k, i), value)) = values
+        .indexed_iter()
+        .find(|(_, &value)| value.is_infinite())
+    {
+        return Err(PyValueError::new_err(format!(
+            "rows: {value} at row {k} for instrument {i}; give a finite value, or NaN to hold"
+        )));
+    }
+    let spot = |i: usize| engine.inner.market(i) == Market::Spot;
+    if let Some(((k, i), value)) = values
+        .indexed_iter()
+        .find(|&((_, i), &value)| value < 0.0 && spot(i))
+    {
+        return Err(PyValueError::new_err(format!(
+            "rows: {value} at row {k} for instrument {i}, which is spot and cannot be \
+             short; give it a value from 0"
+        )));
+    }
+    let values = values
+        .iter()
+        .map(|&value| match sizing {
+            Sizing::Weight => units.signed(value),
+            Sizing::Quantity => units.size(units.signed(value)),
+        })
+        .collect();
+    let stop = barrier_of("stop", stop, bars - start, width)?;
+    let take_profit = barrier_of("take_profit", take_profit, bars - start, width)?;
+    let mut array = Array::new(values, width, sizing, tolerance, stop, take_profit, units);
+    let inner = &mut engine.inner;
+    py.detach(|| {
+        run_from(inner, &mut array, start);
+    });
+    Ok(())
+}
+
 /// Bars a year on the clock `times`, each bar's open in UTC nanoseconds: the rows
 /// less one per 365 days of their span, or `None` with fewer than two rows
 /// (ADR 0004).
@@ -3846,6 +3965,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyState>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
     m.add_function(wrap_pyfunction!(run_script, m)?)?;
+    m.add_function(wrap_pyfunction!(run_array, m)?)?;
     m.add_function(wrap_pyfunction!(arrow::arrow_columns, m)?)?;
     Ok(())
 }

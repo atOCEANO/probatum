@@ -296,6 +296,9 @@ pub struct Engine {
     /// take there, filled from its trailing volume at the bar's first fill on it
     /// (Specification, The liquidity budget).
     budget: Vec<(usize, f64)>,
+    /// The bar a bracket leg last filled on each instrument, whole or in part, which an
+    /// array's barriers read, `usize::MAX` where none has since the reset.
+    leg_fills: Vec<usize>,
     unseen: Unseen,
     /// The stream a random setting draws each bar's way from, which runs on across
     /// resets, so each episode of one engine draws afresh.
@@ -370,6 +373,7 @@ impl Engine {
             entered: vec![(f64::NAN, false); width],
             reach: 0.0,
             budget: vec![(usize::MAX, 0.0); width],
+            leg_fills: vec![usize::MAX; width],
             unseen: {
                 let worse = config.intrabar != Intrabar::Optimistic;
                 Unseen {
@@ -483,6 +487,13 @@ impl Engine {
                 let mark = self.marks[i];
                 let signed = if qty == 0.0 { 0.0 } else { qty * mark };
                 let weight = if equity > 0.0 { signed / equity } else { 0.0 };
+                // a wanted position asks its notional at this close over equity
+                let asked = match self.targets.wanted[i] {
+                    wanted if wanted.is_nan() => self.targets.asked[i],
+                    _ if mark.is_nan() => f64::NAN,
+                    wanted if equity > 0.0 => wanted * mark / equity,
+                    _ => 0.0,
+                };
                 reporter.record_leg(Leg {
                     position: qty,
                     entry: position.avg_entry.get(),
@@ -494,7 +505,7 @@ impl Engine {
                         position.unrealized(Price(mark))
                     },
                     weight,
-                    drift: self.targets.asked[i] - weight,
+                    drift: asked - weight,
                 });
             }
         }
@@ -525,6 +536,7 @@ impl Engine {
         self.bust = false;
         // what an earlier episode took of a bar's budget is not taken in this one
         self.budget.fill((usize::MAX, 0.0));
+        self.leg_fills.fill(usize::MAX);
         if self.reporter.is_some() {
             self.reporter = Some(Reporter::new());
             self.record_ledger();
@@ -581,6 +593,16 @@ impl Engine {
     /// Instrument `i`'s last close, the mark its position is valued at.
     pub fn mark(&self, i: usize) -> f64 {
         self.marks[i]
+    }
+
+    /// Instrument `i`'s average entry price, zero while it is flat.
+    pub fn entry(&self, i: usize) -> f64 {
+        self.account.positions[i].avg_entry.get()
+    }
+
+    /// Whether a bracket leg filled on instrument `i` on this bar, whole or in part.
+    pub fn leg_filled(&self, i: usize) -> bool {
+        self.leg_fills[i] == self.tick
     }
 
     /// Bars a year by the series' own clock, or `None` when its bars came without

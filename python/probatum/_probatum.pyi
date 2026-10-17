@@ -221,4 +221,13 @@ def run(
     script: dict[int, list[tuple[str, dict[str, Any]]]],
     times: Optional[np.ndarray] = ...,
 ) -> dict[str, Any]: ...
+def run_array(
+    engine: Engine,
+    rows: np.ndarray,
+    sizing: str = ...,
+    tolerance: float = ...,
+    stop: Optional[float | np.ndarray] = ...,
+    take_profit: Optional[float | np.ndarray] = ...,
+    start: int = ...,
+) -> None: ...
 def arrow_columns(data: Any) -> list[tuple[str, str, Optional[np.ndarray], str]]: ...
