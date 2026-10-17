@@ -111,7 +111,7 @@ class Swing(probatum.Strategy):
 
 
 def run(candles):
-    return probatum.backtest.Backtester(candles).run(Swing())
+    return probatum.Backtester(candles).run(Swing())
 
 
 def observe(built, tmp_path, name="chart.html", act=None):

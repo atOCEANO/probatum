@@ -24,7 +24,7 @@ from __future__ import annotations
 import numpy as np
 
 from ._data import annualization, prepare
-from .backtest import Backtester, Strategy
+from ._backtester import Backtester, Strategy
 
 __all__ = ["walk_forward", "WalkForward"]
 

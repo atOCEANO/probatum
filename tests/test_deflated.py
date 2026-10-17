@@ -12,7 +12,7 @@ optuna = pytest.importorskip("optuna")
 
 import probatum
 from probatum import metrics
-from probatum.backtest import Strategy
+from probatum import Strategy
 
 SPACE = {"fast": (3, 12), "slow": (15, 40)}
 

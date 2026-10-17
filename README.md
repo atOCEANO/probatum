@@ -123,7 +123,7 @@ The order verbs mirror a real exchange, so a strategy is written against the sam
 A classic `Strategy` class with `init` and `next`, driven over the series, returning stats, the equity curve, and the trade log. Set `warmup` to the longest history a decision reads and `next` is not called until that many bars exist, which replaces the guard every strategy used to open with and closes what that guard was really for: on an early bar `close[i - 50]` is a negative index, numpy resolves it from the **end** of the array, and the rule reads prices from the future without raising anything.
 
 ```python
-from probatum.backtest import Backtester, Strategy
+from probatum import Backtester, Strategy
 
 class BuyDip(Strategy):
     warmup = 1                                # next() waits until a previous bar exists
@@ -204,7 +204,7 @@ Search a strategy's parameters for the setting that maximizes an objective. `tun
 
 ```python
 from probatum import tune
-from probatum.backtest import Strategy
+from probatum import Strategy
 
 class SmaCross(Strategy):
     def __init__(self, fast, slow):           # the tunables, as constructor arguments
@@ -285,7 +285,7 @@ import numpy as np
 import probatum
 from probatum.plot import Background, Band, Histogram, Level, Line
 
-result = probatum.backtest.Backtester(candles=frame, market="spot").run(strategy)
+result = probatum.Backtester(candles=frame, market="spot").run(strategy)
 
 # the bars the rule was actually in the market, a round trip still open at the end
 # running to the last. Bars index candles, so this is one entry per candle; an

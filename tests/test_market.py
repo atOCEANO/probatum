@@ -7,7 +7,7 @@ import pytest
 
 import probatum
 from probatum import Market
-from probatum.backtest import Strategy
+from probatum import Strategy
 
 
 def series(n=60):
@@ -92,7 +92,7 @@ def test_the_rl_env_gets_the_same_venue_too():
 
 
 def test_a_market_backtest_matches_the_same_knobs_typed_out():
-    from probatum.backtest import Backtester
+    from probatum import Backtester
 
     venue     = Market(kind="perp", fee_taker=0.001, slippage_bps=3.0)
     data      = series()
@@ -166,7 +166,8 @@ def test_a_market_prints_only_what_was_chosen():
 
 
 def test_the_keyword_form_still_works_untouched():
-    from probatum.backtest import Backtester
+    from probatum import Backtester
+
     result = Backtester(
         series(),
         market           = "perp",

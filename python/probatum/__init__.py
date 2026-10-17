@@ -4,7 +4,7 @@ The compiled Rust core is exposed as ``probatum._probatum``; this package re-exp
 public surface. ``Engine`` drives a single environment one bar at a time: build it
 from a ``(T, 5)`` OHLCV numpy array, then ``reset`` and ``step``. ``Batch`` runs
 many independent envs over one shared series and steps them in parallel with the
-GIL released. The Python wrappers (rl, backtest) layer on top of these, and ``tune``
+GIL released. The Python wrappers (rl, Backtester) layer on top of these, and ``tune``
 searches a strategy's parameters by running many backtests across cores. ``chart``
 renders a frame, your own arrays and a run into one self-contained HTML document
 for a notebook cell or a file, computing nothing itself. ``Venue`` holds a venue's
@@ -14,17 +14,17 @@ rules, and ``venues`` the presets, each one a Venue.
 from ._probatum import Batch, Engine
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
-from . import backtest, metrics, plot, rl, ta, venues
-from .backtest import Strategy
+from . import metrics, plot, rl, ta, venues
+from ._backtester import Backtester, BacktestResult, Strategy
 from .market import Market
 from ._tune import tune
 from ._walk import walk_forward
 from ._chart import chart, chart_defaults
 
 __all__ = [
-    "Batch", "Data", "Engine", "Instrument", "Market", "Strategy", "Venue", "chart",
-    "chart_defaults", "to_ohlcv", "tune", "walk_forward", "backtest", "metrics", "plot",
-    "rl", "ta", "venues",
+    "BacktestResult", "Backtester", "Batch", "Data", "Engine", "Instrument", "Market",
+    "Strategy", "Venue", "chart", "chart_defaults", "to_ohlcv", "tune", "walk_forward",
+    "metrics", "plot", "rl", "ta", "venues",
 ]
 
 try:

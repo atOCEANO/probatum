@@ -544,7 +544,7 @@ def test_an_indicator_drives_a_strategy_and_draws_on_the_chart():
     )
 
     strategy = Cross()
-    result   = probatum.backtest.Backtester(frame).run(strategy)
+    result   = probatum.Backtester(frame).run(strategy)
 
     # the same array the rule traded on goes straight onto the chart, no padding
     chart = probatum.chart(frame=frame, marks=probatum.plot.Line(

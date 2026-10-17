@@ -108,7 +108,7 @@ class Market:
 
     def backtest(self, candles, periods_per_year=None, risk_free=0.0):
         """A ``Backtester`` over ``candles`` at this venue."""
-        from .backtest import Backtester
+        from ._backtester import Backtester
         return Backtester(
             candles,
             periods_per_year = periods_per_year,

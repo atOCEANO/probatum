@@ -63,7 +63,7 @@ def time_batch(data, num_envs, passes):
 
 
 def time_backtest(data, passes):
-    from probatum.backtest import Backtester, Strategy
+    from probatum import Backtester, Strategy
 
     class SmaCross(Strategy):
 

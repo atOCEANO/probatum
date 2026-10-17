@@ -11,7 +11,7 @@ import pytest
 import probatum
 from probatum import metrics
 from probatum._walk import WalkForward
-from probatum.backtest import Backtester, BacktestResult, Strategy
+from probatum import Backtester, BacktestResult, Strategy
 
 
 def series(n=120, seed=3):

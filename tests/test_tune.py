@@ -14,7 +14,7 @@ optuna = pytest.importorskip("optuna")
 pytest.importorskip("cloudpickle")
 
 import probatum
-from probatum.backtest import Strategy
+from probatum import Strategy
 from probatum._tune import Categorical, Float, Int, _CloudPickled, _evaluate, _to_distribution
 
 
@@ -318,7 +318,7 @@ def test_the_holdout_is_the_end_of_the_series_and_never_the_start():
     # and the winner really is re-run on that tail rather than on the head
     result = probatum.tune(SmaCross, SPACE, data, n_trials=6, seed=0, oos=0.3,
                        periods_per_year=365.0, fee_taker=0.0, fee_maker=0.0)
-    expected = probatum.backtest.Backtester(
+    expected = probatum.Backtester(
         data[210:],
         periods_per_year = 365.0,
         fee_taker        = 0.0,
@@ -504,7 +504,7 @@ def test_the_whole_venue_reaches_every_trial_and_not_only_the_fees():
     result = tuned(Crowd, DEPTH, data, objective="total_return_pct", n_trials=8,
                    n_jobs=2, seed=0, sampler="random", **VENUE)
 
-    venue = probatum.backtest.Backtester(
+    venue = probatum.Backtester(
         data,
         periods_per_year = 365.0,
         risk_free        = 0.0,
@@ -527,7 +527,7 @@ def test_the_whole_venue_reaches_every_trial_and_not_only_the_fees():
     # the winner's own parameters reach a different set of stats
     full = venue.run(Crowd(**result.best_params)).stats
     for knob in sorted(DEFAULTS):
-        loosened = probatum.backtest.Backtester(
+        loosened = probatum.Backtester(
             data,
             periods_per_year = 365.0,
             risk_free        = 0.0,

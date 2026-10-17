@@ -122,7 +122,7 @@ def prelude():
     data     = frame()
     close    = data.close
     strategy = SmaCross(fast=20, slow=50)
-    result   = probatum.backtest.Backtester(candles=data).run(strategy)
+    result   = probatum.Backtester(candles=data).run(strategy)
 
     fast, slow = close.rolling(20).mean(), close.rolling(50).mean()
     logret = np.log(close / close.shift(1))

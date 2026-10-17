@@ -1157,7 +1157,7 @@ def cost_curve(strategy, data, costs=(0.0, 2.0, 5.0, 10.0, 20.0), **config):
     way every run starts from the same strategy, since the point of the sweep is
     that only the fee moved (ADR 0024).
     """
-    from .backtest import Backtester
+    from ._backtester import Backtester
     _own_the_fees(config, "cost_curve")
 
     rebuild = _rebuilder(strategy)
@@ -1191,7 +1191,7 @@ def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
     in the first week than any probability, because it says how much of the edge is
     real and how much is the absence of friction.
     """
-    from .backtest import Backtester
+    from ._backtester import Backtester
     _own_the_fees(config, "breakeven_bps")
     rebuild = _rebuilder(strategy)
 
@@ -1357,7 +1357,7 @@ def _ran_on(result):
 
 def _fingerprint_of(frame):
     from ._data import to_ohlcv
-    from .backtest import _fingerprint
+    from ._backtester import _fingerprint
 
     try:
         return _fingerprint(to_ohlcv(frame))

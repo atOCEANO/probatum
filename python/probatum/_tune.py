@@ -1,8 +1,8 @@
-"""Parameter tuning over the ``backtest.Strategy`` spine.
+"""Parameter tuning over the ``Strategy`` spine.
 
 ``tune`` searches a strategy's parameters for the configuration that maximizes (or
 minimizes) an objective, running each trial as a full backtest through the same
-``probatum.backtest.Backtester`` a single run uses. The same ``Strategy`` subclass
+``probatum.Backtester`` a single run uses. The same ``Strategy`` subclass
 feeds a backtest and a tune; the difference is that ``tune`` builds a fresh one per
 trial from the sampled parameters, ``StrategyClass(**params)``, so a strategy
 declares its tunables as constructor arguments and stores them as fields.
@@ -58,7 +58,7 @@ result has to be reproducible.
 to the workers; both install with ``pip install 'probatum[tune]'``.
 
     from probatum import tune
-    from probatum.backtest import Strategy
+    from probatum import Strategy
 
 
     class SmaCross(Strategy):
@@ -102,7 +102,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 
 from ._data import annualization, prepare
-from .backtest import Backtester
+from ._backtester import Backtester
 
 __all__ = ["tune", "Int", "Float", "Categorical", "TuneResult"]
 
@@ -549,7 +549,7 @@ def tune(
 ):
     """Search ``strategy``'s parameters over ``space`` for the best ``objective``.
 
-    ``strategy`` is a ``backtest.Strategy`` subclass, or any callable that builds one
+    ``strategy`` is a ``Strategy`` subclass, or any callable that builds one
     from the sampled parameters; each trial runs ``strategy(**params)`` through a
     ``Backtester`` on ``data`` (a numpy array, DataFrame, or parquet path) with the
     given engine configuration. ``space`` maps each parameter name to a range (see

@@ -62,7 +62,7 @@ All three together is the chart most people are actually after:
 ```python
 strategy = SmaCross(fast=20, slow=50)
 
-result = probatum.backtest.Backtester(
+result = probatum.Backtester(
     candles=frame,
     market="perp",
     fee_taker=0.0005,
@@ -335,7 +335,7 @@ A pandas Series, a numpy array or a plain list all work, and all are read **by p
 ```python
 strategy = SmaCross(fast=20, slow=50)
 
-result = probatum.backtest.Backtester(candles=frame).run(strategy)
+result = probatum.Backtester(candles=frame).run(strategy)
 
 probatum.chart(
     frame=frame,

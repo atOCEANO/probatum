@@ -10,7 +10,7 @@ optuna = pytest.importorskip("optuna")
 import probatum
 from probatum import metrics
 from probatum._walk import _layout
-from probatum.backtest import Strategy
+from probatum import Strategy
 
 SPACE = {"fast": (3, 10), "slow": (12, 30)}
 
@@ -225,7 +225,7 @@ def test_a_window_keeps_the_history_before_it_rather_than_restarting():
         assert record["bars_traded"] == last - first
 
         # while the isolated run the score used to come from could not trade at all
-        alone = probatum.backtest.Backtester(
+        alone = probatum.Backtester(
             data[first:last],
             periods_per_year = 365.0,
             fee_taker        = 0.0,

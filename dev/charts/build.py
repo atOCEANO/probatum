@@ -253,7 +253,7 @@ def start_here(raw):
     frame = resample_to(bars=raw, rule="1h").loc["2025"]
 
     strategy = Channel(length=96, fast=12, slow=26, signal=9, trend=480)
-    result   = probatum.backtest.Backtester(
+    result   = probatum.Backtester(
         candles          = frame,
         market           = "spot",
         quote            = 10_000.0,
@@ -303,7 +303,7 @@ def cloud_break(raw):
         top = numpy.maximum(senkou_a[:len(frame)], senkou_b[:len(frame)]),
         low = numpy.minimum(senkou_a[:len(frame)], senkou_b[:len(frame)]),
     )
-    result = probatum.backtest.Backtester(
+    result = probatum.Backtester(
         candles          = frame,
         market           = "spot",
         quote            = 10_000.0,
@@ -376,7 +376,7 @@ def documented_examples(raw):
     ])
 
     strategy = ExampleCross(fast=20, slow=50)
-    result   = probatum.backtest.Backtester(
+    result   = probatum.Backtester(
         candles          = frame,
         market           = "spot",
         quote            = 10_000.0,

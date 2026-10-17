@@ -73,7 +73,7 @@ def sank(n=6):
 
 def run(data=None):
     data = frame(8) if data is None else data
-    return probatum.backtest.Backtester(
+    return probatum.Backtester(
         data,
         market    = "spot",
         fee_taker = 0.0,
@@ -245,11 +245,12 @@ def test_a_run_that_ends_where_it_started_reads_zero_on_the_equity_panel():
         index=pd.date_range("2024-01-01", periods=close.size, freq="1h"),
     )
 
-    result = probatum.backtest.Backtester(
+    result = probatum.Backtester(
         data,
         fee_taker = 0.0,
         fee_maker = 0.0,
     ).run(BuyAtOpen())
+
     spec = probatum.chart(data, run=result).spec()
     base, last = spec["equity"]["v"][0], spec["equity"]["v"][-1]
 
@@ -262,7 +263,7 @@ def test_a_run_that_ends_where_it_started_reads_zero_on_the_equity_panel():
 def test_a_result_with_no_opening_balance_still_draws_from_bar_one():
     # a hand-built result carries no initial, and there is nothing honest to seed
     # with, so the track keeps the shape the curve has
-    bare = probatum.backtest.BacktestResult(
+    bare = probatum.BacktestResult(
         stats        = {},
         equity_curve = np.arange(7, dtype=float) + 100.0,
         trades       = [],
@@ -657,12 +658,13 @@ def test_the_drawdown_panel_agrees_with_the_engine():
     # recorded equity point is already under the opening balance and a peak taken
     # from the curve alone reports no drawdown at all
     data   = sank()
-    result = probatum.backtest.Backtester(
+    result = probatum.Backtester(
         data,
         market    = "spot",
         fee_taker = 0.0,
         fee_maker = 0.0,
     ).run(BuyAtOpen())
+
     values = probatum.chart(data, result).spec()["drawdown"]["v"]
     worst  = min(v for v in values if v is not None)
 
@@ -681,7 +683,7 @@ def test_a_run_that_does_not_report_its_opening_balance_still_charts():
 def test_a_drawdown_is_capped_at_a_total_loss():
     # bad debt takes equity below zero (ADR 0017), and the engine caps there for a
     # reason: uncapped, a deeper bust reports a larger fall than a wipeout
-    result = probatum.backtest.BacktestResult(
+    result = probatum.BacktestResult(
         stats        = {},
         equity_curve = np.array([10.0, -50.0]),
         trades       = [],
@@ -1036,7 +1038,7 @@ def test_focus_of_a_trade_frames_that_trade():
 
 def test_focus_of_a_round_trip_still_open_frames_it_to_the_last_bar():
     data   = frame(60)
-    result = probatum.backtest.Backtester(
+    result = probatum.Backtester(
         data,
         market    = "spot",
         fee_taker = 0.0,
@@ -1847,8 +1849,7 @@ def test_a_forced_close_is_marked_in_the_trade_payload():
     # conditional and has to be asserted here instead. A forced close reads as an
     # ordinary exit otherwise, and the leverage that caused it goes unread
     data = sank()
-
-    dead = probatum.backtest.Backtester(
+    dead = probatum.Backtester(
         data,
         market    = "perp",
         quote     = 100.0,
@@ -1882,7 +1883,7 @@ def test_the_drawdown_panel_falls_from_the_running_peak_not_from_the_balance():
         index=pd.date_range("2024-01-01", periods=4, freq="1h"),
     )
 
-    result = probatum.backtest.Backtester(
+    result = probatum.Backtester(
         data,
         market    = "spot",
         fee_taker = 0.0,

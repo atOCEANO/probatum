@@ -1,11 +1,11 @@
-"""Tests for the probatum.backtest wrapper: it should drive a Strategy through the
+"""Tests for probatum.Backtester: it should drive a Strategy through the
 engine and bundle stats, the equity curve, and the trade log.
 """
 
 import numpy as np
 import pytest
 
-from probatum.backtest import Backtester, BacktestResult, Strategy
+from probatum import Backtester, BacktestResult, Strategy
 
 
 def series():

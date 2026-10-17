@@ -19,7 +19,7 @@ import time
 import numpy as np
 
 from probatum import Batch, Engine, tune
-from probatum.backtest import Backtester, Strategy
+from probatum import Backtester, Strategy
 from probatum.rl import VectorEnv
 
 BARS = 10_000

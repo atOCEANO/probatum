@@ -14,7 +14,7 @@ import re
 
 import probatum
 from probatum import metrics, plot, ta
-from probatum.backtest import Backtester
+from probatum import Backtester
 
 # the gate copies the pages to /docs; a source checkout has them beside tests
 _CANDIDATES = (

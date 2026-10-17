@@ -52,7 +52,7 @@ def test_to_ohlcv_from_parquet(tmp_path):
 
 
 def test_backtester_accepts_a_dataframe():
-    from probatum.backtest import Backtester, Strategy
+    from probatum import Backtester, Strategy
 
     class Noop(Strategy):
 

@@ -37,8 +37,9 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.venues` | The presets, each a Venue: `binance_perp`, `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
 | `probatum.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
-| `probatum.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
-| `probatum.Strategy` | The base class a strategy subclasses, re-exported from `probatum.backtest`. [Below](#backtesting). |
+| `probatum.Backtester` | Drive a `Strategy` over one series, get stats, equity, and trades. [Below](#backtesting). |
+| `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#backtesting). |
+| `probatum.Strategy` | The base class a strategy for `Backtester` subclasses. [Below](#backtesting). |
 | `probatum.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
 | `probatum.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
 | `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
@@ -499,10 +500,10 @@ The full contract, every constructor argument, the observation and reward shapes
 
 ## Backtesting
 
-`probatum.backtest` wraps the single engine into a classic strategy runner. Reporting is always on, so the result carries the stats, equity curve, and trades.
+`probatum.Backtester` wraps the single engine into a classic strategy runner. Reporting is always on, so the result carries the stats, equity curve, and trades.
 
 ```python
-from probatum.backtest import Backtester, Strategy
+from probatum import Backtester, Strategy
 
 class SmaCross(Strategy):
     warmup = 30                               # next() waits for 30 bars of history
@@ -669,7 +670,7 @@ A refused placement still returns `None`, and the log holds it under the id it w
 
 ```python
 from probatum import tune
-from probatum.backtest import Strategy
+from probatum import Strategy
 
 
 class SmaCross(Strategy):
@@ -978,7 +979,7 @@ It computes nothing and knows no indicator names: you bring arrays, it turns the
 import probatum
 from probatum.plot import Line, Band, Level, Panel
 
-result = probatum.backtest.Backtester(frame, market="perp", fee_taker=0.0005).run(s)
+result = probatum.Backtester(frame, market="perp", fee_taker=0.0005).run(s)
 
 probatum.chart(frame, [                                  # matched by type, in any order
     Line(s.fast, "SMA 20"),                          # the strategy's own array, not a copy
