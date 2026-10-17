@@ -133,10 +133,11 @@ def bench_tune(data, n_trials, n_jobs):
     return n_trials / dt
 
 
-def bench_array(width, bars=50_000):
+def weighted(width, bars):
     t      = np.arange(bars, dtype=np.float64)
     closes = np.stack([100.0 + 20.0 * np.sin(t / 15.0 + k) + 0.05 * t
                        for k in range(width)], axis=1)
+
     candles = np.stack([closes, closes + 1.0, closes - 1.0, closes,
                         np.full_like(closes, 1e6)], axis=-1)
 
@@ -153,9 +154,52 @@ def bench_array(width, bars=50_000):
         weights[k % 50::50, k]        = 1.0 / width
         weights[(k + 25) % 50::50, k] = 0.0
 
+    return data, weights
+
+
+def bench_array(width, bars=50_000):
+    data, weights = weighted(width, bars)
     venue = probatum.Venue()
 
     return best_rate(lambda: probatum.backtest(weights, data, venue), bars)
+
+
+class Decided(Strategy):
+    """The array's weights decided at each close, a target naming the instruments its
+    row gives, or with ``every`` the weight last given held by a target at every
+    close of one instrument."""
+
+
+    def __init__(self, weights, every=False):
+        self.weights = weights
+        self.every   = every
+
+
+    def init(self, data):
+        names      = data.names
+        self.given = [{} for _ in range(len(data))]
+        for t, k in zip(*np.nonzero(~np.isnan(self.weights))):
+            self.given[t][names[k]] = float(self.weights[t, k])
+
+        self.held = 0.0
+
+
+    def next(self, bar, account):
+        given = self.given[bar.i]
+
+        if self.every:
+            self.held = given.get("I0", self.held)
+            account.target(self.held)
+        elif given:
+            account.target(given)
+
+
+def bench_strategy(width, every=False, bars=50_000):
+    data, weights = weighted(width, bars)
+    venue = probatum.Venue()
+
+    return best_rate(lambda: probatum.backtest(Decided(weights, every), data, venue),
+                     bars)
 
 
 def bench_vectorenv(data, num_envs, steps):
@@ -201,11 +245,14 @@ def main():
     engine_bps     = bench_engine(data)
     backtester_bps = bench_backtester(data)
 
-    tune_trials = 48
-    tune_seq    = bench_tune(data, n_trials=tune_trials, n_jobs=1)
-    tune_par    = bench_tune(data, n_trials=tune_trials, n_jobs=-1)
-    array_one   = bench_array(1)
-    array_fifty = bench_array(50)
+    tune_trials    = 48
+    tune_seq       = bench_tune(data, n_trials=tune_trials, n_jobs=1)
+    tune_par       = bench_tune(data, n_trials=tune_trials, n_jobs=-1)
+    array_one      = bench_array(1)
+    array_fifty    = bench_array(50)
+    strategy_one   = bench_strategy(1)
+    strategy_every = bench_strategy(1, every=True)
+    strategy_fifty = bench_strategy(50)
 
     rl_envs, rl_steps = 1_024, 2_000
     vectorenv_eps = bench_vectorenv(data, num_envs=rl_envs, steps=rl_steps)
@@ -217,6 +264,12 @@ def main():
     print(f"backtester,bars_per_sec,{backtester_bps:.0f},single env reporting wrapper")
     print(f"array,bars_per_sec,{array_one:.0f},50000 bars N=1 weights in one call")
     print(f"array,bars_per_sec,{array_fifty:.0f},50000 bars N=50 weights in one call")
+    print(f"strategy,bars_per_sec,{strategy_one:.0f},50000 bars N=1 the same weights "
+          f"decided at each close")
+    print(f"strategy,bars_per_sec,{strategy_every:.0f},50000 bars N=1 a target at every "
+          f"close")
+    print(f"strategy,bars_per_sec,{strategy_fifty:.0f},50000 bars N=50 the same weights "
+          f"decided at each close")
     print(f"tune,trials_per_sec,{tune_seq:.2f},n_jobs=1 {tune_trials} trials")
     print(f"tune,trials_per_sec,{tune_par:.2f},n_jobs=-1 {tune_trials} trials {cores} cores")
     print(f"vectorenv,env_steps_per_sec,{vectorenv_eps:.0f},{rl_envs} envs x {rl_steps} steps")
