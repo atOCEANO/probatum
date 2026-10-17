@@ -216,7 +216,7 @@ fn candles_from_array(
         ));
     }
     for (i, bar) in bars.iter().enumerate() {
-        check_bar(bar, &format!("row {i}"))?;
+        check_bar(bar, || format!("row {i}"))?;
     }
     match times {
         None => Ok(Candles::new(bars)),
@@ -228,15 +228,16 @@ fn candles_from_array(
 }
 
 /// Refuse a bar with a value that is not finite, whose four prices are not a bar,
-/// whose low is at or below zero or whose volume is negative, naming `at`, where it
-/// sits.
-fn check_bar(bar: &Candle, at: &str) -> PyResult<()> {
+/// whose low is at or below zero or whose volume is negative, naming where it sits
+/// as `at` writes it, which only a refusal calls.
+fn check_bar(bar: &Candle, at: impl Fn() -> String) -> PyResult<()> {
     // A bar's values are finite: a non-finite candle would silently poison every mark
     // and equity downstream, and a series of one instrument has no row without a bar.
     let values = [bar.open, bar.high, bar.low, bar.close, bar.volume];
     if let Some(value) = values.into_iter().find(|value| !value.is_finite()) {
         return Err(PyValueError::new_err(format!(
-            "candles: {value} at {at}; clean NaN and inf rows first"
+            "candles: {value} at {}; clean NaN and inf rows first",
+            at()
         )));
     }
     // and that the four prices are a bar. The taker clamp bounds a fill to what
@@ -253,10 +254,14 @@ fn check_bar(bar: &Candle, at: &str) -> PyResult<()> {
         && bar.close <= bar.high)
     {
         return Err(PyValueError::new_err(format!(
-            "candles are not a bar at {at}: open {}, high {}, low {}, close {}; need low \
+            "candles are not a bar at {}: open {}, high {}, low {}, close {}; need low \
              <= open <= high and low <= close <= high, so check the column order, which \
              is open, high, low, close, volume",
-            bar.open, bar.high, bar.low, bar.close
+            at(),
+            bar.open,
+            bar.high,
+            bar.low,
+            bar.close
         )));
     }
     // A price at or below zero has no logarithm for the window's deviation and no
@@ -265,14 +270,16 @@ fn check_bar(bar: &Candle, at: &str) -> PyResult<()> {
     // the least of them
     if bar.low <= 0.0 {
         return Err(PyValueError::new_err(format!(
-            "candles: a low of {} at {at}; give prices above 0",
-            bar.low
+            "candles: a low of {} at {}; give prices above 0",
+            bar.low,
+            at()
         )));
     }
     if bar.volume < 0.0 {
         return Err(PyValueError::new_err(format!(
-            "candles: a volume of {} at {at}; give a volume of 0 or more",
-            bar.volume
+            "candles: a volume of {} at {}; give a volume of 0 or more",
+            bar.volume,
+            at()
         )));
     }
     Ok(())
@@ -327,7 +334,7 @@ fn candles_from_universe(
                      values, or NaN in all five where it printed no bar"
                 )));
             }
-            check_bar(&bar, &format!("row {t}, instrument {i}"))?;
+            check_bar(&bar, || format!("row {t}, instrument {i}"))?;
             printed = true;
         }
         if !printed {
