@@ -66,6 +66,7 @@ _API = {
     "Data": probatum.Data,
     "from_router": probatum.Data.from_router,
     "load": probatum.Data.load,
+    "Result.load": probatum.Result.load,
     # a preset's replace takes the settings the constructor does
     "Venue": probatum.Venue,
 }
@@ -120,6 +121,11 @@ def called(func):
     base = func.value
     if isinstance(base, ast.Name) and base.id in _ROOTS:
         return func.attr
+
+    # a Result's methods are keyed by the class, since load is the Data's name too
+    if (isinstance(base, ast.Attribute) and base.attr == "Result"
+            and isinstance(base.value, ast.Name) and base.value.id == "probatum"):
+        return f"Result.{func.attr}"
 
     if (isinstance(base, ast.Attribute) and base.attr in _ROOTS | {"Data"}
             and isinstance(base.value, ast.Name) and base.value.id in _ROOTS):

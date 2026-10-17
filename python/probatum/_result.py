@@ -1,21 +1,28 @@
 """What one run produced, whatever its policy was: its equity and returns as arrays and
-its records as tables any Arrow reader takes (ADR 0026)."""
+its records as tables any Arrow reader takes, saved as files any tool reads
+(ADR 0026)."""
 
 import copy
 import functools
 import importlib
 import importlib.metadata
 import json
+import os
+import pathlib
 import platform
 import sys
 
 import numpy as np
 
+from . import _ipc
 from ._probatum import Table as _Held
 from ._venue import _settlement
 
+# the format a saved Result is written in, which this version reads, as every later
+# one will
+FORMAT = 1
 # each table a Result holds: its columns, of a kind each, and whether each can hold a
-# null, as the binding builds them
+# null, as the binding builds them and a saved Result's files hold them
 SCHEMAS = {
     "ledger": [("bar", "int", False), ("time", "time", False)]
     + [(name, "float", True) for name in (
@@ -45,9 +52,23 @@ SCHEMAS = {
         "realized", "fees", "funding", "pnl", "ret", "best", "worst")]
     + [("reason", "text", True), ("open", "bool", False)],
 }
+# the statistics a run reports, in the order the binding gives them, the counts among
+# them integers
+STATS = ("total_return_pct", "net_profit_pct", "cagr_pct", "sharpe", "sortino", "calmar",
+         "max_drawdown_pct", "volatility_pct", "exposure_pct", "win_rate",
+         "profit_factor", "num_trades", "avg_trade_pct", "num_fills", "funding_paid")
+COUNTS = ("num_trades", "num_fills")
 # the order log's kinds of event, in the order an order's life meets them
 KINDS = ("placed", "armed", "clamped", "refused", "not_filled", "expired", "cancelled",
          "filled")
+BARS   = ("bar", "open_bar", "close_bar")
+STORED = {
+    "float": "float",
+    "int":   "int64",
+    "time":  "time",
+    "bool":  "bool",
+    "text":  "large_text",
+}
 
 
 def _frozen(array):
@@ -295,7 +316,8 @@ class Result:
     whether the account's equity reached zero; ``liquidations``, the number of bars it
     was liquidated on; and ``provenance``, what the run was given and where it ran. A
     row's return is its equity over the row before's, less one, and nothing once the
-    equity is gone."""
+    equity is gone. ``save(path)`` writes it as files any tool reads, and
+    ``Result.load(path)`` reads it back."""
 
 
     def __init__(self, time, equity, tables, stats, policy, bust, provenance):
@@ -400,6 +422,138 @@ class Result:
         return out
 
 
+    def save(self, path):
+        """Write this Result into the directory ``path``, made where it is missing, as
+        files any tool reads (ADR 0026): ``result.json``, the manifest, holding the
+        format it is written in, the version of probatum that wrote it, the provenance,
+        whether the policy was an array and whether the account went bust; ``time.npy``,
+        ``equity.npy`` and ``returns.npy``; ``policy.npy`` where the policy was an
+        array; each table as an Arrow IPC file, ``ledger.arrow``, ``holdings.arrow``,
+        ``fills.arrow``, ``orders.arrow`` and ``trades.arrow``; and ``stats.arrow``, the
+        statistics as one row, none where the clock was too short to annualise. Every
+        file is written under another name first, all of them removed again where one
+        cannot be written, then the manifest already there and any policy.npy go, the
+        files are put in place, and the manifest last, so a save that an error or a
+        killed process stops leaves either the Result that was there or a directory with
+        no manifest, which load refuses."""
+        folder = pathlib.Path(path)
+        if folder.exists() and not folder.is_dir():
+            raise ValueError(f"path: {str(path)!r} is a file; name a directory")
+        folder.mkdir(parents=True, exist_ok=True)
+
+        array  = self.policy if isinstance(self.policy, np.ndarray) else None
+        arrays = dict(time=self.time, equity=self.equity, returns=self.returns)
+        if array is not None:
+            arrays["policy"] = array
+        files = ([f"{name}.npy" for name in arrays] + [f"{name}.arrow" for name in SCHEMAS]
+                 + ["stats.arrow", "result.json"])
+        stats    = self.stats or {}
+        manifest = dict(format=FORMAT, version=_version(),
+                        policy=None if array is None else "array", bust=self.bust,
+                        provenance=self.provenance)
+
+        try:
+            for name, values in arrays.items():
+                with open(folder / f"{name}.npy.partial", "wb") as file:
+                    np.save(file, np.ascontiguousarray(values), allow_pickle=False)
+            for name in SCHEMAS:
+                _ipc.write(folder / f"{name}.arrow.partial", _stored(getattr(self, name)),
+                           {})
+            _ipc.write(folder / "stats.arrow.partial",
+                       [(key, "int64" if key in COUNTS else "float",
+                         np.array([stats[key]] if stats else [],
+                                  dtype=np.int64 if key in COUNTS else np.float64),
+                         None, False) for key in STATS], {})
+            with open(folder / "result.json.partial", "w", encoding="utf-8") as file:
+                json.dump(manifest, file, allow_nan=False, indent=1)
+        except BaseException:
+            for name in files:
+                (folder / f"{name}.partial").unlink(missing_ok=True)
+            raise
+
+        (folder / "result.json").unlink(missing_ok=True)
+        (folder / "policy.npy").unlink(missing_ok=True)
+        for name in files:
+            os.replace(folder / f"{name}.partial", folder / name)
+
+
+    @classmethod
+    def load(cls, path):
+        """The Result ``save`` wrote into the directory ``path``, read by its format,
+        never by the class that wrote it, so a Result one version saves opens in the
+        next. Refused are a directory with no manifest, a format this version does not
+        read, and files that are not the ones save writes or do not agree with one
+        another. The policy comes back for an array run, read-only, and as None for any
+        other, which its provenance still describes."""
+        folder = pathlib.Path(path)
+        fix    = "give a directory a Result was saved into"
+        if not (folder / "result.json").is_file():
+            raise ValueError(f"path: {str(path)!r} holds no result.json; {fix}")
+
+        try:
+            with open(folder / "result.json", encoding="utf-8") as file:
+                manifest = json.load(file, parse_constant=_constant)
+        except ValueError:
+            manifest = None
+
+        given = manifest.get("format") if isinstance(manifest, dict) else None
+        if type(given) is int and given != FORMAT:
+            raise ValueError(f"path: {str(path)!r} holds a Result saved in format "
+                             f"{given} by probatum {manifest.get('version')}, and this "
+                             f"version, {_version()}, reads format {FORMAT}; load it "
+                             f"with the version that saved it, or a later one")
+
+        if (type(given) is not int or not isinstance(manifest.get("provenance"), dict)
+                or not isinstance(manifest.get("bust"), bool)
+                or manifest.get("policy", "") not in (None, "array")
+                or not _described(manifest["provenance"])):
+            raise ValueError(f"path: {str(path)!r}'s result.json is not a manifest save "
+                             f"writes; {fix}")
+
+        provenance = manifest["provenance"]
+        arrays     = {name: _array(path, folder, name, fix)
+                      for name in ("time", "equity", "returns")}
+        if manifest["policy"] == "array":
+            arrays["policy"] = _array(path, folder, "policy", fix)
+
+        time, equity, policy = arrays["time"], arrays["equity"], arrays.get("policy")
+        if (time.dtype != np.int64 or equity.dtype != np.float64 or time.ndim != 1
+                or not len(time) or equity.shape != time.shape
+                or arrays["returns"].shape != time.shape
+                or (policy is not None and (policy.dtype != np.float64
+                                            or policy.ndim not in (1, 2)))):
+            raise ValueError(f"path: the arrays of {str(path)!r} are not a row each of "
+                             f"one clock as save writes them; {fix}")
+
+        rows   = len(time)
+        tables = {name: _loaded(path, folder, name, fix) for name in SCHEMAS}
+        ledger, holdings = tables["ledger"], tables["holdings"]
+        bars = [table[column] for table in tables.values() for column in BARS
+                if column in table.columns]
+        if (len(ledger) != rows or not np.array_equal(ledger["time"], time)
+                or not np.array_equal(ledger["equity"], equity)
+                or any(np.ma.any((column < 0) | (column >= rows)) for column in bars)
+                or any(not np.array_equal(table["time"], time[table["bar"]])
+                       for table in (holdings, tables["fills"], tables["orders"]))
+                or not _laid_out(holdings, rows)):
+            raise ValueError(f"path: the tables of {str(path)!r} do not hold the rows of "
+                             f"its time.npy and equity.npy; {fix}")
+
+        stats = _stats(path, folder, fix)
+        if stats is not None and (
+                stats["num_fills"] != len(tables["fills"])
+                or stats["num_trades"] != np.count_nonzero(~tables["trades"]["open"])):
+            raise ValueError(f"path: {str(path)!r}'s stats.arrow does not count the fills "
+                             f"and the round trips its tables hold; {fix}")
+
+        loaded = cls(time, equity, tables, stats, policy, manifest["bust"], provenance)
+        if not np.array_equal(loaded.returns, arrays["returns"]):
+            raise ValueError(f"path: {str(path)!r}'s returns.npy does not hold the returns "
+                             f"its equity.npy gives; {fix}")
+
+        return loaded
+
+
 def _listed(values):
     """``values``, a column or an array, as a list, None where a value is missing."""
     if isinstance(values, np.ma.MaskedArray) or values.dtype.kind != "f":
@@ -413,6 +567,133 @@ def _version():
         return importlib.metadata.version("probatum")
     except importlib.metadata.PackageNotFoundError:
         return "0.0.0"
+
+
+def _constant(token):
+    raise ValueError(f"{token} is not JSON")
+
+
+def _stored(table):
+    """``table``'s columns as `_ipc.write` takes them."""
+    out = []
+    for name, kind, nullable, values, valid, data in table._held.parts():
+        if kind == "text":
+            values = (values, data)
+        out.append((name, STORED[kind], values, valid, nullable))
+
+    return out
+
+
+def _array(path, folder, name, fix):
+    """The array ``name``.npy of ``folder``, the directory ``path`` names, refused where
+    it is missing or is no array of numbers."""
+    file = folder / f"{name}.npy"
+    if not file.is_file():
+        raise ValueError(f"path: {str(path)!r} holds no {name}.npy; {fix}")
+
+    try:
+        with open(file, "rb") as handle:
+            values = np.load(handle, allow_pickle=False)
+    except (ValueError, EOFError):
+        values = None
+
+    if not isinstance(values, np.ndarray):
+        raise ValueError(f"path: {str(path)!r}'s {name}.npy is not an array of numbers "
+                         f"save writes; {fix}")
+
+    return values
+
+
+def _read(path, folder, name, fix):
+    """The columns of the Arrow IPC file ``name`` of ``folder``, the directory ``path``
+    names, refused where it is missing or unreadable."""
+    file = folder / name
+    if not file.is_file():
+        raise ValueError(f"path: {str(path)!r} holds no {name}; {fix}")
+
+    try:
+        columns, _ = _ipc.read(file)
+    except _ipc.Refused as error:
+        raise ValueError(f"path: {str(path)!r}'s {name} {error}; {fix}") from None
+
+    return columns
+
+
+def _loaded(path, folder, name, fix):
+    """The table ``name``.arrow of ``folder``, the directory ``path`` names, refused
+    where it lacks a column save writes or holds a null in a column that holds none,
+    its columns in this version's order; a column a later version added comes back
+    after them as it was written."""
+    columns  = _read(path, folder, f"{name}.arrow", fix)
+    schema   = SCHEMAS[name]
+    kinds    = {stored: kind for kind, stored in STORED.items()}
+    nullable = {column: can for column, _, can in schema}
+
+    for column, kind, _ in schema:
+        if columns.get(column, ("",))[0] != STORED[kind]:
+            raise ValueError(f"path: {str(path)!r}'s {name}.arrow has no {kind} column "
+                             f"{column}; {fix}")
+
+    parts = []
+    for column in [column for column, _, _ in schema] + [
+            column for column in columns if column not in nullable]:
+        stored, values, present, written = columns[column]
+        if stored not in kinds:
+            raise ValueError(f"path: {str(path)!r}'s {name}.arrow holds a column "
+                             f"{column} of a kind save does not write; {fix}")
+
+        can = nullable.get(column, written)
+        if not (can or present.all()):
+            raise ValueError(f"path: {str(path)!r}'s {name}.arrow holds a null in "
+                             f"{column}, a column that holds none; {fix}")
+
+        data = None
+        if stored == "large_text":
+            values, data = values
+
+        parts.append((column, kinds[stored], can, values,
+                      None if present.all() else present, data))
+
+    try:
+        held = _Held(parts)
+    except ValueError:
+        raise ValueError(f"path: {str(path)!r}'s {name}.arrow is not a table save "
+                         f"writes; {fix}") from None
+
+    return (OrderLog if name == "orders" else Table)(held)
+
+
+def _stats(path, folder, fix):
+    """The statistics ``stats.arrow`` holds, None where it holds no row, refused where
+    one is missing; a statistic a later version added is left out."""
+    columns = _read(path, folder, "stats.arrow", fix)
+    counts  = {len(columns[key][1]) for key in STATS if key in columns}
+
+    if (any(columns.get(key, ("",))[0] != ("int64" if key in COUNTS else "float")
+            for key in STATS) or len(counts) != 1 or counts.pop() > 1
+            or not all(columns[key][2].all() for key in STATS)):
+        raise ValueError(f"path: {str(path)!r}'s stats.arrow is not the row of "
+                         f"statistics save writes; {fix}")
+
+    if not len(columns[STATS[0]][1]):
+        return None
+    return {key: (int if key in COUNTS else float)(columns[key][1][0]) for key in STATS}
+
+
+def _described(provenance):
+    """Whether ``provenance`` holds what a Result's repr reads of it."""
+    return "venue" in provenance and "policy" in provenance
+
+
+def _laid_out(holdings, rows):
+    """Whether ``holdings`` hold a row a bar and instrument over ``rows`` bars, each
+    bar's instruments in one order, as a run records them."""
+    width = len(holdings) // rows
+    names = holdings["instrument"]
+
+    return (width > 0 and len(holdings) == rows * width
+            and np.array_equal(holdings["bar"], np.repeat(np.arange(rows), width))
+            and bool((names.reshape(rows, width) == names[:width]).all()))
 
 
 def _environment():

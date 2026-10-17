@@ -588,7 +588,7 @@ def test_the_provenance_names_the_venue_its_markets_settlement_and_seed():
     assert json.loads(json.dumps(ran)) == ran
 
 
-def test_a_run_hands_its_tables_over_without_importing_a_reader(tmp_path):
+def test_a_run_reads_and_writes_its_tables_without_importing_a_reader(tmp_path):
     script = f"""
 import json, sys
 for name in ("pyarrow", "polars", "pandas", "duckdb"):
@@ -601,10 +601,13 @@ hours = np.arange(50, dtype=np.int64) * 3_600_000_000_000
 data = probatum.Data(bars, symbol="BTCUSDT", market="linear", time=hours)
 result = probatum.backtest(np.full(50, 0.5), data, "frictionless")
 result.trades.__arrow_c_stream__()
+result.save({str(tmp_path)!r})
+loaded = probatum.Result.load({str(tmp_path)!r})
 import importlib.metadata as metadata
 packages = result.provenance["packages"]
 assert packages["numpy"] == metadata.version("numpy"), packages
 assert not {{"pyarrow", "polars", "pandas", "duckdb"}} & set(packages), packages
+assert loaded.provenance == result.provenance
 print(json.dumps(sorted(packages)))
 """
 

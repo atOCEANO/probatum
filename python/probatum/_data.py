@@ -1149,7 +1149,7 @@ class Data:
                              f"the ones save writes; {fix}")
 
         def value_of(name, k):
-            kind, values, present = listed[name]
+            kind, values, present, _ = listed[name]
             if not present[k]:
                 return None
             return float(values[k]) if kind == "float" else values[k]
@@ -1158,7 +1158,8 @@ class Data:
                        for k in range(width)]
         values = np.stack([np.where(bars[field][2], bars[field][1], np.nan)
                            for field in _OHLCV], axis=1).reshape(rows, width, 5)
-        clock = np.ascontiguousarray(time[::width])
+        clock = np.array(time[::width])
+
         for k in range(width):
             _check(names[k], clock, values[:, k])
 

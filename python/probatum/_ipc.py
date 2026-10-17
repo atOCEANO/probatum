@@ -1,8 +1,8 @@
 """Arrow IPC files written and read in the package rather than through an Arrow library,
 which the core does not depend on (ADR 0044): a table of named columns, each UTC
-timestamps in nanoseconds, float64 numbers, int32 integers or UTF-8 text, any of them
-with missing values, and string metadata on its schema. Any Arrow reader opens what
-this writes.
+timestamps in nanoseconds, float64 numbers, int32 or int64 integers, booleans, or UTF-8
+text with 32-bit or 64-bit offsets, any of them with missing values, and string metadata
+on its schema. Any Arrow reader opens what this writes.
 
 The format's metadata is flatbuffers. They are written here front to back, each table's
 vtable before it and everything it points at after it, which the format allows since a
@@ -19,10 +19,19 @@ CONTINUATION = b"\xff\xff\xff\xff"
 # column here can be
 V5 = 4
 SCHEMA, RECORD_BATCH = 1, 3
-INT, FLOAT, TEXT, TIME = 2, 3, 5, 10
-KINDS   = {"int": INT, "float": FLOAT, "text": TEXT, "time": TIME}
-FORMATS = {INT: "<i4", FLOAT: "<f8", TIME: "<i8"}
-BLOCK   = "<qi4xq"
+INT, FLOAT, TEXT, BOOL, TIME, LARGE_TEXT = 2, 3, 5, 6, 10, 20
+# each kind of column: its type's number, the fields of its type's table, and the
+# format of its values, None for booleans, laid out as bits, and for text
+KINDS = {
+    "int":        (INT, [(0, "i", 32), (1, "?", True)], "<i4"),
+    "int64":      (INT, [(0, "i", 64), (1, "?", True)], "<i8"),
+    "float":      (FLOAT, [(0, "h", 2)], "<f8"),
+    "time":       (TIME, [(0, "h", 3), (1, "ref", ("string", "UTC"))], "<i8"),
+    "bool":       (BOOL, [], None),
+    "text":       (TEXT, [], None),
+    "large_text": (LARGE_TEXT, [], None),
+}
+BLOCK = "<qi4xq"
 
 
 class Refused(ValueError):
@@ -31,18 +40,27 @@ class Refused(ValueError):
 
 def write(path, columns, metadata):
     """Write ``columns`` to the file ``path`` as one record batch: each column is
-    (name, kind, values, present), kind ``"time"``, ``"float"``, ``"int"`` or
-    ``"text"``, values int64 nanoseconds, float64 numbers, int32 integers or strings,
-    and present a boolean mask, or None where every value is there; ``metadata`` maps
-    strings to strings on the schema."""
-    rows = len(columns[0][2]) if columns else 0
+    (name, kind, values, present), and a fifth, whether the column can hold a null,
+    where it cannot. Kind ``"time"`` takes int64 nanoseconds, ``"float"`` float64
+    numbers, ``"int"`` and ``"int64"`` integers of those widths, ``"bool"`` booleans,
+    ``"text"`` strings, and ``"large_text"`` the offset of each row into its UTF-8
+    bytes and one past the last, with the bytes; present is a boolean mask, or None
+    where every value is there; and ``metadata`` maps strings to strings on the
+    schema."""
+    rows = _rows(columns[0]) if columns else 0
     body, size, nodes, buffers = [], 0, [], []
 
-    for name, kind, values, present in columns:
+    for name, kind, values, present, *_ in columns:
         missing = 0 if present is None else int(np.count_nonzero(~present))
         nodes.append((rows, missing))
         parts = [np.packbits(present, bitorder="little") if missing else b""]
-        if kind == "text":
+        if kind == "large_text":
+            ends, data = values
+            parts += [np.ascontiguousarray(ends, dtype="<i8").view(np.uint8),
+                      np.ascontiguousarray(data, dtype=np.uint8)]
+        elif kind == "bool":
+            parts.append(np.packbits(np.asarray(values, dtype=bool), bitorder="little"))
+        elif kind == "text":
             data = [b"" if value is None else value.encode() for value in values]
             ends = np.cumsum([0] + [len(item) for item in data], dtype=np.int64)
             if ends[-1] > np.iinfo(np.int32).max:
@@ -50,7 +68,7 @@ def write(path, columns, metadata):
                                  f"an Arrow text column holds; write fewer rows")
             parts += [ends.astype("<i4").view(np.uint8), b"".join(data)]
         else:
-            values = np.ascontiguousarray(values, dtype=FORMATS[KINDS[kind]])
+            values = np.ascontiguousarray(values, dtype=KINDS[kind][2])
             parts.append(values.view(np.uint8))
 
         for part in parts:
@@ -79,9 +97,12 @@ def write(path, columns, metadata):
 
 def read(path):
     """The columns of the Arrow IPC file ``path``, as a dict of name to (kind, values,
-    present), values an array of the column's kind or a list of strings and present a
-    boolean mask, and the metadata on its schema. It reads the types ``write`` writes,
-    little-endian and uncompressed, and raises `Refused` for any other file."""
+    present, nullable), values an array of the column's kind, a list of strings for
+    text, and for large text its offsets from 0 and its bytes, present a boolean mask,
+    and nullable whether its field says it can hold a null, and the metadata on its
+    schema. It reads the types ``write`` writes, little-endian, uncompressed and on the
+    8-byte boundaries the format puts every buffer on, and raises `Refused` for any
+    other file."""
     with open(path, "rb") as file:
         raw = memoryview(file.read())
 
@@ -103,16 +124,16 @@ def _read(raw):
     if schema.scalar(0, "h") != 0:
         raise Refused("is big-endian, which this reader does not read")
 
-    fields = [(field.string(0), field.scalar(2, "B"), field.table(3), field.ref(4))
-              for field in schema.tables(1)]
-    for name, kind, detail, dictionary in fields:
-        if dictionary is not None or not _known(kind, detail):
+    fields = []
+    for field in schema.tables(1):
+        name, kind = field.string(0), _kind(field.scalar(2, "B"), field.table(3))
+        if field.ref(4) is not None or kind is None:
             raise Refused(f"holds a column {name!r} of a type this reader does not "
                           f"read")
+        fields.append((name, kind, bool(field.scalar(1, "?"))))
 
     metadata = {pair.string(0): pair.string(1) for pair in schema.tables(2)}
-    names    = {number: kind for kind, number in KINDS.items()}
-    out      = {name: (names[kind], [], []) for name, kind, _, _ in fields}
+    out      = {name: (kind, [], []) for name, kind, _ in fields}
 
     for offset, framed, length in footer.structs(3, BLOCK):
         message = _Table.root(raw[offset + 8:offset + framed])
@@ -120,15 +141,31 @@ def _read(raw):
         if batch is None or batch.ref(3) is not None:
             raise Refused("holds a compressed or unknown message")
 
+        places = batch.structs(2, "<qq")
+        if (offset + framed) % 8 or any(at % 8 for at, _ in places):
+            raise Refused("holds a buffer off the 8-byte boundary the format puts it on")
+
         body    = raw[offset + framed:offset + framed + length]
-        buffers = iter(batch.structs(2, "<qq"))
-        for (name, kind, _, _), (count, missing) in zip(fields,
-                                                       batch.structs(1, "<qq")):
+        buffers = iter(places)
+        for (name, kind, _), (count, missing) in zip(fields, batch.structs(1, "<qq")):
             at, size = next(buffers)
             present = (np.unpackbits(np.frombuffer(body, np.uint8, size, at),
                                      count=count, bitorder="little").astype(bool)
                        if missing and size else np.ones(count, dtype=bool))
-            if kind == TEXT:
+
+            if kind == "large_text":
+                (ends_at, _), (data_at, data_size) = next(buffers), next(buffers)
+                ends = np.frombuffer(body, "<i8", count + 1, ends_at)
+                data = np.frombuffer(body, np.uint8, data_size, data_at)
+                if not 0 <= ends[0] <= ends[-1] <= data_size:
+                    raise Refused(f"holds text in {name!r} whose offsets run past its "
+                                  f"bytes")
+                values = (ends - ends[0], data[ends[0]:ends[-1]])
+            elif kind == "bool":
+                at, size = next(buffers)
+                values = np.unpackbits(np.frombuffer(body, np.uint8, size, at),
+                                       count=count, bitorder="little").astype(bool)
+            elif kind == "text":
                 (ends_at, _), (data_at, data_size) = next(buffers), next(buffers)
                 ends   = np.frombuffer(body, "<i4", count + 1, ends_at).tolist()
                 data   = bytes(body[data_at:data_at + data_size])
@@ -136,48 +173,69 @@ def _read(raw):
                           for a, b, there in zip(ends, ends[1:], present.tolist())]
             else:
                 at, _ = next(buffers)
-                values = np.frombuffer(body, FORMATS[kind], count, at)
+                values = np.frombuffer(body, KINDS[kind][2], count, at)
+
             out[name][1].append(values)
             out[name][2].append(present)
 
+    nullable = {name: can for name, _, can in fields}
     for name, (kind, parts, present) in out.items():
         if kind == "text":
             joined = [value for part in parts for value in part]
+        elif kind == "large_text" and len(parts) == 1:
+            joined = parts[0]
+        elif kind == "large_text":
+            ends, data, size = [np.zeros(1, dtype=np.int64)], [], 0
+            for part_ends, part_data in parts:
+                ends.append(part_ends[1:] + size)
+                data.append(part_data)
+                size += len(part_data)
+            joined = (np.concatenate(ends),
+                      np.concatenate(data) if data else np.zeros(0, dtype=np.uint8))
+        elif len(parts) == 1:
+            joined = parts[0]
         else:
             joined = (np.concatenate(parts) if parts
-                      else np.zeros(0, dtype=FORMATS[KINDS[kind]]))
-        out[name] = (kind, joined, np.concatenate(present) if present
-                     else np.zeros(0, dtype=bool))
+                      else np.zeros(0, dtype=KINDS[kind][2] or bool))
+
+        out[name] = (kind, joined, present[0] if len(present) == 1
+                     else np.concatenate(present) if present
+                     else np.zeros(0, dtype=bool), nullable[name])
 
     return out, metadata
 
 
-def _known(kind, detail):
-    """Whether a column of ``kind``, with the type table ``detail``, is one this reads:
-    a double, a signed 32-bit integer, text, or a time in nanoseconds."""
-    if kind == FLOAT:
-        return detail.scalar(0, "h") == 2
+def _rows(column):
+    """The rows of ``column``, as ``write`` takes it."""
+    if column[1] == "large_text":
+        return len(column[2][0]) - 1
+    return len(column[2])
 
-    if kind == INT:
-        return detail.scalar(0, "i") == 32 and detail.scalar(1, "?")
 
-    if kind == TIME:
-        return detail.scalar(0, "h") == 3
+def _kind(number, detail):
+    """The kind of a column of the type ``number`` with the type table ``detail``, or
+    None where it is none this reads: a double, a signed integer of 32 or 64 bits, a
+    boolean, text, or a time in nanoseconds."""
+    if number == FLOAT:
+        return "float" if detail.scalar(0, "h") == 2 else None
 
-    return kind == TEXT
+    if number == INT:
+        bits = detail.scalar(0, "i") if detail.scalar(1, "?") else None
+        return {32: "int", 64: "int64"}.get(bits)
+
+    if number == TIME:
+        return "time" if detail.scalar(0, "h") == 3 else None
+
+    return {BOOL: "bool", TEXT: "text", LARGE_TEXT: "large_text"}.get(number)
 
 
 def _schema(columns, metadata):
     fields = []
-    for name, kind, _, _ in columns:
-        detail = {
-            "time":  [(0, "h", 3), (1, "ref", ("string", "UTC"))],
-            "float": [(0, "h", 2)],
-            "int":   [(0, "i", 32), (1, "?", True)],
-            "text":  [],
-        }[kind]
-        fields.append(("table", [(0, "ref", ("string", name)), (1, "?", True),
-                                 (2, "B", KINDS[kind]), (3, "ref", ("table", detail)),
+    for name, kind, _, _, *nullable in columns:
+        number, detail, _ = KINDS[kind]
+        fields.append(("table", [(0, "ref", ("string", name)),
+                                 (1, "?", nullable[0] if nullable else True),
+                                 (2, "B", number), (3, "ref", ("table", detail)),
                                  (5, "ref", ("tables", []))]))
 
     pairs = [("table", [(0, "ref", ("string", key)), (1, "ref", ("string", value))])

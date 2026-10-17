@@ -1,10 +1,11 @@
 """The API page's Quickstart and its Result section run as written, one after another in
 one namespace, as a reader copies them: the Quickstart builds the Data and the Result
-the section reads and queries. Every block of the page is checked for
+the section reads, saves and queries. Every block of the page is checked for
 its names and keywords by ``test_docs.py``; these are run.
 """
 
 import pathlib
+import tempfile
 
 import pytest
 
@@ -41,14 +42,17 @@ def sections(*titles):
 
 def test_the_quickstart_and_the_result_section_run_as_written(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # the folder the page saves into made under the test's own
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
     blocks = sections("Quickstart", "The Result")
 
-    assert len(blocks) >= 3
+    assert len(blocks) >= 4
 
     names = {}
     for block in blocks:
         exec(compile(block, str(PAGE), "exec"), names)
 
-    result = names["result"]
-
+    result, again = names["result"], names["again"]
+    assert again.trades == result.trades and again.stats == result.stats
     assert len(result.fills) > 0

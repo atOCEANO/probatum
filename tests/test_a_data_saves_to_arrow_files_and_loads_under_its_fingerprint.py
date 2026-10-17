@@ -66,6 +66,13 @@ def test_a_data_comes_back_as_it_was_saved(tmp_path):
         "bars.arrow", "funding.arrow", "instruments.arrow"]
 
 
+def test_a_data_of_one_instrument_holds_its_clock_apart_from_the_file_it_read(tmp_path):
+    probatum.Data(frame(), symbol="BTCUSDT", market="linear").save(tmp_path / "one")
+
+    # a view of the file's bytes would keep all of them to hold the clock
+    assert probatum.Data.load(tmp_path / "one")._root.time.flags.owndata
+
+
 def test_a_slice_saves_the_bars_before_it_and_loads_back_as_the_same_slice(tmp_path):
     late = universe()["币安人生USDT"][5:9]
     late.save(tmp_path / "late")
@@ -118,6 +125,7 @@ def test_any_arrow_reader_opens_the_files(tmp_path):
 
     assert bars.schema.field("time").type       == pa.timestamp("ns", tz="UTC")
     assert bars.schema.field("instrument").type == pa.int32()
+    assert all(field.nullable for field in bars.schema)
     assert [bars.schema.field(f).type for f in ("open", "close")] == [pa.float64()] * 2
     assert bars.num_rows == 2 * len(data)
     assert bars["instrument"].to_pylist()[:4] == [0, 1, 0, 1]

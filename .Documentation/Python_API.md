@@ -38,7 +38,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Engine` | An account at a venue on a Data for a loop the caller owns: `reset`, `step`, and the account's state and verbs, recording the Result `backtest` records. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
-| `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, its statistics and its provenance. [Below](#the-result). |
+| `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, its statistics and its provenance, saved as files any tool reads. [Below](#the-result). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
@@ -806,6 +806,19 @@ print(result.orders.events("filled"))           # the order log's fills alone
 fills = result.fills
 print(polars.DataFrame(fills).select("bar", "price", "fee"))
 print(duckdb.sql("select instrument, count(*), sum(fee) from fills group by 1"))
+```
+
+### Saving and loading
+
+`result.save(path)` writes a directory of files any tool reads: `result.json`, the manifest, holding the format it is written in, the version of probatum that wrote it, the provenance, whether the policy was an array and whether the account went bust; `time.npy`, `equity.npy` and `returns.npy`, and `policy.npy` for an array run; each table as an Arrow IPC file; and `stats.arrow`, the statistics as one row. `probatum.Result.load(path)` reads the format, never the class that wrote it, so a Result one version saves opens in the next, and it refuses a format it does not read and files that save did not write or that disagree with one another. Nothing is pickled, so a loaded Strategy's `policy` is None, and its provenance still describes it. Every file is written under another name before the first is put in place, the manifest last, so a save that an error or a killed process stops leaves the Result that was there or a directory that load refuses.
+
+```python
+import tempfile
+
+folder = tempfile.mkdtemp()
+result.save(folder)
+again = probatum.Result.load(folder)
+print(again.trades == result.trades, again.stats == result.stats)
 ```
 
 ### The provenance
