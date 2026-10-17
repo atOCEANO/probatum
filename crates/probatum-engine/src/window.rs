@@ -62,15 +62,18 @@ impl Windows {
         let mut volume = vec![0.0; cells];
         let mut deviations = vec![0.0; if sigma { cells } else { 0 }];
         let mut spreads = vec![0.0; if estimated { cells } else { 0 }];
-        // the window's own bars and the bar before them, whose close the first of
-        // their returns is measured from; a window longer than the series holds all
-        // of it
-        let mut recent: VecDeque<Seen> = VecDeque::with_capacity(bars.min(rows) + 1);
+        // each instrument's window, its own bars and the bar before them, whose close
+        // the first of their returns is measured from, a window longer than the series
+        // holding all of it; read row by row as the series lies, since a column at a
+        // time reads a wide universe a cache line a bar
+        let mut windows: Vec<VecDeque<Seen>> = (0..width)
+            .map(|_| VecDeque::with_capacity(bars.min(rows) + 1))
+            .collect();
+        let mut closes = vec![f64::NAN; width];
         let mut logs: Vec<[f64; 5]> = Vec::new();
-        for i in 0..width {
-            recent.clear();
-            let mut close = f64::NAN;
-            for t in 0..rows {
+        for t in 0..rows {
+            for i in 0..width {
+                let (recent, close) = (&mut windows[i], &mut closes[i]);
                 let k = t * width + i;
                 let held = recent.len().min(bars);
                 let window = recent.iter().skip(recent.len() - held);
@@ -78,7 +81,7 @@ impl Windows {
                     volume[k] = window.clone().map(|seen| seen.volume).sum::<f64>() / held as f64;
                 }
                 if sigma {
-                    deviations[k] = deviation(&recent);
+                    deviations[k] = deviation(recent);
                 }
                 if estimated {
                     logs.clear();
@@ -93,13 +96,13 @@ impl Windows {
                     recent.push_back(Seen {
                         volume: bar.volume,
                         ret: if sigma {
-                            libm::log(bar.close / close)
+                            libm::log(bar.close / *close)
                         } else {
                             0.0
                         },
                         logs: if estimated { logged(&bar) } else { [0.0; 5] },
                     });
-                    close = bar.close;
+                    *close = bar.close;
                 }
             }
         }
