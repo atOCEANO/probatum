@@ -63,7 +63,7 @@ jobs:
           path: dist
       - run: |
           pip install -c dev/constraints.txt dist/*.whl \
-            numpy gymnasium pandas pyarrow optuna cloudpickle pytest
+            numpy gymnasium pandas pyarrow polars optuna cloudpickle pytest
       - run: python -c "import probatum; print(probatum.__version__)"
       - run: pytest -q tests
 
