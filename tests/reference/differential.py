@@ -677,7 +677,7 @@ FIELDS = ("position", "equity", "spot_cash", "margin_cash", "funding_paid")
 
 def close_enough(a, b, scale=1.0):
     if not math.isfinite(a) or not math.isfinite(b):
-        return math.isfinite(a) == math.isfinite(b)
+        return (math.isnan(a) and math.isnan(b)) or a == b
     return abs(a - b) <= TOL * max(1.0, abs(a), abs(b), scale)
 
 
