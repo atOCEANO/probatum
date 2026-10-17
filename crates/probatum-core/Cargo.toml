@@ -1,6 +1,6 @@
 [package]
 name = "probatum-core"
-description = "Fidelity-neutral market-simulation primitives: units, orders and fills, the netted position, the account, the cost model, and the resting-order book."
+description = "Fidelity-neutral market-simulation primitives: units, orders and fills, the netted position, the account, the cost model, the resting-order book, and a table of columns exported through the Arrow C interfaces."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

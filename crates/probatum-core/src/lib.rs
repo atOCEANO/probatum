@@ -2,9 +2,12 @@
 //!
 //! Pure Rust: no candle series, no Python, no parallelism. These primitives are
 //! the reuse seam shared across fidelity tiers (the bar engine here, a future
-//! tick and L2 engine later).
+//! tick and L2 engine later). The crate also holds a table of named columns and its
+//! export through the Arrow C interfaces, kept here so that Miri, which runs no
+//! Python, checks their release.
 
 pub mod account;
+pub mod arrow;
 pub mod book;
 pub mod candle;
 pub mod cost;

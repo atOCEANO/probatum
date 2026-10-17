@@ -36,6 +36,7 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | If it is... | It goes in... |
 | :--- | :--- |
 | A fidelity-neutral primitive (a unit, an order, position or account math, a cost model) | `crates/probatum-core` |
+| Memory a C interface lends out and takes back (the Arrow export and its release) | `crates/probatum-core`, where Miri runs it |
 | A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/probatum-engine` |
 | A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/probatum-py` |
 | A convenience over the bindings (a new runner, a wrapper) | `python/probatum` |
@@ -62,7 +63,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Python-facing work (anything in `probatum-py` or `python/probatum`) is validated on the Docker gate that builds the one abi3 wheel and runs the suite across Python versions; the full split is in the [Validation Guide](Validation_Guide.md). Four test stages sit outside that gate because each is much heavier; CI runs them, and a change to what they cover should run them locally before it is pushed: `--target test-browser` executes the chart's JavaScript in a real browser, `--target test-sb3` installs torch and exercises the Stable-Baselines3 adapter, `--target test-sdist` installs the source archive and runs the suite against it, and `--target miri` checks the candle memory behind every zero-copy view under Miri. Anything under `_static/` needs the first one, since nothing else in the project runs that code at all. The `probatum-py` crate is an `extension-module` cdylib, so it cannot be unit-tested with `cargo test` (there is no interpreter to link); it is checked with `cargo build` and `clippy`, then exercised through the wheel.
+Python-facing work (anything in `probatum-py` or `python/probatum`) is validated on the Docker gate that builds the one abi3 wheel and runs the suite across Python versions; the full split is in the [Validation Guide](Validation_Guide.md). Four test stages sit outside that gate because each is much heavier; CI runs them, and a change to what they cover should run them locally before it is pushed: `--target test-browser` executes the chart's JavaScript in a real browser, `--target test-sb3` installs torch and exercises the Stable-Baselines3 adapter, `--target test-sdist` installs the source archive and runs the suite against it, and `--target miri` checks under Miri the candle memory behind every zero-copy view and the release of what a table lends through the Arrow C interfaces, down to the stream a capsule frees. Anything under `_static/` needs the first one, since nothing else in the project runs that code at all. The `probatum-py` crate is an `extension-module` cdylib, so it cannot be unit-tested with `cargo test` (there is no interpreter to link); it is checked with `cargo build` and `clippy`, then exercised through the wheel.
 
 <br>
 

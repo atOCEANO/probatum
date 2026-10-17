@@ -6,52 +6,15 @@
 //! caller does not read can refuse the frame, but a time past what nanoseconds can
 //! count.
 
-use std::ffi::{c_char, c_int, c_void, CStr};
-use std::ptr::{null, null_mut};
+use std::ffi::{c_char, c_void, CStr};
+use std::ptr::null;
 
 use numpy::PyArray1;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyCapsule, PyList};
 
-/// A schema as the C data interface lays it out.
-#[repr(C)]
-struct ArrowSchema {
-    format: *const c_char,
-    name: *const c_char,
-    metadata: *const c_char,
-    flags: i64,
-    n_children: i64,
-    children: *mut *mut ArrowSchema,
-    dictionary: *mut ArrowSchema,
-    release: Option<unsafe extern "C" fn(*mut ArrowSchema)>,
-    private_data: *mut c_void,
-}
-
-/// An array as the C data interface lays it out.
-#[repr(C)]
-struct ArrowArray {
-    length: i64,
-    null_count: i64,
-    offset: i64,
-    n_buffers: i64,
-    n_children: i64,
-    buffers: *mut *const c_void,
-    children: *mut *mut ArrowArray,
-    dictionary: *mut ArrowArray,
-    release: Option<unsafe extern "C" fn(*mut ArrowArray)>,
-    private_data: *mut c_void,
-}
-
-/// A stream of arrays as the C stream interface lays it out.
-#[repr(C)]
-struct ArrowArrayStream {
-    get_schema: Option<unsafe extern "C" fn(*mut ArrowArrayStream, *mut ArrowSchema) -> c_int>,
-    get_next: Option<unsafe extern "C" fn(*mut ArrowArrayStream, *mut ArrowArray) -> c_int>,
-    get_last_error: Option<unsafe extern "C" fn(*mut ArrowArrayStream) -> *const c_char>,
-    release: Option<unsafe extern "C" fn(*mut ArrowArrayStream)>,
-    private_data: *mut c_void,
-}
+use probatum_core::arrow::{empty_array, empty_schema, ArrowArray, ArrowArrayStream, ArrowSchema};
 
 /// A schema a stream handed over, released when it goes out of scope.
 struct OwnedSchema(ArrowSchema);
@@ -74,35 +37,6 @@ impl Drop for OwnedArray {
             // SAFETY: an array the stream filled is released once, by its own callback
             unsafe { release(&mut self.0) }
         }
-    }
-}
-
-fn empty_schema() -> ArrowSchema {
-    ArrowSchema {
-        format: null(),
-        name: null(),
-        metadata: null(),
-        flags: 0,
-        n_children: 0,
-        children: null_mut(),
-        dictionary: null_mut(),
-        release: None,
-        private_data: null_mut(),
-    }
-}
-
-fn empty_array() -> ArrowArray {
-    ArrowArray {
-        length: 0,
-        null_count: 0,
-        offset: 0,
-        n_buffers: 0,
-        n_children: 0,
-        buffers: null_mut(),
-        children: null_mut(),
-        dictionary: null_mut(),
-        release: None,
-        private_data: null_mut(),
     }
 }
 
@@ -204,7 +138,7 @@ unsafe fn columns_of(schema: &ArrowSchema) -> Result<(Vec<Column>, bool), String
 ///
 /// # Safety
 /// `text` is null or a NUL-terminated string.
-unsafe fn text(text: *const c_char) -> String {
+pub(crate) unsafe fn text(text: *const c_char) -> String {
     if text.is_null() {
         String::new()
     } else {

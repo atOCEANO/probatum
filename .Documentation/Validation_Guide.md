@@ -92,12 +92,12 @@ The gate does not run the stages below. The first four are tests that CI runs on
 docker build --target test-browser .    # the chart's javascript, in chromium
 docker build --target test-sb3 .        # the Stable-Baselines3 adapter, with torch
 docker build --target test-sdist .      # the source archive, built and tested
-docker build --target miri .            # the zero-copy views' memory, under Miri
+docker build --target miri .            # the zero-copy views' and the tables' memory, under Miri
 ```
 
 `test-sdist` builds the source archive a release ships, installs it the way pip does on a platform with no wheel, and runs the whole suite against it, so a file left out of the archive fails there rather than for the first user on an unusual platform.
 
-`miri` runs the candle tests under Miri, an interpreter that checks every memory access a test makes. Every zero-copy view reads the candles through `floats` in probatum-core, the library's one reinterpretation of memory ([ADR 0040](Decisions.md)), and a mistake there can read past the buffer and still return the right values, which an ordinary test cannot see. The stage needs a nightly compiler, pinned by date.
+`miri` runs the candle tests and the Arrow table's under Miri, an interpreter that checks every memory access a test makes and reports what is never freed. Every zero-copy view reads the candles through `floats` in probatum-core, the library's one reinterpretation of memory ([ADR 0040](Decisions.md)), and a mistake there can read past the buffer and still return the right values, which an ordinary test cannot see. A table leaves through the Arrow C stream interface, whose reader may move the stream out of the capsule that holds it and a column out of its batch, and release what it holds in any order ([ADR 0026](Decisions.md)), and a mistake there frees what a reader still holds or never frees it at all; the release of all of it, the capsule's free among it, is probatum-core's, which Miri runs. The stage needs a nightly compiler, pinned by date.
 
 `test-browser` is the other half of the chart layer. Everything in `tests/test_chart.py` reads `Chart.spec()`, because the gate has no browser and a spec assertion is the sharper test of what Python decided ([ADR 0042](Decisions.md)). What that cannot reach is whether the shipped JavaScript parses, runs and draws, and roughly 1,250 lines of it had never been executed by anything in the project. The first run of it found that the vendored renderer joins a line straight across whitespace, so ADR 0042's central claim was false in the artifact while true in the document. `tests/test_render.py` skips wherever playwright is absent, so the correctness gate stays green without one.
 

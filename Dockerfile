@@ -265,10 +265,12 @@ WORKDIR /src
 COPY . .
 RUN cargo bench --locked -p probatum-engine --bench step_instructions
 
-# Miri runs the candle tests in an interpreter that reports undefined behaviour,
-# which checks the library's one reinterpretation of memory, the floats behind
-# every zero-copy view (ADR 0040). It needs a nightly toolchain, pinned by date and
-# named on each command so that rust-toolchain.toml does not win. CI runs it:
+# Miri runs the candle tests and the Arrow table's in an interpreter that reports
+# undefined behaviour and leaks, which checks the library's one reinterpretation of
+# memory, the floats behind every zero-copy view (ADR 0040), and the release of what a
+# table lends a reader, moved out or not and in either order, down to the stream a
+# capsule frees (ADR 0026). It needs a nightly toolchain, pinned by date and named on
+# each command so that rust-toolchain.toml does not win. CI runs it:
 #   docker build --target miri .
 FROM python:3.13-slim AS miri
 RUN apt-get update \
@@ -281,4 +283,4 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo +nightly-2026-10-01 miri setup
 WORKDIR /src
 COPY . .
-RUN cargo +nightly-2026-10-01 miri test --locked -p probatum-core candle::
+RUN cargo +nightly-2026-10-01 miri test --locked -p probatum-core -- candle:: arrow::
