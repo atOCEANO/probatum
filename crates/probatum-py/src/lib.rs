@@ -4080,20 +4080,21 @@ fn units_of(market: &str, contract: Option<f64>) -> PyResult<Units> {
 /// every perp held. `script` maps a bar to the actions taken at its close, each a verb
 /// and a dict of its arguments: `buy` and `sell` with a `size`, and a `limit` or a
 /// `stop`, `tif`, `post_only` and `reduce_only`; `buy_value` and `sell_value` with an
-/// `amount`, `tif` and `reduce_only`; `close` and `cancel_all`; `cancel` and
-/// `replace` naming an `order`, the second with the `price`, `trigger` or `size` it
-/// moves to; `transfer` with an `amount` and the wallet it goes `to`, the margin wallet
-/// unless named; and `target` with its `weights`, `tolerance` and `transfer`, as
-/// `Engine.target` takes them. `buy`, `sell`, their value forms and `close` name the
-/// `instrument` they trade, counted from 0, which one instrument leaves out, and
-/// `cancel_all` cancels one instrument's orders when it names one and every order when
-/// it does not. An order is named by an earlier placement in the script, counting its
-/// buys, sells, value orders and closes from 0, and a bracket as two, its stop's and
-/// then its take-profit's, which names nothing once the engine refused that placement
-/// or a close found nothing to close, or as `"oldest"`, the oldest order still resting.
-/// The ledger gives each instrument's columns a value a bar at one instrument and a row
-/// of N a bar for a universe. The comparison with the reference simulator and the tests
-/// drive the engine through this.
+/// `amount`, `tif` and `reduce_only`; `bracket` with a `stop`, a `take_profit` or both;
+/// `close` and `cancel_all`; `cancel` and `replace` naming an `order`, the second with
+/// the `price`, `trigger` or `size` it moves to; `transfer` with an `amount` and the
+/// wallet it goes `to`, the margin wallet unless named; and `target` with its
+/// `weights`, `tolerance` and `transfer`, as `Engine.target` takes them. `buy`, `sell`,
+/// their value forms, `bracket` and `close` name the `instrument` they trade, counted
+/// from 0, which one instrument leaves out, and `cancel_all` cancels one instrument's
+/// orders when it names one and every order when it does not. An order is named by an
+/// earlier placement in the script, counting its buys, sells, value orders and closes
+/// from 0, and a bracket as two, its stop's and then its take-profit's, which names
+/// nothing once the engine refused that placement or a close found nothing to close,
+/// or as `"oldest"`, the oldest order still resting. The ledger gives each
+/// instrument's columns a value a bar at one instrument and a row of N a bar for a
+/// universe. The comparison with the reference simulator and the tests drive the
+/// engine through this.
 #[pyfunction]
 #[pyo3(name = "run", signature = (candles, venue, script, times = None))]
 fn run_script<'py>(
