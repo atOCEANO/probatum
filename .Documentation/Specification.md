@@ -132,6 +132,10 @@ A fill inside the bar is a resting order's fill at a price the open had not reac
 
 `buy(size)` and `sell(size)` take base units, or contracts on an inverse instrument. `buy_value(amount)` and `sell_value(amount)` take the quote currency, and the size such an order fills is its amount over its fill price, or over the contract's value on an inverse instrument, so it spends or raises that amount before its fee. `target(weights)` takes signed weights of account equity: `1.0` is fully long unlevered, `-0.5` half short.
 
+A value order is a market order. Its amount over the open sizes the taker's fill that prices it, and the amount over that price is the size it fills, up to the bar's budget; where the venue's sizes are on, each size is held to the largest order and rounded down to the lot, and an amount below the minimum notional is refused as it is placed, a reduce-only one spared where the venue spares it. On an inverse contract the amount, in dollars, buys the contracts it is worth, a size the order has as it is placed.
+
+**Worked example.** `buy_value(1,000)` on BTCUSDT, with 1% slippage and a next open of 20,000, fills `1,000 / 20,200 = 0.049505` BTC at 20,200, and with a lot of 0.001, 0.049. On a contract worth 100 dollars, `buy_value(1,000)` buys 10 contracts at any price.
+
 ### Target
 
 At the close of bar `t`, each instrument's wanted position is the one whose notional at `close_t` is `weight * equity_t`:
@@ -192,6 +196,10 @@ inverse, V dollars  wanted = weight * equity_t * close_t / V            contract
 - At each close the brackets are placed and moved instrument by instrument, a stop before its take-profit, and before the row's target is.
 
 **Worked example.** A long entered at an average of 20,000 with `stop=0.04` and `take_profit=0.08` rests its stop at 19,200 and its take-profit at 21,600 from the close of the bar its entry filled on. An add of the same size that fills at 21,000 takes the average entry to 20,500 and moves them to 19,680 and 22,140 at the close of its bar, and a short entered at 20,000 rests its stop at 20,800 and its take-profit at 18,400. With a weight of 1.0 on every row, a stop that fills leaves the instrument flat until a row asks for zero or less.
+
+### A strategy
+
+A Strategy's `init(data)` runs once over the whole Data before the first bar, and `next(bar, account)` runs at the close of every bar from `warmup` on, `warmup` counting the Data's rows, except the last, which no bar follows to fill on, and a row none of the instruments printed, which the account never sees. What `next` places at a close fills on a later bar, never on that one. The account it reads is the one that close left, with the events since the last close, and `bar.history(n)` holds the last `n` bars up to and including that one.
 
 <br>
 <br>
