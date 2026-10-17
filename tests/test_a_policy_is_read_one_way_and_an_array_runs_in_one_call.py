@@ -1,11 +1,11 @@
 """``backtest`` reads a policy in one fixed order. A table is matched to the Data's clock
 and instruments by label. An array of weights, with its barriers, makes the run the
 Engine makes stepped from Python with the same targets and the same brackets, and one
-of quantities reaches the positions it wants. A class, a Strategy, a model that fits
-and an agent are each refused or not run yet, with what to do instead, and so is
-anything the run cannot read before it starts. The Result holds what the run recorded,
-its bars counted from its first row, the copy of the policy the run read and what it
-was given, annualized over the whole Data whatever slice of it ran.
+of quantities reaches the positions it wants. A class, a model that fits and an agent
+are each refused or not run yet, with what to do instead, and so is anything the run
+cannot read before it starts. The Result holds what the run recorded, its bars counted
+from its first row, the copy of the policy the run read and what it was given,
+annualized over the whole Data whatever slice of it ran.
 """
 
 import math
@@ -264,9 +264,6 @@ def test_what_backtest_does_not_run_is_answered_with_what_to_do_instead():
     with pytest.raises(TypeError, match=r"got the class Cross, not an instance; pass "
                                         r"Cross\(\)"):
         probatum.backtest(Cross, data, VENUE)
-    with pytest.raises(NotImplementedError, match="probatum.Backtester"):
-        probatum.backtest(Cross(), data, VENUE)
-
     with pytest.raises(TypeError, match="an object of type Fitted, a model that fits, "
                                         "which backtest does not fit; pass its "
                                         "predictions as an array"):

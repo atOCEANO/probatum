@@ -2,16 +2,18 @@
 Result, reading the policy in one fixed order, so no input is read two ways
 (ADR 0024)."""
 
+import copy
 import math
 import sys
 import types
 
 import numpy as np
 
-from ._backtester import Strategy, _version
+from ._backtester import _version
 from ._data import DAY, Data, _columns, _dated, _when
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
 from ._result import Result
+from ._strategy import Strategy, _Run, _called, _play
 from ._venue import _run, _venue_of
 
 SIZINGS = ("weight", "quantity")
@@ -33,7 +35,8 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     t is the decision at the close of bar t, a weight of equity or, with ``sizing``
     of ``"quantity"``, the position wanted, in base units or contracts, a NaN holding
     and the last row never read. A class is refused for an instance and a model that
-    fits for its predictions, and a Strategy and an agent are not run yet.
+    fits for its predictions, and an agent is not run yet. A Strategy runs on a deep
+    copy of itself, which is the Result's ``policy``, deciding at each close.
 
     ``stop`` and ``take_profit`` give each round trip of an array run its barriers,
     each a return from the average entry, a number, or an array or a table of them
@@ -53,9 +56,8 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
         raise TypeError(f"policy: got the class {policy.__name__}, not an instance; "
                         f"pass {policy.__name__}()")
     elif isinstance(policy, Strategy):
-        raise NotImplementedError(f"policy: a Strategy, {type(policy).__name__}, which "
-                                  f"backtest does not run yet; run it through "
-                                  f"probatum.Backtester")
+        return _decided(policy, data, venue, sizing, stop, take_profit, tolerance,
+                        risk_free)
     elif hasattr(policy, "fit") and not callable(policy):
         raise TypeError(f"policy: {_kind(policy)}, a model that fits, which backtest "
                         f"does not fit; pass its predictions as an array")
@@ -79,18 +81,11 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     barriers = {name: _barrier(name, given, data)
                 for name, given in (("stop", stop), ("take_profit", take_profit))}
 
-    held = _venue_of(venue)
-    if held._intrabar == "random":
-        raise ValueError("venue: intrabar is \"random\", which backtest refuses so that "
-                         "a backtest repeats without a seed; replace(intrabar="
-                         "\"pessimistic\") or \"optimistic\"")
+    held  = _repeatable(venue)
+    run   = _run(held, data)
+    names = data.names
 
-    run     = _run(held, data)
-    names   = data.names
-    markets = [spec["market"] for spec in run.settings.get("instruments",
-                                                           [run.settings])]
-
-    for k, market in enumerate(markets):
+    for k, market in enumerate(_markets(run)):
         if market == "spot" and (rows[:, k] < 0.0).any():
             t = int(np.flatnonzero(rows[:, k] < 0.0)[0])
             raise ValueError(f"policy: {rows[t, k]} at row {t:,} "
@@ -117,6 +112,58 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     rows.flags.writeable = False
     return Result(*_recorded(engine, run.start), stats, rows, engine.is_bust(),
                   provenance)
+
+
+def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_free):
+    """``strategy`` run on ``data`` at ``venue`` through a deep copy of it, which places
+    its own orders, so the settings of an array run are refused beside it."""
+    for name, given in (("stop", stop), ("take_profit", take_profit)):
+        if given is not None:
+            raise ValueError(f"{name}: {given!r} beside a Strategy, which places its own "
+                             f"exits; place them with account.bracket")
+
+    if sizing != "weight":
+        raise ValueError(f"sizing: {sizing!r} beside a Strategy, whose verbs say their "
+                         f"own units; leave it out")
+
+    if tolerance != 0.0:
+        raise ValueError(f"tolerance: {tolerance!r} beside a Strategy; pass it to "
+                         f"account.target")
+
+    if not _number(risk_free):
+        raise ValueError(f"risk_free: {risk_free!r}; give the annual rate as a finite "
+                         f"number, such as 0.04")
+
+    held   = _repeatable(venue)
+    run    = _run(held, data)
+    engine = Engine(run.candles, report=True, **run.settings)
+    copied = copy.deepcopy(strategy)
+
+    _play(copied, _Run(engine, data, run.start, _markets(run)))
+
+    rate       = _annualised(data)
+    stats      = None if rate is None else engine.stats(rate, float(risk_free))
+    provenance = dict(data=data.provenance, venue=repr(held), policy=_called(strategy),
+                      risk_free=risk_free, periods_per_year=rate, version=_version())
+
+    return Result(*_recorded(engine, run.start), stats, copied, engine.is_bust(),
+                  provenance)
+
+
+def _repeatable(venue):
+    """``venue`` as a Venue, refused where it decides at random, so that a backtest
+    repeats without a seed."""
+    held = _venue_of(venue)
+    if held._intrabar == "random":
+        raise ValueError("venue: intrabar is \"random\", which backtest refuses so that "
+                         "a backtest repeats without a seed; replace(intrabar="
+                         "\"pessimistic\") or \"optimistic\"")
+    return held
+
+
+def _markets(run):
+    """The market of each instrument a `Run` trades."""
+    return [spec["market"] for spec in run.settings.get("instruments", [run.settings])]
 
 
 def _number(value):

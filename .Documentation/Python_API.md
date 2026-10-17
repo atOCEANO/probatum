@@ -37,11 +37,11 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.venues` | The presets, each a Venue: `binance_perp`, `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
 | `probatum.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
-| `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers. [Below](#backtesting). |
+| `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
 | `probatum.Result` | What a run recorded: its equity and returns, the ledger, the fill log, the order log, the round trips, its statistics and its provenance. [Below](#backtesting). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
-| `probatum.Strategy` | The base class a strategy for `Backtester` subclasses. [Below](#the-strategy-runner). |
+| `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
 | `probatum.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
 | `probatum.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
 | `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
@@ -509,7 +509,7 @@ The full contract, every constructor argument, the observation and reward shapes
 | 1 | a table: anything exporting the Arrow C stream interface, or a pandas frame or series | its rows matched to the Data's clock by their times, in a datetime index or column or a `timestamp` column of milliseconds, and a daily Data's by their dates, and its columns to the instruments by name, then run as an array; a time or a name that does not match is refused, and a row may be left out only where no instrument printed a bar |
 | 2 | an array: anything with `__dlpack__`, the buffer protocol, `__array__` or `__arrow_c_array__` | converted once to float64 on the host and run whole in Rust |
 | 3 | a class | refused: pass an instance |
-| 4 | a `Strategy` | not run by `backtest` yet; [`probatum.Backtester`](#the-strategy-runner) runs one |
+| 4 | a `Strategy` | a deep copy of it, `init(data)` once and `next(bar, account)` at each close ([below](#a-strategy)) |
 | 5 | an object with `fit` that is not callable | refused: pass its predictions as an array |
 | 6 | an agent: a Stable-Baselines3 model, a torch module or any other callable | not run yet |
 | 7 | anything else | refused |
@@ -528,7 +528,55 @@ result = probatum.backtest(weights, btc, venue, stop=0.04, take_profit=0.08)
 
 **Barriers.** `stop` and `take_profit` give each round trip of an array run a stop and a take-profit at those returns from its average entry, each a number, or a `(T, N)` array or a table of them read on the row whose decision opened the round trip, NaN for none. They rest from the close of the bar the entry filled on and move when an add moves the average entry, and a barrier that fills, even in part, holds its instrument flat until a row asks for zero or for the other side, so the rows still asking for the position do not buy it straight back ([Specification](Specification.md#barriers-on-an-array)).
 
-**The Result** holds what the run recorded, on the rows the account saw from its first: `time`, `equity` and `returns`, each `(T,)`; `ledger`, `fills`, `orders` and `trades`, the [ledger](#the-ledger), the [fill log](#fills), the [order log](#the-order-log) and the [round trips](#trades); `stats`, the [statistics](#statistics) at `risk_free` and at the annualization of the whole Data the run's instruments are drawn from, counted on the rows they printed, so every slice of it annualizes alike; `policy`, the policy's values on the Data's rows as the run read them; `bust`, whether the account's equity reached zero; `liquidations`, how many bars it was liquidated on; and `provenance`, the Data's provenance with its fingerprint, the venue, the policy and its sizing, barriers and tolerance, the annualization and the version. Every `bar` in the records counts from the Result's first row, so `result.time[bar]` is its time.
+**The Result** holds what the run recorded, on the rows the account saw from its first: `time`, `equity` and `returns`, each `(T,)`; `ledger`, `fills`, `orders` and `trades`, the [ledger](#the-ledger), the [fill log](#fills), the [order log](#the-order-log) and the [round trips](#trades); `stats`, the [statistics](#statistics) at `risk_free` and at the annualization of the whole Data the run's instruments are drawn from, counted on the rows they printed, so every slice of it annualizes alike; `policy`, an array's values on the Data's rows as the run read them, or the copy of a Strategy it ran; `bust`, whether the account's equity reached zero; `liquidations`, how many bars it was liquidated on; and `provenance`, the Data's provenance with its fingerprint, the venue, the policy, an array's sizing, barriers and tolerance, the annualization and the version. Every `bar` in the records counts from the Result's first row, so `result.time[bar]` is its time.
+
+### A strategy
+
+A `probatum.Strategy` decides at each close. `init(data)` runs once over the whole Data before the first bar, the place to compute indicators over every bar at once, and `next(bar, account)` runs at the close of every bar from `warmup` on, counted in the Data's rows, except the last, which no bar follows to fill on, and a row none of the instruments printed. What `next` places fills on a later bar, never on that one. `warmup` is a class attribute or is set in `init`, and should cover the longest history a decision reads, since an index below zero reads numpy's array from its end. A strategy's parameters are its constructor's arguments, kept as attributes of the same names. `backtest` runs a deep copy of it, so two runs of one instance start alike, and the copy, holding what `init` computed, is the Result's `policy`. `stop`, `take_profit`, `sizing` and `tolerance` belong to an array run and are refused beside a Strategy, which places its own exits and gives `target` its own tolerance ([Specification](Specification.md#a-strategy), [ADR 0025](Decisions.md)).
+
+```python
+class Breakout(probatum.Strategy):
+    warmup = 21
+
+    def init(self, data):
+        self.high = probatum.ta.highest(data.high, 20)
+        self.atr = probatum.ta.atr(data.high, data.low, data.close, 14)
+
+    def next(self, bar, account):
+        atr = self.atr[bar.i]
+        if account.position == 0.0 and bar.close > self.high[bar.i - 1]:
+            account.buy(account.equity * 0.01 / (2.0 * atr))
+            self.exits = account.bracket(stop=bar.close - 2.0 * atr,
+                                         take_profit=bar.close + 4.0 * atr)
+        elif account.position > 0.0:
+            trail = bar.close - 2.0 * atr
+            if trail > self.exits.stop.trigger:
+                account.replace(self.exits.stop, trigger=trail)
+
+
+result = probatum.backtest(Breakout(), btc, venue)
+```
+
+**The bar** is the bar just closed: `i`, its row of the Data, by which an array computed in `init` is read; `time`, its open as a `datetime` in UTC, and `ns`, the same in int64 nanoseconds since 1970; `n`, the number of instruments; with one instrument `open`, `high`, `low`, `close`, `volume` and `funding_rate`, the last rate known at the bar's end, NaN before the first, and with any number their plural forms, each `(N,)` and NaN where an instrument printed no bar; `available`, which instruments printed it; and `bar["ETHUSDT"]`, one instrument's bar. With several instruments the singular forms are refused with the fix, as a Data's are. `bar.history(n)` is the last `n` bars up to and including this one as a read-only Data, the bars before a slice's first among them, and `bar.history()` every bar so far, so logic computed in `next` cannot read a later bar.
+
+**The account** is the one the bar's close left, in the venue's terms: `equity` and `leverage`; `position` and `entry` with one instrument, and `positions`, `(N,)`, with any number; `orders`, the orders still open, resting on the book or pending until the next open; `events`, what happened to its orders since the last close, oldest first, the orders placed at that close among them; `trades`, the round trips closed so far, each [column](#trades) a read-only array; `equity_curve`, the equity at the opening and at every bar since, one a row its instruments printed, as the Result's `equity` counts them; and the two wallets, `spot` and `margin`, each with its `cash` and `equity`, the margin wallet also with its maintenance `requirement` and `available`, its equity less the margin the cap asks, floored at zero. `account["ETHUSDT"]` is one instrument's view, with its `position`, `entry`, `upnl`, `weight` and `orders` and the verbs that place an order on it. With several instruments those verbs are taken through an instrument's view and refused on the whole account with the fix; `target`, `transfer` and `cancel_all` act on the whole account. Every bar the account names is the Data's row, as `bar.i` is.
+
+| Verb | Places |
+| :--- | :--- |
+| `buy(size)`, `sell(size)` | a market order of `size` base units, or contracts on an inverse contract, for the next open |
+| `buy(size, limit=price)`, `sell(size, limit=price)` | a limit order at `price` |
+| `buy(size, stop=trigger)`, `sell(size, stop=trigger)` | a stop that triggers at `trigger` and fills as a taker |
+| `buy_value(amount)`, `sell_value(amount)` | a market order for `amount` of the quote currency, its size the amount over its fill price ([Specification](Specification.md#units)) |
+| `target(weights, tolerance=0.0, transfer=False)` | the legs that bring each instrument to its weight of equity, `weights` one number with one instrument, one for each in order, or a dict from name to weight ([ADR 0009](Decisions.md)) |
+| `bracket(stop=None, take_profit=None)` | an OCO pair of reduce-only exits with no size of their own, at those prices |
+| `close()` | a reduce-only market order that flattens the position, or None where it is flat |
+| `cancel(order)`, `cancel_all()` | the cancellation of a resting order, or of every one |
+| `replace(order, price=None, trigger=None, size=None)` | the same order moved under its id, a limit by its `price` and a stop by its `trigger`, or None where it no longer rests or cannot move |
+| `transfer(amount, to="margin")` | cash moved between the wallets at the start of the next bar ([ADR 0008](Decisions.md)) |
+
+`buy` and `sell` also take `tif`, `"gtc"`, `"ioc"` or `"fok"`, on a market or a limit order, `post_only` on a limit and `reduce_only` on any order; their value forms take `tif`, `"ioc"` or `"fok"`, and `reduce_only`.
+
+**Every placing verb returns an `Order`**, a live handle that shows the order as it stands on any later bar: its `id`, `instrument`, `side`, None for a bracket's leg until it arms and for a target's leg refused before it took one, `kind`, `size`, None for a bracket's leg that closes the position it finds and for a value order, whose `filled` is what its amount bought, `filled`, `price`, `trigger`, `placed`, the Data's row it was placed at, `status` and `reason`, what the order log said last of it. Its status is `pending` while a market order waits for the next open and `resting` while a limit or a stop is on the book, then `filled`, `cancelled`, `expired`, as an order is once its time in force ends what is left of it, or `refused`, since a refused order is returned too, with its reason ([ADR 0010](Decisions.md)). `bracket` returns both legs as `.stop` and `.take_profit`, and `target` the list of its legs, refused ones included. Each of the account's events is an `Event` with its `kind`, `placed`, `armed`, `filled`, `clamped`, `refused`, `not_filled`, `expired` or `cancelled`, its `order`, None for a transfer's clamp, its `instrument`, its `bar`, the `size` and `price` of a fill or a clamp, and its `reason`.
 
 ### The strategy runner
 

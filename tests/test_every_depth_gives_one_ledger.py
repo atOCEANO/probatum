@@ -1,8 +1,10 @@
 """Every depth runs the same step: a script of targets played in one call, the same
-targets as an array run in one call, the Engine stepped from Python with them, and the
-batch with each env given its own, over random universes, record one ledger, one fill
-log, one order log and one set of round trips; and an array run's barriers are the
-brackets the Engine stepped from Python places by the same rules, at one instrument.
+targets as an array run in one call, the Engine stepped from Python with them, a
+Strategy deciding them through its account, and the batch with each env given its own,
+over random universes, record one ledger, one fill log, one order log and one set of
+round trips; and an array run's barriers are the brackets the Engine stepped from Python
+places by the same rules, and those a Strategy places through its account's handles and
+events, at one instrument.
 """
 
 import collections
@@ -13,6 +15,7 @@ import numpy as np
 import pytest
 
 import probatum
+from probatum._strategy import _Run, _play
 from reference import differential, universe_differential
 
 
@@ -65,6 +68,27 @@ def records(engine):
     }
 
 
+class Targets(probatum.Strategy):
+    """A target at each close, of the weights its rows give the Data's row."""
+
+
+    def __init__(self, rows):
+        self.rows = rows
+
+
+    def next(self, bar, account):
+        account.target(self.rows[bar.i])
+
+
+def through_account(candles, times, venue, markets, strategy):
+    """The Engine after ``strategy`` decided at each close of a Data of the candles, every
+    row of which an instrument printed, through its account."""
+    engine = probatum.Engine(candles, times=times, report=True, **venue)
+    _play(strategy, _Run(engine, probatum.Data(candles, time=times), 0, markets))
+
+    return engine
+
+
 @pytest.mark.parametrize("seed", range(8))
 def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(seed):
     rng = random.Random(seed)
@@ -95,6 +119,10 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
 
         assert same(records(array), run)
 
+        strategy = through_account(candles, times, venue, kinds, Targets(weights))
+
+        assert same(records(strategy), run)
+
     batch = probatum.Batch(candles, len(envs), times=times, report=True, **venue)
     batch.reset_all()
     for t in range(rows):
@@ -121,6 +149,22 @@ def barrier(rng, rows):
             for _ in range(rows)]
 
 
+def levels(entry, q, k, stop, take_profit):
+    """A round trip's stop and take-profit off its average `entry`, on the side of `q`,
+    at the returns row `k` gives, None for a barrier it does not give or a price at or
+    below zero."""
+    def at(barrier):
+        value = barrier if barrier is None or isinstance(barrier, float) else (
+            barrier[k][0])
+        return None if value is None or math.isnan(value) else value
+
+    side = 1.0 if q > 0.0 else -1.0
+    stop_at, take_at = at(stop), at(take_profit)
+    out = [None if stop_at is None else entry * (1.0 - side * stop_at),
+           None if take_at is None else entry * (1.0 + side * take_at)]
+    return [None if price is None or price <= 0.0 else price for price in out]
+
+
 def placed(engine, rows, stop, take_profit):
     """The Engine stepped from Python, placing at each close what an array run places
     by the rules of Barriers on an array: each round trip's bracket at the close of the
@@ -129,18 +173,6 @@ def placed(engine, rows, stop, take_profit):
     barrier's fill holding the instrument flat until a row asks for zero or for the
     other side. Returns the engine and how often a barrier filled, a bracket moved and
     a row was held flat."""
-    def at(barrier, k):
-        value = barrier if barrier is None or isinstance(barrier, float) else (
-            barrier[k][0])
-        return None if value is None or math.isnan(value) else value
-
-    def levels(entry, q, k):
-        side = 1.0 if q > 0.0 else -1.0
-        stop_at, take_at = at(stop, k), at(take_profit, k)
-        out = [None if stop_at is None else entry * (1.0 - side * stop_at),
-               None if take_at is None else entry * (1.0 + side * take_at)]
-        return [None if price is None or price <= 0.0 else price for price in out]
-
     state = engine.reset()
     held, decided, opened, priced, latched, seen = 0.0, None, None, None, 0.0, 0
     legs, counts = (None, None), collections.Counter()
@@ -157,13 +189,13 @@ def placed(engine, rows, stop, take_profit):
             legs = (None, None)
         elif held == 0.0 or held * q < 0.0:
             opened, priced = decided, entry
-            stop_at, take_at = levels(entry, q, opened)
+            stop_at, take_at = levels(entry, q, opened, stop, take_profit)
             legs = (None, None)
             if stop_at is not None or take_at is not None:
                 legs = engine.bracket(stop_at, take_at)
         elif legs != (None, None) and entry != priced:
             priced = entry
-            stop_at, take_at = levels(entry, q, opened)
+            stop_at, take_at = levels(entry, q, opened, stop, take_profit)
             counts["moved"] += 1
             if legs[0] is not None:
                 engine.replace(legs[0], trigger=stop_at)
@@ -184,10 +216,62 @@ def placed(engine, rows, stop, take_profit):
     return engine, counts
 
 
+class Bracketed(probatum.Strategy):
+    """What `placed` places, decided through the account: a leg's fill read off its
+    events, a bracket's legs as handles and moved through them."""
+
+
+    def __init__(self, rows, stop, take_profit):
+        self.rows        = rows
+        self.stop        = stop
+        self.take_profit = take_profit
+
+
+    def init(self, data):
+        self.held, self.decided, self.opened, self.priced = 0.0, None, None, None
+        self.latched, self.legs = 0.0, (None, None)
+
+
+    def next(self, bar, account):
+        if any(event.kind == "filled" and event.order is not None
+               and event.order in self.legs for event in account.events):
+            self.latched = math.copysign(1.0, self.held)
+
+        q, entry = account.position, account.entry
+        if q == 0.0:
+            self.legs = (None, None)
+        elif self.held == 0.0 or self.held * q < 0.0:
+            self.opened, self.priced = self.decided, entry
+            stop_at, take_at = levels(entry, q, self.opened, self.stop, self.take_profit)
+            self.legs = (None, None)
+            if stop_at is not None or take_at is not None:
+                self.legs = tuple(None if leg is None or leg.status == "refused" else leg
+                                  for leg in account.bracket(stop_at, take_at))
+        elif self.legs != (None, None) and entry != self.priced:
+            self.priced = entry
+            stop_at, take_at = levels(entry, q, self.opened, self.stop, self.take_profit)
+            if self.legs[0] is not None:
+                account.replace(self.legs[0], trigger=stop_at)
+            if self.legs[1] is not None:
+                account.replace(self.legs[1], price=take_at)
+
+        self.held = q
+        value     = self.rows[bar.i]
+        if math.isnan(value):
+            return
+
+        if self.latched and value != 0.0 and math.copysign(1.0, value) == self.latched:
+            return
+
+        self.latched = 0.0
+        account.target(value)
+        self.decided = bar.i
+
+
 def barred(seed):
     """One instrument of the first comparison's, its fill model and sizes drawn as
-    there, with weights and barriers through the array run and through the Engine
-    stepped from Python, and what the second placed."""
+    there, with weights and barriers through the array run, the Engine stepped from
+    Python and a Strategy, and what the Engine placed."""
     rng   = random.Random(seed)
     bars  = differential.walk(rng, rng.randint(12, 40))
     times = np.array(differential.clock(rng, len(bars)), dtype=np.int64)
@@ -216,7 +300,11 @@ def barred(seed):
         report = True,
         **settings,
     ), rows, stop, take_profit)
-    return array, engine, counts
+
+    strategy = through_account(candles, times, settings, [cfg["market"]],
+                               Bracketed(rows, stop, take_profit))
+
+    return array, engine, strategy, counts
 
 
 @pytest.fixture(scope="module")
@@ -227,10 +315,20 @@ def cases():
 @pytest.mark.parametrize("seed", range(16))
 def test_an_array_s_barriers_are_the_brackets_the_engine_stepped_from_python_places(
         seed, cases):
-    array, engine, _ = cases[seed]
+    array, engine, _, _ = cases[seed]
+
     assert same(records(array), records(engine))
 
 
+@pytest.mark.parametrize("seed", range(16))
+def test_an_array_s_barriers_are_the_brackets_a_strategy_places_through_its_account(
+        seed, cases):
+    array, _, strategy, _ = cases[seed]
+
+    assert same(records(array), records(strategy))
+
+
 def test_the_barrier_cases_fill_move_and_hold_their_brackets(cases):
-    counts = sum((counts for _, _, counts in cases), collections.Counter())
+    counts = sum((counts for *_, counts in cases), collections.Counter())
+
     assert counts["filled"] and counts["moved"] and counts["held"], counts

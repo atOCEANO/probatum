@@ -9,14 +9,16 @@ searches a strategy's parameters by running many backtests across cores. ``chart
 renders a frame, your own arrays and a run into one self-contained HTML document
 for a notebook cell or a file, computing nothing itself. ``Venue`` holds a venue's
 rules, and ``venues`` the presets, each one a Venue. ``backtest`` runs a policy on a
-Data at a venue and returns the ``Result`` it recorded.
+Data at a venue and returns the ``Result`` it recorded, and ``Strategy`` is a policy
+that decides at each close.
 """
 
 from ._probatum import Batch, Engine
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
 from . import metrics, plot, rl, ta, venues
-from ._backtester import Backtester, BacktestResult, Strategy
+from ._backtester import Backtester, BacktestResult
+from ._strategy import Strategy
 from ._result import Result
 from ._backtest import backtest
 from .market import Market
