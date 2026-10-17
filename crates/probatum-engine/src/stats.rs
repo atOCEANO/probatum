@@ -1,8 +1,6 @@
 //! Performance statistics derived from a recorded equity curve and round trips.
 //! The conventions are fixed in ADR 0030.
 
-use crate::reporter::RoundTrip;
-
 /// A run's performance summary. Percent fields are in percent (10.0 is 10%);
 /// ratios (sharpe, sortino, calmar, profit_factor) are unitless, and each is
 /// infinite when it earned something against no measured risk at all, so the set
@@ -69,13 +67,13 @@ fn ranked(reward: f64, risk: f64, annualizer: f64) -> f64 {
 
 impl Stats {
     /// Compute stats from the starting equity, the per-step equity curve, the
-    /// closed trades, and the annualization inputs. Degenerate inputs return
+    /// closed trades' net PnL, and the annualization inputs. Degenerate inputs return
     /// zeros rather than errors, so the result is always defined.
     #[allow(clippy::too_many_arguments)]
     pub fn compute(
         initial: f64,
         curve: &[f64],
-        trades: &[RoundTrip],
+        pnls: impl IntoIterator<Item = f64>,
         periods_per_year: f64,
         risk_free: f64,
         in_position_steps: usize,
@@ -222,13 +220,13 @@ impl Stats {
         // return, the most flattering way a backtest can lie (ADR 0030), and netting
         // only the exit side left half that error in place (ADR 0023). `realized`
         // stays gross, so either can be recomputed.
-        let num_trades = trades.len();
+        let mut num_trades = 0usize;
         let mut wins = 0usize;
         let mut net_profit = 0.0;
         let mut net_loss = 0.0;
         let mut total_pnl = 0.0;
-        for t in trades {
-            let net = t.pnl;
+        for net in pnls {
+            num_trades += 1;
             total_pnl += net;
             if net > 0.0 {
                 wins += 1;
@@ -315,7 +313,7 @@ mod tests {
         Stats::compute(
             initial,
             curve,
-            trades,
+            trades.iter().map(|trip| trip.pnl),
             periods_per_year,
             risk_free,
             in_position_steps,

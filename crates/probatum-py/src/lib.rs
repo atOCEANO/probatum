@@ -4289,6 +4289,43 @@ fn periods_per_year(times: PyReadonlyArray1<'_, i64>) -> PyResult<Option<f64>> {
     Ok(clock_from(times, None)?.periods_per_year())
 }
 
+/// The statistics `Engine.stats` gives, of an account that opened at `initial`, whose
+/// equity after each step is `curve`, whose closed round trips netted `pnl`, and which
+/// held a position on `in_position_steps` of those steps, filled `num_fills` times and
+/// paid `funding_paid` (ADR 0030).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn stats_of<'py>(
+    py: Python<'py>,
+    initial: f64,
+    curve: PyReadonlyArray1<'_, f64>,
+    pnl: PyReadonlyArray1<'_, f64>,
+    periods_per_year: f64,
+    risk_free: f64,
+    in_position_steps: usize,
+    num_fills: usize,
+    funding_paid: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    if !(periods_per_year.is_finite() && periods_per_year > 0.0) {
+        return Err(PyValueError::new_err(format!(
+            "periods_per_year: {periods_per_year}; give the bars a year as a finite number \
+             above 0"
+        )));
+    }
+    finite("risk_free", risk_free)?;
+    let stats = Stats::compute(
+        initial,
+        curve.as_slice()?,
+        pnl.as_slice()?.iter().copied(),
+        periods_per_year,
+        risk_free,
+        in_position_steps,
+        num_fills,
+        funding_paid,
+    );
+    stats_to_dict(py, &stats)
+}
+
 /// The `_probatum` extension module, imported by Python as `probatum._probatum`.
 #[pymodule]
 fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -4297,6 +4334,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyState>()?;
     m.add_class::<table::PyTable>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
+    m.add_function(wrap_pyfunction!(stats_of, m)?)?;
     m.add_function(wrap_pyfunction!(run_script, m)?)?;
     m.add_function(wrap_pyfunction!(run_array, m)?)?;
     m.add_function(wrap_pyfunction!(arrow::arrow_columns, m)?)?;

@@ -9,7 +9,8 @@ across cores. ``chart`` renders a frame, your own arrays and a run into one
 self-contained HTML document for a notebook cell or a file, computing nothing itself.
 ``Venue`` holds a venue's rules, and ``venues`` the presets, each one a Venue.
 ``backtest`` runs a policy on a Data at a venue and returns the ``Result`` it
-recorded, and ``Strategy`` is a policy that decides at each close.
+recorded, ``Strategy`` is a policy that decides at each close, and ``combine`` adds
+Results from accounts at different venues into one book.
 """
 
 from ._probatum import Batch
@@ -19,7 +20,7 @@ from . import metrics, plot, rl, ta, venues
 from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
 from ._engine import Engine
-from ._result import Result
+from ._result import Result, combine
 from ._backtest import backtest
 from .market import Market
 from ._tune import tune
@@ -28,8 +29,8 @@ from ._chart import chart, chart_defaults
 
 __all__ = [
     "BacktestResult", "Backtester", "Batch", "Data", "Engine", "Instrument", "Market",
-    "Result", "Strategy", "Venue", "backtest", "chart", "chart_defaults", "to_ohlcv",
-    "tune", "walk_forward", "metrics", "plot", "rl", "ta", "venues",
+    "Result", "Strategy", "Venue", "backtest", "chart", "chart_defaults", "combine",
+    "to_ohlcv", "tune", "walk_forward", "metrics", "plot", "rl", "ta", "venues",
 ]
 
 try:

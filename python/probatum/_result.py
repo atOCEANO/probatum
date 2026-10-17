@@ -1,7 +1,8 @@
-"""What one run produced, whatever its policy was: its equity and returns as arrays and
-its records as tables any Arrow reader takes, saved as files any tool reads
-(ADR 0026)."""
+"""What one run produced, whatever its policy was: its equity and returns as arrays, its
+records as tables any Arrow reader takes, saved as files any tool reads, and books kept
+at several venues added into one (ADR 0026)."""
 
+import collections.abc
 import copy
 import functools
 import importlib
@@ -15,7 +16,8 @@ import sys
 import numpy as np
 
 from . import _ipc
-from ._probatum import Table as _Held
+from ._data import DAY, INTERVALS, _when
+from ._probatum import Table as _Held, stats_of
 from ._venue import _settlement
 
 # the format a saved Result is written in, which this version reads, as every later
@@ -69,6 +71,14 @@ STORED = {
     "bool":  "bool",
     "text":  "large_text",
 }
+# a book's ledger: what each account counts as its equity is held, what it counts only
+# inside its own span, and the costs that fall on the rows they were paid on
+HELD    = ("equity", "spot_cash", "margin_cash", "equity_in_quote")
+SPANNED = ("gross_exposure", "net_exposure", "margin_used", "maintenance")
+COSTS   = ("fees", "funding", "spread", "slippage", "impact", "liquidation", "dust")
+# the assets a book counts at par, one for another, where it names one of them its own
+DOLLARS = frozenset(("USD", "USDT", "USDC", "USDD", "TUSD", "FDUSD", "BUSD", "DAI",
+                     "PYUSD", "USDE", "USDP", "USD1", "RLUSD"))
 
 
 def _frozen(array):
@@ -314,10 +324,10 @@ class Result:
     Data's annualisation and the run's risk-free rate, None where the clock is too
     short to annualise; ``policy``, the copy of the policy the run used; ``bust``,
     whether the account's equity reached zero; ``liquidations``, the number of bars it
-    was liquidated on; and ``provenance``, what the run was given and where it ran. A
-    row's return is its equity over the row before's, less one, and nothing once the
-    equity is gone. ``save(path)`` writes it as files any tool reads, and
-    ``Result.load(path)`` reads it back."""
+    was liquidated on, each account of a book counted apart; and ``provenance``, what
+    the run was given and where it ran. A row's return is its equity over the row
+    before's, less one, and nothing once the equity is gone. ``save(path)`` writes it as
+    files any tool reads, and ``Result.load(path)`` reads it back."""
 
 
     def __init__(self, time, equity, tables, stats, policy, bust, provenance):
@@ -336,9 +346,11 @@ class Result:
         self.policy     = _frozen(policy) if isinstance(policy, np.ndarray) else policy
         self.bust       = bool(bust)
         self.provenance = provenance
-
-        hit               = self.fills._held.equal("reason", "liquidation")
-        self.liquidations = len(np.unique(self.fills["bar"][hit]))
+        held            = self.fills._held
+        forced          = held.take(np.flatnonzero(held.equal("reason", "liquidation")))
+        venue           = (forced.column("venue") if "venue" in self.fills.columns
+                           else np.zeros(len(forced)))
+        self.liquidations = len(set(zip(venue.tolist(), forced.column("bar").tolist())))
 
 
     @classmethod
@@ -352,8 +364,10 @@ class Result:
 
     def __repr__(self):
         given = self.provenance
-        return (f"Result({given['policy']} on {given['venue']}, {len(self.time):,} bars, "
-                f"equity {self.equity[0]:,.2f} to {self.equity[-1]:,.2f})")
+        what  = (f"a book of {' and '.join(given['results'])}" if "results" in given
+                 else f"{given['policy']} on {given['venue']}")
+        return (f"Result({what}, {len(self.time):,} bars, equity {self.equity[0]:,.2f} "
+                f"to {self.equity[-1]:,.2f})")
 
 
     def __copy__(self):
@@ -526,7 +540,8 @@ class Result:
                              f"one clock as save writes them; {fix}")
 
         rows   = len(time)
-        tables = {name: _loaded(path, folder, name, fix) for name in SCHEMAS}
+        book   = "results" in provenance
+        tables = {name: _loaded(path, folder, name, book, fix) for name in SCHEMAS}
         ledger, holdings = tables["ledger"], tables["holdings"]
         bars = [table[column] for table in tables.values() for column in BARS
                 if column in table.columns]
@@ -535,7 +550,7 @@ class Result:
                 or any(np.ma.any((column < 0) | (column >= rows)) for column in bars)
                 or any(not np.array_equal(table["time"], time[table["bar"]])
                        for table in (holdings, tables["fills"], tables["orders"]))
-                or not _laid_out(holdings, rows)):
+                or not (book or _laid_out(holdings, rows))):
             raise ValueError(f"path: the tables of {str(path)!r} do not hold the rows of "
                              f"its time.npy and equity.npy; {fix}")
 
@@ -619,13 +634,15 @@ def _read(path, folder, name, fix):
     return columns
 
 
-def _loaded(path, folder, name, fix):
+def _loaded(path, folder, name, book, fix):
     """The table ``name``.arrow of ``folder``, the directory ``path`` names, refused
-    where it lacks a column save writes or holds a null in a column that holds none,
-    its columns in this version's order; a column a later version added comes back
-    after them as it was written."""
+    where it lacks a column save writes or holds a null in a column that holds none, a
+    book's with its venue first but for its ledger, which is the book's own, its columns
+    in this version's order; a column a later version added comes back after them as it
+    was written."""
     columns  = _read(path, folder, f"{name}.arrow", fix)
-    schema   = SCHEMAS[name]
+    joined   = book and name != "ledger"
+    schema   = ([("venue", "text", False)] if joined else []) + SCHEMAS[name]
     kinds    = {stored: kind for kind, stored in STORED.items()}
     nullable = {column: can for column, _, can in schema}
 
@@ -681,8 +698,15 @@ def _stats(path, folder, fix):
 
 
 def _described(provenance):
-    """Whether ``provenance`` holds what a Result's repr reads of it."""
-    return "venue" in provenance and "policy" in provenance
+    """Whether ``provenance`` holds what a Result's repr and combine read of it."""
+    if "results" in provenance:
+        return isinstance(provenance["results"], dict) and all(
+            key in provenance for key in ("settlement", "risk_free", "periods_per_year"))
+
+    data = provenance.get("data")
+    return isinstance(data, dict) and "interval" in data and all(
+        key in provenance for key in ("venue", "venue_name", "policy", "markets",
+                                      "settlement", "risk_free", "periods_per_year"))
 
 
 def _laid_out(holdings, rows):
@@ -764,3 +788,274 @@ def _provenance(data, venue, markets, policy, risk_free, rate, seed=None, **give
                 policy=policy, **given, seed=seed, streams=streams,
                 risk_free=float(risk_free), periods_per_year=rate, version=_version(),
                 **_environment())
+
+
+def combine(results, settlement=None):
+    """One book of ``results``, Results from accounts at different venues, each named by
+    its venue's name, or a mapping of a name to each, every account margined on its own
+    and no capital moved between them.
+
+    The book's clock is every time any of them has a row, on one interval's steps. An
+    account counts its opening balance before its first row, its last row's between
+    its rows, and its last equity after its end, and the book's equity is their sum in
+    the order given, so its returns and statistics are those of the sum, computed as a
+    run's are. Its ledger is the book's, a row per row of its clock: each account's
+    cash held as its equity is, its exposure, margin and maintenance counted only inside
+    its own span, its costs on the rows they were paid on, and the leverage gross
+    exposure over equity. Its other tables are theirs joined, each row with its venue
+    first and every bar counted on the book's clock, in order of bar, the round trips
+    closed in the order they closed and then those still open (Specification, Combining
+    books).
+
+    ``settlement`` names the dollar asset a book of accounts kept in dollar assets, such
+    as USDT and USDC, is kept in, each counted at par (Specification, Combining books).
+    Refused are Results kept in different assets but dollar ones, or in different
+    dollar assets without it; an inverse contract's account beside an account of
+    another kind, whose equity in the quote is not in dollars; Results on bars of
+    different intervals or off one interval's steps, or at different risk-free rates;
+    and a book already combined. A column a later version added to a table is left out
+    of the book's, since this version cannot tell what it counts."""
+    if isinstance(results, Result):
+        raise TypeError("results: one Result; give a list of them, or a mapping of a "
+                        "name to each")
+
+    if isinstance(results, collections.abc.Mapping):
+        named = list(results.items())
+        for name, _ in named:
+            if not (isinstance(name, str) and name):
+                raise TypeError(f"results: a name {name!r}; name each Result with a "
+                                f"string")
+    elif isinstance(results, collections.abc.Iterable):
+        named = [(None, part) for part in results]
+    else:
+        raise TypeError(f"results: {results!r}; give a list of Results, or a mapping of "
+                        f"a name to each")
+
+    if not named:
+        raise ValueError("results: none; give the Results to combine")
+
+    for k, (name, part) in enumerate(named):
+        if not isinstance(part, Result):
+            raise TypeError(f"results: a {type(part).__name__}; give Results, as "
+                            f"backtest returns them")
+        if "results" in part.provenance:
+            raise ValueError("results: a book already combined; combine the Results it "
+                             "was made of")
+        if name is None:
+            name = part.provenance["venue_name"]
+            if name is None:
+                raise ValueError("results: a Result at a venue with no name; name each, "
+                                 "as combine({\"a\": first, \"b\": second})")
+            named[k] = (name, part)
+
+    labels = [name for name, _ in named]
+    for name in labels:
+        if labels.count(name) > 1:
+            raise ValueError(f"results: two at {name}; name each, as combine({{\"a\": "
+                             f"first, \"b\": second}})")
+
+    parts = [part for _, part in named]
+    kept  = _kept(named, settlement)
+
+    for key, what, fix in (("interval", "bars of", "run them on one interval"),
+                           ("risk_free", "risk-free rates of", "run them at one rate")):
+        seen = list(dict.fromkeys(part.provenance["data"]["interval"] if key == "interval"
+                                  else part.provenance[key] for part in parts))
+        if len(seen) > 1:
+            raise ValueError(f"results: {what} {seen[0]} and {seen[1]}; {fix}")
+
+    clock = np.unique(np.concatenate([part.time for part in parts]))
+    step  = INTERVALS.get(parts[0].provenance["data"]["interval"])
+
+    if step is not None:
+        off = np.flatnonzero((clock - clock[0]) % step)
+        if len(off):
+            name = next(name for name, part in named if clock[off[0]] in part.time)
+            raise ValueError(f"results: {name} opens a row at {_when(clock[off[0]])}, "
+                             f"between the {parts[0].provenance['data']['interval']} "
+                             f"steps from {_when(clock[0])}; run them on bars that open "
+                             f"on one interval's steps")
+
+    book, held, rows, funding = {}, np.zeros(len(clock), dtype=bool), [], 0.0
+    for part in parts:
+        at     = np.maximum(np.searchsorted(part.time, clock, side="right") - 1, 0)
+        within = (clock >= part.time[0]) & (clock <= part.time[-1])
+        place  = np.searchsorted(clock, part.time)
+        ledger = part.ledger
+
+        for name in HELD + SPANNED + COSTS:
+            if name in HELD:
+                values = ledger[name][at]
+            elif name in SPANNED:
+                values = np.where(within, ledger[name][at], 0.0)
+            else:
+                values = np.zeros(len(clock))
+                values[place] = ledger[name]
+            book[name] = values if name not in book else book[name] + values
+
+        width   = len(part.holdings) // len(part.time)
+        holding = (np.abs(part.holdings["position"].reshape(len(part.time), width))
+                   > 0.0).any(axis=1)
+        held |= within & holding[at]
+        rows.append(place)
+        funding = funding + (0.0 if part.stats is None else part.stats["funding_paid"])
+
+    equity   = book["equity"]
+    leverage = np.divide(book["gross_exposure"], equity, out=np.zeros(len(clock)),
+                         where=equity > 0.0)
+    columns = dict(bar=np.arange(len(clock), dtype=np.int64), time=clock,
+                   leverage=leverage, **book)
+    tables = {"ledger": Table(_Held([(name, kind, nullable, columns[name], None, None)
+                                     for name, kind, nullable in SCHEMAS["ledger"]]))}
+
+    for name in SCHEMAS:
+        if name != "ledger":
+            tables[name] = (OrderLog if name == "orders" else Table)(
+                _joined([getattr(part, name) for part in parts], labels, rows, name))
+
+    trades    = tables["trades"]
+    rate      = _annualised(parts, clock)
+    risk_free = parts[0].provenance["risk_free"]
+    stats     = None if rate is None else stats_of(
+        float(equity[0]), np.ascontiguousarray(equity[1:]),
+        np.ascontiguousarray(trades["pnl"][~trades["open"]]), rate, float(risk_free),
+        int(held[1:].sum()), len(tables["fills"]), funding)
+
+    provenance = dict(results={label: copy.deepcopy(part.provenance)
+                               for label, part in zip(labels, parts)},
+                      settlement=kept, risk_free=risk_free, periods_per_year=rate,
+                      version=_version(), **_environment())
+
+    return Result(clock, equity, tables, stats, None, bool((equity[1:] <= 0.0).any()),
+                  provenance)
+
+
+def _kept(named, settlement):
+    """The asset a book of the Results ``named`` is kept in: the one asset its accounts
+    are kept in, or the dollar asset ``settlement`` names where they are kept in dollar
+    assets, None where none says, refusing a book whose accounts are kept in assets
+    that do not add."""
+    if settlement is not None and not (isinstance(settlement, str) and settlement):
+        raise TypeError(f"settlement: {settlement!r}; name the asset the book is kept in, "
+                        f"such as \"USDT\"")
+
+    coins = [name for name, part in named if part.provenance["markets"] == ["inverse"]]
+    if coins and len(coins) < len(named):
+        other = next(name for name, _ in named if name not in coins)
+        raise ValueError(f"results: {coins[0]} trades an inverse contract and {other} "
+                         f"does not, so their equity in the quote does not add; combine "
+                         f"each kind on its own")
+
+    assets = list(dict.fromkeys(part.provenance["settlement"] for _, part in named))
+
+    if coins:
+        if len(assets) > 1 or (assets[0] is None and len(coins) > 1):
+            raise ValueError(f"results: accounts kept in coins that are not one known "
+                             f"coin, {', '.join(map(str, assets))}; combine accounts "
+                             f"kept in one coin")
+        if settlement not in (None, assets[0]):
+            raise ValueError(f"settlement: {settlement!r} for accounts kept in their coin; "
+                             f"a book of a coin is kept in that coin, so leave "
+                             f"settlement out")
+        return assets[0]
+
+    known = [asset for asset in assets if asset is not None]
+    odd   = [asset for asset in known if asset not in DOLLARS]
+    if odd:
+        if len(assets) > 1:
+            other = next(asset for asset in assets if asset != odd[0])
+            raise ValueError(f"results: accounts kept in {odd[0]} and "
+                             f"{other or 'an asset their bars do not name'}, which do not "
+                             f"add; combine accounts kept in one asset")
+        if settlement not in (None, odd[0]):
+            raise ValueError(f"settlement: {settlement!r} for accounts kept in {odd[0]}, "
+                             f"which is no dollar asset to count at par; leave settlement "
+                             f"out")
+        return odd[0]
+
+    if settlement is not None:
+        if known and settlement not in DOLLARS:
+            raise ValueError(f"settlement: {settlement!r} for accounts kept in "
+                             f"{' and '.join(known)}; name the dollar asset the book is "
+                             f"kept in, as \"{known[0]}\"")
+        return settlement
+
+    if len(known) > 1:
+        raise ValueError(f"results: accounts kept in {known[0]} and {known[1]}; pass "
+                         f"settlement= to count them at par in one, as "
+                         f"settlement=\"{known[0]}\"")
+
+    return known[0] if known else None
+
+
+def _annualised(parts, clock):
+    """The bars a year a book of ``parts`` on ``clock`` is annualised at: theirs where
+    every part that has one agrees, and otherwise its rows less one per 365 days of the
+    time some part covers, so time between two parts' spans counts for neither."""
+    rates = list(dict.fromkeys(part.provenance["periods_per_year"] for part in parts
+                               if part.provenance["periods_per_year"] is not None))
+    if len(rates) == 1:
+        return rates[0]
+
+    spans = sorted((int(part.time[0]), int(part.time[-1])) for part in parts)
+    covered, end = 0, None
+    for first, last in spans:
+        if end is None or first > end:
+            covered += last - first
+            end = last
+        elif last > end:
+            covered += last - end
+            end = last
+
+    if len(clock) < 2 or covered <= 0:
+        return None
+    return (len(clock) - 1) * 365.0 / (covered / DAY)
+
+
+def _joined(tables, labels, rows, name):
+    """``tables``, one of each book's, as one table of the binding, each row with its
+    book's venue first and every bar counted on the book's clock through ``rows``, each
+    book's rows on it, the rows in order of bar, and for the round trips ``name``
+    names, the closed ones in the order they closed and then those still open. Each
+    part's columns are found by name and the book's are this version's, so a column a
+    later version added is left out."""
+    pieces  = [{part[0]: part for part in table._held.parts()} for table in tables]
+    counts  = [len(table) for table in tables]
+    encoded = [label.encode() for label in labels]
+    ends    = np.concatenate([[0], np.cumsum(np.repeat([len(b) for b in encoded], counts))])
+    data    = np.frombuffer(b"".join(b * count for b, count in zip(encoded, counts)),
+                            dtype=np.uint8)
+
+    joined = [("venue", "text", False, ends.astype(np.int64, copy=False), None, data)]
+    for column, kind, nullable in SCHEMAS[name]:
+        values = [piece[column][3] for piece in pieces]
+        valid  = [piece[column][4] for piece in pieces]
+        if column in BARS:
+            values = [own[given] if mask is None else
+                      np.where(mask, own[np.where(mask, given, 0)], given)
+                      for own, given, mask in zip(rows, values, valid)]
+
+        if kind == "text":
+            shifts = np.cumsum([0] + [len(piece[column][5]) for piece in pieces[:-1]])
+            values = np.concatenate([[0]] + [given[1:] + shift
+                                             for given, shift in zip(values, shifts)])
+            text = np.concatenate([piece[column][5] for piece in pieces])
+        else:
+            values, text = np.concatenate(values), None
+
+        mask = (None if all(given is None for given in valid) else np.concatenate(
+            [np.ones(count, dtype=bool) if given is None else given
+             for given, count in zip(valid, counts)]))
+        joined.append((column, kind, nullable, np.ascontiguousarray(values), mask, text))
+
+    held = _Held(joined)
+    del joined
+
+    if name == "trades":
+        _, _, _, closed, valid, _ = next(part for part in held.parts()
+                                         if part[0] == "close_bar")
+        key = closed if valid is None else np.where(valid, closed, np.iinfo(np.int64).max)
+    else:
+        key = held.column("bar")
+
+    return held.take(np.argsort(key, kind="stable").astype(np.int64, copy=False))

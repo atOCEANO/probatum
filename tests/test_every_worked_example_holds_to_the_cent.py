@@ -2,8 +2,8 @@
 
 Each test is one example, named for what it shows, and runs it through the reference
 simulator written from that page, or through probatum where the rule is the Python
-layer's own, a run's tables. The engine is held to the examples it models by its own
-tests, which name the same numbers.
+layer's own, a run's tables and a book's sum. The engine is held to the examples it
+models by its own tests, which name the same numbers.
 """
 
 import math
@@ -1066,3 +1066,43 @@ def test_three_rows_of_two_instruments_record_six_holdings_and_null_what_they_la
     [trip] = list(result.trades)
     assert trip["open"] and (trip["close_bar"], trip["close_time"], trip["exit"],
                              trip["reason"]) == (None, None, None, None)
+
+
+def test_two_accounts_listed_and_ended_apart_add_into_15_350():
+    venue = probatum.venues.frictionless
+    first = probatum.Data(
+        hourly_bars([100.0, 100.0, 101.0, 100.5],
+                    [100.0, 101.0, 100.5, 102.0], range(4)),
+        symbol = "COINUSDT",
+        market = "linear",
+    )
+    second = probatum.Data(
+        hourly_bars([50.0, 50.0, 51.5], [50.0, 49.0, 52.0], [1, 3, 4]),
+        symbol   = "COINUSDT",
+        market   = "linear",
+        interval = "1h",
+    )
+
+    a = probatum.backtest(np.array([100.0, np.nan, np.nan, np.nan]), first,
+                          venue.replace(balance=10_000.0), sizing="quantity")
+    b = probatum.backtest(np.array([100.0, 0.0, np.nan]), second,
+                          venue.replace(balance=5_000.0), sizing="quantity")
+
+    assert a.equity.tolist() == [10_000.0, 10_100.0, 10_050.0, 10_200.0]
+    assert b.equity.tolist() == [5_000.0, 4_900.0, 5_150.0]
+
+    book = probatum.combine({"A": a, "B": b})
+    assert book.equity.tolist() == [15_000.0, 15_100.0, 15_050.0, 15_100.0, 15_350.0]
+
+    stats = book.stats
+    assert stats["total_return_pct"] == pytest.approx(350.0 / 15_000.0 * 100.0)
+    assert stats["exposure_pct"]     == 75.0
+    assert stats["num_trades"] == 1 and stats["num_fills"] == 3
+    assert stats["avg_trade_pct"]    == pytest.approx(1.0)
+    assert stats["max_drawdown_pct"] == pytest.approx(50.0 / 15_100.0 * 100.0)
+
+    fills = book.fills[book.fills["venue"] == "B"]
+    assert fills["bar"].tolist() == [3, 4]
+    assert (a.provenance["periods_per_year"], b.provenance["periods_per_year"]) == (
+        8_760.0, 5_840.0)
+    assert book.provenance["periods_per_year"] == 4 * 365 / (4 / 24) == 8_760.0

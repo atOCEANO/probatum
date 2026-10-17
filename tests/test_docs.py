@@ -67,6 +67,7 @@ _API = {
     "from_router": probatum.Data.from_router,
     "load": probatum.Data.load,
     "Result.load": probatum.Result.load,
+    "combine": probatum.combine,
     # a preset's replace takes the settings the constructor does
     "Venue": probatum.Venue,
 }

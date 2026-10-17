@@ -1,6 +1,6 @@
 """The API page's Quickstart and its Result section run as written, one after another in
 one namespace, as a reader copies them: the Quickstart builds the Data and the Result
-the section reads, saves and queries. Every block of the page is checked for
+the section reads, saves, queries and combines. Every block of the page is checked for
 its names and keywords by ``test_docs.py``; these are run.
 """
 
@@ -47,7 +47,7 @@ def test_the_quickstart_and_the_result_section_run_as_written(tmp_path, monkeypa
 
     blocks = sections("Quickstart", "The Result")
 
-    assert len(blocks) >= 4
+    assert len(blocks) >= 5
 
     names = {}
     for block in blocks:
@@ -55,4 +55,4 @@ def test_the_quickstart_and_the_result_section_run_as_written(tmp_path, monkeypa
 
     result, again = names["result"], names["again"]
     assert again.trades == result.trades and again.stats == result.stats
-    assert len(result.fills) > 0
+    assert "book" in names and len(names["book"].fills) > len(result.fills)

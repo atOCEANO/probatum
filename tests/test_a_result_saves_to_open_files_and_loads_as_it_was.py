@@ -41,8 +41,8 @@ class Twice(probatum.Strategy):
 def made():
     """A Result of each kind a save meets: an array run, a Strategy, a loop stepped by
     hand with a numpy seed, a run that fills nothing, an inverse contract, a takeover,
-    a winner whose profit factor is infinite, and a run of one row, too short for
-    statistics."""
+    a winner whose profit factor is infinite, a run of one row, too short for
+    statistics, and a book of two."""
     data     = pair()
     array    = probatum.backtest(weights(), data, VENUE)
     strategy = probatum.backtest(Twice(), data, VENUE)
@@ -62,7 +62,8 @@ def made():
     return dict(array=array, strategy=strategy, loop=engine.result(),
                 idle=probatum.backtest(np.full((40, 2), np.nan), data, VENUE),
                 inverse=inverse(), takeover=takeover(), winner=winner,
-                single=probatum.backtest(np.full(1, 0.5), single, VENUE))
+                single=probatum.backtest(np.full(1, 0.5), single, VENUE),
+                book=probatum.combine({"a": array, "b": strategy}))
 
 
 @pytest.fixture(scope="module")
@@ -89,7 +90,7 @@ def same(loaded, result):
 
 
 @pytest.mark.parametrize("kind", ["array", "strategy", "loop", "idle", "inverse",
-                                  "takeover", "winner", "single"])
+                                  "takeover", "winner", "single", "book"])
 def test_a_result_comes_back_as_it_was_saved(kind, results, tmp_path):
     result = results[kind]
     result.save(tmp_path)
@@ -140,6 +141,13 @@ def test_the_directory_holds_open_files_any_tool_reads(results, tmp_path):
     kept = pyarrow.ipc.open_file(tmp_path / "winner" / "stats.arrow").read_all()
 
     assert kept["profit_factor"].to_pylist() == [float("inf")]
+
+    results["book"].save(tmp_path / "book")
+
+    assert "venue" not in pyarrow.ipc.open_file(
+        tmp_path / "book" / "ledger.arrow").read_all().column_names
+    assert pyarrow.ipc.open_file(
+        tmp_path / "book" / "fills.arrow").read_all().column_names[0] == "venue"
 
 
 def rewritten(path, name, change=None):
@@ -434,3 +442,40 @@ def test_a_save_that_stops_partway_leaves_the_result_that_was_there_or_none(
     same(probatum.Result.load(tmp_path), strategy)
     with pytest.raises(ValueError, match="path: .* is a file; name a directory"):
         array.save(tmp_path / "result.json")
+
+
+def test_a_book_and_its_parts_saved_and_loaded_combine_as_they_did(results, tmp_path):
+    array, strategy = results["array"], results["strategy"]
+    array.save(tmp_path / "a")
+    strategy.save(tmp_path / "b")
+
+    loaded = probatum.combine({
+        "a": probatum.Result.load(tmp_path / "a"),
+        "b": probatum.Result.load(tmp_path / "b"),
+    })
+    book = results["book"]
+
+    for name in ("time", "equity", "returns"):
+        assert getattr(loaded, name).tobytes() == getattr(book, name).tobytes()
+    for name in SCHEMAS:
+        assert getattr(loaded, name) == getattr(book, name)
+    assert loaded.stats == book.stats
+
+
+def test_a_part_another_hand_wrote_again_combines_as_the_part_it_was(results, tmp_path):
+    array, strategy = results["array"], results["strategy"]
+    array.save(tmp_path)
+
+    rewritten(tmp_path, "fills", lambda table: table.append_column(
+        "venue_fee_tier", pyarrow.array(["vip0"] * len(table), pyarrow.large_string())))
+    rewritten(tmp_path, "holdings", lambda table: table.select(table.column_names[::-1]))
+
+    loaded = probatum.Result.load(tmp_path)
+
+    for first, second in (("a", "b"), ("b", "a")):
+        given = {"a": loaded, "b": strategy}
+        plain = {"a": array, "b": strategy}
+        book  = probatum.combine({first: given[first], second: given[second]})
+        made  = probatum.combine({first: plain[first], second: plain[second]})
+
+        assert book.fills == made.fills and book.holdings == made.holdings

@@ -251,6 +251,16 @@ class Table:
     def __arrow_c_stream__(self, requested_schema: Any = ...) -> Any: ...
 
 def periods_per_year(times: np.ndarray) -> Optional[float]: ...
+def stats_of(
+    initial: float,
+    curve: np.ndarray,
+    pnl: np.ndarray,
+    periods_per_year: float,
+    risk_free: float,
+    in_position_steps: int,
+    num_fills: int,
+    funding_paid: float,
+) -> dict[str, Any]: ...
 def run(
     candles: np.ndarray,
     venue: Optional[dict[str, Any]],

@@ -547,7 +547,7 @@ impl Reporter {
         Stats::compute(
             initial,
             &self.equity_curve,
-            &self.trades,
+            self.trades.iter().map(|trip| trip.pnl),
             periods_per_year,
             risk_free,
             self.in_position_steps,
