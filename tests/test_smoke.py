@@ -1801,3 +1801,17 @@ def test_a_per_env_impact_lands_on_impact_and_not_on_slippage():
     moved = 100.0 * (1.0 + 5.0 * sigma * 0.1)
 
     assert states[1]["quote"] == pytest.approx(10_000.0 - moved, rel=1e-12)
+
+
+def test_a_mask_byte_other_than_0_resets_its_env_as_true_does():
+    # numpy lets a view put any byte in a bool array; the binding reads the bytes, so a
+    # 2 resets its env rather than reaching Rust as a bool it cannot hold
+    b = probatum.Batch(series(), num_envs=2, market="spot", fee_taker=0.0, fee_maker=0.0)
+    b.reset_all()
+    b.step_all()
+
+    mask = np.array([2, 0], dtype=np.uint8).view(bool)
+    b.reset_masked(mask, np.zeros(2, dtype=np.int64))
+    states = b.step_all()
+
+    assert [state["tick_index"] for state in states] == [1, 2]

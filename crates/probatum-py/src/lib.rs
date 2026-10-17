@@ -549,6 +549,18 @@ fn at_least(name: &str, value: f64, low: f64) -> PyResult<f64> {
     Ok(value)
 }
 
+/// The booleans of `mask`, read a byte at a time, any byte but 0 true: numpy lets a
+/// view put any byte in a bool array, and a byte other than 0 or 1 is no Rust bool.
+fn booleans(mask: &PyReadonlyArray1<'_, bool>) -> PyResult<Vec<bool>> {
+    let bytes = mask.as_any().call_method1("view", ("u1",))?;
+    Ok(bytes
+        .extract::<PyReadonlyArray1<'_, u8>>()?
+        .as_slice()?
+        .iter()
+        .map(|&byte| byte != 0)
+        .collect())
+}
+
 /// The opening cash as `quote` takes it: a number for the wallet the market settles
 /// in, or a dict naming each wallet's, `{"spot": s, "margin": m}` (ADR 0008).
 enum Opening {
@@ -3002,20 +3014,18 @@ impl Batch {
         mask: PyReadonlyArray1<'_, bool>,
         offsets: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<()> {
-        let mask_slice = mask
-            .as_slice()
+        let mask = booleans(&mask)
             .map_err(|_| PyValueError::new_err("mask must be a contiguous 1-D bool array"))?;
-        if mask_slice.len() != self.inner.len() {
+        if mask.len() != self.inner.len() {
             return Err(PyValueError::new_err(format!(
                 "mask length {} must equal num_envs {}",
-                mask_slice.len(),
+                mask.len(),
                 self.inner.len()
             )));
         }
-        let mask_vec = mask_slice.to_vec();
         let offs = self.offsets_vec(offsets)?;
         py.detach(|| {
-            self.inner.reset_masked(&mask_vec, &offs);
+            self.inner.reset_masked(&mask, &offs);
         });
         Ok(())
     }
