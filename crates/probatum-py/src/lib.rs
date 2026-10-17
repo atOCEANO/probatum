@@ -1218,7 +1218,11 @@ fn per_env_vec(
     }
 }
 
-fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyDict>> {
+fn order_to_dict<'py>(
+    py: Python<'py>,
+    order: &Order,
+    status: &str,
+) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     // a bracket leg has no side until it arms, and no size while it closes the
     // position it finds
@@ -1232,9 +1236,7 @@ fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyD
     d.set_item("size", sized.then(|| order.size.get()))?;
     d.set_item("filled", order.filled.get())?;
     d.set_item("remaining", sized.then(|| order.remaining().get()))?;
-    // only resting orders are ever handed out, so this is a constant; the key stays
-    // because the API documents it
-    d.set_item("status", "resting")?;
+    d.set_item("status", status)?;
     d.set_item("reduce_only", order.reduce_only)?;
     d.set_item("post_only", order.post_only)?;
     Ok(d)
@@ -1317,7 +1319,7 @@ impl PyState {
     fn open_orders<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let list = PyList::empty(py);
         for order in &self.orders {
-            list.append(order_to_dict(py, order)?)?;
+            list.append(order_to_dict(py, order, "resting")?)?;
         }
         Ok(list)
     }
@@ -1640,16 +1642,18 @@ fn ledger_of<'py>(
     Ok(Some(d))
 }
 
+/// The order log from event `from` on, or None when reporting is off.
 fn order_log_of<'py>(
     py: Python<'py>,
     engine: &BarEngine,
     units: Units,
+    from: usize,
 ) -> PyResult<Option<Bound<'py, PyList>>> {
     let Some(reporter) = engine.reporter() else {
         return Ok(None);
     };
     let list = PyList::empty(py);
-    for event in reporter.events() {
+    for event in reporter.events().iter().skip(from) {
         list.append(event_to_dict(
             py,
             &units.event(*event),
@@ -1905,6 +1909,20 @@ impl Engine {
         self.state_of(py, state)
     }
 
+    /// Reset with the account opened at bar `start` rather than the first, the bars
+    /// before it there to be read and never traded, and return its state.
+    fn reset_at<'py>(&mut self, py: Python<'py>, start: usize) -> PyResult<Bound<'py, PyState>> {
+        let last = self.inner.num_bars() - 1;
+        if start > last {
+            return Err(PyValueError::new_err(format!(
+                "start: {start} is past the last bar, {last}; open the account on a bar \
+                 the engine holds"
+            )));
+        }
+        let state = self.inner.reset_at(start);
+        self.state_of(py, state)
+    }
+
     /// Advance one bar, resolve the orders placed since the last step, mark the
     /// account, and return the new state.
     fn step<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyState>> {
@@ -2065,12 +2083,14 @@ impl Engine {
     /// once when one is held and otherwise once the entry fills, and the bracket
     /// goes when that position closes or flips. Returns the two legs' ids, None for
     /// one not asked for or refused; a non-finite price raises (ADR 0010).
-    #[pyo3(signature = (stop = None, take_profit = None))]
+    #[pyo3(signature = (stop = None, take_profit = None, instrument = 0))]
     fn bracket(
         &mut self,
         stop: Option<f64>,
         take_profit: Option<f64>,
+        instrument: usize,
     ) -> PyResult<(Option<u64>, Option<u64>)> {
+        let instrument = self.instrument(instrument)?;
         if stop.is_none() && take_profit.is_none() {
             return Err(PyValueError::new_err(
                 "bracket has no stop and no take_profit; give either or both",
@@ -2088,13 +2108,15 @@ impl Engine {
                 .transpose()
         };
         let (stop, take_profit) = (price("stop", stop)?, price("take_profit", take_profit)?);
-        let (stop, take_profit) = self.inner.bracket(0, stop, take_profit);
+        let (stop, take_profit) = self.inner.bracket(instrument, stop, take_profit);
         Ok((stop.map(|id| id.0), take_profit.map(|id| id.0)))
     }
 
     /// Flatten the position with a reduce-only market order. None when flat.
-    fn close(&mut self) -> Option<u64> {
-        self.inner.close().map(|id| id.0)
+    #[pyo3(signature = (instrument = 0))]
+    fn close(&mut self, instrument: usize) -> PyResult<Option<u64>> {
+        let instrument = self.instrument(instrument)?;
+        Ok(self.inner.close_on(instrument).map(|id| id.0))
     }
 
     /// Cancel a resting order by id. True if it was found and removed.
@@ -2140,10 +2162,18 @@ impl Engine {
             .map(|id| id.0))
     }
 
-    /// Cancel every resting order, returning how many were dropped. Pending market
-    /// orders are not resting and still fill on the next step.
-    fn cancel_all(&mut self) -> usize {
-        self.inner.cancel_all()
+    /// Cancel every resting order, or every one on `instrument`, returning how many
+    /// were dropped. Pending market orders are not resting and still fill on the next
+    /// step.
+    #[pyo3(signature = (instrument = None))]
+    fn cancel_all(&mut self, instrument: Option<usize>) -> PyResult<usize> {
+        Ok(match instrument {
+            Some(instrument) => {
+                let instrument = self.instrument(instrument)?;
+                self.inner.cancel_all_on(instrument)
+            }
+            None => self.inner.cancel_all(),
+        })
     }
 
     /// Move `amount` of cash into the `to` wallet, "spot" or "margin", from the
@@ -2215,6 +2245,7 @@ impl Engine {
         reduce_only = false,
         post_only = false,
         tif = "GTC",
+        instrument = 0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn order(
@@ -2227,7 +2258,9 @@ impl Engine {
         reduce_only: bool,
         post_only: bool,
         tif: &str,
+        instrument: usize,
     ) -> PyResult<Option<u64>> {
+        let instrument = self.instrument(instrument)?;
         let side = parse_side(side)?;
         let kind = parse_order_type(r#type)?;
         let tif = parse_tif(tif)?;
@@ -2254,7 +2287,8 @@ impl Engine {
             .transpose()?;
         Ok(self
             .inner
-            .order(
+            .order_on(
+                instrument,
                 units.side(side),
                 units.size(size),
                 kind,
@@ -2265,6 +2299,51 @@ impl Engine {
                 tif,
             )
             .map(|id| id.0))
+    }
+
+    /// Queue a market order on `instrument` for `amount` of the quote currency, which
+    /// fills its amount over its fill price at the next open, held to the venue's
+    /// sizes; on an inverse contract the amount, in dollars, buys the contracts it is
+    /// worth as it is placed, and one that is no amount is refused as one. `tif` is
+    /// "ioc" or "fok". Returns the order id, or None where it was refused
+    /// (Specification, Units).
+    #[pyo3(signature = (side, amount, reduce_only = false, tif = "ioc", instrument = 0))]
+    fn order_value(
+        &mut self,
+        side: &str,
+        amount: f64,
+        reduce_only: bool,
+        tif: &str,
+        instrument: usize,
+    ) -> PyResult<Option<u64>> {
+        let instrument = self.instrument(instrument)?;
+        let side = parse_side(side)?;
+        let tif = match parse_tif(tif) {
+            Ok(TimeInForce::Gtc) | Err(_) => {
+                return Err(PyValueError::new_err(format!(
+                    "tif: {tif:?} is not a market order's; use \"ioc\" or \"fok\""
+                )))
+            }
+            Ok(tif) => tif,
+        };
+        let units = self.units;
+        let id = match units {
+            Units::Inverse(value) if amount.is_finite() && amount > 0.0 => self.inner.order_on(
+                instrument,
+                units.side(side),
+                units.size(amount / value),
+                OrderType::Market,
+                None,
+                None,
+                reduce_only,
+                false,
+                tif,
+            ),
+            _ => self
+                .inner
+                .order_value(instrument, side, amount, reduce_only, tif),
+        };
+        Ok(id.map(|id| id.0))
     }
 
     /// Base size for `fraction` of current equity, marked at the current close, or
@@ -2348,7 +2427,152 @@ impl Engine {
     /// reason. A refused placement is here under the id it would have had
     /// (ADRs 0010, 0022).
     fn order_log<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
-        order_log_of(py, &self.inner, self.units)
+        order_log_of(py, &self.inner, self.units, 0)
+    }
+
+    /// The events of the order log from event `first` on, as `order_log` gives them,
+    /// or None when reporting is off.
+    fn order_log_since<'py>(
+        &self,
+        py: Python<'py>,
+        first: usize,
+    ) -> PyResult<Option<Bound<'py, PyList>>> {
+        order_log_of(py, &self.inner, self.units, first)
+    }
+
+    /// The round trips closed from the `first` on, each a dict as `trades` gives it, or
+    /// None when reporting is off. A trip never changes once closed, so a caller can
+    /// read each as it closes.
+    fn trades_since<'py>(
+        &self,
+        py: Python<'py>,
+        first: usize,
+    ) -> PyResult<Option<Bound<'py, PyList>>> {
+        let Some(reporter) = self.inner.reporter() else {
+            return Ok(None);
+        };
+        let list = PyList::empty(py);
+        for trade in reporter.trades().iter().skip(first) {
+            list.append(trade_to_dict(py, &self.units.trip(*trade), &self.inner)?)?;
+        }
+        Ok(Some(list))
+    }
+
+    /// The equity curve from point `first` on, one point a step, or None when reporting
+    /// is off.
+    fn equity_since<'py>(
+        &self,
+        py: Python<'py>,
+        first: usize,
+    ) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.inner.reporter().map(|reporter| {
+            let curve = reporter.equity_curve();
+            PyArray1::from_slice(py, &curve[first.min(curve.len())..])
+        })
+    }
+
+    /// The events the order log holds, none when reporting is off.
+    fn num_events(&self) -> usize {
+        self.inner
+            .reporter()
+            .map_or(0, |reporter| reporter.events().len())
+    }
+
+    /// The account as the last close left it, in the venue's terms, or None when
+    /// reporting is off: the ledger's last row, each wallet's equity, and the margin
+    /// wallet's room under the cap, its equity less the margin the cap asks, floored at
+    /// zero; and each instrument's position, entry, mark, notional, unrealized PnL,
+    /// weight and drift, as a list over the instruments.
+    fn account<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(reporter) = self.inner.reporter() else {
+            return Ok(None);
+        };
+        let row = self
+            .units
+            .row(*reporter.ledger().last().expect("a row from the reset on"));
+        let width = self.inner.width();
+        let printed = &self.inner.candles_all()[row.tick * width..(row.tick + 1) * width];
+        let legs: Vec<Leg> = reporter.legs()[reporter.legs().len() - width..]
+            .iter()
+            .zip(printed)
+            .map(|(&leg, bar)| self.units.leg(leg, bar.close))
+            .collect();
+        let (mut spot, mut margin) = (row.spot_cash, row.margin_cash);
+        for (i, leg) in legs.iter().enumerate() {
+            if leg.position == 0.0 {
+                continue;
+            }
+            match self.inner.market(i) {
+                Market::Spot => spot += leg.position * leg.mark,
+                Market::Perp => margin += leg.unrealized,
+            }
+        }
+        let d = PyDict::new(py);
+        let columns: [(&str, f64); 12] = [
+            ("equity", row.equity),
+            ("spot_cash", row.spot_cash),
+            ("margin_cash", row.margin_cash),
+            ("spot_equity", spot),
+            ("margin_equity", margin),
+            ("available", (margin - row.margin_used).max(0.0)),
+            ("gross_exposure", row.gross_exposure),
+            ("net_exposure", row.net_exposure),
+            ("leverage", row.leverage),
+            ("margin_used", row.margin_used),
+            ("maintenance", row.maintenance),
+            (
+                "equity_in_quote",
+                self.units.in_quote(row.equity, printed[0].close),
+            ),
+        ];
+        for (name, value) in columns {
+            d.set_item(name, value)?;
+        }
+        let leg_columns: [(&str, LegColumn); 7] = [
+            ("position", |leg| leg.position),
+            ("entry", |leg| leg.entry),
+            ("mark", |leg| leg.mark),
+            ("notional", |leg| leg.notional),
+            ("unrealized", |leg| leg.unrealized),
+            ("weight", |leg| leg.weight),
+            ("drift", |leg| leg.drift),
+        ];
+        for (name, get) in leg_columns {
+            d.set_item(name, legs.iter().map(get).collect::<Vec<f64>>())?;
+        }
+        Ok(Some(d))
+    }
+
+    /// The orders still open, each a dict as `State.open_orders` gives one, with its
+    /// instrument: those resting on the book, then the market orders waiting for the
+    /// next open, whose status is "pending", a value order with its `amount` and no
+    /// size until its fill sets one.
+    fn orders<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for order in self.inner.resting() {
+            list.append(self.open_dict(py, order, "resting", None)?)?;
+        }
+        for (order, amount) in self.inner.waiting() {
+            list.append(self.open_dict(py, order, "pending", amount)?)?;
+        }
+        Ok(list)
+    }
+
+    /// The order `order_id` as `orders` gives it while it is open, or None, so an
+    /// order just placed is read as the venue's sizes and price rule left it.
+    fn open_order<'py>(
+        &self,
+        py: Python<'py>,
+        order_id: u64,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let id = OrderId(order_id);
+        if let Some(order) = self.inner.resting().find(|order| order.id == id) {
+            return self.open_dict(py, order, "resting", None).map(Some);
+        }
+        match self.inner.waiting().find(|(order, _)| order.id == id) {
+            Some((order, amount)) => self.open_dict(py, order, "pending", amount).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Drive `strategy` over the whole series and return the final state. Resets,
@@ -2409,6 +2633,38 @@ impl Engine {
 }
 
 impl Engine {
+    /// `instrument`, refused where the engine holds no such instrument.
+    fn instrument(&self, instrument: usize) -> PyResult<usize> {
+        let width = self.inner.width();
+        if instrument < width {
+            return Ok(instrument);
+        }
+        Err(PyValueError::new_err(format!(
+            "instrument: {instrument} is not one the engine holds; name one counted from \
+             0, of the {width}"
+        )))
+    }
+
+    /// An open order as `orders` hands it out, in the venue's terms, with its
+    /// instrument, its `status` and the `amount` of a value order, which has no size
+    /// until its fill sets one.
+    fn open_dict<'py>(
+        &self,
+        py: Python<'py>,
+        order: &Order,
+        status: &str,
+        amount: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let d = order_to_dict(py, &self.units.order(*order), status)?;
+        d.set_item("instrument", order.instrument)?;
+        d.set_item("amount", amount)?;
+        if amount.is_some() {
+            d.set_item("size", None::<f64>)?;
+            d.set_item("remaining", None::<f64>)?;
+        }
+        Ok(d)
+    }
+
     /// `state` as Python reads it, in the venue's terms.
     fn state_of<'py>(&self, py: Python<'py>, state: State) -> PyResult<Bound<'py, PyState>> {
         Bound::new(
@@ -2882,7 +3138,7 @@ impl Batch {
         let out = PyDict::new(py);
         out.set_item("ledger", ledger_of(py, engine, self.universe, self.units)?)?;
         out.set_item("fills", fills_of(py, engine, self.units)?)?;
-        out.set_item("order_log", order_log_of(py, engine, self.units)?)?;
+        out.set_item("order_log", order_log_of(py, engine, self.units, 0)?)?;
         out.set_item("trades", round_trips_of(py, engine, self.units)?)?;
         Ok(out)
     }
@@ -3868,7 +4124,7 @@ fn run_script<'py>(
     let out = PyDict::new(py);
     out.set_item("ledger", ledger_of(py, &engine.inner, universe, units)?)?;
     out.set_item("fills", fills_of(py, &engine.inner, units)?)?;
-    out.set_item("order_log", order_log_of(py, &engine.inner, units)?)?;
+    out.set_item("order_log", order_log_of(py, &engine.inner, units, 0)?)?;
     out.set_item("trades", round_trips_of(py, &engine.inner, units)?)?;
     Ok(out)
 }

@@ -93,8 +93,9 @@ def test_a_long_on_half_a_coin_is_liquidated_at_40_200(low, liquidated):
 
 
 def test_two_buys_enter_at_the_harmonic_mean_and_a_value_order_buys_contracts():
-    # 300 contracts at 60,000 and 300 at 40,000 enter at 48,000, and at 50,000 the
-    # long has made 0.05 BTC, the sum of the fills' own, -0.10 and 0.15
+    # 300 contracts at 60,000 and 300 at 40,000, the second bought for 30,000 dollars,
+    # enter at 48,000, and at 50,000 the long has made 0.05 BTC, the sum of the fills'
+    # own, -0.10 and 0.15
     candles = bars((60_000.0, 60_000.0, 60_000.0, 60_000.0),
                    (60_000.0, 60_000.0, 60_000.0, 60_000.0),
                    (40_000.0, 50_000.0, 40_000.0, 50_000.0))
@@ -106,7 +107,11 @@ def test_two_buys_enter_at_the_harmonic_mean_and_a_value_order_buys_contracts():
 
     e.market_buy(300.0)
     e.step()
-    e.market_buy(300.0)
+
+    assert e.order_value("buy", -50.0) is None
+    assert e.order_log()[-1]["reason"] == "amount: -50 cannot fill"
+
+    e.order_value("buy", 30_000.0)
     state = e.step()
 
     assert state.position       == 600.0

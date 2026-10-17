@@ -637,6 +637,20 @@ impl Engine {
         self.book.iter().map(|order| order.id).min_by_key(|id| id.0)
     }
 
+    /// The orders resting on the book.
+    pub fn resting(&self) -> impl Iterator<Item = &Order> {
+        self.book.iter()
+    }
+
+    /// The market orders waiting for the next open, each beside its amount of the
+    /// quote currency where it is a value order, whose fill sets its size.
+    pub fn waiting(&self) -> impl Iterator<Item = (&Order, Option<f64>)> {
+        self.pending.iter().map(|order| {
+            let value = self.values.iter().find(|(id, _)| *id == order.id);
+            (order, value.map(|&(_, amount)| amount))
+        })
+    }
+
     /// Flatten the first instrument's position with a reduce-only market order.
     /// `None` when flat.
     pub fn close(&mut self) -> Option<OrderId> {
