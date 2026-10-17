@@ -1,7 +1,7 @@
 """``backtest`` reads a policy in one fixed order. A table is matched to the Data's clock
-and instruments by label. An array of weights makes the run the Engine makes stepped
-from Python with the same targets, and one of quantities reaches the positions it
-wants. A class, a Strategy, a model that fits
+and instruments by label. An array of weights, with its barriers, makes the run the
+Engine makes stepped from Python with the same targets and the same brackets, and one
+of quantities reaches the positions it wants. A class, a Strategy, a model that fits
 and an agent are each refused or not run yet, with what to do instead, and so is
 anything the run cannot read before it starts. The Result holds what the run recorded,
 its bars counted from its first row, the copy of the policy the run read and what it
@@ -17,6 +17,7 @@ import pytest
 import probatum
 from probatum import Venue
 from probatum._venue import _run
+from test_every_depth_gives_one_ledger import placed
 
 VENUE = Venue(fees={"maker": 0.0, "taker": 0.0})
 
@@ -124,6 +125,21 @@ def test_an_instrument_alone_takes_a_one_dimensional_array():
 
     assert same(flat.fills, probatum.backtest(rows, data, VENUE).fills)
     same_run(flat, stepped(rows, data))
+
+
+def test_an_array_s_barriers_are_the_brackets_the_engine_stepped_from_python_places():
+    data        = one()
+    rows        = weights(width=1)[:, 0]
+    take_profit = np.full(40, 0.04)
+    take_profit[::3] = np.nan
+
+    result = probatum.backtest(rows, data, VENUE, stop=0.02, take_profit=take_profit)
+    run    = _run(VENUE, data)
+    engine, counts = placed(probatum.Engine(run.candles, report=True, **run.settings),
+                            list(rows), 0.02, [[value] for value in take_profit])
+
+    assert counts["filled"]
+    same_run(result, engine)
 
 
 @pytest.mark.parametrize("library", ["pandas", "pyarrow", "polars"])

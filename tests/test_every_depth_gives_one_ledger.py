@@ -1,9 +1,11 @@
-"""Every depth runs the same step: a script of targets played in one call, the Engine
-stepped from Python with the same targets, and the batch with each env given its own,
-over random universes, record one ledger, one fill log, one order log and one set of
-round trips.
+"""Every depth runs the same step: a script of targets played in one call, the same
+targets as an array run in one call, the Engine stepped from Python with them, and the
+batch with each env given its own, over random universes, record one ledger, one fill
+log, one order log and one set of round trips; and an array run's barriers are the
+brackets the Engine stepped from Python places by the same rules, at one instrument.
 """
 
+import collections
 import math
 import random
 
@@ -11,7 +13,7 @@ import numpy as np
 import pytest
 
 import probatum
-from reference import universe_differential
+from reference import differential, universe_differential
 
 
 def same(mine, theirs):
@@ -86,6 +88,13 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
 
         assert same(records(engine), run)
 
+        # the last row is never read, so it holds
+        array = probatum.Engine(candles, times=times, report=True, **venue)
+        probatum._probatum.run_array(array,
+                                     np.array(weights + [[math.nan] * len(kinds)]))
+
+        assert same(records(array), run)
+
     batch = probatum.Batch(candles, len(envs), times=times, report=True, **venue)
     batch.reset_all()
     for t in range(rows):
@@ -94,3 +103,134 @@ def test_a_script_the_engine_stepped_from_python_and_the_batch_record_one_run(se
 
     for env, run in enumerate(played):
         assert same(batch.records(env), run)
+
+
+def barrier(rng, rows):
+    """A barrier as an array run takes it: none, a number, or a return for each row,
+    a NaN or a return of exactly 1 or more among them."""
+    u       = rng.random()
+    returns = [0.005, 0.01, 0.03, 0.08]
+    if u < 0.2:
+        return None
+
+    if u < 0.6:
+        return rng.choice(returns)
+
+    return [[math.nan if rng.random() < 0.15 else
+             rng.choice([1.0, 1.5]) if rng.random() < 0.05 else rng.choice(returns)]
+            for _ in range(rows)]
+
+
+def placed(engine, rows, stop, take_profit):
+    """The Engine stepped from Python, placing at each close what an array run places
+    by the rules of Barriers on an array: each round trip's bracket at the close of the
+    bar it opened on, priced off its average entry at the returns of the row whose
+    decision opened it, its legs still resting moved when a fill moves the entry, and a
+    barrier's fill holding the instrument flat until a row asks for zero or for the
+    other side. Returns the engine and how often a barrier filled, a bracket moved and
+    a row was held flat."""
+    def at(barrier, k):
+        value = barrier if barrier is None or isinstance(barrier, float) else (
+            barrier[k][0])
+        return None if value is None or math.isnan(value) else value
+
+    def levels(entry, q, k):
+        side = 1.0 if q > 0.0 else -1.0
+        stop_at, take_at = at(stop, k), at(take_profit, k)
+        out = [None if stop_at is None else entry * (1.0 - side * stop_at),
+               None if take_at is None else entry * (1.0 + side * take_at)]
+        return [None if price is None or price <= 0.0 else price for price in out]
+
+    state = engine.reset()
+    held, decided, opened, priced, latched, seen = 0.0, None, None, None, 0.0, 0
+    legs, counts = (None, None), collections.Counter()
+
+    for k, value in enumerate(rows[:-1]):
+        fills = engine.fills()
+        if any(fill["order"] in legs for fill in fills[seen:] if fill["order"]):
+            latched = math.copysign(1.0, held)
+            counts["filled"] += 1
+        seen = len(fills)
+
+        q, entry = state.position, state.avg_entry
+        if q == 0.0:
+            legs = (None, None)
+        elif held == 0.0 or held * q < 0.0:
+            opened, priced = decided, entry
+            stop_at, take_at = levels(entry, q, opened)
+            legs = (None, None)
+            if stop_at is not None or take_at is not None:
+                legs = engine.bracket(stop_at, take_at)
+        elif legs != (None, None) and entry != priced:
+            priced = entry
+            stop_at, take_at = levels(entry, q, opened)
+            counts["moved"] += 1
+            if legs[0] is not None:
+                engine.replace(legs[0], trigger=stop_at)
+            if legs[1] is not None:
+                engine.replace(legs[1], price=take_at)
+
+        held = q
+        if not math.isnan(value):
+            if latched and value != 0.0 and math.copysign(1.0, value) == latched:
+                counts["held"] += 1
+            else:
+                latched = 0.0
+                engine.target(value)
+                decided = k
+
+        state = engine.step()
+
+    return engine, counts
+
+
+def barred(seed):
+    """One instrument of the first comparison's, its fill model and sizes drawn as
+    there, with weights and barriers through the array run and through the Engine
+    stepped from Python, and what the second placed."""
+    rng   = random.Random(seed)
+    bars  = differential.walk(rng, rng.randint(12, 40))
+    times = np.array(differential.clock(rng, len(bars)), dtype=np.int64)
+    cfg   = differential.config(rng, times, inverse=seed % 4 == 3)
+
+    cfg["intrabar"] = rng.choice(["pessimistic", "optimistic"])
+    cfg.update(differential.fills(seed, seed))
+    cfg.update(differential.sizes(seed, seed, cfg["quote"], [bars[0].open],
+                                  cfg.get("contract")))
+
+    spot = cfg["market"] == "spot"
+    rows = [math.nan if rng.random() < 0.3 else 0.0 if rng.random() < 0.15 else
+            rng.uniform(0.0 if spot else -2.0, 1.0 if spot else 2.0) for _ in bars]
+    stop, take_profit = barrier(rng, len(bars)), barrier(rng, len(bars))
+
+    candles  = np.array([list(bar) for bar in bars], dtype=np.float64)
+    settings = differential.venue(cfg)
+    array    = probatum.Engine(candles, times=times, report=True, **settings)
+    shaped   = [b if b is None or isinstance(b, float) else np.array(b)
+                for b in (stop, take_profit)]
+    probatum._probatum.run_array(array, np.array(rows)[:, None], "weight", 0.0, *shaped)
+
+    engine, counts = placed(probatum.Engine(
+        candles,
+        times  = times,
+        report = True,
+        **settings,
+    ), rows, stop, take_profit)
+    return array, engine, counts
+
+
+@pytest.fixture(scope="module")
+def cases():
+    return [barred(seed) for seed in range(16)]
+
+
+@pytest.mark.parametrize("seed", range(16))
+def test_an_array_s_barriers_are_the_brackets_the_engine_stepped_from_python_places(
+        seed, cases):
+    array, engine, _ = cases[seed]
+    assert same(records(array), records(engine))
+
+
+def test_the_barrier_cases_fill_move_and_hold_their_brackets(cases):
+    counts = sum((counts for _, _, counts in cases), collections.Counter())
+    assert counts["filled"] and counts["moved"] and counts["held"], counts
