@@ -568,9 +568,9 @@ An inverse perpetual is quoted in dollars and settled in its coin. A contract is
 
 ### The ledger
 
-One row per bar from the first, where row 0 is the opening balance, so no curve is one shorter than the data.
-- Per account: equity, each wallet's cash, gross and net exposure, leverage, margin used, the maintenance requirement, and that bar's fees, funding, spread, slippage, impact, liquidation charge and dust adjustment.
-- Per instrument: position, average entry, mark, notional, unrealized PnL, weight and drift.
+One row per bar from the first, where row 0 is the opening balance, so no curve is one shorter than the data, and beside it the holdings, one row per bar and instrument, a bar's instruments in the Data's order.
+- The ledger, per account: equity, each wallet's cash, gross and net exposure, leverage, margin used, the maintenance requirement, and that bar's fees, funding, spread, slippage, impact, liquidation charge and dust adjustment.
+- The holdings, per instrument: position, average entry, mark, notional, unrealized PnL, weight and drift.
 
 ### The ledger identity
 
@@ -586,6 +586,15 @@ Each bar, the change in equity equals the price PnL less spread, slippage, impac
 - The fill log has a row per fill: time, instrument, order id, side, size and price; the reference price; spread, slippage, impact and fee; any adjustment that held the price inside the bar or applied the margin bound; maker or taker; and the reason, one of `market`, `limit`, `stop`, `take_profit`, `rebalance`, `seam`, `liquidation` and `delist`.
 - The order log has every order's events, each with its reason: `placed`, `armed`, `clamped`, `refused`, `not_filled`, `expired`, `cancelled` and `filled`.
 
+### Tables
+
+A run hands each record over as a table of named columns: the ledger, the holdings, the fill log, the order log and the round trips. Every bar counts from the run's first row, so a row's time is the run's time at its bar, and every instrument is its name. A value a record does not have is missing, never a number that stands for none: a float the run leaves NaN, such as a drift no target has named, a fill's order on a forced close, an event's order, instrument, size and price where it has none, a round trip's close and its reason while it is open, and its exit until a fill has closed some of it. A missing float holds NaN under it and a missing integer or time the least int64, numpy's NaT, so neither reads as a value.
+
+**Worked example.** An account trades BTCUSDT and ETHUSDT over three hourly rows, targeting a long of BTCUSDT at the first close and holding it to the end.
+- Its ledger has three rows, at bars 0, 1 and 2, and its holdings six, bar 0's BTCUSDT and ETHUSDT, then bar 1's and bar 2's.
+- No target names ETHUSDT, so its drift is missing on every row; BTCUSDT's is missing at bar 0 and holds from bar 1, the bar after the target was decided.
+- Its one fill lands at bar 1 and names its order. Its round trip is still open at the end, so its close bar, close time, exit and reason are missing.
+
 ### Recording levels
 
 | Level | Keeps |
@@ -594,6 +603,23 @@ Each bar, the change in equity equals the price PnL less spread, slippage, impac
 | `"account"` | the account's columns and one row per round trip |
 | `"transitions"` | what offline reinforcement learning needs |
 | `"none"` | the final state only; `backtest` refuses it |
+
+### Combining books
+
+A strategy with legs at several venues is an account at each, each margined on its own, and its book is their sum; moving capital between them is not modelled. The book's clock is every time any account has a row, on one interval's steps. On a row of the clock each account counts its equity at its last row at or before it, its opening balance before its first row and its last equity after its last, and the book's equity is
+
+`E(t) = E_1(t) + E_2(t) + ... + E_n(t)`,
+
+added in the order the accounts are given. The book's returns and statistics are those of `E`, annualised as its accounts are where every one with an annualisation agrees, and otherwise at its rows less one per 365 days of the time some account covers, so a gap between two accounts' spans counts for neither. A row is in the market where an account holds a position inside its own span, and the book is bust where `E` reaches zero.
+
+The book's ledger is its own, a row per row of its clock: each account's cash and its equity in the quote held as its equity is, an inverse account's equity in the quote before its first row valued at that row's close, its exposure, margin used and maintenance inside its own span alone, each cost on the row it was paid on, and the leverage gross exposure over `E`. Its holdings, fills, orders and round trips are the accounts' own, each row naming its venue and every bar counted on the book's clock, so a venue and an order identify one, and a bar two of its accounts were liquidated on counts once for each among its liquidations. Accounts kept in different assets are not added, but the dollar assets USD, USDT, USDC, USDD, TUSD, FDUSD, BUSD, DAI, PYUSD, USDE, USDP, USD1 and RLUSD are counted at par where the book names one of them its asset, and an inverse contract's account is added only to others of its coin, its equity in the quote being dollars where any other account's is its own asset; neither are accounts on different intervals, off one interval's steps, or at different risk-free rates.
+
+**Worked example.** Two accounts at two venues, with no fees.
+- A holds 10,000 USDT on hourly bars from 00:00 to 03:00 and buys 100 of a coin at the 01:00 open of 100. The coin closes at 101, 100.50 and 102, so A's equity is 10,000, 10,100, 10,050 and 10,200, and its round trip is open at its end.
+- B holds 5,000 USDT on bars at 01:00, 03:00 and 04:00, its instrument printing nothing at 02:00. It buys 100 at the 03:00 open of 50, the coin closes at 49, and it sells at the 04:00 open of 51.50, so its equity is 5,000, 4,900 and 5,150.
+- The book's clock runs from 00:00 to 04:00. B counts its opening 5,000 at 00:00, before its first row, and at 02:00, held from its 01:00 row; A counts 10,200 at 04:00, after its end. The book's equity is 15,000, 15,100, 15,050, 15,100 and 15,350, a total return of 2.33%.
+- A position is held on three of the four rows after the first: at 04:00 B is flat and A has ended. B's fills land on the book's bars 3 and 4, its own bars 1 and 2.
+- A annualises at `3 * 365 / (3 / 24) = 8,760` and B, short of a row, at `2 * 365 / (3 / 24) = 5,840`, so the book annualises over the four hours its accounts cover: `4 * 365 / (4 / 24) = 8,760`.
 
 <br>
 <br>
