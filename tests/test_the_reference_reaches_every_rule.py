@@ -77,6 +77,7 @@ RULES = [
     "a price put on a tick",
     "a price put on significant figures",
     "a reduce-only order spared the minimum notional",
+    "a reduce-only value order",
     "a reduce_only order held to the position",
     "a reduce_only order with nothing to reduce",
     "a reducing fill bounded at a fee of its own",
@@ -106,6 +107,7 @@ RULES = [
     "a transfer",
     "a transfer clamped",
     "a value order",
+    "a value order all or nothing",
     "a waiting market order cancelled",
     "a waiting target leg replaced",
     "a wallet a fill left within rounding of zero set to zero",
@@ -380,7 +382,10 @@ def decisions(rng, row, instruments, wallets, rough):
                                    reduce_only=rng.random() < 0.15)))
         elif verb < 0.32:
             amount = rng.choice([50.0, 500.0, 3_000.0])
-            out.append((f"{side}_value", dict(instrument=i, amount=amount)))
+            # fok at the largest amount and reduce-only at the smallest, with no draw
+            out.append((f"{side}_value", dict(instrument=i, amount=amount,
+                                              tif="fok" if amount > 1_000.0 else "ioc",
+                                              reduce_only=amount < 100.0)))
         elif verb < 0.5:
             out.append((side, dict(instrument=i, size=size,
                                    limit=mark * (1.0 + rng.uniform(-0.05, 0.05)),

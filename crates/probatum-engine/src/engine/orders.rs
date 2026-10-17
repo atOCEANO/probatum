@@ -396,6 +396,63 @@ impl Engine {
         }
     }
 
+    /// Queue a market order on `instrument` for `amount` of its quote currency, whose
+    /// size is the amount over its fill price, so it spends or raises that amount
+    /// before its fee (Specification, Units). Refused as a market order is, for an
+    /// amount that is not a positive finite number, and where the venue's sizes are on
+    /// for one below the minimum notional, a reduce-only one spared where the venue
+    /// spares it.
+    pub fn order_value(
+        &mut self,
+        instrument: usize,
+        side: Side,
+        amount: f64,
+        reduce_only: bool,
+        tif: TimeInForce,
+    ) -> Option<OrderId> {
+        let id = self.next_id();
+        if self.marks[instrument].is_nan() {
+            return self.refuse(id, instrument, Refusal::Unlisted);
+        }
+        if !positive(amount) {
+            return self.refuse(id, instrument, Refusal::Amount(amount));
+        }
+        if self.config.sizes {
+            let sizes = self.candles.sizes(instrument);
+            let least = sizes.min_notional;
+            if amount < least && !(reduce_only && sizes.reduce_only_exempt) {
+                return self.refuse(id, instrument, Refusal::MinAmount { amount, least });
+            }
+        }
+        let waiting = self
+            .pending
+            .iter()
+            .filter(|order| order.instrument == instrument)
+            .count();
+        if waiting >= self.config.max_open_orders {
+            return self.refuse(
+                id,
+                instrument,
+                Refusal::Waiting(self.config.max_open_orders),
+            );
+        }
+        // the size is set as it fills, and what the queue holds in its place fills
+        // nothing by itself
+        let mut order = Order::market(id, side, Qty(f64::INFINITY), reduce_only).on(instrument);
+        order.tif = tif;
+        self.pending.push(order);
+        self.values.push((id, amount));
+        self.log_event(
+            EventKind::Placed,
+            Some(id),
+            Some(instrument),
+            None,
+            None,
+            EventReason::Market,
+        );
+        Some(id)
+    }
+
     /// Queue a market buy; it fills on the next bar's open. `None` if the queue is
     /// already holding `max_open_orders` for this bar, or the size is not a
     /// positive finite number.
@@ -1450,5 +1507,105 @@ mod tests {
         assert_eq!(e.replace(id, Some(0.05), None, None), None);
         let refused = log(&e).last().expect("the refusal is logged").reason;
         assert_eq!(refused, EventReason::Replacing(Refusal::Size(0.0)));
+    }
+
+    #[test]
+    fn a_value_order_fills_its_amount_over_its_fill_price() {
+        // 1,000 at a next open of 200 buys 5, and with 1% of slippage the 4.95 that
+        // 1,000 buys at 202
+        for (bps, size) in [(0.0, 5.0), (100.0, 1_000.0 / 202.0)] {
+            let config = EngineConfig {
+                quote: 10_000.0,
+                slippage_bps: bps,
+                ..report_cfg()
+            };
+            let mut e = Engine::new(series(), config);
+            e.reset();
+            let id = e.order_value(0, Side::Buy, 1_000.0, false, TimeInForce::Ioc);
+            e.step();
+            let fill = e.reporter().expect("reporting is on").fills()[0];
+            assert_eq!((fill.order, fill.size), (id, size));
+        }
+    }
+
+    #[test]
+    fn with_sizes_on_a_value_order_is_held_to_the_largest_size_and_the_lot() {
+        // at a next open of 200, 100.05 buys the 0.500 of the 0.50025 it reaches that
+        // the lot allows, 300 is held to the largest size of 1, 5 falls short of the
+        // minimum notional of 10, and with sizes off nothing is refused but an amount
+        // that is no positive number
+        let mut e = sized(false);
+        e.order_value(0, Side::Buy, 100.05, false, TimeInForce::Ioc)
+            .expect("queued");
+        e.order_value(0, Side::Buy, 300.0, false, TimeInForce::Ioc)
+            .expect("queued");
+        assert_eq!(
+            e.order_value(0, Side::Buy, 5.0, false, TimeInForce::Ioc),
+            None
+        );
+        let refused = log(&e).last().expect("the refusal is logged").reason;
+        let short = Refusal::MinAmount {
+            amount: 5.0,
+            least: 10.0,
+        };
+        assert_eq!(refused, EventReason::Refused(short));
+        e.step();
+        let fills = e.reporter().expect("reporting is on").fills();
+        let sizes: Vec<f64> = fills.iter().map(|fill| fill.size).collect();
+        assert_eq!(sizes, [0.5, 1.0]);
+        let mut e = Engine::new(series(), report_cfg());
+        e.reset();
+        assert_eq!(
+            e.order_value(0, Side::Buy, 0.0, false, TimeInForce::Ioc),
+            None
+        );
+        let refused = log(&e).last().expect("the refusal is logged").reason;
+        assert_eq!(refused, EventReason::Refused(Refusal::Amount(0.0)));
+    }
+
+    #[test]
+    fn a_value_order_is_refused_for_its_amount_first_and_spared_the_minimum_when_reduce_only() {
+        // a negative amount is no amount, whatever the minimum notional, and a
+        // reduce-only 5 is spared the minimum of 10 where the venue spares it
+        let mut e = sized(false);
+        assert_eq!(
+            e.order_value(0, Side::Buy, -100.0, false, TimeInForce::Ioc),
+            None
+        );
+        let refused = log(&e).last().expect("the refusal is logged").reason;
+        assert_eq!(refused, EventReason::Refused(Refusal::Amount(-100.0)));
+        assert_eq!(
+            e.order_value(0, Side::Sell, 5.0, true, TimeInForce::Ioc),
+            None
+        );
+        let mut e = sized(true);
+        assert!(e
+            .order_value(0, Side::Sell, 5.0, true, TimeInForce::Ioc)
+            .is_some());
+    }
+
+    #[test]
+    fn an_all_or_nothing_value_order_whose_amount_buys_no_lot_fills_nothing_for_that() {
+        // 50 at a next open of 200 buys 0.25, less than a lot of 1, so the bar fills
+        // nothing of an order that asks nothing, all or nothing or not
+        let sizes = Sizes {
+            lot: 1.0,
+            prices: PriceRule::Tick(0.01),
+            min_notional: 0.0,
+            max_qty: 100.0,
+            reduce_only_exempt: false,
+        };
+        let config = EngineConfig {
+            sizes: true,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(series().with_sizes(sizes), config);
+        e.reset();
+        e.order_value(0, Side::Buy, 50.0, false, TimeInForce::Fok)
+            .expect("queued");
+        e.step();
+        let last = log(&e).last().expect("the miss is logged").reason;
+        assert_eq!(last, EventReason::NothingFilled);
     }
 }

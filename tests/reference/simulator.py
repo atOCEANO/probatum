@@ -942,10 +942,16 @@ class Simulator:
 
         if order["size"] is None:
             amount = order["value"]
-            if self.venue.sizes and amount is not None and amount < inst.min_notional:
-                self.hit("an order below the minimum notional refused")
-                return (f"amount: {amount} is below the minimum notional of "
-                        f"{inst.min_notional}")
+            if amount is None:
+                return None
+            if not math.isfinite(amount) or amount <= 0.0:
+                return f"amount: {amount} cannot fill"
+            if self.venue.sizes and amount < inst.min_notional:
+                if not (order["reduce_only"] and inst.reduce_only_exempt):
+                    self.hit("an order below the minimum notional refused")
+                    return (f"amount: {amount} is below the minimum notional of "
+                            f"{inst.min_notional}")
+                self.hit("a reduce-only order spared the minimum notional")
             return None
 
         if not math.isfinite(order["size"]) or order["size"] <= 0.0:
@@ -985,11 +991,6 @@ class Simulator:
         """Orders, Order types: a market order fills at its instrument's next open,
         and a value order's size is its amount over its fill price (Units)."""
         why = self.size_refusal(order)
-
-        if why is None and order["value"] is not None and (
-                not math.isfinite(order["value"]) or order["value"] <= 0.0):
-            why = f"amount: {order['value']} cannot fill"
-
         if why is None and len([o for o in self.pending if o["instrument"]
                                 == order["instrument"]]) >= self.venue.max_open_orders:
             why = f"max_open_orders: {self.venue.max_open_orders} already waiting"
@@ -1119,12 +1120,24 @@ class Simulator:
                           reduce_only)
 
 
-    def buy_value(self, instrument, amount):
-        return self.order(instrument, "buy", value=amount)
+    def buy_value(self, instrument, amount, tif="ioc", reduce_only=False):
+        return self.value(instrument, "buy", amount, tif, reduce_only)
 
 
-    def sell_value(self, instrument, amount):
-        return self.order(instrument, "sell", value=amount)
+    def sell_value(self, instrument, amount, tif="ioc", reduce_only=False):
+        return self.value(instrument, "sell", amount, tif, reduce_only)
+
+
+    def value(self, instrument, side, amount, tif, reduce_only):
+        """Orders, Units: a market order for an amount of the quote currency, its size
+        the amount over its fill price, and on an inverse contract the contracts the
+        amount in dollars is worth, a size it has as it is placed, and one that is
+        no amount refused as one."""
+        inst = self.instruments[instrument]
+        if inst.kind == "inverse" and math.isfinite(amount) and amount > 0.0:
+            return self.order(instrument, side, amount / inst.contract, tif=tif,
+                              reduce_only=reduce_only)
+        return self.order(instrument, side, value=amount, tif=tif, reduce_only=reduce_only)
 
 
     def close(self, instrument):
@@ -2380,8 +2393,18 @@ class Simulator:
                 self.hit("the liquidity budget")
             size = self.lot_down(i, self.clamp(i, side, allowed, price,
                                                order["reduce_only"], self.taker(i)))
-            whole         = size >= self.lot_down(i, wanted) - self.dust(i)
+
+            # a value order asks the lots its amount buys
+            asked         = self.lot_down(i, wanted)
+            whole         = size >= asked - self.dust(i)
             refused_whole = order["tif"] == "fok" and not whole
+
+            if order["value"] is not None:
+                if order["tif"] == "fok":
+                    self.hit("a value order all or nothing")
+                if order["reduce_only"]:
+                    self.hit("a reduce-only value order")
+
             if size <= self.dust(i) or refused_whole:
                 self.hit("a fok order filling nothing" if refused_whole
                          else "a market order filling nothing")
@@ -2393,8 +2416,7 @@ class Simulator:
             self.hit("a value order" if order["value"] is not None
                      else "a market order")
             if not whole:
-                self.log("clamped", order, f"{size} of the {wanted} asked fits",
-                         size=size)
+                self.log("clamped", order, f"{size} of the {asked} asked fits", size=size)
 
             # what is left can round to a hair below zero, and a bar never owes volume
             self.budget_left[i] = max(budget - size, 0.0)

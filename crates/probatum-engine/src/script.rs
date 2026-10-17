@@ -12,9 +12,9 @@ use crate::strategy::Strategy;
 /// The order a cancel or a replace acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderRef {
-    /// What the script's placement `n` made, counting its `Order` and `Close`
-    /// actions from 0 in the order they are taken, and a `Bracket` as two, its stop
-    /// and then its take-profit.
+    /// What the script's placement `n` made, counting its `Order`, `Value` and
+    /// `Close` actions from 0 in the order they are taken, and a `Bracket` as two,
+    /// its stop and then its take-profit.
     Placed(usize),
     /// The oldest order still resting.
     Oldest,
@@ -32,6 +32,15 @@ pub enum Action {
         trigger: Option<f64>,
         reduce_only: bool,
         post_only: bool,
+        tif: TimeInForce,
+    },
+    /// A market order for an amount of the quote currency, as `Engine::order_value`
+    /// places it.
+    Value {
+        instrument: usize,
+        side: Side,
+        amount: f64,
+        reduce_only: bool,
         tif: TimeInForce,
     },
     /// A stop and a take-profit as one OCO pair, as `Engine::bracket` places them.
@@ -120,6 +129,16 @@ impl Strategy for Script {
                         post_only,
                         tif,
                     );
+                    self.placed.push(id);
+                }
+                Action::Value {
+                    instrument,
+                    side,
+                    amount,
+                    reduce_only,
+                    tif,
+                } => {
+                    let id = engine.order_value(instrument, side, amount, reduce_only, tif);
                     self.placed.push(id);
                 }
                 Action::Bracket {

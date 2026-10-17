@@ -257,3 +257,15 @@ def test_a_price_comes_back_as_it_was_quoted_and_a_flat_position_reads_flat():
     assert (state.avg_entry, state.mark_price, state.bar_close) == (49.0, 56.31, 56.31)
     assert e.fills()[0]["price"]       == 49.0
     assert e.ledger()["mark"].tolist() == [49.0, 56.31]
+
+
+def test_a_value_order_that_is_no_amount_is_refused_for_its_amount():
+    # an inverse contract's dollars buy its contracts only where they are an amount,
+    # and a market order's time in force is read in any case
+    script = {0: [("buy_value", {"amount": -50.0}),
+                  ("sell_value", {"amount": 50.0, "tif": "IOC"})]}
+    venue  = dict(market="inverse", contract=100.0, quote=1.0)
+    played = probatum._probatum.run(bars((60_000.0,) * 4, (60_000.0,) * 4), venue, script)
+
+    assert [(event["kind"], event["reason"]) for event in played["order_log"][:2]] == [
+        ("refused", "amount: -50 cannot fill"), ("placed", "market")]

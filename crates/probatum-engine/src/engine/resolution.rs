@@ -57,6 +57,7 @@ impl Engine {
     /// the next, and one whose instrument printed no bar waits for its next.
     pub(super) fn resolve_pending(&mut self) {
         if self.pending.is_empty() {
+            self.values.clear();
             return;
         }
         let spare = std::mem::take(&mut self.spare);
@@ -69,14 +70,20 @@ impl Engine {
                 self.pending.push(*order);
                 continue;
             }
-            let requested = order.remaining().get();
             let available = self.available(i);
-            let trailing = || self.candles.trailing(self.tick, i);
-            let made = self
-                .fill_model
-                .fill_market(order, &bar, available, trailing);
+            let value = self.values.iter().find(|&&(id, _)| id == order.id);
+            let (requested, made) = match value {
+                Some(&(_, amount)) => self.value_fill(order, amount, &bar, available),
+                None => {
+                    let trailing = || self.candles.trailing(self.tick, i);
+                    let made = self
+                        .fill_model
+                        .fill_market(order, &bar, available, trailing);
+                    (order.remaining().get(), made)
+                }
+            };
             let Some((fill, costs)) = made else {
-                self.market_not_filled(order, &bar);
+                self.market_not_filled(order, &bar, requested);
                 continue;
             };
             // FOK is all or nothing against everything that can shrink the fill,
@@ -138,13 +145,55 @@ impl Engine {
         pending.clear();
         self.spare = pending;
         self.targets.keep_waiting(&self.pending);
+        if !self.values.is_empty() {
+            let waiting = &self.pending;
+            self.values
+                .retain(|&(id, _)| waiting.iter().any(|order| order.id == id));
+        }
+    }
+
+    /// What a value order of `amount` asks of `bar` and the fill the bar offers it:
+    /// its amount over the open, held to the largest order where the venue's sizes
+    /// are on, prices a taker's fill of what `available` allows of it, and over that
+    /// price again it is the size the fill takes, rounded down to the lot
+    /// (Specification, Units).
+    fn value_fill(
+        &self,
+        order: &Order,
+        amount: f64,
+        bar: &Candle,
+        available: f64,
+    ) -> (f64, Option<(Fill, FillCosts)>) {
+        let i = order.instrument;
+        let rules = self.config.sizes.then(|| self.candles.sizes(i));
+        let held = |size: f64| rules.map_or(size, |sizes| size.min(sizes.down(sizes.max_qty)));
+        let down = |size: f64| rules.map_or(size, |sizes| sizes.down(size));
+        let wanted = held(amount / bar.open);
+        if !positive(bar.volume) || !positive(available) {
+            return (down(wanted), None);
+        }
+        let trailing = || self.candles.trailing(self.tick, i);
+        let (fill, costs) =
+            self.fill_model
+                .taker_fill(order.side, wanted.min(available), bar.open, bar, trailing);
+        let wanted = held(amount / fill.price.get());
+        let size = down(wanted.min(available));
+        let made = positive(size).then_some((
+            Fill {
+                size: Qty(size),
+                ..fill
+            },
+            costs,
+        ));
+        (down(wanted), made)
     }
 
     /// Log a market order its bar filled nothing of. A bar that traded, whose budget
-    /// left nothing, refuses an all-or-nothing order for its whole size.
+    /// left nothing, refuses an all-or-nothing order for its whole size, `requested`,
+    /// where it asks any: a value order whose amount buys no lot asks none.
     #[cold]
-    fn market_not_filled(&mut self, order: &Order, bar: &Candle) {
-        let why = if order.tif == TimeInForce::Fok && positive(bar.volume) {
+    fn market_not_filled(&mut self, order: &Order, bar: &Candle, requested: f64) {
+        let why = if order.tif == TimeInForce::Fok && positive(bar.volume) && positive(requested) {
             EventReason::Fok
         } else {
             EventReason::NothingFilled

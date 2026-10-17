@@ -454,7 +454,7 @@ class Script:
             self.placements += 2
             return self.placements - 2, self.placements - 1
 
-        if verb not in ("buy", "sell", "close"):
+        if verb not in ("buy", "sell", "buy_value", "sell_value", "close"):
             return None
 
         self.placements += 1
@@ -485,7 +485,15 @@ def place(sim, action, t, close, theirs, script, reached=None):
             reached[t][kind] += 1
 
     got = None
-    if kind in ("market", "fok", "reduce"):
+    if kind in ("market", "fok", "reduce") and u >= 0.7:
+        # a market order in three is given in the quote currency, the size's worth at
+        # the close, or in dollars of contracts on an inverse contract
+        inst   = sim.instruments[0]
+        amount = size * (inst.contract if inst.kind == "inverse" else close)
+        tif, reduce_only = "fok" if kind == "fok" else "ioc", kind == "reduce"
+        script.take(t, f"{side}_value", amount=amount, tif=tif, reduce_only=reduce_only)
+        getattr(sim, f"{side}_value")(0, amount, tif=tif, reduce_only=reduce_only)
+    elif kind in ("market", "fok", "reduce"):
         tif         = "fok" if kind == "fok" else "ioc"
         reduce_only = kind == "reduce"
         script.take(t, side, size=size, tif=tif, reduce_only=reduce_only)

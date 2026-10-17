@@ -45,7 +45,8 @@ pub use target::TargetError;
 use target::Targets;
 
 use probatum_core::{
-    Account, Bps, Candle, FlatCostModel, Market, Order, Price, RestingOrderBook, State, Wallet,
+    Account, Bps, Candle, FlatCostModel, Market, Order, OrderId, Price, RestingOrderBook, State,
+    Wallet,
 };
 use rand_chacha::rand_core::RngCore;
 use rand_chacha::ChaCha20Rng;
@@ -228,6 +229,9 @@ pub struct Engine {
     book: RestingOrderBook,
     reporter: Option<Reporter>,
     pending: Vec<Order>,
+    /// The amount in its quote currency of each value order in the queue, whose size
+    /// its fill sets (Specification, Units).
+    values: Vec<(OrderId, f64)>,
     /// The queue's other buffer: the orders a bar resolves are read from one while
     /// those that wait go into the other, so a step allocates no queue.
     spare: Vec<Order>,
@@ -350,6 +354,7 @@ impl Engine {
                 None
             },
             pending: Vec::new(),
+            values: Vec::new(),
             spare: Vec::new(),
             transfers: Vec::new(),
             targets: Targets::new(width),
@@ -524,6 +529,7 @@ impl Engine {
         self.account.reset(spot, margin);
         self.book.cancel_all();
         self.pending.clear();
+        self.values.clear();
         self.transfers.clear();
         self.targets.reset();
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));

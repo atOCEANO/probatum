@@ -8,9 +8,11 @@
 //! then come out in the coin with no formula of their own. `Units` carries a price,
 //! a size, a side or a record between the venue's terms and the engine's.
 
-use probatum_core::{Candle, Order, Price, Qty, Side, State, Tier, TierBasis, TierError, Tiers};
+use probatum_core::{
+    Candle, Order, OrderType, Price, Qty, Side, State, Tier, TierBasis, TierError, Tiers,
+};
 
-use crate::execution::FillCosts;
+use crate::execution::{positive, FillCosts};
 use crate::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal, RoundTrip};
 use crate::script::Action;
 use crate::sizes::{PriceRule, Sizes};
@@ -197,6 +199,29 @@ impl Units {
                 reduce_only,
                 post_only,
                 tif,
+            },
+            // an inverse contract's amount, in dollars, buys the contracts it is worth,
+            // a size the order has as it is placed, and one that is no amount is
+            // refused as one
+            Action::Value {
+                instrument,
+                side,
+                amount,
+                reduce_only,
+                tif,
+            } => match self {
+                Units::Inverse(value) if positive(amount) => Action::Order {
+                    instrument,
+                    side: self.side(side),
+                    size: self.size(amount / value),
+                    kind: OrderType::Market,
+                    price: None,
+                    trigger: None,
+                    reduce_only,
+                    post_only: false,
+                    tif,
+                },
+                _ => action,
             },
             Action::Bracket {
                 instrument,

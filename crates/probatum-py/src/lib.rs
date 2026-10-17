@@ -1471,6 +1471,10 @@ fn refusal_text(why: Refusal) -> String {
         Refusal::MinNotional { size, least } => {
             format!("size: {size} is below the minimum notional of {least}")
         }
+        Refusal::Amount(amount) => format!("amount: {amount} cannot fill"),
+        Refusal::MinAmount { amount, least } => {
+            format!("amount: {amount} is below the minimum notional of {least}")
+        }
     }
 }
 
@@ -3048,7 +3052,9 @@ impl Batch {
 }
 
 /// The verbs a script takes, as an error lists them.
-const VERBS: &str = "buy, sell, bracket, close, cancel, cancel_all, replace, transfer or target";
+const VERBS: &str =
+    "buy, sell, buy_value, sell_value, bracket, close, cancel, cancel_all, replace, \
+     transfer or target";
 
 /// The weights a target takes, as each instrument and its weight: one number for an
 /// engine of one instrument, one weight for each instrument in order, or a dict from
@@ -3298,6 +3304,7 @@ fn read_action(
             "reduce_only",
             "instrument",
         ],
+        "buy_value" | "sell_value" => &["amount", "tif", "reduce_only", "instrument"],
         "bracket" => &["stop", "take_profit", "instrument"],
         "close" | "cancel_all" => &["instrument"],
         "cancel" => &["order"],
@@ -3365,6 +3372,33 @@ fn read_action(
                         "{at}: tif {tif:?} is not a time in force; use gtc, ioc or fok"
                     ))
                 })?,
+            }
+        }
+        "buy_value" | "sell_value" => {
+            let Some(amount) = args.number("amount")? else {
+                return Err(PyValueError::new_err(format!(
+                    "{at}: {verb} has no amount; give it one, in the quote currency"
+                )));
+            };
+            let tif = args.text("tif", "ioc", "ioc or fok")?;
+            Action::Value {
+                instrument: args.traded(width)?,
+                side: if verb == "buy_value" {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                },
+                amount,
+                reduce_only: args.flag("reduce_only")?,
+                tif: match tif.to_ascii_lowercase().as_str() {
+                    "ioc" => TimeInForce::Ioc,
+                    "fok" => TimeInForce::Fok,
+                    _ => {
+                        return Err(PyValueError::new_err(format!(
+                            "{at}: tif {tif:?} is not a market order's; use ioc or fok"
+                        )))
+                    }
+                },
             }
         }
         "bracket" => {
@@ -3474,7 +3508,7 @@ fn read_script<'py>(
                 one_wallet(&format!("{at}: "), units)?;
             }
             placements += match action {
-                Action::Order { .. } | Action::Close(_) => 1,
+                Action::Order { .. } | Action::Value { .. } | Action::Close(_) => 1,
                 // a bracket places its stop and then its take-profit
                 Action::Bracket { .. } => 2,
                 _ => 0,
@@ -3789,19 +3823,21 @@ fn units_of(market: &str, contract: Option<f64>) -> PyResult<Units> {
 /// `funding_instruments`, the instrument each of `funding_times` charges or None for
 /// every perp held. `script` maps a bar to the actions taken at its close, each a verb
 /// and a dict of its arguments: `buy` and `sell` with a `size`, and a `limit` or a
-/// `stop`, `tif`, `post_only` and `reduce_only`; `close` and `cancel_all`; `cancel` and
+/// `stop`, `tif`, `post_only` and `reduce_only`; `buy_value` and `sell_value` with an
+/// `amount`, `tif` and `reduce_only`; `close` and `cancel_all`; `cancel` and
 /// `replace` naming an `order`, the second with the `price`, `trigger` or `size` it
 /// moves to; `transfer` with an `amount` and the wallet it goes `to`, the margin wallet
 /// unless named; and `target` with its `weights`, `tolerance` and `transfer`, as
-/// `Engine.target` takes them. `buy`, `sell` and `close` name the `instrument` they
-/// trade, counted from 0, which one instrument leaves out, and `cancel_all` cancels one
-/// instrument's orders when it names one and every order when it does not. An order is
-/// named by an earlier placement in the script, counting its buys, sells and closes
-/// from 0, and a bracket as two, its stop's and then its take-profit's, which names
-/// nothing once the engine refused that placement or a close found nothing to close, or
-/// as `"oldest"`, the oldest order still resting. The ledger gives each instrument's
-/// columns a value a bar at one instrument and a row of N a bar for a universe. The
-/// comparison with the reference simulator and the tests drive the engine through this.
+/// `Engine.target` takes them. `buy`, `sell`, their value forms and `close` name the
+/// `instrument` they trade, counted from 0, which one instrument leaves out, and
+/// `cancel_all` cancels one instrument's orders when it names one and every order when
+/// it does not. An order is named by an earlier placement in the script, counting its
+/// buys, sells, value orders and closes from 0, and a bracket as two, its stop's and
+/// then its take-profit's, which names nothing once the engine refused that placement
+/// or a close found nothing to close, or as `"oldest"`, the oldest order still resting.
+/// The ledger gives each instrument's columns a value a bar at one instrument and a row
+/// of N a bar for a universe. The comparison with the reference simulator and the tests
+/// drive the engine through this.
 #[pyfunction]
 #[pyo3(name = "run", signature = (candles, venue, script, times = None))]
 fn run_script<'py>(

@@ -114,6 +114,10 @@ pub enum Refusal {
     Lot { size: f64, lot: f64 },
     /// A size whose notional at the last close falls short of the venue's minimum.
     MinNotional { size: f64, least: f64 },
+    /// An amount in the quote currency that is not a positive finite number.
+    Amount(f64),
+    /// An amount in the quote currency below the venue's minimum notional.
+    MinAmount { amount: f64, least: f64 },
 }
 
 /// Why an event happened, with the numbers its text quotes (ADR 0022).

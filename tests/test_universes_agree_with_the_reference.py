@@ -84,6 +84,8 @@ SHARED = [
     "a tier above the first",
     "a transfer",
     "a transfer clamped",
+    "a value order",
+    "a value order all or nothing",
     "a window cut to its last bars",
     "an OCO partner cancelled",
     "an account over the cap kept from growing",

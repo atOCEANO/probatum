@@ -612,7 +612,8 @@ def plan(rng, columns, cfg):
     instrument, a kind, a side, a size and a draw `u` that sets the action's price
     off that instrument's last close, sized from a twentieth of the balance's worth
     to twelve times it. Now and then a market order goes to an instrument that has
-    not printed its first bar, which is refused."""
+    not printed its first bar, which is refused, a sized one or one given in the quote
+    currency."""
     out, last = [], [None] * len(columns)
     for t in range(len(columns[0]) - 1):
         for k, column in enumerate(columns):
@@ -626,7 +627,9 @@ def plan(rng, columns, cfg):
             continue
 
         if unlisted and rng.random() < 0.1:
-            out.append((rng.choice(unlisted), "market", "buy", 1.0, 0.0))
+            # every other one given in the quote currency
+            u = 0.9 if t % 2 else 0.0
+            out.append((rng.choice(unlisted), "market", "buy", 1.0, u))
             continue
 
         k     = rng.choice(listed)
@@ -671,7 +674,15 @@ def place(sim, action, t, theirs, script, reached):
         reached[t][kind] += 1
 
     got = None
-    if kind in ("market", "fok", "reduce"):
+    if kind in ("market", "fok", "reduce") and u >= 0.7:
+        # a market order in three is given in the quote currency, the size's worth at
+        # its instrument's last close, or the size itself before its first
+        amount = size if close is None else size * close
+        tif, reduce_only = "fok" if kind == "fok" else "ioc", kind == "reduce"
+        script.take(t, f"{side}_value", amount=amount, tif=tif, reduce_only=reduce_only,
+                    instrument=i)
+        getattr(sim, f"{side}_value")(i, amount, tif=tif, reduce_only=reduce_only)
+    elif kind in ("market", "fok", "reduce"):
         tif         = "fok" if kind == "fok" else "ioc"
         reduce_only = kind == "reduce"
         script.take(t, side, size=size, tif=tif, reduce_only=reduce_only,
