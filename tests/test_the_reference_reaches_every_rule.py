@@ -49,6 +49,7 @@ RULES = [
     "a flip split by a target",
     "a flip's old side on the check",
     "a fok order filling nothing",
+    "a forced close after a perp with maintenance left the path",
     "a forced close of a leg that joined during the bar",
     "a growing fill refused at no equity",
     "a held perp read at its last mark",
@@ -158,6 +159,7 @@ SEVERAL_ONLY = {
     "a held perp read at its last mark",
     "the margin bound beside another perp",
     "a fill leaving no maintenance bounded at the liquidation fee",
+    "a forced close after a perp with maintenance left the path",
 }
 ONE_ONLY = {"an inverse contract filled"}
 # with sizes on every fill is a whole number of lots, so neither a position the
@@ -171,6 +173,7 @@ UNREACHABLE = {"dust swept at the close", "an order retired below a lot",
 # comparison with the engine
 BUILT = {
     "a fill leaving no maintenance bounded at the liquidation fee",
+    "a forced close after a perp with maintenance left the path",
     "an exit the bar reached only before its position's fill",
     "a leg a resting fill armed held back on a liquidating bar",
     "a sized leg gone with the position its fill closed",

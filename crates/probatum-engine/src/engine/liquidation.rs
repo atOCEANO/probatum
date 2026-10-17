@@ -343,15 +343,16 @@ impl Engine {
         wallet: impl Fn(usize) -> f64,
         clip: Point,
     ) {
+        // the account keeps maintenance where its path does, as the clip was solved,
+        // a leg that left during the bar among them
+        let maintained = path.legs.iter().any(|leg| self.maintains[leg.i]);
         if let Liquidation::BookThenBackstop(share) = self.config.liquidation {
-            if closes.iter().any(|&(i, ..)| self.maintains[i])
-                && self.book_holds(closes, moment, path, wallet, clip, share)
-            {
+            if maintained && self.book_holds(closes, moment, path, wallet, clip, share) {
                 self.sell_on_book(closes, moment);
                 return;
             }
         }
-        self.take_over(closes, moment);
+        self.take_over(closes, moment, maintained);
     }
 
     /// Whether a sale on the book holds (The forced close): every leg in `closes`
@@ -469,12 +470,17 @@ impl Engine {
     /// Take the account over (The forced close): close every leg in `closes`, each an
     /// instrument, a signed size and a price, at that price, so a perp with a leg
     /// carried into the bar and one opened during it closes in two fills, the second
-    /// taking what the position still holds. With no
-    /// maintenance each close pays the liquidation fee on its notional, which at the
-    /// close point leaves exactly nothing; with maintenance it pays none. Whatever
-    /// the margin wallet then holds, positive or negative, is the liquidation charge.
-    pub(super) fn take_over(&mut self, closes: &[(usize, f64, f64)], moment: Moment) {
-        let maintained = self.account_maintained();
+    /// taking what the position still holds. Where the path the clip was solved on
+    /// keeps no maintenance, as `maintained` says, each close pays the liquidation
+    /// fee on its notional, which at the close point leaves exactly nothing; with
+    /// maintenance it pays none. Whatever the margin wallet then holds, positive or
+    /// negative, is the liquidation charge.
+    pub(super) fn take_over(
+        &mut self,
+        closes: &[(usize, f64, f64)],
+        moment: Moment,
+        maintained: bool,
+    ) {
         for (k, &(i, q, price)) in closes.iter().enumerate() {
             // an instrument's last close takes what its position still holds, which
             // the closes of its other legs can leave a hair off their own size
@@ -1985,6 +1991,41 @@ mod tests {
             (charge + lifted - 81.0).abs() < 1e-9,
             "the charge was {charge}"
         );
+    }
+
+    #[test]
+    fn a_takeover_after_a_perp_with_maintenance_left_the_path_pays_no_fee() {
+        // 50 of margin: a stop selling 2 A at 95 flips the long short for 0.19 and one
+        // buying 1 at 102 closes the short for 0.102, which leaves 37.708, and B, falling
+        // to 5, takes that to zero at 6.2292. The old side of A's flip stays on the path
+        // the clip is solved on, so the account kept maintenance there, and B closes at
+        // its trigger with no fee of its own, leaving nothing and charging nothing
+        let a = ohlc(100.0, 110.0, 90.0, 95.0, 1e6);
+        let b = ohlc(10.0, 10.0, 5.0, 5.0, 1e6);
+        let stops = [
+            (Side::Sell, 2.0, 95.0, false),
+            (Side::Buy, 1.0, 102.0, false),
+        ];
+        let e = stops_beside_a_perp_without_maintenance(a, b, &stops, 50.0, None);
+        let reporter = e.reporter().expect("reporting is on");
+        let close = reporter
+            .fills()
+            .iter()
+            .find(|fill| fill.reason == FillReason::Liquidation)
+            .expect("the close of B");
+        assert_eq!((close.instrument, close.fee), (1, 0.0));
+        assert!(
+            (close.price - 6.2292).abs() < 1e-9,
+            "closed at {}",
+            close.price
+        );
+        let row = reporter.ledger()[3];
+        assert!(
+            row.costs.liquidation.abs() < 1e-9,
+            "charged {}",
+            row.costs.liquidation
+        );
+        assert_eq!(row.margin_cash, 0.0);
     }
 
     #[test]

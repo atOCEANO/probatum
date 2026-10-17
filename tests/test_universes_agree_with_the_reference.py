@@ -288,6 +288,15 @@ BUILT = {
         "a fill leaving no maintenance bounded at the liquidation fee",
         beside_one_without_maintenance((100.0, 100.0, 80.0, 80.0), (10.0,) * 4,
                                        [("stop", "sell", 1.0, 81.0)], 20.0, 0.03)),
+    # a stop flips the first short and another closes the short, and the second
+    # falls to its trigger after: the old side of the flip stays on the path the clip
+    # is solved on, so the takeover of the second pays no fee of its own
+    "a takeover of the perp left beside a flip with maintenance closed again": (
+        "a forced close after a perp with maintenance left the path",
+        beside_one_without_maintenance(
+            (100.0, 110.0, 90.0, 95.0), (10.0, 10.0, 5.0, 5.0),
+            [("stop_entry", "sell", 2.0, 95.0), ("stop_entry", "buy", 1.0, 102.0)],
+            50.0, None)),
 }
 
 

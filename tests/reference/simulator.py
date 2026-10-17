@@ -2079,7 +2079,13 @@ class Simulator:
         if len({i for i, _, _ in closes}) > 1:
             self.hit("a liquidation of several perpetuals")
 
-        maintained = self.account_maintained()
+        # the account keeps maintenance where its path does, as the clip was solved,
+        # a leg that left during the bar among them
+        maintained = any(self.has_maintenance(leg.instrument)
+                         for piece in path for leg in piece)
+        if maintained and not self.account_maintained():
+            self.hit("a forced close after a perp with maintenance left the path")
+
         # counted where an account with maintenance is closed out, not where a solve
         # finds its trigger, which the optimistic setting or a stop can still spare
         if maintained:

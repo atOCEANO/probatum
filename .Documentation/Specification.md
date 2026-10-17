@@ -433,6 +433,8 @@ Under `intrabar="optimistic"` the account is liquidated on a bar only if every p
 
 ### The trigger, close and clip points
 
+An account keeps maintenance where a leg on its path has a maintenance rate, a leg that left during the bar among them, and its forced close reads it as the path does.
+
 - **The trigger point** is where margin equity falls to the maintenance requirement, `E = M`; with no maintenance, where equity reaches zero.
 - **The close point** is where equity, less a closing fee on every position's notional, reaches zero: `E = sum_i f_i * N_i`, each at its instrument's liquidation fee when there is no maintenance, the taker rate unless the venue sets one, and at its taker fee when there is.
 - **The clip point** is where the account leaves the market: with maintenance, the trigger point; with none, the point from which the account stays at or past the close level all the way to the trigger.
