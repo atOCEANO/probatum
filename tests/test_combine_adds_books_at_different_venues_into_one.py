@@ -268,7 +268,7 @@ def test_what_combine_cannot_add_is_refused():
                                "as combine({\"a\": first, \"b\": second})"),
         ([alpha, "x"], TypeError, "results: a str; give Results"),
         ({1: result}, TypeError, "results: a name 1; name each Result with a string"),
-        ({"": result}, TypeError, "results: a name ''; name each Result with a string"),
+        ({"": result}, ValueError, "results: a name ''; give each Result a name"),
         ([alpha, alpha], ValueError, "results: two at alpha; name each, as "
                                      "combine({\"a\": first, \"b\": second})"),
         ([probatum.combine({"a": result})], ValueError,

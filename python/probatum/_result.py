@@ -1181,9 +1181,11 @@ def combine(results, settlement=None):
     if isinstance(results, collections.abc.Mapping):
         named = list(results.items())
         for name, _ in named:
-            if not (isinstance(name, str) and name):
+            if not isinstance(name, str):
                 raise TypeError(f"results: a name {name!r}; name each Result with a "
                                 f"string")
+            if not name:
+                raise ValueError("results: a name ''; give each Result a name")
     elif isinstance(results, collections.abc.Iterable):
         named = [(None, part) for part in results]
     else:
