@@ -2916,12 +2916,16 @@ class Simulator:
                 last /= abs(inst.notional(1.0, price))
             limit = min(limit, max(last - base, 0.0))
 
+        # Margin, The cap: only a growing fill the cap holds is clamped, so one that fits
+        # keeps the size it came with rather than reducing + limit, which can round a
+        # float off it
         if need(0.0) >= equity:
             # no fill may raise the sum, which a fill on an instrument with no cap
             # never does, up to the last tier's bound
             if need(limit) <= need(0.0):
-                if limit < growing:
-                    self.hit("a fill held at the last tier's bound")
+                if limit == growing:
+                    return size
+                self.hit("a fill held at the last tier's bound")
                 return booked(q, signed, reducing + limit, base + limit)
             self.hit("an account over the cap kept from growing")
             held_back()
@@ -2932,7 +2936,8 @@ class Simulator:
             self.hit("a fill held at the last tier's bound")
 
         if need(limit) <= equity:
-            return booked(q, signed, reducing + limit, base + limit)
+            return size if limit == growing else booked(q, signed, reducing + limit,
+                                                        base + limit)
 
         self.hit("a fill held to the margin cap")
         held_back()
