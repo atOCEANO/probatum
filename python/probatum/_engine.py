@@ -7,7 +7,7 @@ import weakref
 from . import _probatum
 from ._backtest import _annualised, _markets, _number
 from ._data import Data
-from ._result import Result, _provenance
+from ._result import Result, _Record, _provenance
 from ._strategy import Account, Bar, _Run
 from ._venue import _run, _venue_of
 
@@ -28,7 +28,7 @@ class Engine(Account):
     left off (Specification, What a bar cannot show).
     """
 
-    __slots__ = ("_venue", "_seed", "_markets", "__weakref__")
+    __slots__ = ("_venue", "_seed", "_markets", "_record", "__weakref__")
 
 
     def __init__(self, data, venue, seed=None):
@@ -48,6 +48,7 @@ class Engine(Account):
         # the binding read the seed as an integer, and the provenance keeps it as one
         self._seed    = None if seed is None else operator.index(seed)
         self._markets = markets
+        self._record  = _Record(held, data, run)
 
 
     def __repr__(self):
@@ -94,4 +95,4 @@ class Engine(Account):
                                  "the caller's loop", risk_free, rate, seed=self._seed)
 
         return Result._of(run.engine.tables(run.start, list(run.names)), stats, None,
-                          run.engine.is_bust(), provenance)
+                          run.engine.is_bust(), provenance, self._record)

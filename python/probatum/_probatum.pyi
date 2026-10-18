@@ -251,6 +251,11 @@ class Table:
     def __arrow_c_stream__(self, requested_schema: Any = ...) -> Any: ...
 
 def periods_per_year(times: np.ndarray) -> Optional[float]: ...
+def funding_inside(
+    times: np.ndarray,
+    funding_hours: float = ...,
+    funding_times: Optional[np.ndarray] = ...,
+) -> np.ndarray: ...
 def stats_of(
     initial: float,
     curve: np.ndarray,

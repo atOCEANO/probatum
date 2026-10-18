@@ -35,7 +35,7 @@ use probatum_engine::schedule::every;
 use probatum_engine::{
     run_from, Action, Array, Barrier, BatchSnapshot, Candles, Clock, Engine as BarEngine,
     EngineConfig, EnvBatch, Impact, Instrument, Intrabar, Limit, Liquidation, OrderRef, PriceRule,
-    RoundTrip, Script, Sizes, Sizing, Spread, Stats, TargetError, Units,
+    RoundTrip, Schedule, Script, Sizes, Sizing, Spread, Stats, TargetError, Units,
 };
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
@@ -4345,6 +4345,48 @@ fn periods_per_year(times: PyReadonlyArray1<'_, i64>) -> PyResult<Option<f64>> {
     Ok(clock_from(times, None)?.periods_per_year())
 }
 
+/// Each row's count of the funding events it owns stamped inside it, after its open
+/// and before its end, on the clock `times`, placed as a run places them: the events
+/// every `funding_hours` from 00:00 UTC, or those stamped at `funding_times`
+/// (ADR 0020).
+#[pyfunction]
+#[pyo3(signature = (times, funding_hours = 0.0, funding_times = None))]
+fn funding_inside<'py>(
+    py: Python<'py>,
+    times: PyReadonlyArray1<'_, i64>,
+    funding_hours: f64,
+    funding_times: Option<PyReadonlyArray1<'_, i64>>,
+) -> PyResult<Bound<'py, PyArray1<i64>>> {
+    if !(funding_hours.is_finite() && funding_hours >= 0.0) {
+        return Err(PyValueError::new_err(format!(
+            "funding_hours: {funding_hours}; pass the hours between events, or 0.0 for none"
+        )));
+    }
+    let clock = clock_from(times, None)?;
+    let events: Vec<(i64, Option<usize>, f64)> = match funding_times {
+        Some(stamps) => stamps
+            .as_array()
+            .iter()
+            .map(|&stamp| (stamp, None, 0.0))
+            .collect(),
+        None => every(&clock, funding_hours, 0.0)
+            .into_iter()
+            .map(|(stamp, rate)| (stamp, None, rate))
+            .collect(),
+    };
+    let schedule = Schedule::tagged(&clock, &events);
+    let counts = (0..clock.times().len())
+        .map(|row| {
+            schedule
+                .owned(row)
+                .iter()
+                .filter(|&&(_, inside, _)| inside)
+                .count() as i64
+        })
+        .collect();
+    Ok(PyArray1::from_vec(py, counts))
+}
+
 /// The statistics `Engine.stats` gives, of an account that opened at `initial`, whose
 /// equity after each step is `curve`, whose closed round trips netted `pnl`, and which
 /// held a position on `in_position_steps` of those steps, filled `num_fills` times and
@@ -4390,6 +4432,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyState>()?;
     m.add_class::<table::PyTable>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
+    m.add_function(wrap_pyfunction!(funding_inside, m)?)?;
     m.add_function(wrap_pyfunction!(stats_of, m)?)?;
     m.add_function(wrap_pyfunction!(run_script, m)?)?;
     m.add_function(wrap_pyfunction!(run_array, m)?)?;

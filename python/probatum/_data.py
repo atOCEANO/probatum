@@ -872,6 +872,15 @@ class Data:
                         [self._cols[own.index(name)] for name in names])
 
 
+    def describe(self):
+        """What a run on these bars assumes (Specification, Assumptions), as the
+        `Assumptions` rows of the Data a run lists: its bars, gaps, funding events,
+        history, delisting, universe and prices, the router's graded venue, with no
+        cost."""
+        from . import _assumptions, _result
+        return _result.Assumptions._of(_assumptions.bars(self))
+
+
     def gaps(self):
         """Every place an instrument's bars jump by more than the interval, as `Gap`
         records: on a market that never closes, each is an outage or a hole in the

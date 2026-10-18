@@ -11,7 +11,7 @@ import numpy as np
 
 from ._data import DAY, Data, _columns, _dated, _when
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
-from ._result import Result, _provenance
+from ._result import Result, _Record, _provenance
 from ._strategy import Strategy, _Run, _called, _play
 from ._venue import _run, _venue_of
 
@@ -107,7 +107,7 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
 
     rows.flags.writeable = False
     return Result._of(engine.tables(run.start, list(names)), stats, rows,
-                      engine.is_bust(), provenance)
+                      engine.is_bust(), provenance, _Record(held, data, run))
 
 
 def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_free):
@@ -143,7 +143,7 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
                              rate)
 
     return Result._of(engine.tables(run.start, list(data.names)), stats, copied,
-                      engine.is_bust(), provenance)
+                      engine.is_bust(), provenance, _Record(held, data, run))
 
 
 def _repeatable(venue):

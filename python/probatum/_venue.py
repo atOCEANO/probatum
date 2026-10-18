@@ -175,6 +175,17 @@ class Venue:
         return copy.deepcopy(self._view())
 
 
+    def describe(self):
+        """What a run on this venue assumes (Specification, Assumptions), as the
+        `Assumptions` rows of the venue and the engine a run lists, read from the venue
+        alone, with no cost: every instrument it lists, and one of each kind it takes
+        but lists none of, its departures counted; the balance as its amount; "no
+        perpetual" where it takes spot alone; an order limit no table gives as the
+        Data's instruments'; and the funding inside a bar without its count."""
+        from . import _assumptions, _result
+        return _result.Assumptions._of(_assumptions.described(self))
+
+
     def replace(self, **changes):
         """This venue with ``changes``, checked as a new one is: ``fees`` and ``fills``
         merge into the venue's own, a table in ``kinds`` or ``instruments`` merges into

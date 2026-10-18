@@ -16,7 +16,7 @@ import sys
 
 import numpy as np
 
-from . import _ipc
+from . import _assumptions, _ipc
 from ._data import DAY, INTERVALS, _when
 from ._probatum import Table as _Held, stats_of
 from ._venue import _settlement
@@ -25,7 +25,8 @@ from ._venue import _settlement
 # one will
 FORMAT = 1
 # each table a Result holds: its columns, of a kind each, and whether each can hold a
-# null, as the binding builds them and a saved Result's files hold them
+# null, as the binding builds them, the assumptions as the Result reads them, and as a
+# saved Result's files hold them
 SCHEMAS = {
     "ledger": [("bar", "int", False), ("time", "time", False)]
     + [(name, "float", True) for name in (
@@ -55,6 +56,8 @@ SCHEMAS = {
     + [(name, "float", True) for name in (
         "realized", "fees", "funding", "pnl", "ret", "best", "worst")]
     + [("reason", "text", True), ("open", "bool", False)],
+    "assumptions": [(name, "text", False) for name in ("name", "value", "source", "grade")]
+    + [("direction", "text", True), ("cost", "float", True)],
 }
 # the statistics a run reports, in the order the binding gives them, the counts among
 # them integers
@@ -306,15 +309,80 @@ class OrderLog(Table):
         return self[self._held.equal("kind", kind)]
 
 
+class Assumptions(Table):
+    """What a run assumed (Specification, Assumptions), a `Table` of a row for each
+    modelling choice: its ``name``, its ``value``, its ``source``, its ``grade``,
+    ``venue``, ``simplified`` or ``optimistic``, the ``direction`` its error leans where
+    it is simplified, and its ``cost`` where the run's ledger and fill log measure it,
+    in the asset the account settles in. Its repr shows every row, and
+    ``table[table.grade == "optimistic"]`` keeps the optimistic ones."""
+
+    __slots__ = ()
+
+
+    @classmethod
+    def _of(cls, rows):
+        """The table of ``rows``, each its columns' values in order, None where one is
+        missing."""
+        columns = list(zip(*rows)) or [()] * len(SCHEMAS["assumptions"])
+        parts   = []
+
+        for (name, kind, nullable), values in zip(SCHEMAS["assumptions"], columns):
+            if kind == "text":
+                ends, valid, data = _text(values)
+                parts.append((name, kind, nullable, ends, valid, data))
+            else:
+                floats = np.array([np.nan if value is None else value for value in values],
+                                  dtype=np.float64)
+                parts.append((name, kind, nullable, floats, None, None))
+
+        return cls(_Held(parts))
+
+
+    def __repr__(self):
+        lines = [list(self.columns)] + [
+            ["" if value is None else f"{value:,.6g}" if isinstance(value, float)
+             else value for value in row.values()] for row in self]
+        widths = [max(len(line[k]) for line in lines) for k in range(len(lines[0]))]
+        return "\n".join("  ".join(text.ljust(width) for text, width in zip(line, widths))
+                         .rstrip() for line in lines)
+
+
+CLASSES = {"orders": OrderLog, "assumptions": Assumptions}
+
+
 def _rebuilt(kind, parts):
     """A `Table` of the type ``kind`` made again from its ``parts``, as pickling does."""
     return kind(_Held(parts))
 
 
+def _text(values):
+    """A text column of ``values`` as the binding takes one: each row's end in its bytes
+    after a leading zero, the rows that hold a text, None where every row does, and the
+    bytes."""
+    encoded = [b"" if value is None else value.encode() for value in values]
+    ends    = np.cumsum([0] + [len(each) for each in encoded], dtype=np.int64)
+    valid   = (None if all(value is not None for value in values)
+               else np.array([value is not None for value in values]))
+    return ends, valid, np.frombuffer(b"".join(encoded), dtype=np.uint8)
+
+
 def _tables(held):
     """The binding's tables ``held``, by name, as a Result holds them."""
-    return {name: (OrderLog if name == "orders" else Table)(held[name])
-            for name in SCHEMAS}
+    return {name: CLASSES.get(name, Table)(table) for name, table in held.items()}
+
+
+class _Record:
+    """What a run's Result keeps of its run, which its assumptions read: the ``venue``,
+    the ``data``, and the Engine's ``settings`` with ``start``, the row of the Data's
+    first bar among the Engine's, as `_run` gave them."""
+
+    __slots__ = ("venue", "data", "settings", "start")
+
+
+    def __init__(self, venue, data, run):
+        self.venue, self.data = venue, data
+        self.settings, self.start = run.settings, run.start
 
 
 class InstrumentResult:
@@ -347,58 +415,91 @@ class Result:
     each ``(T,)``; the tables ``ledger``, a row a bar, ``holdings``, a row a bar and
     instrument, ``fills``, the fill log, ``orders``, the order log, and ``trades``, the
     round trips (Specification, What a run records); ``costs``, the totals of the
-    ledger's costs; ``stats``, the statistics at the Data's annualisation and the run's
-    risk-free rate, None where the clock is too short to annualise; ``policy``, the copy
-    of the policy the run used; ``bust``, whether the account's equity reached zero;
-    ``liquidations``, the number of bars it was liquidated on, each account of a book
-    counted apart; and ``provenance``, what the run was given and where it ran. A row's
-    return is its equity over the row before's, less one, and nothing once the equity is
-    gone. ``result[name]`` is one instrument's record, and with one instrument the
-    Result itself answers ``position``, ``weight`` and ``pnl``. ``save(path)`` writes it
-    as files any tool reads, and ``Result.load(path)`` reads it back."""
+    ledger's costs; ``assumptions``, what the run assumed, graded; ``stats``, the
+    statistics at the Data's annualisation and the run's risk-free rate, None where the
+    clock is too short to annualise; ``policy``, the copy of the policy the run used;
+    ``bust``, whether the account's equity reached zero; ``liquidations``, the number
+    of bars it was liquidated on, each account of a book counted apart; and
+    ``provenance``, what the run was given and where it ran. A row's return is its
+    equity over the row before's, less one, and nothing once the equity is gone.
+    ``result[name]`` is one instrument's record, and with one instrument the Result
+    itself answers ``position``, ``weight`` and ``pnl``. Its repr names every assumption
+    graded optimistic. ``save(path)`` writes it as files any tool reads, and
+    ``Result.load(path)`` reads it back."""
 
     # a Result is no sequence of its instruments, which it names rather than counts
     __iter__ = None
 
 
-    def __init__(self, time, equity, tables, stats, policy, bust, provenance):
+    def __init__(self, time, equity, tables, stats, policy, bust, provenance,
+                 record=None):
         self.time   = _frozen(np.array(time, dtype=np.int64))
         self.equity = _frozen(np.array(equity, dtype=np.float64))
         before      = self.equity[:-1]
         grown       = np.divide(self.equity[1:], before, out=np.ones_like(before),
                                 where=before > 0.0)
-        self.returns    = _frozen(np.concatenate([[0.0], grown - 1.0]))
-        self.ledger     = tables["ledger"]
-        self.holdings   = tables["holdings"]
-        self.fills      = tables["fills"]
-        self.orders     = tables["orders"]
-        self.trades     = tables["trades"]
-        self.stats      = stats
-        self.policy     = _frozen(policy) if isinstance(policy, np.ndarray) else policy
-        self.bust       = bool(bust)
-        self.provenance = provenance
-        held            = self.fills._held
-        forced          = held.take(np.flatnonzero(held.equal("reason", "liquidation")))
-        venue           = (forced.column("venue") if "venue" in self.fills.columns
-                           else np.zeros(len(forced)))
+        self.returns  = _frozen(np.concatenate([[0.0], grown - 1.0]))
+        self.ledger   = tables["ledger"]
+        self.holdings = tables["holdings"]
+        self.fills    = tables["fills"]
+        self.orders   = tables["orders"]
+        self.trades   = tables["trades"]
+
+        # a run's assumptions are read from its record when first asked for, and every
+        # other Result holds them
+        self._assumptions = tables.get("assumptions")
+        self._record      = record
+        self.stats        = stats
+        self.policy       = _frozen(policy) if isinstance(policy, np.ndarray) else policy
+        self.bust         = bool(bust)
+        self.provenance   = provenance
+        held              = self.fills._held
+        forced            = held.take(np.flatnonzero(held.equal("reason", "liquidation")))
+        venue             = (forced.column("venue") if "venue" in self.fills.columns
+                             else np.zeros(len(forced)))
         self.liquidations = len(set(zip(venue.tolist(), forced.column("bar").tolist())))
 
 
     @classmethod
-    def _of(cls, held, stats, policy, bust, provenance):
-        """The Result of a run whose tables the binding built, ``held``."""
+    def _of(cls, held, stats, policy, bust, provenance, record):
+        """The Result of a run whose tables the binding built, ``held``, which keeps
+        ``record`` of the run."""
         tables = _tables(held)
         ledger = tables["ledger"]
         return cls(ledger["time"], ledger["equity"], tables, stats, policy, bust,
-                   provenance)
+                   provenance, record)
 
 
     def __repr__(self):
         given = self.provenance
         what  = (f"a book of {' and '.join(given['results'])}" if "results" in given
                  else f"{given['policy']} on {given['venue']}")
-        return (f"Result({what}, {len(self.time):,} bars, equity {self.equity[0]:,.2f} "
-                f"to {self.equity[-1]:,.2f})")
+        said = (f"Result({what}, {len(self.time):,} bars, equity {self.equity[0]:,.2f} "
+                f"to {self.equity[-1]:,.2f}")
+
+        table = self.assumptions
+        named = [f"{row['name']} {row['value']}"
+                 + (f" at {row['venue']}" if "venue" in row else "")
+                 for row in table[table.grade == "optimistic"]]
+        if named:
+            said += (f"; {len(named)} optimistic assumption{'s' * (len(named) != 1)}: "
+                     f"{'; '.join(named)}")
+
+        return said + ")"
+
+
+    @property
+    def assumptions(self):
+        """What the run assumed (Specification, Assumptions), as an `Assumptions` table:
+        the venue's settings each instrument ran, the engine's own rules and the Data's,
+        each with its value, its source and its grade, and its cost where the run's
+        ledger and fill log measure it, read when first asked for. A book's are its
+        accounts', in the order they were given, each row naming its venue."""
+        table = self._assumptions
+        if table is None:
+            table = self._assumptions = Assumptions._of(_assumptions.ran(self._record,
+                                                                         self))
+        return table
 
 
     @property
@@ -543,7 +644,8 @@ class Result:
 
 
     def __reduce__(self):
-        # a pickled Strategy's copy or loop is described in the provenance, not kept
+        # a pickled Strategy's copy or loop is described in the provenance, not kept,
+        # nor the record its assumptions are read from, which are read first
         policy = self.policy if isinstance(self.policy, np.ndarray) else None
         tables = {name: getattr(self, name) for name in SCHEMAS}
         return Result, (self.time, self.equity, tables, self.stats, policy, self.bust,
@@ -598,7 +700,8 @@ class Result:
         whether the policy was an array and whether the account went bust; ``time.npy``,
         ``equity.npy`` and ``returns.npy``; ``policy.npy`` where the policy was an
         array; each table as an Arrow IPC file, ``ledger.arrow``, ``holdings.arrow``,
-        ``fills.arrow``, ``orders.arrow`` and ``trades.arrow``; and ``stats.arrow``, the
+        ``fills.arrow``, ``orders.arrow``, ``trades.arrow`` and ``assumptions.arrow``,
+        read first where the run has not read them yet; and ``stats.arrow``, the
         statistics as one row, none where the clock was too short to annualise. Every
         file is written under another name first, all of them removed again where one
         cannot be written, then the manifest already there and any policy.npy go, the
@@ -832,7 +935,7 @@ def _loaded(path, folder, name, book, fix):
         raise ValueError(f"path: {str(path)!r}'s {name}.arrow is not a table save "
                          f"writes; {fix}") from None
 
-    return (OrderLog if name == "orders" else Table)(held)
+    return CLASSES.get(name, Table)(held)
 
 
 def _stats(path, folder, fix):
@@ -959,8 +1062,8 @@ def combine(results, settlement=None):
     its own span, its costs on the rows they were paid on, and the leverage gross
     exposure over equity. Its other tables are theirs joined, each row with its venue
     first and every bar counted on the book's clock, in order of bar, the round trips
-    closed in the order they closed and then those still open (Specification, Combining
-    books).
+    closed in the order they closed and then those still open, and the assumptions in
+    the order the Results are given (Specification, Combining books).
 
     ``settlement`` names the dollar asset a book of accounts kept in dollar assets, such
     as USDT and USDC, is kept in, each counted at par (Specification, Combining books).
@@ -1065,7 +1168,7 @@ def combine(results, settlement=None):
 
     for name in SCHEMAS:
         if name != "ledger":
-            tables[name] = (OrderLog if name == "orders" else Table)(
+            tables[name] = CLASSES.get(name, Table)(
                 _joined([getattr(part, name) for part in parts], labels, rows, name))
 
     trades    = tables["trades"]
@@ -1170,10 +1273,10 @@ def _annualised(parts, clock):
 def _joined(tables, labels, rows, name):
     """``tables``, one of each book's, as one table of the binding, each row with its
     book's venue first and every bar counted on the book's clock through ``rows``, each
-    book's rows on it, the rows in order of bar, and for the round trips ``name``
-    names, the closed ones in the order they closed and then those still open. Each
-    part's columns are found by name and the book's are this version's, so a column a
-    later version added is left out."""
+    book's rows on it, the rows in order of bar, for the round trips ``name`` names,
+    the closed ones in the order they closed and then those still open, and for the
+    assumptions, in the order of the books. Each part's columns are found by name and
+    the book's are this version's, so a column a later version added is left out."""
     pieces  = [{part[0]: part for part in table._held.parts()} for table in tables]
     counts  = [len(table) for table in tables]
     encoded = [label.encode() for label in labels]
@@ -1205,6 +1308,9 @@ def _joined(tables, labels, rows, name):
 
     held = _Held(joined)
     del joined
+
+    if name == "assumptions":
+        return held
 
     if name == "trades":
         _, _, _, closed, valid, _ = next(part for part in held.parts()
