@@ -70,8 +70,8 @@ class PolicyError(ProbatumTypeError):
     """A policy ``backtest`` or ``search`` cannot run as given: a class for an instance,
     and for a search an instance for its class, a class that is no Strategy or a
     function that takes no data, a model that fits, an object of no kind it reads, an
-    array of values it cannot read as decisions, and a trial that decides in another
-    kind than the trials before it."""
+    array of values it cannot read as decisions, a trial that decides in another kind
+    than the trials before it, and a policy the workers cannot carry."""
 
 
 class MissingDependency(ProbatumError, ImportError):

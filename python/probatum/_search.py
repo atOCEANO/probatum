@@ -8,7 +8,12 @@ import copy
 import inspect
 import logging
 import math
+import multiprocessing
 import os
+import pathlib
+import shutil
+import sys
+import tempfile
 import warnings
 
 import numpy as np
@@ -38,6 +43,7 @@ OWN = ("number", "state", "score", "error") + STATS
 CHUNK = 256 * 2**20
 # the package's files, which a warning skips to name the caller's line
 PACKAGE = (os.path.dirname(__file__),)
+GUARD   = 'put the call under if __name__ == "__main__":'
 
 
 def search(policy, space, data, venue, objective="sharpe", direction="maximize",
@@ -61,8 +67,14 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     it is None. ``holdout`` holds out the last rows: a share of them in (0, 1), a number
     of them, or the time it starts at; 0 holds out nothing, and None nothing with a
     warning. ``keep="all"`` keeps every trial's returns and ``"none"`` none.
-    ``risk_free`` is the annual rate the statistics are computed against; ``n_jobs``
-    above 1 and ``storage`` are not built yet."""
+    ``n_jobs`` above 1 runs the trials that do not run together in Rust in that many
+    workers spawn starts, -1 one a core, ``risk_free`` is the annual rate the statistics
+    are computed against, and ``storage`` is not built yet."""
+    if getattr(multiprocessing.current_process(), "_inheriting", False):
+        raise ProbatumRuntimeError(f"search: called by a worker of a search as it starts, "
+                                   f"as spawn runs the script's top level again in each; "
+                                   f"{GUARD}")
+
     kind  = _policy(policy)
     space = _spaced(space, policy, kind)
 
@@ -89,11 +101,15 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
         raise ProbatumValueError(f"keep: {keep!r}; use \"all\" or \"none\"")
 
     _counted("n_jobs", n_jobs, None)
-    if n_jobs != 1:
-        raise ProbatumNotImplementedError(f"n_jobs: {n_jobs}, which search does not run "
-                                          f"in workers yet; leave it at 1")
+    if n_jobs == 0 or n_jobs < -1:
+        raise ProbatumValueError(f"n_jobs: {n_jobs}; give a number of workers from 1, or "
+                                 f"-1 for one a core")
 
     trials, min_trades, n_jobs = int(trials), int(min_trades), int(n_jobs)
+    resolved = (os.process_cpu_count() or 1) if n_jobs == -1 else int(n_jobs)
+    if sys.platform == "win32":
+        # the most workers a process pool takes on that platform
+        resolved = min(resolved, 61)
 
     if storage is not None:
         raise ProbatumNotImplementedError(f"storage: {storage!r}, which search does not "
@@ -126,31 +142,58 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     LOGGER.info("search: %s trials of %s by %s on %s rows, %s held out", draws.count,
                 named, sampler, f"{cut:,}", f"{len(data) - cut:,}")
 
-    made, checked = [], None
-    while len(made) < draws.count:
-        number = len(made)
-        # once checked, weights a random or grid search draws run together in Rust,
-        # and TPE, which chooses each trial from the last, runs them one at a time
-        if checked is not None and sampler != "tpe" and runner.made == "weights":
-            arrived = runner.together(number, draws)
-        else:
-            arrived = [runner.trial(number, draws.ask(number))]
+    made, checked, pool = [], None, None
+    try:
+        while len(made) < draws.count and (pool is None or pool.broken is None):
+            number = len(made)
+            # once checked, weights a random or grid search draws run together in Rust,
+            # and every other trial in the workers where there are some, TPE asking a
+            # round of them at a time, since it chooses each trial from those before
+            if checked is not None and sampler != "tpe" and runner.made == "weights":
+                arrived = runner.together(number, draws)
+            elif checked is not None and resolved > 1:
+                if pool is None:
+                    settings = dict(kind=kind, made=runner.made, objective=objective,
+                                    min_trades=min_trades, rate=rate,
+                                    risk_free=float(risk_free), keep=keep)
+                    pool = _pooled(policy, held, inside, settings,
+                                   min(resolved, draws.count - number), n_jobs)
 
-        for trial in arrived:
-            draws.tell(trial.number, trial)
-            if keep == "none":
-                trial.returns = None
-            made.append(trial)
-            LOGGER.debug("search: trial %s %s%s", trial.number, trial.state,
-                         "" if trial.score is None
-                         else f", {objective} {trial.score:.6g}")
+                last = min(number + resolved if sampler == "tpe" else draws.count,
+                           draws.count)
+                arrived = pool.run([(k, draws.ask(k)) for k in range(number, last)])
+            else:
+                arrived = [runner.trial(number, draws.ask(number))]
 
-            # the first trial that ran and decided something is checked before any
-            # other runs (Specification, The causality check)
-            if checked is None and trial.state != "failed" and _check(
-                    policy, kind, trial.params, inside, held, run):
-                checked = trial.params
-                LOGGER.info("search: trial %s's decisions are causal", trial.number)
+            for trial in arrived:
+                draws.tell(trial.number, trial)
+                if keep == "none":
+                    trial.returns = None
+                made.append(trial)
+                LOGGER.debug("search: trial %s %s%s", trial.number, trial.state,
+                             "" if trial.score is None
+                             else f", {objective} {trial.score:.6g}")
+
+                # the first trial that ran and decided something is checked before any
+                # other runs (Specification, The causality check)
+                if checked is None and trial.state != "failed" and _check(
+                        policy, kind, trial.params, inside, held, run):
+                    checked = trial.params
+                    LOGGER.info("search: trial %s's decisions are causal", trial.number)
+    finally:
+        if pool is not None:
+            try:
+                pool.close()
+            finally:
+                shutil.rmtree(pool.folder, ignore_errors=True)
+
+    if pool is not None and pool.broken is not None:
+        if not any(trial.state == "complete" for trial in made):
+            raise pool.refused() from pool.broken
+        warnings.warn(f"n_jobs: the workers broke after {pool.returned:,} trials came "
+                      f"back ({_told(pool.broken)}), so the trials in flight failed and "
+                      f"no more were asked; the Study holds {len(made):,} of "
+                      f"{draws.count:,}", ProbatumWarning, skip_file_prefixes=PACKAGE)
 
     winner = _winner(made, direction, min_trades)
     if checked is not None and winner.params != checked:
@@ -168,7 +211,8 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
         ran=len(made), min_trades=min_trades,
         holdout=dict(given=_shown(holdout), rows=len(data) - cut,
                      first=None if cut == len(data) else _when(data.time[cut])),
-        keep=keep, n_jobs=dict(given=n_jobs, resolved=1), risk_free=float(risk_free),
+        keep=keep, n_jobs=dict(given=n_jobs, resolved=resolved),
+        risk_free=float(risk_free),
         periods_per_year=rate, fingerprint=inside.fingerprint, venue=repr(held),
         venue_name=held.name, data=data.provenance, version=_version(),
         **_environment())
@@ -176,6 +220,20 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     return Study(_trials(made, space), _kept(made, keep), winner,
                  _Ran(policy, kind, held, float(risk_free), data, cut, inside),
                  provenance)
+
+
+def _pooled(policy, venue, data, settings, workers, n_jobs):
+    """The workers a search's trials run in, ``workers`` of them for the ``n_jobs``
+    given, and the folder they run from, written first."""
+    from . import _workers
+    folder = pathlib.Path(tempfile.mkdtemp(prefix="probatum-search-"))
+
+    try:
+        _workers._wrote(folder, policy, venue, data, settings)
+        return _workers._Pool(folder, workers, n_jobs)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
 
 
 def _counted(name, value, least, unit=None):
@@ -338,17 +396,19 @@ def _cut(holdout, data):
 
 class _Trial:
     """One trial: its ``number``, its ``params``, its ``state`` and ``score``, the
-    ``stats`` and ``returns`` of a trial that ran, and a failure's ``error`` as text
-    and, for the last failure in this process alone, the exception it ``raised``."""
+    ``stats`` and ``returns`` of a trial that ran, and a failure's ``error`` as text,
+    the exception it ``raised``, kept for the last failure in this process alone, and its
+    ``trace`` where it was in a ``worker``."""
 
     __slots__ = ("number", "params", "state", "score", "stats", "returns", "error",
-                 "raised")
+                 "raised", "trace", "worker")
 
 
     def __init__(self, number, params, state, score=None, stats=None, returns=None,
-                 error=None, raised=None):
+                 error=None, raised=None, trace=None, worker=False):
         self.number, self.params, self.state, self.score = number, params, state, score
         self.stats, self.returns, self.error, self.raised = stats, returns, error, raised
+        self.trace, self.worker = trace, worker
 
 
 def _scored(number, params, stats, returns, objective, min_trades):
@@ -541,10 +601,14 @@ def _winner(made, direction, min_trades):
                                  f"closed that many round trips on the in-sample bars, "
                                  f"the most {most:,}; lower it")
 
-    last = made[-1]
-    raise ProbatumRuntimeError(f"policy: all {len(made):,} trials failed, the last, "
-                               f"trial {last.number}, with {last.error}; backtest it "
-                               f"with {last.params} to see where") from last.raised
+    last  = made[-1]
+    error = ProbatumRuntimeError(f"policy: all {len(made):,} trials failed, the last, "
+                                 f"trial {last.number}, with {last.error}; backtest it "
+                                 f"with {last.params} to see where")
+    if last.trace is not None:
+        error.add_note(f"in the worker that ran it:\n{last.trace}")
+
+    raise error from last.raised
 
 
 def _trials(made, space):
@@ -707,11 +771,14 @@ class Study:
             changed = [key for key in STATS if again[key] != row[key]]
             if changed:
                 key = changed[0]
+                why = ("it ran in a worker, which imported the policy afresh under a hash "
+                       "seed of its own, so give the policy what it reads as its "
+                       "arguments, or set PYTHONHASHSEED" if self._winner.worker else
+                       "the policy's code or the globals it reads changed since the "
+                       "search, so search again")
                 raise ProbatumRuntimeError(f"best: trial {self._winner.number}'s {key} was "
                                            f"{row[key]!r} on the in-sample bars, and run "
-                                           f"again it is {again[key]!r}; the policy's code "
-                                           f"or the globals it reads changed since the "
-                                           f"search, so search again")
+                                           f"again it is {again[key]!r}; {why}")
 
             self._best = result
 
