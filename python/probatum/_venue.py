@@ -14,6 +14,7 @@ import numpy as np
 
 from . import venues
 from ._data import Data
+from ._errors import DataError, ProbatumAttributeError, ProbatumTypeError, VenueError
 
 # the plain option in each row, which a venue's setting left out or given as None takes
 PLAIN = {"balance": 10_000.0, "fees": {"maker": 0.0002, "taker": 0.0006},
@@ -73,23 +74,23 @@ class Venue:
             max_qty=max_qty, reduce_only_exempt=reduce_only_exempt).items()}
 
         if name is not None and not isinstance(name, str):
-            raise TypeError(f"name: {name!r}; give the venue's name as text")
+            raise ProbatumTypeError(f"name: {name!r}; give the venue's name as text")
         if name == "":
-            raise ValueError("name: ''; give the venue a name, or leave it out")
+            raise VenueError("name: ''; give the venue a name, or leave it out")
 
         if type(taken) is datetime.date:
             taken = taken.isoformat()
         if taken is not None and not _day(taken):
-            raise ValueError(f"taken: {taken!r} is not a day; give the day the venue's "
+            raise VenueError(f"taken: {taken!r} is not a day; give the day the venue's "
                              f"tables were taken, as YYYY-MM-DD")
 
         if kind is not None and kind not in venues.KINDS:
-            raise ValueError(f"kind: {kind!r}; use {', '.join(venues.KINDS)}, or None "
+            raise VenueError(f"kind: {kind!r}; use {', '.join(venues.KINDS)}, or None "
                              f"for a venue of several kinds")
 
         intrabar = _given_or_plain(given, "intrabar")
         if intrabar not in INTRABAR:
-            raise ValueError(f"intrabar: {intrabar!r} is not a setting; use "
+            raise VenueError(f"intrabar: {intrabar!r} is not a setting; use "
                              f"{', '.join(INTRABAR)}")
 
         defaults = {setting: _given_or_plain(given, setting)
@@ -201,8 +202,8 @@ class Venue:
 
         for setting, value in changes.items():
             if setting not in settings:
-                raise TypeError(f"{setting}: not a setting of a venue; use one of "
-                                f"{', '.join(SETTINGS)}")
+                raise ProbatumTypeError(f"{setting}: not a setting of a venue; use one "
+                                        f"of {', '.join(SETTINGS)}")
 
             held = settings[setting]
             if setting in ("fees", "fills") and isinstance(value, dict):
@@ -219,7 +220,7 @@ class Venue:
             if (setting in ("fees",) + SHARED and settings["kind"] is None and kinds
                     and all(_gives(table, setting) for table in kinds.values())):
                 first, who = next(iter(kinds)), self.name or "the venue"
-                raise ValueError(f"{setting}: {changes[setting]!r}, which no "
+                raise VenueError(f"{setting}: {changes[setting]!r}, which no "
                                  f"instrument of {who} takes, as each of its kinds "
                                  f"gives its own; give it in a kind's table, "
                                  f"replace(kinds={{{first!r}: {{{setting!r}: ...}}}})")
@@ -275,16 +276,16 @@ class Venue:
 
     def __setattr__(self, name, value):
         if name not in SETTINGS:
-            raise AttributeError(f"{name}: not a setting of a venue, and a venue does "
-                                 f"not change")
+            raise ProbatumAttributeError(f"{name}: not a setting of a venue, and a "
+                                         f"venue does not change")
 
-        raise AttributeError(f"{name}: a Venue does not change; make a variant with "
-                             f"replace({name}=...)")
+        raise ProbatumAttributeError(f"{name}: a Venue does not change; make a variant "
+                                     f"with replace({name}=...)")
 
 
     def __delattr__(self, name):
-        raise AttributeError(f"{name}: a Venue does not change; make a variant with "
-                             f"replace")
+        raise ProbatumAttributeError(f"{name}: a Venue does not change; make a variant "
+                                     f"with replace")
 
 
     def __reduce__(self):
@@ -318,22 +319,22 @@ def _run(venue, data, seed=None):
     data   = data if isinstance(data, Data) else Data(data)
     origin = venue.name or "venue"
     if not len(data) or not data.available.any():
-        raise ValueError("data: no bars to run; give a Data that has some")
+        raise DataError("data: no bars to run; give a Data that has some")
 
     instruments, names = data.instruments, data.names
     # an unnamed instrument is keyed by its position or its empty name, which no table
     # of a venue names
     if venue._preset["instruments"] and any(not instrument.symbol
                                            for instrument in instruments):
-        raise ValueError("data: an unnamed instrument; pass probatum.Data(frame, "
-                         "symbol=...)")
+        raise DataError("data: an unnamed instrument; pass probatum.Data(frame, "
+                        "symbol=...)")
 
     markets = [_market(instrument, name, venue, origin)
                for instrument, name in zip(instruments, names)]
     held = sorted({instrument.venue for instrument in instruments if instrument.venue})
     if len(held) > 1:
-        raise ValueError(f"data: instruments at {' and '.join(held)}, and an account "
-                         f"is at one venue; run each venue's instruments on their own")
+        raise DataError(f"data: instruments at {' and '.join(held)}, and an account "
+                        f"is at one venue; run each venue's instruments on their own")
 
     _one_cash(instruments, names, markets)
 
@@ -342,9 +343,9 @@ def _run(venue, data, seed=None):
             for instrument, name, market in zip(instruments, names, markets)]
     inverse = markets == ["inverse"]
     if inverse and instruments[0].contract is None:
-        raise ValueError(f"data: {names[0]} is an inverse contract whose bars do not "
-                         f"give the dollars a contract is worth; build it from frames "
-                         f"that do, as the router's do for a symbol it lists")
+        raise DataError(f"data: {names[0]} is an inverse contract whose bars do not "
+                        f"give the dollars a contract is worth; build it from frames "
+                        f"that do, as the router's do for a symbol it lists")
 
     settings = venues._settings(venue._preset, keys,
                                 instruments[0].contract if inverse else None)
@@ -360,7 +361,7 @@ def _run(venue, data, seed=None):
         _held_to_rules(spec, name, origin, settings["sizes"])
         if booked and spec["market"] != "spot" and not any(
                 rate > 0.0 for _, _, rate, _ in spec.get("tiers", [])):
-            raise ValueError(f"venue: {origin} books then backstops, and gives {name} "
+            raise VenueError(f"venue: {origin} books then backstops, and gives {name} "
                              f"no tier table that keeps maintenance; give {name} its "
                              f"tiers in instruments")
 
@@ -369,9 +370,9 @@ def _run(venue, data, seed=None):
         owned = set(data._root.funding["instrument"].tolist())
         bare  = [names[k] for k in perps if data._cols[k] not in owned]
         if bare:
-            raise ValueError(f"funding: {origin} charges the funding the data holds, "
-                             f"and the data holds none for {bare[0]}; fetch the bars "
-                             f"with funding=True, or replace(funding=\"none\")")
+            raise DataError(f"funding: {origin} charges the funding the data holds, "
+                            f"and the data holds none for {bare[0]}; fetch the bars "
+                            f"with funding=True, or replace(funding=\"none\")")
 
         events = data.funding
         settings.update(funding_times=np.ascontiguousarray(events["time"]),
@@ -380,12 +381,12 @@ def _run(venue, data, seed=None):
 
     balance = venue._balance
     if not isinstance(balance, dict) and "spot" in markets and perps:
-        raise ValueError(f"balance: {balance}, one wallet's, and the data's spot and "
+        raise VenueError(f"balance: {balance}, one wallet's, and the data's spot and "
                          f"perpetual instruments use both; replace(balance="
                          f"{{\"spot\": s, \"margin\": m}})")
 
     if isinstance(balance, dict) and inverse:
-        raise ValueError(f"balance: {balance}, the cash of two wallets, and an inverse "
+        raise VenueError(f"balance: {balance}, the cash of two wallets, and an inverse "
                          f"contract's account holds its coin in one; give the coin as "
                          f"a number")
 
@@ -412,7 +413,7 @@ def _held_to_rules(spec, name, origin, sizes):
     price rule, significant figures needing their decimals, and with the venue's
     ``sizes`` on, to no lot or no price rule."""
     if spec.get("sigfigs") is not None and spec.get("decimals") is None:
-        raise ValueError(f"venue: {origin} gives {name} significant figures and no "
+        raise VenueError(f"venue: {origin} gives {name} significant figures and no "
                          f"decimals, the cap its price rule needs; give {name} its "
                          f"decimals in instruments")
 
@@ -421,7 +422,7 @@ def _held_to_rules(spec, name, origin, sizes):
                if not there]
 
     if sizes and missing:
-        raise ValueError(f"venue: {origin} gives {name} no {' and no '.join(missing)}, "
+        raise VenueError(f"venue: {origin} gives {name} no {' and no '.join(missing)}, "
                          f"and its sizes hold every order to them; give {name} its own "
                          f"in instruments, or replace(fills={{\"sizes\": \"off\"}})")
 
@@ -435,8 +436,8 @@ def _venue_of(venue):
         venues._preset(venue)
         return venues._venue(venue)
 
-    raise TypeError(f"venue: {venue!r}; pass a Venue, or a preset's name such as "
-                    f"\"binance_perp\"")
+    raise ProbatumTypeError(f"venue: {venue!r}; pass a Venue, or a preset's name such "
+                            f"as \"binance_perp\"")
 
 
 def _market(instrument, name, venue, origin):
@@ -445,12 +446,12 @@ def _market(instrument, name, venue, origin):
     several, the kinds its tables name, a venue that names none taking every kind."""
     market = instrument.market or venue.kind
     if market is None:
-        raise ValueError(f"data: {name} names no market, and {origin} is not of one "
-                         f"kind; build the Data with market=")
+        raise DataError(f"data: {name} names no market, and {origin} is not of one "
+                        f"kind; build the Data with market=")
 
     kinds = [venue.kind] if venue.kind else list(venue._preset["kinds"])
     if kinds and market not in kinds:
-        raise ValueError(f"venue: {origin} lists {' and '.join(kinds)} instruments, "
+        raise VenueError(f"venue: {origin} lists {' and '.join(kinds)} instruments, "
                          f"and {name} is {market}; run it on a venue of its kind")
 
     return market
@@ -472,8 +473,8 @@ def _one_cash(instruments, names, markets):
         if first is None:
             first = (asset, said)
         elif asset != first[0]:
-            raise ValueError(f"data: {first[1]} and {said}, and an account's cash is "
-                             f"one asset; run them on their own")
+            raise DataError(f"data: {first[1]} and {said}, and an account's cash is "
+                            f"one asset; run them on their own")
 
 
 def _settlement(instruments, markets):
@@ -554,7 +555,7 @@ def _balance(balance):
     for value in cash:
         if (isinstance(value, bool) or not isinstance(value, (int, float))
                 or not math.isfinite(value) or value < 0.0):
-            raise ValueError(f"balance: {balance!r}; give the opening cash as a number "
+            raise VenueError(f"balance: {balance!r}; give the opening cash as a number "
                              f"from 0, or {{\"spot\": s, \"margin\": m}} for an "
                              f"account that holds both wallets")
 
@@ -572,7 +573,7 @@ def _merged(setting, held, given):
     for key, table in given.items():
         if table is None:
             if key not in out:
-                raise ValueError(f"{setting}: {key!r}: None for a table the venue "
+                raise VenueError(f"{setting}: {key!r}: None for a table the venue "
                                  f"does not hold; name one of its {setting}")
             del out[key]
         elif isinstance(table, dict) and isinstance(out.get(key), dict):

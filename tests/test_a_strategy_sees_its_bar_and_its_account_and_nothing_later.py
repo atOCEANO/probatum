@@ -17,7 +17,8 @@ import pandas as pd
 import pytest
 
 import probatum
-from probatum import Venue
+from probatum import (ProbatumAttributeError, ProbatumIndexError, ProbatumKeyError,
+                      ProbatumTypeError, ProbatumValueError, Venue, VenueError)
 from probatum._strategy import _Run
 from probatum._venue import _run
 from reference import universe_differential
@@ -170,19 +171,21 @@ def test_the_round_trips_a_strategy_reads_read_as_a_result_s_table_does():
     assert type(rows[0]["pnl"]) is float and type(rows[0]["open_bar"]) is int
     assert rows[0] in trades
 
-    with pytest.raises(TypeError, match=re.escape(
+    with pytest.raises(ProbatumTypeError, match=re.escape(
             "'pnl' in trades: the round trips are rows, as dicts; ask 'pnl' in "
             "trades.columns")):
         "pnl" in trades
 
-    with pytest.raises(AttributeError, match="trades: no column 'symbol'; use one of "
-                                             "instrument"):
+    with pytest.raises(ProbatumAttributeError, match="trades: no column 'symbol'; use "
+                                                     "one of instrument"):
         trades.symbol
 
-    with pytest.raises(KeyError, match="trades: no column 'symbol'; use one of instrument"):
+    with pytest.raises(ProbatumKeyError, match="trades: no column 'symbol'; use one of "
+                                               "instrument"):
         trades["symbol"]
 
-    with pytest.raises(IndexError, match=f"row: {len(rows)} of {len(rows)} round trips"):
+    with pytest.raises(ProbatumIndexError, match=f"row: {len(rows)} of {len(rows)} "
+                                                 f"round trips"):
         trades[len(rows)]
 
     class Kept(probatum.Strategy):
@@ -196,7 +199,7 @@ def test_the_round_trips_a_strategy_reads_read_as_a_result_s_table_does():
 
     assert len(none) == 0 and list(none) == []
 
-    with pytest.raises(IndexError, match=re.escape(
+    with pytest.raises(ProbatumIndexError, match=re.escape(
             "row: 0 of no round trips; check len(account.trades) first")):
         none[0]
 
@@ -221,12 +224,13 @@ def test_the_bar_is_the_data_s_row_and_its_history_ends_there():
         np.testing.assert_array_equal(window.closes, data.closes[max(0, i - 4):i + 1])
         assert len(bar.history()) == i + 1
 
-    with pytest.raises(AttributeError, match=r"bar.close: the universe has 2 "
-                                             r"instruments; use bar.closes or "
-                                             r"bar\[\"BTCUSDT\"\].close"):
+    with pytest.raises(ProbatumAttributeError, match=r"bar.close: the universe has 2 "
+                                                     r"instruments; use bar.closes or "
+                                                     r"bar\[\"BTCUSDT\"\].close"):
         strategy.bars[0].close
 
-    with pytest.raises(ValueError, match="n: 0; give history a whole number of bars"):
+    with pytest.raises(ProbatumValueError, match="n: 0; give history a whole number of "
+                                                 "bars"):
         strategy.bars[0].history(0)
 
 
@@ -837,70 +841,84 @@ def test_a_verb_on_one_instrument_of_several_is_taken_through_its_view():
     def run(call):
         probatum.backtest(Asked(call), data, VENUE)
 
-    with pytest.raises(AttributeError, match=r"account.buy: the account holds 2 "
-                                             r"instruments; use account\[\"BTCUSDT\"\]"
-                                             r".buy"):
+    with pytest.raises(ProbatumAttributeError, match=(
+            r"account.buy: the account holds 2 instruments; use "
+            r"account\[\"BTCUSDT\"\].buy")):
         run(lambda bar, account: account.buy(1.0))
 
-    with pytest.raises(AttributeError, match=r"account.position: the account holds 2 "
-                                             r"instruments; use account.positions or "
-                                             r"account\[\"BTCUSDT\"\].position"):
+    with pytest.raises(ProbatumAttributeError, match=(
+            r"account.position: the account holds 2 instruments; use "
+            r"account.positions or account\[\"BTCUSDT\"\].position")):
         run(lambda bar, account: account.position)
 
-    with pytest.raises(KeyError, match="account: no instrument 'SOLUSDT'; use one of "
-                                       "BTCUSDT, ETHUSDT"):
+    with pytest.raises(ProbatumKeyError, match="account: no instrument 'SOLUSDT'; use "
+                                               "one of BTCUSDT, ETHUSDT"):
         run(lambda bar, account: account["SOLUSDT"])
-    with pytest.raises(KeyError, match="weights: no instrument 'SOLUSDT'"):
+
+    # a name that is not text is no name either, rather than Python's own refusal of
+    # an unhashable key
+    with pytest.raises(ProbatumKeyError, match=re.escape(
+            "account: no instrument ['ETHUSDT']; use one of BTCUSDT, ETHUSDT")):
+        run(lambda bar, account: account[["ETHUSDT"]])
+
+    with pytest.raises(ProbatumKeyError, match=re.escape(
+            "bar: no instrument ['ETHUSDT']; use one of BTCUSDT, ETHUSDT")):
+        run(lambda bar, account: bar[["ETHUSDT"]])
+
+    with pytest.raises(ProbatumKeyError, match="weights: no instrument 'SOLUSDT'"):
         run(lambda bar, account: account.target({"SOLUSDT": 0.5}))
 
-    with pytest.raises(ValueError, match=r"weights: 0.5, one number, for 2 instruments"):
+    with pytest.raises(ProbatumValueError, match=r"weights: 0.5, one number, for 2 "
+                                                 r"instruments"):
         run(lambda bar, account: account.target(0.5))
 
     cases = [
         (lambda bar, account: account["ETHUSDT"].buy(1.0, limit=9.0, stop=11.0),
-         ValueError, "buy: a limit of 9.0 and a stop of 11.0; give one or the other"),
-        (lambda bar, account: account["ETHUSDT"].buy(1.0, post_only=True), ValueError,
+         ProbatumValueError,
+         "buy: a limit of 9.0 and a stop of 11.0; give one or the other"),
+        (lambda bar, account: account["ETHUSDT"].buy(1.0, post_only=True),
+         ProbatumValueError,
          "post_only: a market order takes liquidity; give limit= to rest one"),
         (lambda bar, account: account["ETHUSDT"].sell(1.0, stop=9.0, tif="ioc"),
-         ValueError, "tif: 'ioc' for a stop, which rests until it triggers"),
-        (lambda bar, account: account["ETHUSDT"].buy(1.0, tif="day"), ValueError,
-         "tif: 'day'; use \"gtc\", \"ioc\" or \"fok\""),
-        (lambda bar, account: account["ETHUSDT"].buy(1.0, tif=5), TypeError,
+         ProbatumValueError, "tif: 'ioc' for a stop, which rests until it triggers"),
+        (lambda bar, account: account["ETHUSDT"].buy(1.0, tif="day"),
+         ProbatumValueError, "tif: 'day'; use \"gtc\", \"ioc\" or \"fok\""),
+        (lambda bar, account: account["ETHUSDT"].buy(1.0, tif=5), ProbatumTypeError,
          "tif: 5; use \"gtc\", \"ioc\" or \"fok\""),
         (lambda bar, account: account["ETHUSDT"].buy(1.0, limit=9.0, post_only=1),
-         TypeError, "post_only: 1; give True or False"),
+         ProbatumTypeError, "post_only: 1; give True or False"),
         (lambda bar, account: account["ETHUSDT"].sell(1.0, reduce_only="yes"),
-         TypeError, "reduce_only: 'yes'; give True or False"),
-        (lambda bar, account: account["ETHUSDT"].buy_value(10.0, tif=None), TypeError,
-         "tif: None; use \"ioc\" or \"fok\""),
+         ProbatumTypeError, "reduce_only: 'yes'; give True or False"),
+        (lambda bar, account: account["ETHUSDT"].buy_value(10.0, tif=None),
+         ProbatumTypeError, "tif: None; use \"ioc\" or \"fok\""),
         (lambda bar, account: account["ETHUSDT"].sell_value(10.0, reduce_only=0),
-         TypeError, "reduce_only: 0; give True or False"),
-        (lambda bar, account: account.target([0.5, 0.5], tolerance="0.01"), TypeError,
-         "tolerance: '0.01'; give a fraction of equity from 0"),
-        (lambda bar, account: account.target([0.5, 0.5], transfer=1), TypeError,
+         ProbatumTypeError, "reduce_only: 0; give True or False"),
+        (lambda bar, account: account.target([0.5, 0.5], tolerance="0.01"),
+         ProbatumTypeError, "tolerance: '0.01'; give a fraction of equity from 0"),
+        (lambda bar, account: account.target([0.5, 0.5], transfer=1), ProbatumTypeError,
          "transfer: 1; give True or False"),
-        (lambda bar, account: account.target([True, False]), TypeError,
+        (lambda bar, account: account.target([True, False]), ProbatumTypeError,
          "weights: True for BTCUSDT; give a number"),
-        (lambda bar, account: account.target(["0.5", "0.5"]), TypeError,
+        (lambda bar, account: account.target(["0.5", "0.5"]), ProbatumTypeError,
          "weights: '0.5' for BTCUSDT; give a number"),
-        (lambda bar, account: account.target([0.5, True]), TypeError,
+        (lambda bar, account: account.target([0.5, True]), ProbatumTypeError,
          "weights: True for ETHUSDT; give a number"),
-        (lambda bar, account: account.transfer("100"), TypeError,
+        (lambda bar, account: account.transfer("100"), ProbatumTypeError,
          "amount: '100'; give the cash to move"),
-        (lambda bar, account: account.transfer(100.0, to=None), TypeError,
+        (lambda bar, account: account.transfer(100.0, to=None), ProbatumTypeError,
          "to: None; use \"spot\" or \"margin\""),
-        (lambda bar, account: account["ETHUSDT"].buy("1"), TypeError,
+        (lambda bar, account: account["ETHUSDT"].buy("1"), ProbatumTypeError,
          "size: '1'; give a number of base units"),
-        (lambda bar, account: account["ETHUSDT"].buy(1.0, limit=math.inf), ValueError,
-         "limit: inf; give a finite price"),
+        (lambda bar, account: account["ETHUSDT"].buy(1.0, limit=math.inf),
+         ProbatumValueError, "limit: inf; give a finite price"),
         (lambda bar, account: account["ETHUSDT"].buy_value(10.0, tif="gtc"), ValueError,
          "tif: \"gtc\" is not a market order's"),
-        (lambda bar, account: account["ETHUSDT"].bracket(), ValueError,
+        (lambda bar, account: account["ETHUSDT"].bracket(), ProbatumValueError,
          "bracket: no stop and no take_profit; give either or both"),
-        (lambda bar, account: account.cancel(7), TypeError,
+        (lambda bar, account: account.cancel(7), ProbatumTypeError,
          "order: 7; pass an Order this account's verbs returned"),
         (lambda bar, account: account.replace(account["ETHUSDT"].buy(
-            1.0, stop=bar.closes[1] * 1.1), price=9.0), ValueError,
+            1.0, stop=bar.closes[1] * 1.1), price=9.0), ProbatumValueError,
          "price: 9.0 for a stop order, which has none; move a limit by its price and a "
          "stop by its trigger"),
     ]
@@ -922,8 +940,9 @@ def test_a_spot_weight_below_zero_is_refused_naming_the_instrument():
         def next(self, bar, account):
             account.target(-0.5)
 
-    with pytest.raises(ValueError, match="weights: -0.5 for BTCUSDT, which is spot and "
-                                         "cannot be short; trade a perpetual instead"):
+    with pytest.raises(ProbatumValueError, match="weights: -0.5 for BTCUSDT, which is "
+                                                 "spot and cannot be short; trade a "
+                                                 "perpetual instead"):
         probatum.backtest(Short(), spot, VENUE)
 
 
@@ -971,12 +990,13 @@ def test_an_array_run_s_settings_and_a_bad_warmup_are_refused_beside_a_strategy(
                               "account.target"),
         (dict(risk_free=math.nan), "risk_free: nan; give the annual rate"),
     ]:
-        with pytest.raises(ValueError, match=re.escape(says)):
+        with pytest.raises(ProbatumValueError, match=re.escape(says)):
             probatum.backtest(Cross(), data, VENUE, **given)
 
     for warmup in (-1, 2.5, True, "3"):
-        with pytest.raises(ValueError, match=re.escape(f"warmup: {warmup!r}; give a "
-                                                       f"whole number of bars from 0")):
+        with pytest.raises(ProbatumValueError, match=re.escape(f"warmup: {warmup!r}; "
+                                                               f"give a whole number "
+                                                               f"of bars from 0")):
             probatum.backtest(Seen(warmup=warmup), data, VENUE)
 
 
@@ -1024,11 +1044,12 @@ def test_the_engine_stepped_by_hand_records_what_a_backtest_of_its_decisions_doe
     assert (episodes[0].fills, episodes[0].orders, episodes[0].trades) == (
         backtest.fills, backtest.orders, backtest.trades)
 
-    with pytest.raises(AttributeError, match=re.escape(
-            "engine.buy: the account holds 2 instruments; use engine[\"BTCUSDT\"].buy")):
+    with pytest.raises(ProbatumAttributeError, match=re.escape(
+            "engine.buy: the account holds 2 instruments; use "
+            "engine[\"BTCUSDT\"].buy")):
         engine.buy(1.0)
 
-    with pytest.raises(KeyError, match="engine: no instrument 'SOLUSDT'"):
+    with pytest.raises(ProbatumKeyError, match="engine: no instrument 'SOLUSDT'"):
         engine["SOLUSDT"]
 
 
@@ -1036,8 +1057,8 @@ def test_the_engine_takes_a_seed_where_backtest_refuses_a_venue_that_draws():
     data  = one()
     drawn = VENUE.replace(intrabar="random")
 
-    with pytest.raises(ValueError, match="venue: intrabar is \"random\", which backtest "
-                                         "refuses"):
+    with pytest.raises(VenueError, match="venue: intrabar is \"random\", which "
+                                         "backtest refuses"):
         probatum.backtest(Cross(), data, drawn)
 
     # the bar after the entry reaches both legs, which the venue orders at random

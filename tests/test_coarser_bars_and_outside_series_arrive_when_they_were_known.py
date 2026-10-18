@@ -16,6 +16,7 @@ import pyarrow as pa
 import pytest
 
 import probatum
+from probatum import DataError, ProbatumTypeError
 from probatum._data import features
 
 HOUR  = 3_600_000_000_000
@@ -148,7 +149,7 @@ def test_a_slice_s_coarse_bars_keep_the_ones_before_it_and_read_nothing_after_it
      "data: no bars to resample; resample a Data that has some"),
 ])
 def test_a_resample_it_cannot_make_is_refused(make, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(DataError, match=re.escape(says)):
         make()
 
 
@@ -252,41 +253,42 @@ def monthly():
 
 
 @pytest.mark.parametrize("values, when, error, says", [
-    ([1.0, 2.0], "four", ValueError,
+    ([1.0, 2.0], "four", DataError,
      "values: 2 for 3 times; give one row of values per time"),
-    (5.0, "four", ValueError, "values: one value for 3 times"),
+    (5.0, "four", DataError, "values: one value for 3 times"),
     ([1.0, 2.0], pd.DatetimeIndex(["2024-01-01 05:00", "2024-01-01 02:00"], tz="UTC"),
-     ValueError, "when: times that fall back at row 1; sort the rows by the time each "
+     DataError, "when: times that fall back at row 1; sort the rows by the time each "
                  "became known"),
-    ([1.0, 2.0], np.array(["2024-01-01", "NaT"], dtype="datetime64[ns]"), ValueError,
+    ([1.0, 2.0], np.array(["2024-01-01", "NaT"], dtype="datetime64[ns]"), DataError,
      "when: no time at row 1; give each row the time it became known"),
-    ([1.0, 2.0], ["2024-01-01 02:00", "2024-01-01 05:00"], TypeError,
+    ([1.0, 2.0], ["2024-01-01 02:00", "2024-01-01 05:00"], ProbatumTypeError,
      "when: values of <U16; give datetimes or int64 nanoseconds since 1970"),
     (pd.Series([1.0, 2.0], index=pd.DatetimeIndex(["2024-01-01 05:00",
                                                    "2024-01-01 02:00"], tz="UTC")),
-     None, ValueError, "values: times that fall back at row 1; sort the rows"),
-    ([1.0], None, TypeError,
+     None, DataError, "values: times that fall back at row 1; sort the rows"),
+    ([1.0], None, ProbatumTypeError,
      "values: a list, which carries no times; pass when=, the time each row became "
      "known"),
-    (pa.array([1.0]), None, TypeError, "values: a DoubleArray, which carries no times"),
-    (pd.DataFrame({"x": [1.0]}), None, ValueError,
+    (pa.array([1.0]), None, ProbatumTypeError,
+     "values: a DoubleArray, which carries no times"),
+    (pd.DataFrame({"x": [1.0]}), None, DataError,
      "values: no times; give the time each row became known in a datetime index or "
      "column, or pass when="),
     (pd.DataFrame({"unit": ["coin"]}, index=pd.DatetimeIndex(["2024-01-01"], tz="UTC")),
-     None, ValueError, "values: no column of numbers; give one beside the times"),
+     None, DataError, "values: no column of numbers; give one beside the times"),
     (polars.DataFrame({"a": [datetime.datetime(2024, 1, 1)],
                        "b": [datetime.datetime(2024, 1, 1)], "x": [1.0]}),
-     None, ValueError, "values: times in a, b; keep the time each row became known "
+     None, DataError, "values: times in a, b; keep the time each row became known "
                        "alone, or pass when="),
-    (monthly()["close"], None, ValueError,
+    (monthly()["close"], None, DataError,
      "values: candles of '1M', an interval no Data runs on; give them on one of 1m"),
-    (monthly(), None, ValueError,
+    (monthly(), None, DataError,
      "values: candles of '1M', an interval no Data runs on"),
     (pa.table({"time": pa.array([2**62], pa.timestamp("s")), "oi": [1.0]}), None,
      ValueError, "values: column \"time\" holds 4611686018427387904 ticks"),
     ([1.0], pa.table({"time": pa.array([2**62], pa.timestamp("s")), "oi": [1.0]}),
      ValueError, "when: column \"time\" holds 4611686018427387904 ticks"),
-    (frame(n=3, freq="4h").assign(high=50.0), None, ValueError,
+    (frame(n=3, freq="4h").assign(high=50.0), None, DataError,
      "values: instrument 0's bar at 2024-01-01 00:00 is not a bar"),
 ])
 def test_values_it_cannot_place_are_refused(values, when, error, says):

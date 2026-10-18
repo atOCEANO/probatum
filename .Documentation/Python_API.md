@@ -54,6 +54,8 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
 | `probatum.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Markers`, `Background`, `Panel`, `Recorder`, `ramp`, `at_bar` and `at_next`: the marks a chart carries and the helpers that record and align them. [Plotting](Plotting.md#the-marks). |
 | `probatum.to_ohlcv` | Turn a DataFrame, a parquet path, or an array into the `(T, 5)` the engine takes. [Below](#data-input). |
+| `probatum.ProbatumError` | What every error probatum raises derives from, beside the built-in it means: a class for each built-in, `ProbatumValueError` and its siblings, and the kinds `DataError`, `VenueError`, `SpecError`, `LookaheadError`, `PolicyError` and `MissingDependency`. [Below](#errors-and-warnings). |
+| `probatum.ProbatumWarning` | The class of every warning probatum gives, a `UserWarning`. [Below](#errors-and-warnings). |
 
 All of it sits on the one Rust engine, so a backtest, an RL rollout, and a parameter search see the same fill model and the same costs.
 
@@ -1204,3 +1206,49 @@ probatum.chart(frame, [                                  # matched by type, in a
 Arrays are read by position. Length `T` maps entry `i` to bar `i` and length `T - 1` maps entry `i` to bar `i + 1`, which is what `equity_curve` and a diff are; any other length raises and names both numbers ([ADR 0042](Decisions.md)). A `NaN` is drawn as a gap rather than a dropped row ([ADR 0042](Decisions.md)).
 
 The full contract, the mark reference, the padding helpers for values recorded inside `next`, and what cannot be charted are in the [Plotting](Plotting.md) guide.
+
+<br>
+
+## Errors and warnings
+
+Every error probatum raises is one of its own classes and the built-in it means, so `except ValueError` still catches a bad value and `except probatum.ProbatumError` catches probatum's errors and nothing else. Each names the argument as you typed it and the value that arrived, and puts the fix after a semicolon.
+
+| Class | Built-in | What it covers |
+| :--- | :--- | :--- |
+| `probatum.ProbatumError` | `Exception` | Every class below. |
+| `probatum.ProbatumValueError` | `ValueError` | A wrong value, the four kinds below among them. |
+| `probatum.DataError` | `ValueError` | A wrong value in bars, frames, the clock, features, funding or a series an indicator reads. |
+| `probatum.VenueError` | `ValueError` | A wrong value in a venue's settings or a preset. |
+| `probatum.SpecError` | `ValueError` | An agent whose spec does not match the run it is given; nothing raises it yet. |
+| `probatum.LookaheadError` | `ValueError` | A policy or a feature the causality check finds reading a bar that has not closed; nothing raises it yet. |
+| `probatum.ProbatumTypeError` | `TypeError` | A wrong type a check tests for, `PolicyError` among them. |
+| `probatum.PolicyError` | `TypeError` | A policy `backtest` cannot run as given: a class for an instance, a model that fits, an object of no kind it reads, or an array it cannot read as decisions. |
+| `probatum.ProbatumKeyError` | `KeyError` | A name none of a set's holds, such as an instrument a Data does not have. |
+| `probatum.ProbatumIndexError` | `IndexError` | A position past the end of a table. |
+| `probatum.ProbatumAttributeError` | `AttributeError` | An attribute an object does not have, such as one instrument's `close` on a universe, which `hasattr` reads as missing. |
+| `probatum.ProbatumNotImplementedError` | `NotImplementedError` | A Strategy that writes no `next`, and an agent, which `backtest` does not run yet. |
+| `probatum.MissingDependency` | `ImportError` | A package a call needs that is not installed, named with the line that installs it. |
+
+A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which is the one its check raises: a check that tests a type raises a `TypeError`, and one that refuses whatever value it cannot take, such as a venue's setting given as text or `backtest`'s `tolerance`, a `ValueError`. So a Data's wrong value is a `DataError` and a type its checks test for a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
+
+What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. emsl's modules the package still carries, `Backtester`, `Market`, `tune`, `walk_forward`, `metrics`, `chart`, `plot`, `rl`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
+
+Every warning probatum gives is a `probatum.ProbatumWarning`, a `UserWarning`, named at the line of your code that caused it, so a test can make probatum's warnings errors without touching anyone else's. Outside those modules probatum prints nothing: long work is logged to the `probatum` logger, `Data.from_router` logging each instrument it built at INFO and each call to the router at DEBUG, which Python's `logging` turns on.
+
+```python
+import logging
+import warnings
+
+try:
+    probatum.backtest(Hundred, data, "frictionless")      # the class, not an instance
+except probatum.PolicyError as error:
+    print(error)            # policy: got the class Hundred, not an instance; pass Hundred()
+
+try:
+    data["SOLUSDT"]
+except KeyError as error:                                # a ProbatumKeyError is one
+    print(type(error).__name__, error)
+
+logging.basicConfig(level=logging.INFO)                  # what long work reports
+warnings.simplefilter("error", probatum.ProbatumWarning)  # probatum's warnings as errors
+```

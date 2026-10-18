@@ -19,6 +19,7 @@ import datetime
 import hashlib
 import inspect
 import json
+import logging
 import os
 import pathlib
 import re
@@ -29,6 +30,8 @@ import zoneinfo
 import numpy as np
 
 from . import _ipc
+from ._errors import (DataError, ProbatumAttributeError, ProbatumKeyError,
+                      ProbatumTypeError, ProbatumValueError, ProbatumWarning)
 from ._probatum import arrow_columns, periods_per_year
 
 _OHLCV = ["open", "high", "low", "close", "volume"]
@@ -242,6 +245,7 @@ def _pandas():
     return pd
 
 
+LOG       = logging.getLogger("probatum")
 SECOND    = 1_000_000_000
 HOUR      = 3_600 * SECOND
 DAY       = 86_400 * SECOND
@@ -383,21 +387,22 @@ class Data:
     def __init__(self, data, symbol=None, market=None, time=None, interval=None):
         if isinstance(data, Data):
             if any(given is not None for given in (symbol, market, time, interval)):
-                raise TypeError("data: a Data with settings beside it; build the Data "
-                                "with them, or pass it alone")
+                raise ProbatumTypeError("data: a Data with settings beside it; build "
+                                        "the Data with them, or pass it alone")
             self.__dict__.update(data.__dict__)
             return
 
         if isinstance(data, dict):
             if symbol is not None:
-                raise TypeError(f"symbol: {symbol!r} beside a dict of frames, whose "
-                                f"keys name its instruments; leave it out")
+                raise ProbatumTypeError(f"symbol: {symbol!r} beside a dict of frames, "
+                                        f"whose keys name its instruments; leave it "
+                                        f"out")
 
             parts = []
             for name, source in data.items():
                 if not isinstance(name, str):
-                    raise TypeError(f"data: a key of {name!r}; key each frame by its "
-                                    f"symbol")
+                    raise ProbatumTypeError(f"data: a key of {name!r}; key each frame "
+                                            f"by its symbol")
                 parts += _parts(source, name, market, time)
         else:
             parts = _parts(data, symbol, market, time)
@@ -405,12 +410,12 @@ class Data:
         declared = {part.attrs["interval"] for part in parts
                     if part.attrs.get("interval")}
         if len(declared) > 1:
-            raise ValueError(f"data: frames of {', '.join(sorted(declared))} bars; "
-                             f"give every instrument bars on one interval")
+            raise DataError(f"data: frames of {', '.join(sorted(declared))} bars; "
+                            f"give every instrument bars on one interval")
 
         if interval is not None and declared - {interval}:
-            raise ValueError(f"interval: {interval!r} for frames of {declared.pop()} "
-                             f"bars; leave it out, the frames name their own")
+            raise DataError(f"interval: {interval!r} for frames of {declared.pop()} "
+                            f"bars; leave it out, the frames name their own")
 
         root = _clock(parts, interval or (declared.pop() if declared else None))
         root.provenance = dict(
@@ -471,38 +476,39 @@ class Data:
         silence."""
         fetch = getattr(router, "get_candles", None)
         if fetch is None:
-            raise TypeError(f"router: {type(router).__name__}, which has no "
-                            f"get_candles; pass an exchange-router Router")
+            raise ProbatumTypeError(f"router: {type(router).__name__}, which has no "
+                                    f"get_candles; pass an exchange-router Router")
 
         if inspect.iscoroutinefunction(fetch):
-            raise TypeError("router: an AsyncRouter, whose calls return coroutines; "
-                            "pass Router.local(...) or Router.service(...)")
+            raise ProbatumTypeError("router: an AsyncRouter, whose calls return "
+                                    "coroutines; pass Router.local(...) or "
+                                    "Router.service(...)")
 
         if getattr(router, "get_symbol_info", None) is None:
-            raise TypeError(f"router: {type(router).__name__}, which has no "
-                            f"get_symbol_info; pass an exchange-router Router")
+            raise ProbatumTypeError(f"router: {type(router).__name__}, which has no "
+                                    f"get_symbol_info; pass an exchange-router Router")
 
         if market not in MARKETS:
-            raise ValueError(f"market: {market!r}; use {', '.join(MARKETS)}")
+            raise DataError(f"market: {market!r}; use {', '.join(MARKETS)}")
         if interval not in INTERVALS:
-            raise ValueError(f"interval: {interval!r}; use one of "
-                             f"{', '.join(INTERVALS)}")
+            raise DataError(f"interval: {interval!r}; use one of "
+                            f"{', '.join(INTERVALS)}")
 
         if isinstance(symbols, str) or not hasattr(symbols, "__iter__"):
-            raise TypeError(f"symbols: {symbols!r}; give a list of symbols")
+            raise ProbatumTypeError(f"symbols: {symbols!r}; give a list of symbols")
 
         symbols = list(symbols)
         if not symbols:
-            raise ValueError("symbols: none; name at least one symbol")
+            raise DataError("symbols: none; name at least one symbol")
 
         twice = [symbol for symbol in symbols if symbols.count(symbol) > 1]
         if twice:
-            raise ValueError(f"symbols: {symbols!r} names {twice[0]} twice; name each "
-                             f"once")
+            raise DataError(f"symbols: {symbols!r} names {twice[0]} twice; name each "
+                            f"once")
 
         if funding and market == "spot":
-            raise ValueError("funding: True for the spot market, which charges none; "
-                             "leave it out")
+            raise DataError("funding: True for the spot market, which charges none; "
+                            "leave it out")
 
         step  = INTERVALS[interval]
         now   = _now()
@@ -514,16 +520,18 @@ class Data:
         if end is not None:
             stop = _period(end, "end")[1] - 1
             if stop < first:
-                raise ValueError(f"end: {end!r}, before the start, {start!r}; give an "
-                                 f"end after the start")
+                raise DataError(f"end: {end!r}, before the start, {start!r}; give an "
+                                f"end after the start")
             last = min(last, stop)
 
         if last < first:
-            raise ValueError(f"start: {start!r}, where no {interval} bar has closed "
-                             f"yet; give an earlier start")
+            raise DataError(f"start: {start!r}, where no {interval} bar has closed "
+                            f"yet; give an earlier start")
 
         initial = {}
         if len(symbols) > 1:
+            LOG.debug("from_router: %s %s, %s symbols' %s bars in one batch", exchange,
+                      market, len(symbols), interval)
             batch = router.candles_many(exchange, market, symbols, interval=interval,
                                         limit=(last - first) // step + 1,
                                         start=last // 1_000_000, verbose=False)
@@ -546,6 +554,9 @@ class Data:
             def call(upper, pieces, symbol=symbol):
                 if symbol in initial:
                     return initial.pop(symbol)
+
+                LOG.debug("from_router: %s %s %s, %s bars back from %s", exchange,
+                          market, symbol, interval, _when(upper))
                 return router.get_candles(exchange, market, symbol, interval=interval,
                                           limit=(upper - first) // step + 1,
                                           start=upper // 1_000_000, verbose=False)
@@ -553,9 +564,9 @@ class Data:
             pieces, begun = _walk(call, first, last,
                                   lambda frame: _bars_of(frame, symbol, market))
             if not pieces:
-                raise ValueError(f"symbols: {symbol} has no {interval} bars on "
-                                 f"{exchange} {market} over the span asked; check the "
-                                 f"symbol, the market and the span")
+                raise DataError(f"symbols: {symbol} has no {interval} bars on "
+                                f"{exchange} {market} over the span asked; check the "
+                                f"symbol, the market and the span")
 
             part = pieces[0][2]
             listed, said = _listed(router, exchange, market, symbol)
@@ -570,6 +581,8 @@ class Data:
                 begins[name] = _when(begun)
 
             times, bars = _joined(pieces)
+            LOG.info("from_router: %s, %s %s bars from %s to %s", name,
+                     f"{len(times):,}", interval, _when(times[0]), _when(times[-1]))
             if times[-1] + step <= last:
                 ends[name] = _when(times[-1])
 
@@ -579,8 +592,8 @@ class Data:
         held = [part.instrument.symbol for part in parts]
         same = [typed for typed, name in zip(symbols, held) if held.count(name) > 1]
         if same:
-            raise ValueError(f"symbols: {same[0]!r} and {same[1]!r} are one "
-                             f"instrument, {held[symbols.index(same[0])]}; name it once")
+            raise DataError(f"symbols: {same[0]!r} and {same[1]!r} are one instrument, "
+                            f"{held[symbols.index(same[0])]}; name it once")
 
         root = _clock(parts, interval)
 
@@ -602,14 +615,16 @@ class Data:
                     f"begin late too" if len(begins) > 1 else "")
             warnings.warn(f"data: {symbol}'s bars begin at {when}, after the "
                           f"start{more}; the venue serves none earlier, see "
-                          f"data.provenance[\"history\"]", stacklevel=2)
+                          f"data.provenance[\"history\"]", ProbatumWarning,
+                          stacklevel=2)
 
         if ends:
             symbol, when = next(iter(ends.items()))
             more = (f", and those of {_count(len(ends) - 1, 'more instrument')} end "
                     f"early too" if len(ends) > 1 else "")
             warnings.warn(f"data: {symbol}'s bars end at {when}, before the "
-                          f"end{more}; the venue served none later", stacklevel=2)
+                          f"end{more}; the venue served none later", ProbatumWarning,
+                          stacklevel=2)
 
         if unlisted:
             (symbol, said), more = unlisted[0], len(unlisted) - 1
@@ -618,7 +633,7 @@ class Data:
             warnings.warn(f"data: the router does not list {symbol} now, saying "
                           f"{said!r}{others}, as for a symbol delisted or paused, so "
                           f"{whose} and order limits are unknown; see data.instruments",
-                          stacklevel=2)
+                          ProbatumWarning, stacklevel=2)
 
         gaps = data.gaps()
         if gaps:
@@ -626,7 +641,7 @@ class Data:
             more = f", one of {len(gaps)} gaps" if len(gaps) > 1 else ""
             warnings.warn(f"data: {gap.instrument} misses {_count(gap.missing, 'bar')} "
                           f"after {_when(gap.after.astype(np.int64))}{more}; see "
-                          f"data.gaps()", stacklevel=2)
+                          f"data.gaps()", ProbatumWarning, stacklevel=2)
 
         return data
 
@@ -724,9 +739,10 @@ class Data:
 
     def _one(self, field):
         if len(self._cols) != 1:
-            raise AttributeError(f"data.{field}: the universe has {len(self._cols)} "
-                                 f"instruments; use data.{field}s or "
-                                 f"data[\"{self.names[0]}\"].{field}")
+            raise ProbatumAttributeError(f"data.{field}: the universe has "
+                                         f"{len(self._cols)} instruments; use "
+                                         f"data.{field}s or "
+                                         f"data[\"{self.names[0]}\"].{field}")
         return getattr(self, field + "s")[:, 0]
 
 
@@ -820,13 +836,14 @@ class Data:
         if isinstance(key, str):
             names = self.names
             if key not in names:
-                raise KeyError(f"data: no instrument {key!r}; use one of "
-                               f"{', '.join(names)}")
+                raise ProbatumKeyError(f"data: no instrument {key!r}; use one of "
+                                       f"{', '.join(names)}")
             return Data._of(self._root, self._rows, [self._cols[names.index(key)]])
 
         if isinstance(key, slice):
             if key.step is not None:
-                raise TypeError(f"data: a step of {key.step!r}; slice bars without one")
+                raise ProbatumTypeError(f"data: a step of {key.step!r}; slice bars "
+                                        f"without one")
 
             start, _ = self._rows
             first = start + (0 if key.start is None
@@ -835,8 +852,8 @@ class Data:
                             else _row(self, key.stop, False, "stop"))
             return Data._of(self._root, (first, max(first, last)), self._cols)
 
-        raise TypeError(f"data: indexed by {key!r}; use an instrument's name or a "
-                        f"slice of times")
+        raise ProbatumTypeError(f"data: indexed by {key!r}; use an instrument's name "
+                                f"or a slice of times")
 
 
     def split(self, when):
@@ -856,23 +873,23 @@ class Data:
 
     def select(self, names):
         """The instruments ``names``, in that order."""
-        if isinstance(names, str):
-            raise TypeError(f"names: {names!r}; give a list of names, or index the "
-                            f"Data by one")
+        if isinstance(names, str) or not hasattr(names, "__iter__"):
+            raise ProbatumTypeError(f"names: {names!r}; give a list of names, or index "
+                                    f"the Data by one")
 
         names = list(names)
         own   = self.names
         if not names:
-            raise ValueError("names: none; name at least one instrument")
+            raise DataError("names: none; name at least one instrument")
 
         missing = [name for name in names if name not in own]
         if missing:
-            raise KeyError(f"names: no instrument {missing[0]!r}; use some of "
-                           f"{', '.join(own)}")
+            raise ProbatumKeyError(f"names: no instrument {missing[0]!r}; use some of "
+                                   f"{', '.join(own)}")
 
         twice = [name for name in names if names.count(name) > 1]
         if twice:
-            raise ValueError(f"names: {names!r} names {twice[0]} twice; name each once")
+            raise DataError(f"names: {names!r} names {twice[0]} twice; name each once")
 
         return Data._of(self._root, self._rows,
                         [self._cols[own.index(name)] for name in names])
@@ -913,14 +930,14 @@ class Data:
             raise _renamed("other", error) from None
 
         if other.interval != self.interval:
-            raise ValueError(f"other: {other.interval} bars beside {self.interval}; "
-                             f"join bars on one interval")
+            raise DataError(f"other: {other.interval} bars beside {self.interval}; "
+                            f"join bars on one interval")
 
         keys  = {_key(i) for i in self.instruments}
         twice = [i for i in other.instruments if _key(i) in keys]
         if twice:
-            raise ValueError(f"other: holds {_label(twice[0])} too; join Datas of "
-                             f"different instruments")
+            raise DataError(f"other: holds {_label(twice[0])} too; join Datas of "
+                            f"different instruments")
 
         parts = [Part(view.time[view.available[:, k]],
                       view.bars[view.available[:, k], k], view.instruments[k], {}, "",
@@ -956,17 +973,17 @@ class Data:
         the slice keeps its bars, reading nothing after its end."""
         root = self._root
         if interval not in INTERVALS:
-            raise ValueError(f"interval: {interval!r}; use one of "
-                             f"{', '.join(INTERVALS)}")
+            raise DataError(f"interval: {interval!r}; use one of "
+                            f"{', '.join(INTERVALS)}")
 
         coarse = INTERVALS[interval]
         if coarse % root.step:
-            raise ValueError(f"interval: {interval!r} for {root.interval} bars; give a "
-                             f"whole multiple of {root.interval}")
+            raise DataError(f"interval: {interval!r} for {root.interval} bars; give a "
+                            f"whole multiple of {root.interval}")
 
         start, stop = self._rows
         if not self.available.any():
-            raise ValueError("data: no bars to resample; resample a Data that has some")
+            raise DataError("data: no bars to resample; resample a Data that has some")
 
         origin  = 4 * DAY if interval == "1w" else 0
         anchor  = origin + (int(root.time[0]) - origin) % root.step
@@ -991,8 +1008,8 @@ class Data:
             parts.append(Part(times, bars, root.instruments[k], {}, "", "resample"))
 
         if not any(len(part.times) for part in parts):
-            raise ValueError(f"interval: {interval!r}, and these bars cover no "
-                             f"{interval} bar to its end; resample bars that do")
+            raise DataError(f"interval: {interval!r}, and these bars cover no "
+                            f"{interval} bar to its end; resample bars that do")
 
         out       = _clock(parts, interval, placed=True)
         out.names = self.names
@@ -1042,18 +1059,18 @@ class Data:
 
         values = np.asarray(values, dtype=np.float64)
         if values.ndim == 0 or len(values) != len(known):
-            raise ValueError(f"values: {len(values) if values.ndim else 'one value'} "
-                             f"for {len(known)} times; give one row of values per time")
+            raise DataError(f"values: {len(values) if values.ndim else 'one value'} "
+                            f"for {len(known)} times; give one row of values per time")
 
         missing = np.flatnonzero(known == np.iinfo(np.int64).min)
         if len(missing):
-            raise ValueError(f"{named}: no time at row {missing[0]}; give each row the "
-                             f"time it became known")
+            raise DataError(f"{named}: no time at row {missing[0]}; give each row the "
+                            f"time it became known")
 
         back = np.flatnonzero(np.diff(known) < 0)
         if len(back):
-            raise ValueError(f"{named}: times that fall back at row {back[0] + 1}; "
-                             f"sort the rows by the time each became known")
+            raise DataError(f"{named}: times that fall back at row {back[0] + 1}; "
+                            f"sort the rows by the time each became known")
 
         known = known + shift
         ends  = self.time + self._root.step
@@ -1089,11 +1106,11 @@ class Data:
         as well, which its features warm up on, and loads back as the same slice. Each
         file is written under another name and then put in place, the bars last."""
         if not len(self):
-            raise ValueError("data: no bars to save; save a Data that has some")
+            raise DataError("data: no bars to save; save a Data that has some")
 
         folder = pathlib.Path(path)
         if folder.exists() and not folder.is_dir():
-            raise ValueError(f"path: {str(path)!r} is a file; name a directory")
+            raise ProbatumValueError(f"path: {str(path)!r} is a file; name a directory")
         folder.mkdir(parents=True, exist_ok=True)
 
         start, stop = self._rows
@@ -1155,8 +1172,8 @@ class Data:
                 or record.get("interval") not in INTERVALS
                 or not isinstance(record.get("start"), int)
                 or not isinstance(record.get("provenance"), dict)):
-            raise ValueError(f"path: {str(path)!r} holds bars this version of probatum "
-                             f"did not save; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r} holds bars this version of "
+                                     f"probatum did not save; {fix}")
 
         names, time = listed["name"][1], bars["time"][1]
         width = len(names)
@@ -1167,8 +1184,8 @@ class Data:
                 or not np.array_equal(bars["instrument"][1],
                                       np.tile(np.arange(width), rows))
                 or not (time.reshape(rows, width) == time[::width, None]).all()):
-            raise ValueError(f"path: the rows of {str(path)!r}'s bars.arrow are not "
-                             f"the ones save writes; {fix}")
+            raise ProbatumValueError(f"path: the rows of {str(path)!r}'s bars.arrow "
+                                     f"are not the ones save writes; {fix}")
 
         def value_of(name, k):
             kind, values, present, _ = listed[name]
@@ -1190,16 +1207,16 @@ class Data:
 
         off = np.flatnonzero((clock - clock[0]) % INTERVALS[record["interval"]])
         if len(off):
-            raise ValueError(f"path: the bars in {str(path)!r} open at "
-                             f"{_when(clock[off[0]])}, between the "
-                             f"{record['interval']} steps from {_when(clock[0])}; {fix}")
+            raise DataError(f"path: the bars in {str(path)!r} open at "
+                            f"{_when(clock[off[0]])}, between the {record['interval']} "
+                            f"steps from {_when(clock[0])}; {fix}")
 
         owners = events["instrument"][1]
         if (np.any((owners < 0) | (owners >= width)) or not events["time"][2].all()
                 or np.any(events["time"][1] == np.iinfo(np.int64).min)
                 or not np.isfinite(events["rate"][1]).all()):
-            raise ValueError(f"path: {str(path)!r}'s funding.arrow holds an event with "
-                             f"no time, rate or instrument of these bars; {fix}")
+            raise DataError(f"path: {str(path)!r}'s funding.arrow holds an event with "
+                            f"no time, rate or instrument of these bars; {fix}")
 
         root       = _Root(clock, values, instruments, record["interval"])
         root.names = tuple(names)
@@ -1211,11 +1228,11 @@ class Data:
         data            = cls._of(root, (record["start"], rows), range(width))
 
         if data.fingerprint != record.get("fingerprint"):
-            raise ValueError(f"path: the bars in {str(path)!r} give the fingerprint "
-                             f"{data.fingerprint}, not the {record.get('fingerprint')} "
-                             f"they were saved under, so they changed since or another "
-                             f"version of probatum saved them; build the Data again "
-                             f"from where its bars came from")
+            raise DataError(f"path: the bars in {str(path)!r} give the fingerprint "
+                            f"{data.fingerprint}, not the {record.get('fingerprint')} "
+                            f"they were saved under, so they changed since or another "
+                            f"version of probatum saved them; build the Data again "
+                            f"from where its bars came from")
 
         return data
 
@@ -1266,17 +1283,18 @@ def _saved(path, folder, name, kinds):
     ``kinds`` that save writes."""
     fix = "give a directory a Data was saved into"
     if not (folder / name).is_file():
-        raise ValueError(f"path: {str(path)!r} holds no {name}; {fix}")
+        raise ProbatumValueError(f"path: {str(path)!r} holds no {name}; {fix}")
 
     try:
         columns, metadata = _ipc.read(folder / name)
     except _ipc.Refused as error:
-        raise ValueError(f"path: {str(path)!r}'s {name} {error}; {fix}") from None
+        raise ProbatumValueError(f"path: {str(path)!r}'s {name} {error}; "
+                                 f"{fix}") from None
 
     for column, kind in kinds.items():
         if columns.get(column, ("",))[0] != kind:
-            raise ValueError(f"path: {str(path)!r}'s {name} has no {kind} column "
-                             f"{column}; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s {name} has no {kind} "
+                                     f"column {column}; {fix}")
 
     return columns, metadata
 
@@ -1341,15 +1359,15 @@ def _period(when, name):
             start = None
 
         if start is None:
-            raise ValueError(f"{name}: {when!r} is not a time; give one such as "
-                             f"\"2024-06\" or \"2024-06-01 08:00\"")
+            raise DataError(f"{name}: {when!r} is not a time; give one such as "
+                            f"\"2024-06\" or \"2024-06-01 08:00\"")
 
         end = start + np.timedelta64(1, np.datetime_data(start.dtype)[0])
         return (int(start.astype("datetime64[ns]").astype(np.int64)),
                 int(end.astype("datetime64[ns]").astype(np.int64)))
 
     if isinstance(when, (int, float, np.integer, np.floating)):
-        raise TypeError(f"{name}: {when!r}; give a time or the text of one")
+        raise ProbatumTypeError(f"{name}: {when!r}; give a time or the text of one")
 
     if isinstance(when, datetime.datetime) and when.tzinfo is not None:
         when = when.astimezone(datetime.timezone.utc).replace(tzinfo=None)
@@ -1357,11 +1375,12 @@ def _period(when, name):
     try:
         ns = int(np.datetime64(when, "ns").astype(np.int64))
     except (TypeError, ValueError):
-        raise TypeError(f"{name}: {when!r}; give a time or the text of one") from None
+        raise ProbatumTypeError(f"{name}: {when!r}; give a time or the text of "
+                                f"one") from None
 
     if ns == np.iinfo(np.int64).min:
-        raise ValueError(f"{name}: {when!r} is not a time; give one such as "
-                         f"\"2024-06\" or \"2024-06-01 08:00\"")
+        raise DataError(f"{name}: {when!r} is not a time; give one such as "
+                        f"\"2024-06\" or \"2024-06-01 08:00\"")
 
     return ns, ns + 1
 
@@ -1415,12 +1434,12 @@ def _parts(source, symbol, market, time):
         array = np.from_dlpack(source) if hasattr(source, "__dlpack__") else source
         array = np.asarray(array, dtype=np.float64)
     except (TypeError, ValueError):
-        raise TypeError(f"data: a {type(source).__name__}; pass a frame, a dict of "
-                        f"frames or an array of bars") from None
+        raise ProbatumTypeError(f"data: a {type(source).__name__}; pass a frame, a "
+                                f"dict of frames or an array of bars") from None
 
     if time is None:
-        raise TypeError("time: none for an array of bars; pass time=, each bar's open "
-                        "time")
+        raise ProbatumTypeError("time: none for an array of bars; pass time=, each "
+                                "bar's open time")
 
     times, zone = _times(time)
     if array.ndim == 2 and array.shape[1] == 5:
@@ -1431,49 +1450,50 @@ def _parts(source, symbol, market, time):
         names = [None] * width if symbol is None else symbol
         if (not isinstance(names, (list, tuple)) or len(names) != width
                 or not all(name is None or isinstance(name, str) for name in names)):
-            raise ValueError(f"symbol: {symbol!r} for {width} instruments; give a list "
-                             f"of {width} names")
+            raise DataError(f"symbol: {symbol!r} for {width} instruments; give a list "
+                            f"of {width} names")
 
         twice = [name for name in names if name is not None and names.count(name) > 1]
         if twice:
-            raise ValueError(f"symbol: {symbol!r} names {twice[0]} twice; name each "
-                             f"once")
+            raise DataError(f"symbol: {symbol!r} names {twice[0]} twice; name each "
+                            f"once")
 
         return [_part(times, array[:, k], zone, names[k], market, {}, "array")
                 for k in range(width)]
 
-    raise ValueError(f"data: an array of shape {array.shape}; give (T, 5) bars of one "
-                     f"instrument or (T, N, 5) of N")
+    raise DataError(f"data: an array of shape {array.shape}; give (T, 5) bars of one "
+                    f"instrument or (T, N, 5) of N")
 
 
 def _part(times, bars, zone, symbol, market, attrs, origin):
     """One instrument's `Part`, its symbol and market checked against what a router
     frame says of itself."""
     if not (symbol is None or isinstance(symbol, str)):
-        raise TypeError(f"symbol: {symbol!r} for one instrument's bars; give its name")
+        raise ProbatumTypeError(f"symbol: {symbol!r} for one instrument's bars; give "
+                                f"its name")
 
     if attrs:
         named = attrs.get("symbol")
         if symbol is not None and named is not None and symbol != named:
-            raise ValueError(f"symbol: {symbol!r} for a frame of {named}; leave it "
-                             f"out, the frame names itself")
+            raise DataError(f"symbol: {symbol!r} for a frame of {named}; leave it "
+                            f"out, the frame names itself")
         symbol = symbol or named
         kind   = attrs.get("market_type")
         if market is not None and kind is not None and market != kind:
-            raise ValueError(f"market: {market!r} for a frame of the {kind} market; "
-                             f"leave it out, the frame names itself")
+            raise DataError(f"market: {market!r} for a frame of the {kind} market; "
+                            f"leave it out, the frame names itself")
         market = market or kind
         if market == "inverse" and attrs.get("volume_unit") not in (None, "contract"):
-            raise ValueError(f"data: {symbol}'s volume is in {attrs['volume_unit']}, "
-                             f"and an inverse contract's volume is counted in "
-                             f"contracts; give its volume in contracts")
+            raise DataError(f"data: {symbol}'s volume is in {attrs['volume_unit']}, "
+                            f"and an inverse contract's volume is counted in "
+                            f"contracts; give its volume in contracts")
 
     if market is not None and market not in MARKETS:
-        raise ValueError(f"market: {market!r}; use {', '.join(MARKETS)}")
+        raise DataError(f"market: {market!r}; use {', '.join(MARKETS)}")
 
     if len(times) != len(bars):
-        raise ValueError(f"time: {len(times)} times for {len(bars)} bars; give each "
-                         f"bar its open time")
+        raise DataError(f"time: {len(times)} times for {len(bars)} bars; give each "
+                        f"bar its open time")
 
     # the router writes an empty quote or size where it holds no symbol information
     contract   = attrs.get("contract_size") or None if market == "inverse" else None
@@ -1502,8 +1522,8 @@ def _from_columns(columns, time):
 
     clocks = [name for name, (kind, _, _) in named.items() if kind in ("time", "date")]
     if len(clocks) > 1:
-        raise ValueError(f"data: times in {', '.join(clocks)}; keep the bars' open "
-                         f"times alone, or pass time=")
+        raise DataError(f"data: times in {', '.join(clocks)}; keep the bars' open "
+                        f"times alone, or pass time=")
 
     if clocks:
         kind, values, zone = named[clocks[0]]
@@ -1512,8 +1532,8 @@ def _from_columns(columns, time):
     if named.get("timestamp", ("",))[0] == "int":
         return named["timestamp"][1] * 1_000_000, bars, "UTC"
 
-    raise ValueError("data: no time column; give the bars' open times in a datetime "
-                     "column or index, a timestamp column of milliseconds, or time=")
+    raise DataError("data: no time column; give the bars' open times in a datetime "
+                    "column or index, a timestamp column of milliseconds, or time=")
 
 
 def _described(kind, detail):
@@ -1545,8 +1565,8 @@ def _from_pandas(frame, time):
         clocks = {"the index": frame.index, **clocks}
 
     if len(clocks) > 1:
-        raise ValueError(f"data: times in {', '.join(map(str, clocks))}; keep the "
-                         f"bars' open times alone, or pass time=")
+        raise DataError(f"data: times in {', '.join(map(str, clocks))}; keep the "
+                        f"bars' open times alone, or pass time=")
 
     if clocks:
         times, zone = _times(next(iter(clocks.values())))
@@ -1555,20 +1575,20 @@ def _from_pandas(frame, time):
     if "timestamp" in frame.columns and frame["timestamp"].dtype.kind in "iu":
         return frame["timestamp"].to_numpy(dtype=np.int64) * 1_000_000, bars, "UTC"
 
-    raise ValueError("data: no time column; give the bars' open times in a datetime "
-                     "column or index, a timestamp column of milliseconds, or time=")
+    raise DataError("data: no time column; give the bars' open times in a datetime "
+                    "column or index, a timestamp column of milliseconds, or time=")
 
 
 def _five(columns, values, numeric, kind):
     """The ``(n, 5)`` bars of a frame whose ``columns`` hold them."""
     missing = [name for name in _OHLCV if name not in columns]
     if missing:
-        raise ValueError(f"data: no {', '.join(missing)} column; give open, high, low, "
-                         f"close and volume")
+        raise DataError(f"data: no {', '.join(missing)} column; give open, high, low, "
+                        f"close and volume")
 
     for name in _OHLCV:
         if not numeric(name):
-            raise ValueError(f"data: column {name} holds {kind(name)}; give numbers")
+            raise DataError(f"data: column {name} holds {kind(name)}; give numbers")
 
     return np.column_stack([np.asarray(values(name), dtype=np.float64)
                             for name in _OHLCV])
@@ -1596,8 +1616,8 @@ def _times(time, name="time"):
     if values.dtype.kind in "iu":
         return values.astype(np.int64), zone
 
-    raise TypeError(f"{name}: values of {values.dtype}; give datetimes or int64 "
-                    f"nanoseconds since 1970")
+    raise ProbatumTypeError(f"{name}: values of {values.dtype}; give datetimes or "
+                            f"int64 nanoseconds since 1970")
 
 
 def _renamed(name, error):
@@ -1648,16 +1668,16 @@ def _stamped(source):
     time column, or a ``timestamp`` column of milliseconds where it has neither."""
     pandas = type(source).__module__.split(".")[0] == "pandas"
     if not (pandas or hasattr(source, "columns")):
-        raise TypeError(f"values: a {type(source).__name__}, which carries no times; "
-                        f"pass when=, the time each row became known")
+        raise ProbatumTypeError(f"values: a {type(source).__name__}, which carries no "
+                                f"times; pass when=, the time each row became known")
 
     attrs = getattr(source, "attrs", None)
     attrs = attrs if isinstance(attrs, dict) else {}
 
     # a router candle frame, or a column of one, says what its volume is counted in
     if "volume_unit" in attrs and attrs.get("interval") not in INTERVALS:
-        raise ValueError(f"values: candles of {attrs.get('interval')!r}, an interval "
-                         f"no Data runs on; give them on one of {', '.join(INTERVALS)}")
+        raise DataError(f"values: candles of {attrs.get('interval')!r}, an interval "
+                        f"no Data runs on; give them on one of {', '.join(INTERVALS)}")
 
     try:
         clocks, numbers, _ = _columns(source)
@@ -1681,19 +1701,19 @@ def _stamped(source):
         return values, bars.time, bars._root.step
 
     if len(clocks) > 1:
-        raise ValueError(f"values: times in {', '.join(map(str, clocks))}; keep the "
-                         f"time each row became known alone, or pass when=")
+        raise DataError(f"values: times in {', '.join(map(str, clocks))}; keep the "
+                        f"time each row became known alone, or pass when=")
 
     if clocks:
         known = next(iter(clocks.values()))[0]
     elif getattr(numbers.get("timestamp"), "dtype", np.dtype(float)).kind == "i":
         known = numbers.pop("timestamp") * 1_000_000
     else:
-        raise ValueError("values: no times; give the time each row became known in a "
-                         "datetime index or column, or pass when=")
+        raise DataError("values: no times; give the time each row became known in a "
+                        "datetime index or column, or pass when=")
 
     if not numbers:
-        raise ValueError("values: no column of numbers; give one beside the times")
+        raise DataError("values: no column of numbers; give one beside the times")
 
     values = np.column_stack([np.asarray(column, dtype=np.float64)
                               for column in numbers.values()])
@@ -1716,12 +1736,12 @@ def _clock(parts, interval, placed=False):
         checked.append(part._replace(times=times[printed], bars=part.bars[printed]))
 
     if not any(len(part.times) for part in checked):
-        raise ValueError("data: no bars; give at least one")
+        raise DataError("data: no bars; give at least one")
 
     if interval is None:
         interval = _interval(checked)
     if interval not in INTERVALS:
-        raise ValueError(f"interval: {interval!r}; use one of {', '.join(INTERVALS)}")
+        raise DataError(f"interval: {interval!r}; use one of {', '.join(INTERVALS)}")
 
     step = INTERVALS[interval]
 
@@ -1732,17 +1752,17 @@ def _clock(parts, interval, placed=False):
             repeat = np.flatnonzero(np.diff(part.times) == 0)
             if len(repeat):
                 day = np.datetime64(int(part.times[repeat[0]]), "ns").astype("M8[D]")
-                raise ValueError(f"data: {name} has two bars dated {day}; give each "
-                                 f"bar a date of its own")
+                raise DataError(f"data: {name} has two bars dated {day}; give each "
+                                f"bar a date of its own")
 
     times = np.unique(np.concatenate([part.times for part in checked]))
     off   = np.flatnonzero((times - times[0]) % step)
     if len(off):
         late  = times[off[0]]
         owner = next(name for part, name in zip(checked, names) if late in part.times)
-        raise ValueError(f"data: {owner} opens a bar at {_when(late)}, between the "
-                         f"{interval} steps from {_when(times[0])}; give every "
-                         f"instrument bars that open on one interval's steps")
+        raise DataError(f"data: {owner} opens a bar at {_when(late)}, between the "
+                        f"{interval} steps from {_when(times[0])}; give every "
+                        f"instrument bars that open on one interval's steps")
 
     bars = np.full((len(times), len(checked), 5), np.nan)
     for column, part in enumerate(checked):
@@ -1758,33 +1778,33 @@ def _check(name, times, bars):
     (ADR 0007)."""
     missing = np.flatnonzero(times == np.iinfo(np.int64).min)
     if len(missing):
-        raise ValueError(f"data: {name}'s bar at row {missing[0]} has no open time; "
-                         f"give every bar its open time")
+        raise DataError(f"data: {name}'s bar at row {missing[0]} has no open time; "
+                        f"give every bar its open time")
 
     back = np.flatnonzero(np.diff(times) <= 0)
     if len(back):
         row = int(back[0]) + 1
         if times[row] == times[row - 1]:
-            raise ValueError(f"data: {name} has two bars at {_when(times[row])}; give "
-                             f"each bar a time of its own")
-        raise ValueError(f"data: {name}'s bars fall back at row {row}, from "
-                         f"{_when(times[row - 1])} to {_when(times[row])}; sort them "
-                         f"by time")
+            raise DataError(f"data: {name} has two bars at {_when(times[row])}; give "
+                            f"each bar a time of its own")
+        raise DataError(f"data: {name}'s bars fall back at row {row}, from "
+                        f"{_when(times[row - 1])} to {_when(times[row])}; sort them "
+                        f"by time")
 
     gone    = np.isnan(bars)
     partial = np.flatnonzero(gone.any(axis=1) & ~gone.all(axis=1))
     if len(partial):
         row     = int(partial[0])
         missing = [field for field, lost in zip(_OHLCV, gone[row]) if lost]
-        raise ValueError(f"data: {name}'s bar at {_when(times[row])} misses its "
-                         f"{', '.join(missing)}; give all five values, or none where "
-                         f"it printed no bar")
+        raise DataError(f"data: {name}'s bar at {_when(times[row])} misses its "
+                        f"{', '.join(missing)}; give all five values, or none where "
+                        f"it printed no bar")
 
     printed  = ~gone.all(axis=1)
     infinite = np.flatnonzero(printed & np.isinf(bars).any(axis=1))
     if len(infinite):
-        raise ValueError(f"data: {name}'s bar at {_when(times[infinite[0]])} holds an "
-                         f"infinite value; give finite values")
+        raise DataError(f"data: {name}'s bar at {_when(times[infinite[0]])} holds an "
+                        f"infinite value; give finite values")
 
     opened, high, low, closed, volume = (bars[:, k] for k in range(5))
     with np.errstate(invalid="ignore"):
@@ -1795,19 +1815,19 @@ def _check(name, times, bars):
 
     if len(wrong):
         row = wrong[0]
-        raise ValueError(f"data: {name}'s bar at {_when(times[row])} is not a bar: "
-                         f"open {opened[row]:g}, high {high[row]:g}, low {low[row]:g}, "
-                         f"close {closed[row]:g}; need low <= open <= high and low <= "
-                         f"close <= high, so check the column order")
+        raise DataError(f"data: {name}'s bar at {_when(times[row])} is not a bar: "
+                        f"open {opened[row]:g}, high {high[row]:g}, low {low[row]:g}, "
+                        f"close {closed[row]:g}; need low <= open <= high and low <= "
+                        f"close <= high, so check the column order")
 
     if len(nought):
-        raise ValueError(f"data: {name}'s bar at {_when(times[nought[0]])} has a low "
-                         f"of {low[nought[0]]:g}; give prices above 0")
+        raise DataError(f"data: {name}'s bar at {_when(times[nought[0]])} has a low "
+                        f"of {low[nought[0]]:g}; give prices above 0")
 
     if len(negative):
-        raise ValueError(f"data: {name}'s bar at {_when(times[negative[0]])} has a "
-                         f"volume of {volume[negative[0]]:g}; give a volume of 0 or "
-                         f"more")
+        raise DataError(f"data: {name}'s bar at {_when(times[negative[0]])} has a "
+                        f"volume of {volume[negative[0]]:g}; give a volume of 0 or "
+                        f"more")
 
 
 def _interval(checked):
@@ -1826,17 +1846,17 @@ def _interval(checked):
             found.append(gap)
 
     if not found:
-        raise ValueError("data: one bar, from which no interval can be read; pass "
-                         "interval=")
+        raise DataError("data: one bar, from which no interval can be read; pass "
+                        "interval=")
 
     gap = min(found)
     for name, step in INTERVALS.items():
         if step == gap:
             return name
 
-    raise ValueError(f"data: bars {_span(gap)} apart at the median, which is no "
-                     f"interval the clock runs on; give bars on one of "
-                     f"{', '.join(INTERVALS)}, or pass interval=")
+    raise DataError(f"data: bars {_span(gap)} apart at the median, which is no "
+                    f"interval the clock runs on; give bars on one of "
+                    f"{', '.join(INTERVALS)}, or pass interval=")
 
 
 def _median(gaps):
@@ -1875,8 +1895,8 @@ def _dated(times, zone):
             try:
                 zone = zoneinfo.ZoneInfo(zone)
             except (zoneinfo.ZoneInfoNotFoundError, ValueError):
-                raise ValueError(f"data: times in the zone {zone!r}, which this "
-                                 f"machine does not know; give them in UTC") from None
+                raise DataError(f"data: times in the zone {zone!r}, which this "
+                                f"machine does not know; give them in UTC") from None
 
     epoch = datetime.date(1970, 1, 1)
     return np.array([(datetime.datetime.fromtimestamp(int(t) / SECOND, zone).date()
@@ -1894,7 +1914,7 @@ def features(data, values, fill=None):
     if not (fill is None or isinstance(fill, str) and fill == "previous"
             or isinstance(fill, (int, float, np.integer, np.floating))
             and not isinstance(fill, bool) and np.isfinite(fill)):
-        raise ValueError(f"fill: {fill!r}; give a finite number or \"previous\"")
+        raise DataError(f"fill: {fill!r}; give a finite number or \"previous\"")
 
     start = 0
     if callable(values):
@@ -1905,8 +1925,8 @@ def features(data, values, fill=None):
     values = np.asarray(values, dtype=np.float64)
     shape  = (len(data), len(data._cols))
     if values.ndim != 3 or values.shape[:2] != shape:
-        raise ValueError(f"features: shape {values.shape} for {shape[0]} bars of "
-                         f"{shape[1]} instruments; give ({shape[0]}, {shape[1]}, F)")
+        raise DataError(f"features: shape {values.shape} for {shape[0]} bars of "
+                        f"{shape[1]} instruments; give ({shape[0]}, {shape[1]}, F)")
 
     out       = values.copy()
     available = data.available
@@ -1928,10 +1948,10 @@ def features(data, values, fill=None):
                 if len(read):
                     row, lost = int(rows[read[0]]), series[read[0]]
                     value = "NaN" if np.isnan(lost) else str(lost)
-                    raise ValueError(f"features: {value} at bar {row - start:,} "
-                                     f"({_when(data.time[row])}) for "
-                                     f"{data.names[instrument]}, feature {feature}; "
-                                     f"pass fill=")
+                    raise DataError(f"features: {value} at bar {row - start:,} "
+                                    f"({_when(data.time[row])}) for "
+                                    f"{data.names[instrument]}, feature {feature}; "
+                                    f"pass fill=")
                 continue
 
             for k in bad:
@@ -2004,6 +2024,7 @@ def _listed(router, exchange, market, symbol):
     counts one in the coin; and the largest size it takes in a limit order, in base
     units, or contracts there. Where the router does not list the symbol now, which it
     answers as a bad request, it is None and what the router said."""
+    LOG.debug("from_router: %s %s %s's symbol information", exchange, market, symbol)
     try:
         info = router.get_symbol_info(exchange, market, symbol)
     except Exception as error:
@@ -2044,8 +2065,8 @@ def _rates_of(frame):
     rates = [values for name, kind, values, _ in columns
              if name == "rate" and kind in ("float", "int")]
     if len(times) != 1 or not rates:
-        raise ValueError("data: a funding frame without one time column and a rate; "
-                         "pass the router's own frame")
+        raise DataError("data: a funding frame without one time column and a rate; "
+                        "pass the router's own frame")
 
     return times[0], np.asarray(rates[0], dtype=np.float64), told
 
@@ -2067,6 +2088,9 @@ def _funding(router, exchange, market, root, step):
             # count it cannot fill as a short result
             gaps  = np.diff(pieces[-1][0]) if pieces else ()
             cycle = max(_median(gaps), HOUR) if len(gaps) else 8 * HOUR
+
+            LOG.debug("from_router: %s %s %s's funding back from %s", exchange, market,
+                      symbol, _when(upper))
             return router.get_funding_rate(exchange, market, symbol,
                                            limit=(upper - opened) // cycle + 1,
                                            start=upper // 1_000_000, verbose=False)
@@ -2079,30 +2103,30 @@ def _funding(router, exchange, market, root, step):
         times, rates = times[owned], rates[owned]
         if not len(times):
             if ended - opened > DAY:
-                raise ValueError(f"funding: {name} has no funding events over its "
-                                 f"bars, from {_when(opened)} to {_when(ended)}; load "
-                                 f"it without funding")
+                raise DataError(f"funding: {name} has no funding events over its "
+                                f"bars, from {_when(opened)} to {_when(ended)}; load "
+                                f"it without funding")
             continue
 
         missing = np.flatnonzero(np.isnan(rates))
         if len(missing):
-            raise ValueError(f"funding: {name}'s event at {_when(times[missing[0]])} "
-                             f"has no rate; load it without funding, or after that "
-                             f"time")
+            raise DataError(f"funding: {name}'s event at {_when(times[missing[0]])} "
+                            f"has no rate; load it without funding, or after that "
+                            f"time")
 
         spacing = np.diff(times)
         head, tail = (int(spacing[0]), int(spacing[-1])) if len(spacing) else (DAY, DAY)
         if times[0] - opened > head + SECOND:
-            raise ValueError(f"funding: {name}'s funding history begins at "
-                             f"{_when(times[0])}, more than a cycle after its first "
-                             f"bar at {_when(opened)}; start the bars at "
-                             f"{_when(times[0])} or load them without funding")
+            raise DataError(f"funding: {name}'s funding history begins at "
+                            f"{_when(times[0])}, more than a cycle after its first "
+                            f"bar at {_when(opened)}; start the bars at "
+                            f"{_when(times[0])} or load them without funding")
 
         if ended - times[-1] > tail + SECOND:
-            raise ValueError(f"funding: {name}'s funding history ends at "
-                             f"{_when(times[-1])}, more than a cycle before its last "
-                             f"bar ends at {_when(ended)}; end the bars by "
-                             f"{_when(times[-1])} or load them without funding")
+            raise DataError(f"funding: {name}'s funding history ends at "
+                            f"{_when(times[-1])}, more than a cycle before its last "
+                            f"bar ends at {_when(ended)}; end the bars by "
+                            f"{_when(times[-1])} or load them without funding")
 
         # a cycle may change, so a hole is a spacing more than half as long again as
         # both its neighbours
@@ -2111,10 +2135,12 @@ def _funding(router, exchange, market, root, step):
         hole = np.flatnonzero(spacing > 1.5 * around) if len(spacing) > 1 else []
         if len(hole):
             k = hole[0]
-            raise ValueError(f"funding: {name}'s funding history misses the events "
-                             f"between {_when(times[k])} and {_when(times[k + 1])}; "
-                             f"load the bars before or after them, or without funding")
+            raise DataError(f"funding: {name}'s funding history misses the events "
+                            f"between {_when(times[k])} and {_when(times[k + 1])}; "
+                            f"load the bars before or after them, or without funding")
 
+        LOG.info("from_router: %s's funding, %s events from %s to %s", name,
+                 f"{len(times):,}", _when(times[0]), _when(times[-1]))
         events += [(int(t), column, float(r)) for t, r in zip(times, rates)]
 
     return np.sort(np.array(events, dtype=FUNDING), order="time"), notes

@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 import probatum
-from probatum import Venue
+from probatum import DataError, ProbatumTypeError, Venue, VenueError
 from probatum._venue import _run
 from test_a_data_from_the_router_is_every_bar_it_asked_for import (Router, bars, fetch,
                                                                    settlements)
@@ -192,63 +192,68 @@ def two(*frames):
     return data
 
 
-@pytest.mark.parametrize("venue, data, says", [
+@pytest.mark.parametrize("venue, data, error, says", [
     (Venue(kind="linear"), two(routed("BTCUSDT"), routed("ETHUSDT", exchange="bybit")),
-     "data: instruments at binance and bybit, and an account is at one venue"),
+     DataError, "data: instruments at binance and bybit, and an account is at one "
+                "venue"),
     (Venue(kind="linear"), two(routed("BTCUSDT"), routed("BTCUSDC", quote="USDC")),
-     "data: BTCUSDT settles in USDT and BTCUSDC settles in USDC, and an account's cash "
-     "is one asset; run them on their own"),
+     DataError, "data: BTCUSDT settles in USDT and BTCUSDC settles in USDC, and an "
+                "account's cash is one asset; run them on their own"),
     (Venue(balance={"spot": 1.0, "margin": 1.0}),
-     two(routed("ETHBTC", market="spot", quote="BTC"), routed("BTCUSDT")),
+     two(routed("ETHBTC", market="spot", quote="BTC"), routed("BTCUSDT")), DataError,
      "data: BTCUSDT settles in USDT and ETHBTC is quoted in BTC"),
-    (Venue(), two(routed("BTCUSDT", market="spot"), routed("BTCUSDT")),
+    (Venue(), two(routed("BTCUSDT", market="spot"), routed("BTCUSDT")), VenueError,
      "balance: 10000.0, one wallet's, and the data's spot and perpetual instruments "
      "use both; replace(balance={\"spot\": s, \"margin\": m})"),
-    ("binance_perp", two(routed("BTCUSDT")),
+    ("binance_perp", two(routed("BTCUSDT")), DataError,
      "funding: binance_perp charges the funding the data holds, and the data holds "
      "none for BTCUSDT; fetch the bars with funding=True, or "
      "replace(funding=\"none\")"),
     (probatum.venues.binance_perp.replace(funding="none"), two(routed("FOOUSDT")),
-     "venue: binance_perp gives FOOUSDT no lot and no tick, and its sizes hold every "
-     "order to them"),
-    ("binance_perp", probatum.Data(frame(), market="linear"),
+     VenueError, "venue: binance_perp gives FOOUSDT no lot and no tick, and its sizes "
+                 "hold every order to them"),
+    ("binance_perp", probatum.Data(frame(), market="linear"), DataError,
      "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
     (probatum.venues.binance_perp.replace(fills={"sizes": "off"}, funding="none"),
-     probatum.Data(frame(), market="linear"),
+     probatum.Data(frame(), market="linear"), DataError,
      "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
-    ("binance_perp", probatum.Data(frame(), symbol="", market="linear"),
+    ("binance_perp", probatum.Data(frame(), symbol="", market="linear"), DataError,
      "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
     (probatum.venues.hyperliquid_perp.replace(funding="none"), two(routed("FOOUSDC")),
-     "venue: hyperliquid_perp gives FOOUSDC significant figures and no decimals, the "
-     "cap its price rule needs; give FOOUSDC its decimals in instruments"),
+     VenueError, "venue: hyperliquid_perp gives FOOUSDC significant figures and no "
+                 "decimals, the cap its price rule needs; give FOOUSDC its decimals in "
+                 "instruments"),
     (probatum.venues.hyperliquid_perp.replace(funding="none", decimals=4, lot=1.0),
-     two(routed("FOOUSDC")),
+     two(routed("FOOUSDC")), VenueError,
      "venue: hyperliquid_perp books then backstops, and gives FOOUSDC no tier table "
      "that keeps maintenance; give FOOUSDC its tiers in instruments"),
     (probatum.venues.binance.replace(
         fills={"sizes": "off"}, balance={"spot": 1.0, "margin": 1.0}),
      two(routed("BTCUSD", market="inverse", quote="USD", volume_unit="contract",
-                contract_size=100.0)),
+                contract_size=100.0)), VenueError,
      "venue: binance lists spot and linear instruments, and BTCUSD is inverse"),
-    ("binance_perp", two(routed("BTCUSDT", market="spot")),
+    ("binance_perp", two(routed("BTCUSDT", market="spot")), VenueError,
      "venue: binance_perp lists linear instruments, and BTCUSDT is spot; run it on a "
      "venue of its kind"),
-    (Venue(), probatum.Data(frame(), symbol="BTCUSDT"),
+    (Venue(), probatum.Data(frame(), symbol="BTCUSDT"), DataError,
      "data: BTCUSDT names no market, and venue is not of one kind; build the Data "
      "with market="),
-    (Venue(), probatum.Data(frame(), symbol="BTCUSD", market="inverse"),
+    (Venue(), probatum.Data(frame(), symbol="BTCUSD", market="inverse"), DataError,
      "data: BTCUSD is an inverse contract whose bars do not give the dollars a "
      "contract is worth"),
     (Venue(balance={"spot": 1.0, "margin": 1.0}),
      two(routed("BTCUSD", market="inverse", quote="USD", volume_unit="contract",
-                contract_size=100.0)),
+                contract_size=100.0)), VenueError,
      "balance: {'spot': 1.0, 'margin': 1.0}, the cash of two wallets, and an inverse "
      "contract's account holds its coin in one; give the coin as a number"),
-    ("binance_futures", two(routed("BTCUSDT")),
+    ("binance_futures", two(routed("BTCUSDT")), VenueError,
      "venue: 'binance_futures' is not a preset; use one of"),
-    (5, two(routed("BTCUSDT")), "venue: 5; pass a Venue, or a preset's name"),
-    (Venue(), two(routed("BTCUSDT"))[:0], "data: no bars to run; give a Data that has"),
+    (5, two(routed("BTCUSDT")), ProbatumTypeError,
+     "venue: 5; pass a Venue, or a preset's name"),
+    (Venue(), two(routed("BTCUSDT"))[:0], DataError,
+     "data: no bars to run; give a Data that has"),
 ])
-def test_an_account_the_venue_cannot_hold_is_refused_before_it_runs(venue, data, says):
-    with pytest.raises((ValueError, TypeError), match=re.escape(says)):
+def test_an_account_the_venue_cannot_hold_is_refused_before_it_runs(venue, data, error,
+                                                                    says):
+    with pytest.raises(error, match=re.escape(says)):
         _run(venue, data)

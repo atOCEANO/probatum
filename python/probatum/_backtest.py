@@ -9,7 +9,9 @@ import types
 
 import numpy as np
 
-from ._data import DAY, Data, _columns, _dated, _renamed, _when
+from ._data import DAY, Data, _columns, _dated, _when
+from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
+                      ProbatumTypeError, ProbatumValueError, VenueError)
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
 from ._result import Result, _Record, _provenance
 from ._strategy import Strategy, _Run, _called, _play
@@ -43,37 +45,38 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     """
     data = data if isinstance(data, Data) else Data(data)
     if not len(data) or not data.available.any():
-        raise ValueError("data: no bars to run; give a Data that has some")
+        raise DataError("data: no bars to run; give a Data that has some")
 
     if _table_like(policy):
         rows = _table("policy", policy, data)
     elif _array_like(policy):
         rows = _shaped("policy", _floats("policy", _host(policy, "policy")), data)
     elif isinstance(policy, type):
-        raise TypeError(f"policy: got the class {policy.__name__}, not an instance; "
-                        f"pass {policy.__name__}()")
+        raise PolicyError(f"policy: got the class {policy.__name__}, not an instance; "
+                          f"pass {policy.__name__}()")
     elif isinstance(policy, Strategy):
         return _decided(policy, data, venue, sizing, stop, take_profit, tolerance,
                         risk_free)
     elif hasattr(policy, "fit") and not callable(policy):
-        raise TypeError(f"policy: {_kind(policy)}, a model that fits, which backtest "
-                        f"does not fit; pass its predictions as an array")
+        raise PolicyError(f"policy: {_kind(policy)}, a model that fits, which backtest "
+                          f"does not fit; pass its predictions as an array")
     elif _agent(policy) or callable(policy):
-        raise NotImplementedError(f"policy: {_kind(policy)}, which backtest does not run "
-                                  f"as an agent yet; pass its decisions as an array")
+        raise ProbatumNotImplementedError(f"policy: {_kind(policy)}, which backtest "
+                                          f"does not run as an agent yet; pass its "
+                                          f"decisions as an array")
     else:
-        raise TypeError(f"policy: {_kind(policy)}; pass a (T, N) array of weights or "
-                        f"quantities, or a table of them")
+        raise PolicyError(f"policy: {_kind(policy)}; pass a (T, N) array of weights or "
+                          f"quantities, or a table of them")
 
     _finite("policy", rows, data)
     if sizing not in SIZINGS:
-        raise ValueError(f"sizing: {sizing!r}; use \"weight\" or \"quantity\"")
+        raise ProbatumValueError(f"sizing: {sizing!r}; use \"weight\" or \"quantity\"")
     if not (_number(tolerance) and tolerance >= 0.0):
-        raise ValueError(f"tolerance: {tolerance!r}; give a fraction of equity from 0, "
-                         f"such as 0.01")
+        raise ProbatumValueError(f"tolerance: {tolerance!r}; give a fraction of equity "
+                                 f"from 0, such as 0.01")
     if not _number(risk_free):
-        raise ValueError(f"risk_free: {risk_free!r}; give the annual rate as a finite "
-                         f"number, such as 0.04")
+        raise ProbatumValueError(f"risk_free: {risk_free!r}; give the annual rate as a "
+                                 f"finite number, such as 0.04")
 
     barriers = {name: _barrier(name, given, data)
                 for name, given in (("stop", stop), ("take_profit", take_profit))}
@@ -85,9 +88,10 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     for k, market in enumerate(_markets(run)):
         if market == "spot" and (rows[:, k] < 0.0).any():
             t = int(np.flatnonzero(rows[:, k] < 0.0)[0])
-            raise ValueError(f"policy: {rows[t, k]} at row {t:,} "
-                             f"({_when(data.time[t])}) for {names[k]}, which is spot and "
-                             f"cannot be short; trade a perpetual instead")
+            raise ProbatumValueError(f"policy: {rows[t, k]} at row {t:,} "
+                                     f"({_when(data.time[t])}) for {names[k]}, which "
+                                     f"is spot and cannot be short; trade a perpetual "
+                                     f"instead")
 
     values, chosen = _seen(rows, data.available.any(axis=1))
     engine = Engine(run.candles, report=True, **run.settings)
@@ -118,20 +122,21 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
     its own orders, so the settings of an array run are refused beside it."""
     for name, given in (("stop", stop), ("take_profit", take_profit)):
         if given is not None:
-            raise ValueError(f"{name}: {given!r} beside a Strategy, which places its own "
-                             f"exits; place them with account.bracket")
+            raise ProbatumValueError(f"{name}: {given!r} beside a Strategy, which "
+                                     f"places its own exits; place them with "
+                                     f"account.bracket")
 
     if sizing != "weight":
-        raise ValueError(f"sizing: {sizing!r} beside a Strategy, whose verbs say their "
-                         f"own units; leave it out")
+        raise ProbatumValueError(f"sizing: {sizing!r} beside a Strategy, whose verbs "
+                                 f"say their own units; leave it out")
 
     if tolerance != 0.0:
-        raise ValueError(f"tolerance: {tolerance!r} beside a Strategy; pass it to "
-                         f"account.target")
+        raise ProbatumValueError(f"tolerance: {tolerance!r} beside a Strategy; pass it "
+                                 f"to account.target")
 
     if not _number(risk_free):
-        raise ValueError(f"risk_free: {risk_free!r}; give the annual rate as a finite "
-                         f"number, such as 0.04")
+        raise ProbatumValueError(f"risk_free: {risk_free!r}; give the annual rate as a "
+                                 f"finite number, such as 0.04")
 
     held   = _repeatable(venue)
     run    = _run(held, data)
@@ -160,8 +165,8 @@ def _repeatable(venue):
     repeats without a seed."""
     held = _venue_of(venue)
     if held._intrabar == "random":
-        raise ValueError("venue: intrabar is \"random\", which backtest refuses so that "
-                         "a backtest repeats without a seed; replace(intrabar="
+        raise VenueError("venue: intrabar is \"random\", which backtest refuses so "
+                         "that a backtest repeats without a seed; replace(intrabar="
                          "\"pessimistic\") or \"optimistic\"")
     return held
 
@@ -182,6 +187,21 @@ def _kind(value):
     if isinstance(value, (types.FunctionType, types.BuiltinFunctionType)):
         return "a function"
     return f"an object of type {type(value).__name__}"
+
+
+def _typed(name):
+    """The class a wrong type in the argument ``name`` raises: a PolicyError for the
+    policy, which backtest then cannot run, and the root's for a barrier."""
+    return PolicyError if name == "policy" else ProbatumTypeError
+
+
+def _refused(name, error):
+    """``error``, the frame reader's refusal of what ``name`` came as, again as a
+    refusal of ``name``, by its built-in: a wrong value is not a fault in the bars,
+    whatever class the reader gave it."""
+    said = str(error).removeprefix("data: ")
+    kind = _typed(name) if isinstance(error, TypeError) else ProbatumValueError
+    return kind(f"{name}: {said}")
 
 
 def _buffer(value):
@@ -240,19 +260,20 @@ def _host(value, name):
 
             # 1 is DLPack's CPU
             if kind != 1:
-                raise ValueError(f"{name}: an array on a device the host cannot read "
-                                 f"({error}); pass a host copy") from None
+                raise ProbatumValueError(f"{name}: an array on a device the host "
+                                         f"cannot read ({error}); pass a host "
+                                         f"copy") from None
 
     if (hasattr(value, "__arrow_c_array__") and not hasattr(value, "__array__")
             and not _buffer(value)):
         try:
             columns = arrow_columns(value)
         except (TypeError, ValueError) as error:
-            raise _renamed(name, error) from None
+            raise _refused(name, error) from None
 
         if len(columns) != 1:
-            raise TypeError(f"{name}: an Arrow array of {len(columns)} columns; pass "
-                            f"it as a table, or one column as an array")
+            raise _typed(name)(f"{name}: an Arrow array of {len(columns)} columns; "
+                               f"pass it as a table, or one column as an array")
 
         [(_, _, value, _)] = columns
 
@@ -265,13 +286,13 @@ def _floats(name, array):
     if array.dtype.kind == "b":
         fix = ("give weights, 1.0 to enter, 0.0 to leave and NaN to hold"
                if name == "policy" else "give returns from the entry above 0")
-        raise TypeError(f"{name}: an array of booleans; {fix}")
+        raise _typed(name)(f"{name}: an array of booleans; {fix}")
 
     try:
         return np.array(array, dtype=np.float64)
     except (TypeError, ValueError):
-        raise TypeError(f"{name}: an array of {array.dtype} values; pass an array of "
-                        f"floats") from None
+        raise _typed(name)(f"{name}: an array of {array.dtype} values; pass an "
+                           f"array of floats") from None
 
 
 def _shaped(name, array, data):
@@ -284,13 +305,14 @@ def _shaped(name, array, data):
         array = array[:, None]
 
     if array.ndim == 1 and len(array) == rows:
-        raise ValueError(f"{name}: a (T,) array for a universe of {width} instruments; "
-                         f"pass a (T, {width}) array")
+        raise ProbatumValueError(f"{name}: a (T,) array for a universe of {width} "
+                                 f"instruments; pass a (T, {width}) array")
 
     if array.shape != (rows, width):
-        raise ValueError(f"{name}: an array of shape {given} for a Data of {rows:,} rows "
-                         f"and {width} instrument{'s' if width > 1 else ''}; pass one of "
-                         f"({rows}, {width})")
+        raise ProbatumValueError(f"{name}: an array of shape {given} for a Data of "
+                                 f"{rows:,} rows and {width} "
+                                 f"instrument{'s' if width > 1 else ''}; pass one of "
+                                 f"({rows}, {width})")
 
     return array
 
@@ -300,8 +322,9 @@ def _finite(name, rows, data):
     bad = np.isinf(rows)
     if bad.any():
         t, k = map(int, np.argwhere(bad)[0])
-        raise ValueError(f"{name}: {rows[t, k]} at row {t:,} ({_when(data.time[t])}) "
-                         f"for {data.names[k]}; give a finite value, or NaN to hold")
+        raise ProbatumValueError(f"{name}: {rows[t, k]} at row {t:,} "
+                                 f"({_when(data.time[t])}) for {data.names[k]}; give a "
+                                 f"finite value, or NaN to hold")
 
 
 def _table(name, given, data):
@@ -317,15 +340,15 @@ def _table(name, given, data):
                                                                          "columns"):
         label = given.name if given.name is not None or len(names) > 1 else names[0]
         if label is None:
-            raise ValueError(f"{name}: an unnamed pandas series for a universe of "
-                             f"{len(names)} instruments; name it after one of "
-                             f"{', '.join(names)}, or pass a frame of them")
+            raise ProbatumValueError(f"{name}: an unnamed pandas series for a universe "
+                                     f"of {len(names)} instruments; name it after one "
+                                     f"of {', '.join(names)}, or pass a frame of them")
         given = given.to_frame(name=label)
 
     try:
         clocks, numbers, others = _columns(given)
     except (TypeError, ValueError) as error:
-        raise _renamed(name, error) from None
+        raise _refused(name, error) from None
 
     numbers = {str(label): values for label, values in numbers.items()}
     others  = {str(label): held for label, held in others.items()}
@@ -334,13 +357,15 @@ def _table(name, given, data):
         clocks["timestamp"] = (numbers.pop("timestamp") * 1_000_000, "UTC")
 
     if len(clocks) > 1:
-        raise ValueError(f"{name}: a table with times in {', '.join(map(str, clocks))}; "
-                         f"keep each row's bar open time alone")
+        raise ProbatumValueError(f"{name}: a table with times in "
+                                 f"{', '.join(map(str, clocks))}; keep each row's bar "
+                                 f"open time alone")
 
     if not clocks:
-        raise ValueError(f"{name}: a table with no times; give each row's bar open time "
-                         f"in a datetime index or column or a timestamp column of "
-                         f"milliseconds, or pass its values as an array")
+        raise ProbatumValueError(f"{name}: a table with no times; give each row's bar "
+                                 f"open time in a datetime index or column or a "
+                                 f"timestamp column of milliseconds, or pass its "
+                                 f"values as an array")
 
     times, zone = next(iter(clocks.values()))
     times = np.asarray(times, dtype=np.int64)
@@ -348,41 +373,44 @@ def _table(name, given, data):
         try:
             times = _dated(times, zone)
         except ValueError as error:
-            raise _renamed(name, error) from None
+            raise _refused(name, error) from None
 
     for label in names:
         if label in others:
-            raise ValueError(f"{name}: a table's column {label} holds {others[label]}; "
-                             f"give numbers")
+            raise ProbatumValueError(f"{name}: a table's column {label} holds "
+                                     f"{others[label]}; give numbers")
 
     missing = [label for label in names if label not in numbers]
     if missing:
-        raise ValueError(f"{name}: a table with no column for {missing[0]}; give one "
-                         f"for each of {', '.join(names)}")
+        raise ProbatumValueError(f"{name}: a table with no column for {missing[0]}; "
+                                 f"give one for each of {', '.join(names)}")
 
     extra = [label for label in numbers if label not in names]
     if extra:
-        raise ValueError(f"{name}: a table's column {extra[0]}, which the data does not "
-                         f"hold; give columns for {', '.join(names)} alone")
+        raise ProbatumValueError(f"{name}: a table's column {extra[0]}, which the data "
+                                 f"does not hold; give columns for {', '.join(names)} "
+                                 f"alone")
 
     clock = data.time
     at    = np.searchsorted(clock, times)
     off   = (at >= len(clock)) | (clock[np.minimum(at, len(clock) - 1)] != times)
     if off.any():
         when = _when(times[np.flatnonzero(off)[0]])
-        raise ValueError(f"{name}: a table row at {when}, which is not on the data's "
-                         f"clock; give rows at the bars' open times")
+        raise ProbatumValueError(f"{name}: a table row at {when}, which is not on the "
+                                 f"data's clock; give rows at the bars' open times")
 
     counts = np.bincount(at, minlength=len(clock))
     if (counts > 1).any():
         when = _when(clock[np.flatnonzero(counts > 1)[0]])
-        raise ValueError(f"{name}: a table with two rows at {when}; give one a bar")
+        raise ProbatumValueError(f"{name}: a table with two rows at {when}; give one a "
+                                 f"bar")
 
     absent = (counts == 0) & data.available.any(axis=1)
     if absent.any():
         when = _when(clock[np.flatnonzero(absent)[0]])
-        raise ValueError(f"{name}: a table with no row at {when}, a bar the data's "
-                         f"instruments printed; give a row for each, NaN to hold")
+        raise ProbatumValueError(f"{name}: a table with no row at {when}, a bar the "
+                                 f"data's instruments printed; give a row for each, "
+                                 f"NaN to hold")
 
     rows = np.full((len(clock), len(names)), np.nan)
     for k, label in enumerate(names):
@@ -398,14 +426,14 @@ def _barrier(name, given, data):
         return None
 
     if getattr(given, "dtype", np.dtype(float)).kind == "b" or isinstance(given, bool):
-        raise TypeError(f"{name}: {given!r}; give a return from the entry above 0, such "
-                        f"as 0.04")
+        raise ProbatumTypeError(f"{name}: {given!r}; give a return from the entry "
+                                f"above 0, such as 0.04")
 
     if isinstance(given, (int, float, np.number)) or getattr(given, "ndim", None) == 0:
         value = float(given)
         if not (math.isfinite(value) and value > 0.0):
-            raise ValueError(f"{name}: {value!r}; give a return from the entry above 0, "
-                             f"such as 0.04")
+            raise ProbatumValueError(f"{name}: {value!r}; give a return from the entry "
+                                     f"above 0, such as 0.04")
         return value
 
     if _table_like(given):
@@ -413,14 +441,15 @@ def _barrier(name, given, data):
     elif _array_like(given):
         values = _shaped(name, _floats(name, _host(given, name)), data)
     else:
-        raise TypeError(f"{name}: {_kind(given)}; give a return from the entry above 0, "
-                        f"or a (T, N) array of them")
+        raise ProbatumTypeError(f"{name}: {_kind(given)}; give a return from the entry "
+                                f"above 0, or a (T, N) array of them")
 
     bad = ~(np.isnan(values) | (np.isfinite(values) & (values > 0.0)))
     if bad.any():
         t, k = map(int, np.argwhere(bad)[0])
-        raise ValueError(f"{name}: {values[t, k]} at row {t:,} ({_when(data.time[t])}) "
-                         f"for {data.names[k]}; give a return above 0, or NaN for none")
+        raise ProbatumValueError(f"{name}: {values[t, k]} at row {t:,} "
+                                 f"({_when(data.time[t])}) for {data.names[k]}; give a "
+                                 f"return above 0, or NaN for none")
 
     return values
 

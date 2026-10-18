@@ -9,6 +9,7 @@ import warnings
 import numpy as np
 
 from ._backtest import _seen
+from ._errors import ProbatumAttributeError, ProbatumWarning
 from ._probatum import Engine, run_array
 from ._strategy import Strategy, _play, _Run
 from ._venue import _run
@@ -32,7 +33,7 @@ def read(result):
 
     record = result._record
     if record is None:
-        raise AttributeError(UNPICKLED)
+        raise ProbatumAttributeError(UNPICKLED)
 
     held, frictionless = computed(record)
     rows = len(result.time)
@@ -158,7 +159,7 @@ def _frictionless(record):
         if record.playing:
             warnings.warn("baselines: the run without costs stopped before it "
                           "finished, so its column is missing; run backtest again to "
-                          "read it", skip_file_prefixes=PACKAGE)
+                          "read it", ProbatumWarning, skip_file_prefixes=PACKAGE)
         return missing
 
     if isinstance(policy, Strategy):
@@ -174,7 +175,7 @@ def _frictionless(record):
     except Exception as error:
         warnings.warn(f"baselines: the run without costs raised "
                       f"{type(error).__name__}: {error}; its column is missing",
-                      skip_file_prefixes=PACKAGE)
+                      ProbatumWarning, skip_file_prefixes=PACKAGE)
         equity = missing
 
     record.playing = False
@@ -195,9 +196,9 @@ def _book(book):
     for label, time, opening, record, given in book._parts:
         if given is None:
             if record is None:
-                raise AttributeError(f"book.baselines: {label} was pickled before its "
-                                     f"baselines were read; read them on it before "
-                                     f"combining it")
+                raise ProbatumAttributeError(f"book.baselines: {label} was pickled "
+                                             f"before its baselines were read; read "
+                                             f"them on it before combining it")
             given = tuple(column[:len(time)] for column in computed(record))
 
         at = np.maximum(np.searchsorted(time, clock, side="right") - 1, 0)

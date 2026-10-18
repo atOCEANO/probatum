@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 import probatum
+from probatum import ProbatumKeyError
 
 from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, periods_per_year,
                                  play_array, run)
@@ -1360,7 +1361,7 @@ def test_two_accounts_listed_and_ended_apart_add_into_15_350():
         [0.0, 0.0, 0.0, 1.0, 0.0])
     assert coin.fills["bar"].tolist() == [3, 4]
 
-    with pytest.raises(KeyError, match="COINUSDT is held at A and B"):
+    with pytest.raises(ProbatumKeyError, match="COINUSDT is held at A and B"):
         book["COINUSDT"]
 
     assert (a.provenance["periods_per_year"], b.provenance["periods_per_year"]) == (

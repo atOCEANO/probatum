@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import probatum
-from probatum import Venue
+from probatum import ProbatumAttributeError, ProbatumTypeError, Venue, VenueError
 
 
 def test_a_venue_built_by_hand_starts_from_the_plain_option_in_each_row():
@@ -61,7 +61,8 @@ def test_the_presets_are_venues_named_and_dated():
     assert both.kind is None and "spot:BTCUSDT" in both.to_dict()["instruments"]
     assert {"binance_perp", "frictionless", "okx"} <= set(dir(probatum.venues))
 
-    with pytest.raises(AttributeError, match="has no attribute 'binance_futures'"):
+    with pytest.raises(ProbatumAttributeError, match="has no attribute "
+                                                     "'binance_futures'"):
         probatum.venues.binance_futures
 
 
@@ -74,11 +75,11 @@ def test_a_venue_never_changes_and_is_equal_to_one_with_the_same_settings():
 
     assert venue.to_dict()["instruments"] == {"BTCUSDT": {"tick": 0.1, "lot": 0.001}}
 
-    with pytest.raises(AttributeError, match=re.escape(
+    with pytest.raises(ProbatumAttributeError, match=re.escape(
             "leverage: a Venue does not change; make a variant with "
             "replace(leverage=...)")):
         venue.leverage = 3.0
-    with pytest.raises(AttributeError, match=re.escape(
+    with pytest.raises(ProbatumAttributeError, match=re.escape(
             "foo: not a setting of a venue, and a venue does not change")):
         venue.foo = 1
 
@@ -151,13 +152,13 @@ def test_a_variant_merges_its_tables_and_replaces_every_other_setting():
     assert probatum.venues.binance.replace(max_open_orders=600).to_dict()[
         "max_open_orders"] == 600
 
-    with pytest.raises(TypeError, match=re.escape(
+    with pytest.raises(ProbatumTypeError, match=re.escape(
             "fee_taker: not a setting of a venue; use one of balance, fees")):
         perp.replace(fee_taker=0.0004)
 
 
 def test_a_variant_that_drops_a_table_the_venue_does_not_hold_is_refused():
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(VenueError, match=re.escape(
             "instruments: 'BTCUSDTT': None for a table the venue does not hold; name "
             "one of its instruments")):
         probatum.venues.binance_perp.replace(instruments={"BTCUSDTT": None})
@@ -166,7 +167,7 @@ def test_a_variant_that_drops_a_table_the_venue_does_not_hold_is_refused():
 def test_a_change_no_instrument_of_a_combined_preset_takes_is_refused():
     both = probatum.venues.binance
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(VenueError, match=re.escape(
             "fees: {'taker': 0.0}, which no instrument of binance takes, as each of "
             "its kinds gives its own; give it in a kind's table, replace(kinds="
             "{'spot': {'fees': ...}})")):
@@ -243,12 +244,21 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
 ])
 def test_a_setting_the_checks_refuse_is_refused_in_the_terms_it_was_given_in(settings,
                                                                              says):
-    with pytest.raises((ValueError, TypeError), match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         Venue(**settings)
 
     if "instruments" not in settings and "kind" not in settings:
-        with pytest.raises((ValueError, TypeError), match=re.escape(says)):
+        with pytest.raises(VenueError, match=re.escape(says)):
             probatum.venues.frictionless.replace(**settings)
+
+
+def test_a_spot_venue_s_refusal_carries_no_engine_error_behind_it():
+    # the engine's own refusal raised inside its handler would be printed above the
+    # venue's, with "During handling of the above exception"
+    with pytest.raises(VenueError, match="backstop: none") as caught:
+        Venue(kind="spot", liquidation="book_then_backstop")
+
+    assert caught.value.__context__ is None
 
 
 def test_a_preset_s_liquidation_fee_reaches_the_engine():

@@ -6,10 +6,12 @@ records and a warning names. A symbol the router fails on raises the router's ow
 error rather than being left out, and a funding series that misses part of its
 instrument's span, at its head, at its tail or between, is refused, so a run never
 charges nothing in silence. Each instrument takes its base asset and order limits from
-the router's symbol information.
+the router's symbol information, and the pull logs each instrument it built and each
+call it made to the probatum logger.
 """
 
 import asyncio
+import logging
 import re
 import warnings
 
@@ -21,6 +23,7 @@ import pytest
 
 import probatum
 import probatum._data
+from probatum import DataError, ProbatumTypeError, ProbatumWarning
 
 HOUR    = 3_600_000_000_000
 START   = 1_704_067_200_000_000_000    # 2024-01-01 00:00 UTC
@@ -198,12 +201,16 @@ def test_a_call_that_brings_nothing_is_asked_once_more():
 def test_a_history_that_begins_after_the_start_is_recorded_and_warned_of():
     router = Router({"BTCUSDT": bars(50, start=START + 50 * HOUR)}, cap=30)
 
-    with pytest.warns(UserWarning, match=re.escape(
+    with pytest.warns(ProbatumWarning, match=re.escape(
             "data: BTCUSDT's bars begin at 2024-01-03 02:00, after the start; the "
-            "venue serves none earlier, see data.provenance[\"history\"]")):
+            "venue serves none earlier, see data.provenance[\"history\"]")) as caught:
         data = fetch(router, end="2024-01-05 03:00")
 
-    assert len(data) == 50
+    # named at the line that asked for the bars, fetch's call
+    warned = caught.pop(ProbatumWarning)
+    assert warned.filename == __file__
+    assert warned.lineno   == fetch.__code__.co_firstlineno + 1
+    assert len(data)       == 50
     assert data.provenance["history"] == {"BTCUSDT": "2024-01-03 02:00"}
 
 
@@ -214,7 +221,7 @@ def test_bars_that_end_before_the_end_are_warned_of():
         "SOLUSDT": bars(30, close=50.0),
     }
 
-    with pytest.warns(UserWarning, match=re.escape(
+    with pytest.warns(ProbatumWarning, match=re.escape(
             "data: ETHUSDT's bars end at 2024-01-02 15:00, before the end, and those "
             "of 1 more instrument end early too; the venue served none later")):
         fetch(Router(held), held)
@@ -240,6 +247,36 @@ def test_several_symbols_come_from_one_batch_and_one_it_failed_on_raises_its_err
         "symbols: the router failed on all 2; fetch them again once it can serve them"]
 
 
+def test_a_pull_logs_each_instrument_it_built_and_each_call_to_the_probatum_logger(
+        caplog):
+    held    = {"BTCUSDT": bars(48), "ETHUSDT": bars(48, close=10.0)}
+    funding = {"BTCUSDT": settlements(), "ETHUSDT": settlements()}
+
+    # a batch of thirty bars each, so each symbol walks back once for the rest, and
+    # each funding series walks back past its first event and is asked once more
+    with caplog.at_level(logging.DEBUG, logger="probatum"):
+        fetch(Router(held, funding=funding, cap=30), held, funding=True)
+
+    said = [(record.levelname, record.getMessage()) for record in caplog.records
+            if record.name == "probatum"]
+    pulled = [line for symbol in held for line in (
+        ("DEBUG", f"from_router: binance linear {symbol}, 1h bars back from "
+                  f"2024-01-01 17:59:59"),
+        ("DEBUG", f"from_router: binance linear {symbol}'s symbol information"),
+        ("INFO", f"from_router: {symbol}, 48 1h bars from 2024-01-01 00:00 to "
+                 f"2024-01-02 23:00"))]
+    funded = [line for symbol in held for line in (
+        ("DEBUG", f"from_router: binance linear {symbol}'s funding back from "
+                  f"2024-01-03 00:00:01"),
+        *[("DEBUG", f"from_router: binance linear {symbol}'s funding back from "
+                    f"2024-01-01 07:59:59")] * 2,
+        ("INFO", f"from_router: {symbol}'s funding, 6 events from 2024-01-01 08:00 "
+                 f"to 2024-01-03 00:00"))]
+
+    assert said == [("DEBUG", "from_router: binance linear, 2 symbols' 1h bars in one "
+                              "batch"), *pulled, *funded]
+
+
 def test_each_instrument_takes_its_base_asset_and_order_limits_from_the_router():
     held = {"BTCUSDT": bars(48), "ETHUSDT": bars(48, close=10.0)}
     btc, eth = fetch(Router(held), held).instruments
@@ -258,7 +295,7 @@ def test_each_instrument_takes_its_base_asset_and_order_limits_from_the_router()
 def test_a_symbol_the_router_no_longer_lists_keeps_its_bars_without_its_limits():
     held = {"BTCUSDT": bars(48), "LUNAUSDT": bars(48, close=10.0)}
 
-    with pytest.warns(UserWarning, match=re.escape(
+    with pytest.warns(ProbatumWarning, match=re.escape(
             "data: the router does not list LUNAUSDT now, saying 'Symbol LUNAUSDT not "
             "found on Binance linear', as for a symbol delisted or paused, so its base "
             "asset and order limits are unknown; see data.instruments")):
@@ -276,7 +313,7 @@ def test_an_instrument_takes_the_router_s_name_for_its_symbol_however_typed():
     assert data.names == ("BTCUSDT",) and data.instruments[0].symbol == "BTCUSDT"
 
     held = {"btcusdt": bars(48), "BTCUSDT": bars(48)}
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(DataError, match=re.escape(
             "symbols: 'btcusdt' and 'BTCUSDT' are one instrument, BTCUSDT; name it "
             "once")):
         fetch(Router(held), held)
@@ -486,7 +523,7 @@ def test_a_funding_series_that_misses_part_of_the_span_is_refused(settings, fund
                                                                    says):
     router = Router({"BTCUSDT": bars(48)}, {"BTCUSDT": funding}, **settings)
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(DataError, match=re.escape(says)):
         fetch(router, funding=True)
 
 
@@ -495,7 +532,7 @@ def test_gaps_in_the_bars_are_warned_of():
     held = {"BTCUSDT": (np.delete(times, [10, 11, 30]),
                         np.delete(values, [10, 11, 30], axis=0))}
 
-    with pytest.warns(UserWarning, match=re.escape(
+    with pytest.warns(ProbatumWarning, match=re.escape(
             "data: BTCUSDT misses 2 bars after 2024-01-01 09:00, one of 2 gaps; see "
             "data.gaps()")):
         fetch(Router(held))
@@ -514,25 +551,28 @@ class Candles:
 
 
 @pytest.mark.parametrize("router, settings, error, says", [
-    (Async(), {}, TypeError, "router: an AsyncRouter, whose calls return coroutines"),
-    (object(), {}, TypeError, "router: object, which has no get_candles"),
-    (Candles(), {}, TypeError, "router: Candles, which has no get_symbol_info"),
-    (Router({}), dict(symbols="BTCUSDT"), TypeError, "symbols: 'BTCUSDT'; give a list"),
-    (Router({}), dict(symbols=5), TypeError, "symbols: 5; give a list of symbols"),
-    (Router({}), dict(symbols=[]), ValueError, "symbols: none; name at least one"),
-    (Router({}), dict(symbols=["BTCUSDT", "BTCUSDT"]), ValueError,
+    (Async(), {}, ProbatumTypeError,
+     "router: an AsyncRouter, whose calls return coroutines"),
+    (object(), {}, ProbatumTypeError, "router: object, which has no get_candles"),
+    (Candles(), {}, ProbatumTypeError, "router: Candles, which has no get_symbol_info"),
+    (Router({}), dict(symbols="BTCUSDT"), ProbatumTypeError,
+     "symbols: 'BTCUSDT'; give a list"),
+    (Router({}), dict(symbols=5), ProbatumTypeError,
+     "symbols: 5; give a list of symbols"),
+    (Router({}), dict(symbols=[]), DataError, "symbols: none; name at least one"),
+    (Router({}), dict(symbols=["BTCUSDT", "BTCUSDT"]), DataError,
      "symbols: ['BTCUSDT', 'BTCUSDT'] names BTCUSDT twice; name each once"),
-    (Router({}), dict(market="spot", funding=True), ValueError,
+    (Router({}), dict(market="spot", funding=True), DataError,
      "funding: True for the spot market, which charges none"),
-    (Router({}), dict(interval="7m"), ValueError, "interval: '7m'; use one of"),
-    (Router({}), dict(start=None), ValueError, "start: None is not a time"),
-    (Router({}), dict(start=1_704_067_200_000), TypeError,
+    (Router({}), dict(interval="7m"), DataError, "interval: '7m'; use one of"),
+    (Router({}), dict(start=None), DataError, "start: None is not a time"),
+    (Router({}), dict(start=1_704_067_200_000), ProbatumTypeError,
      "start: 1704067200000; give a time or the text of one"),
-    (Router({}), dict(start="2200-01-01", end=None), ValueError,
+    (Router({}), dict(start="2200-01-01", end=None), DataError,
      "start: '2200-01-01', where no 1h bar has closed yet; give an earlier start"),
-    (Router({}), dict(end="2023-12-31"), ValueError,
+    (Router({}), dict(end="2023-12-31"), DataError,
      "end: '2023-12-31', before the start, '2024-01-01'; give an end after"),
-    (Router({"BTCUSDT": bars(0)}), {}, ValueError,
+    (Router({"BTCUSDT": bars(0)}), {}, DataError,
      "symbols: BTCUSDT has no 1h bars on binance linear over the span asked"),
 ])
 def test_a_fetch_it_cannot_make_is_refused(router, settings, error, says):

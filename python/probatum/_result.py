@@ -18,6 +18,8 @@ import numpy as np
 
 from . import _assumptions, _ipc
 from ._data import DAY, INTERVALS, _when
+from ._errors import (MissingDependency, ProbatumAttributeError, ProbatumIndexError,
+                      ProbatumKeyError, ProbatumTypeError, ProbatumValueError)
 from ._probatum import Table as _Held, stats_of
 from ._venue import _settlement
 
@@ -101,7 +103,8 @@ def _imported(name, method):
     try:
         return importlib.import_module(name)
     except ImportError:
-        raise ImportError(f"{method}: {name} is not installed; pip install {name}") from None
+        raise MissingDependency(f"{method}: {name} is not installed; pip install "
+                                f"{name}") from None
 
 
 def _outside(said, given, rows):
@@ -159,8 +162,8 @@ class Table:
         """Column ``name``, kept for the next read unless ``kept`` is false, as a
         conversion that reads every column once asks."""
         if name not in self._kinds:
-            raise KeyError(f"table: no column {name!r}; use one of "
-                           f"{', '.join(self._kinds)}")
+            raise ProbatumKeyError(f"table: no column {name!r}; use one of "
+                                   f"{', '.join(self._kinds)}")
 
         read = self._read.get(name)
         if read is None:
@@ -199,7 +202,7 @@ class Table:
         if isinstance(key, (int, np.integer)) and not isinstance(key, (bool, np.bool_)):
             at = int(key) + rows if key < 0 else int(key)
             if not 0 <= at < rows:
-                raise IndexError(_outside("row:", int(key), rows))
+                raise ProbatumIndexError(_outside("row:", int(key), rows))
             return self._held.row(at)
 
         if isinstance(key, slice):
@@ -208,38 +211,41 @@ class Table:
         if isinstance(key, np.ma.MaskedArray) and key.dtype.kind in "iu":
             masked = np.ma.count_masked(key)
             if masked:
-                raise IndexError(f"key: positions of which {masked:,} are masked, and a "
-                                 f"masked position names no row; give key.compressed()")
+                raise ProbatumIndexError(f"key: positions of which {masked:,} are "
+                                         f"masked, and a masked position names no row; "
+                                         f"give key.compressed()")
 
         picked = (key.filled(False) if isinstance(key, np.ma.MaskedArray)
                   else np.asarray(key))
 
         if picked.dtype == bool and picked.ndim == 1:
             if len(picked) != rows:
-                raise IndexError(f"key: a mask of {len(picked):,} rows for a table of "
-                                 f"{rows:,}; give one a row")
+                raise ProbatumIndexError(f"key: a mask of {len(picked):,} rows for a "
+                                         f"table of {rows:,}; give one a row")
             return self._rows(np.flatnonzero(picked))
 
         if picked.ndim == 1 and (picked.dtype.kind in "iu" or not picked.size):
             outside = (picked < -rows) | (picked >= rows)
             if outside.any():
-                raise IndexError(_outside("key: position", int(picked[outside][0]), rows))
+                raise ProbatumIndexError(_outside("key: position",
+                                                  int(picked[outside][0]), rows))
             at = picked.astype(np.int64)
             return self._rows(np.where(at < 0, at + rows, at))
 
-        raise TypeError(f"key: {key!r}; give a column's name, a row's position, a slice "
-                        f"of rows, or a boolean mask or positions of them")
+        raise ProbatumTypeError(f"key: {key!r}; give a column's name, a row's "
+                                f"position, a slice of rows, or a boolean mask or "
+                                f"positions of them")
 
 
     def __getattr__(self, name):
         if name.startswith("_"):
-            raise AttributeError(name)
+            raise ProbatumAttributeError(name)
 
         try:
             return self._column(name)
         except KeyError:
-            raise AttributeError(f"table: no column {name!r}; use one of "
-                                 f"{', '.join(self.columns)}") from None
+            raise ProbatumAttributeError(f"table: no column {name!r}; use one of "
+                                         f"{', '.join(self.columns)}") from None
 
 
     def __iter__(self):
@@ -249,8 +255,8 @@ class Table:
 
     def __contains__(self, item):
         if isinstance(item, str):
-            raise TypeError(f"{item!r} in table: a table holds rows, as dicts; ask "
-                            f"{item!r} in table.columns")
+            raise ProbatumTypeError(f"{item!r} in table: a table holds rows, as dicts; "
+                                    f"ask {item!r} in table.columns")
         return any(row == item for row in self)
 
 
@@ -309,7 +315,7 @@ class OrderLog(Table):
         """The events of ``kind``, one of placed, armed, clamped, refused, not_filled,
         expired, cancelled and filled, as an order log of their own, in order."""
         if kind not in KINDS:
-            raise ValueError(f"kind: {kind!r}; use one of {', '.join(KINDS)}")
+            raise ProbatumValueError(f"kind: {kind!r}; use one of {', '.join(KINDS)}")
         return self[self._held.equal("kind", kind)]
 
 
@@ -615,8 +621,8 @@ class Result:
         else:
             fix = ('its venue and its name, as result["binance", "BTCUSDT"]' if book
                    else 'its name, as result["BTCUSDT"]')
-            raise TypeError(f"result[{key!r}]: an instrument is named by a string; give "
-                            f"{fix}")
+            raise ProbatumTypeError(f"result[{key!r}]: an instrument is named by a "
+                                    f"string; give {fix}")
 
         held   = holdings._held
         picked = held.equal("instrument", name)
@@ -625,17 +631,18 @@ class Result:
             venues = {at for at, named in self._instruments() if named == name}
             if venue is None and len(venues) > 1:
                 listed = sorted(venues)
-                raise KeyError(f"result[{name!r}]: {name} is held at "
-                               f"{', '.join(listed[:-1])} and {listed[-1]}; give its "
-                               f"venue, as result[\"{listed[0]}\", \"{name}\"]")
+                raise ProbatumKeyError(f"result[{name!r}]: {name} is held at "
+                                       f"{', '.join(listed[:-1])} and {listed[-1]}; "
+                                       f"give its venue, as result[\"{listed[0]}\", "
+                                       f"\"{name}\"]")
 
             venue  = venue if venue is not None else next(iter(venues), None)
             picked = picked & held.equal("venue", "" if venue is None else venue)
 
         if not picked.any():
             known = ", ".join(repr(given) for given in self._instruments())
-            raise KeyError(f"result[{key!r}]: the run holds no such instrument; use one "
-                           f"of {known}")
+            raise ProbatumKeyError(f"result[{key!r}]: the run holds no such "
+                                   f"instrument; use one of {known}")
 
         rows   = np.flatnonzero(picked)
         bars   = holdings["bar"][rows]
@@ -672,8 +679,9 @@ class Result:
             first = instruments[0]
             named = (f"\"{first[0]}\", \"{first[1]}\"" if isinstance(first, tuple)
                      else f"\"{first}\"")
-            raise AttributeError(f"result.{field}: the run holds {len(instruments)} "
-                                 f"instruments; use result[{named}].{field}")
+            raise ProbatumAttributeError(f"result.{field}: the run holds "
+                                         f"{len(instruments)} instruments; use "
+                                         f"result[{named}].{field}")
 
         return getattr(self[instruments[0]], field)
 
@@ -791,11 +799,12 @@ class Result:
         try:
             self.baselines
         except AttributeError as error:
-            raise ValueError(f"{error}, and save writes them, so it wrote nothing") from None
+            raise ProbatumValueError(f"{error}, and save writes them, so it wrote "
+                                     f"nothing") from None
 
         folder = pathlib.Path(path)
         if folder.exists() and not folder.is_dir():
-            raise ValueError(f"path: {str(path)!r} is a file; name a directory")
+            raise ProbatumValueError(f"path: {str(path)!r} is a file; name a directory")
         folder.mkdir(parents=True, exist_ok=True)
 
         array  = self.policy if isinstance(self.policy, np.ndarray) else None
@@ -845,7 +854,7 @@ class Result:
         folder = pathlib.Path(path)
         fix    = "give a directory a Result was saved into"
         if not (folder / "result.json").is_file():
-            raise ValueError(f"path: {str(path)!r} holds no result.json; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r} holds no result.json; {fix}")
 
         try:
             with open(folder / "result.json", encoding="utf-8") as file:
@@ -855,17 +864,18 @@ class Result:
 
         given = manifest.get("format") if isinstance(manifest, dict) else None
         if type(given) is int and given != FORMAT:
-            raise ValueError(f"path: {str(path)!r} holds a Result saved in format "
-                             f"{given} by probatum {manifest.get('version')}, and this "
-                             f"version, {_version()}, reads format {FORMAT}; load it "
-                             f"with the version that saved it, or a later one")
+            raise ProbatumValueError(f"path: {str(path)!r} holds a Result saved in "
+                                     f"format {given} by probatum "
+                                     f"{manifest.get('version')}, and this version, "
+                                     f"{_version()}, reads format {FORMAT}; load it "
+                                     f"with the version that saved it, or a later one")
 
         if (type(given) is not int or not isinstance(manifest.get("provenance"), dict)
                 or not isinstance(manifest.get("bust"), bool)
                 or manifest.get("policy", "") not in (None, "array")
                 or not _described(manifest["provenance"])):
-            raise ValueError(f"path: {str(path)!r}'s result.json is not a manifest save "
-                             f"writes; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s result.json is not a "
+                                     f"manifest save writes; {fix}")
 
         provenance = manifest["provenance"]
         arrays     = {name: _array(path, folder, name, fix)
@@ -879,8 +889,8 @@ class Result:
                 or arrays["returns"].shape != time.shape
                 or (policy is not None and (policy.dtype != np.float64
                                             or policy.ndim not in (1, 2)))):
-            raise ValueError(f"path: the arrays of {str(path)!r} are not a row each of "
-                             f"one clock as save writes them; {fix}")
+            raise ProbatumValueError(f"path: the arrays of {str(path)!r} are not a row "
+                                     f"each of one clock as save writes them; {fix}")
 
         rows   = len(time)
         book   = "results" in provenance
@@ -894,28 +904,30 @@ class Result:
                 or any(not np.array_equal(table["time"], time[table["bar"]])
                        for table in (holdings, tables["fills"], tables["orders"]))
                 or not (book or _laid_out(holdings, rows))):
-            raise ValueError(f"path: the tables of {str(path)!r} do not hold the rows of "
-                             f"its time.npy and equity.npy; {fix}")
+            raise ProbatumValueError(f"path: the tables of {str(path)!r} do not hold "
+                                     f"the rows of its time.npy and equity.npy; {fix}")
 
         baselines = tables["baselines"]
         if (len(baselines) != rows or not np.array_equal(baselines["time"], time)
                 or not (baselines["cash"] == equity[0]).all()
                 or not all(np.isnan(value) or value == equity[0] for value in (
                     baselines["buy_and_hold"][0], baselines["frictionless"][0]))):
-            raise ValueError(f"path: {str(path)!r}'s baselines.arrow does not open at its "
-                             f"equity.npy's first row on each of its rows; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s baselines.arrow does not "
+                                     f"open at its equity.npy's first row on each of "
+                                     f"its rows; {fix}")
 
         stats = _stats(path, folder, fix)
         if stats is not None and (
                 stats["num_fills"] != len(tables["fills"])
                 or stats["num_trades"] != np.count_nonzero(~tables["trades"]["open"])):
-            raise ValueError(f"path: {str(path)!r}'s stats.arrow does not count the fills "
-                             f"and the round trips its tables hold; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s stats.arrow does not "
+                                     f"count the fills and the round trips its tables "
+                                     f"hold; {fix}")
 
         loaded = cls(time, equity, tables, stats, policy, manifest["bust"], provenance)
         if not np.array_equal(loaded.returns, arrays["returns"]):
-            raise ValueError(f"path: {str(path)!r}'s returns.npy does not hold the returns "
-                             f"its equity.npy gives; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s returns.npy does not hold "
+                                     f"the returns its equity.npy gives; {fix}")
 
         return loaded
 
@@ -936,7 +948,7 @@ def _version():
 
 
 def _constant(token):
-    raise ValueError(f"{token} is not JSON")
+    raise ProbatumValueError(f"{token} is not JSON")
 
 
 def _stored(table):
@@ -955,7 +967,7 @@ def _array(path, folder, name, fix):
     it is missing or is no array of numbers."""
     file = folder / f"{name}.npy"
     if not file.is_file():
-        raise ValueError(f"path: {str(path)!r} holds no {name}.npy; {fix}")
+        raise ProbatumValueError(f"path: {str(path)!r} holds no {name}.npy; {fix}")
 
     try:
         with open(file, "rb") as handle:
@@ -964,8 +976,8 @@ def _array(path, folder, name, fix):
         values = None
 
     if not isinstance(values, np.ndarray):
-        raise ValueError(f"path: {str(path)!r}'s {name}.npy is not an array of numbers "
-                         f"save writes; {fix}")
+        raise ProbatumValueError(f"path: {str(path)!r}'s {name}.npy is not an array of "
+                                 f"numbers save writes; {fix}")
 
     return values
 
@@ -975,12 +987,13 @@ def _read(path, folder, name, fix):
     names, refused where it is missing or unreadable."""
     file = folder / name
     if not file.is_file():
-        raise ValueError(f"path: {str(path)!r} holds no {name}; {fix}")
+        raise ProbatumValueError(f"path: {str(path)!r} holds no {name}; {fix}")
 
     try:
         columns, _ = _ipc.read(file)
     except _ipc.Refused as error:
-        raise ValueError(f"path: {str(path)!r}'s {name} {error}; {fix}") from None
+        raise ProbatumValueError(f"path: {str(path)!r}'s {name} {error}; "
+                                 f"{fix}") from None
 
     return columns
 
@@ -999,21 +1012,22 @@ def _loaded(path, folder, name, book, fix):
 
     for column, kind, _ in schema:
         if columns.get(column, ("",))[0] != STORED[kind]:
-            raise ValueError(f"path: {str(path)!r}'s {name}.arrow has no {kind} column "
-                             f"{column}; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s {name}.arrow has no "
+                                     f"{kind} column {column}; {fix}")
 
     parts = []
     for column in [column for column, _, _ in schema] + [
             column for column in columns if column not in nullable]:
         stored, values, present, written = columns[column]
         if stored not in kinds:
-            raise ValueError(f"path: {str(path)!r}'s {name}.arrow holds a column "
-                             f"{column} of a kind save does not write; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s {name}.arrow holds a "
+                                     f"column {column} of a kind save does not write; "
+                                     f"{fix}")
 
         can = nullable.get(column, written)
         if not (can or present.all()):
-            raise ValueError(f"path: {str(path)!r}'s {name}.arrow holds a null in "
-                             f"{column}, a column that holds none; {fix}")
+            raise ProbatumValueError(f"path: {str(path)!r}'s {name}.arrow holds a null "
+                                     f"in {column}, a column that holds none; {fix}")
 
         data = None
         if stored == "large_text":
@@ -1024,9 +1038,11 @@ def _loaded(path, folder, name, book, fix):
 
     try:
         held = _Held(parts)
-    except ValueError:
-        raise ValueError(f"path: {str(path)!r}'s {name}.arrow is not a table save "
-                         f"writes; {fix}") from None
+    except ValueError as error:
+        # the table's own refusal says which column or length failed, which this one
+        # leaves out
+        raise ProbatumValueError(f"path: {str(path)!r}'s {name}.arrow is not a table "
+                                 f"save writes; {fix}") from error
 
     return CLASSES.get(name, Table)(held)
 
@@ -1040,8 +1056,8 @@ def _stats(path, folder, fix):
     if (any(columns.get(key, ("",))[0] != ("int64" if key in COUNTS else "float")
             for key in STATS) or len(counts) != 1 or counts.pop() > 1
             or not all(columns[key][2].all() for key in STATS)):
-        raise ValueError(f"path: {str(path)!r}'s stats.arrow is not the row of "
-                         f"statistics save writes; {fix}")
+        raise ProbatumValueError(f"path: {str(path)!r}'s stats.arrow is not the row of "
+                                 f"statistics save writes; {fix}")
 
     if not len(columns[STATS[0]][1]):
         return None
@@ -1175,45 +1191,46 @@ def combine(results, settlement=None):
     and a book already combined. A column a later version added to a table is left out
     of the book's, since this version cannot tell what it counts."""
     if isinstance(results, Result):
-        raise TypeError("results: one Result; give a list of them, or a mapping of a "
-                        "name to each")
+        raise ProbatumTypeError("results: one Result; give a list of them, or a "
+                                "mapping of a name to each")
 
     if isinstance(results, collections.abc.Mapping):
         named = list(results.items())
         for name, _ in named:
             if not isinstance(name, str):
-                raise TypeError(f"results: a name {name!r}; name each Result with a "
-                                f"string")
+                raise ProbatumTypeError(f"results: a name {name!r}; name each Result "
+                                        f"with a string")
             if not name:
-                raise ValueError("results: a name ''; give each Result a name")
+                raise ProbatumValueError("results: a name ''; give each Result a name")
     elif isinstance(results, collections.abc.Iterable):
         named = [(None, part) for part in results]
     else:
-        raise TypeError(f"results: {results!r}; give a list of Results, or a mapping of "
-                        f"a name to each")
+        raise ProbatumTypeError(f"results: {results!r}; give a list of Results, or a "
+                                f"mapping of a name to each")
 
     if not named:
-        raise ValueError("results: none; give the Results to combine")
+        raise ProbatumValueError("results: none; give the Results to combine")
 
     for k, (name, part) in enumerate(named):
         if not isinstance(part, Result):
-            raise TypeError(f"results: a {type(part).__name__}; give Results, as "
-                            f"backtest returns them")
+            raise ProbatumTypeError(f"results: a {type(part).__name__}; give Results, "
+                                    f"as backtest returns them")
         if "results" in part.provenance:
-            raise ValueError("results: a book already combined; combine the Results it "
-                             "was made of")
+            raise ProbatumValueError("results: a book already combined; combine the "
+                                     "Results it was made of")
         if name is None:
             name = part.provenance["venue_name"]
             if name is None:
-                raise ValueError("results: a Result at a venue with no name; name each, "
-                                 "as combine({\"a\": first, \"b\": second})")
+                raise ProbatumValueError("results: a Result at a venue with no name; "
+                                         "name each, as combine({\"a\": first, \"b\": "
+                                         "second})")
             named[k] = (name, part)
 
     labels = [name for name, _ in named]
     for name in labels:
         if labels.count(name) > 1:
-            raise ValueError(f"results: two at {name}; name each, as combine({{\"a\": "
-                             f"first, \"b\": second}})")
+            raise ProbatumValueError(f"results: two at {name}; name each, as "
+                                     f"combine({{\"a\": first, \"b\": second}})")
 
     parts = [part for _, part in named]
     kept  = _kept(named, settlement)
@@ -1223,7 +1240,7 @@ def combine(results, settlement=None):
         seen = list(dict.fromkeys(part.provenance["data"]["interval"] if key == "interval"
                                   else part.provenance[key] for part in parts))
         if len(seen) > 1:
-            raise ValueError(f"results: {what} {seen[0]} and {seen[1]}; {fix}")
+            raise ProbatumValueError(f"results: {what} {seen[0]} and {seen[1]}; {fix}")
 
     clock = np.unique(np.concatenate([part.time for part in parts]))
     step  = INTERVALS.get(parts[0].provenance["data"]["interval"])
@@ -1232,10 +1249,11 @@ def combine(results, settlement=None):
         off = np.flatnonzero((clock - clock[0]) % step)
         if len(off):
             name = next(name for name, part in named if clock[off[0]] in part.time)
-            raise ValueError(f"results: {name} opens a row at {_when(clock[off[0]])}, "
-                             f"between the {parts[0].provenance['data']['interval']} "
-                             f"steps from {_when(clock[0])}; run them on bars that open "
-                             f"on one interval's steps")
+            raise ProbatumValueError(f"results: {name} opens a row at "
+                                     f"{_when(clock[off[0]])}, between the "
+                                     f"{parts[0].provenance['data']['interval']} steps "
+                                     f"from {_when(clock[0])}; run them on bars that "
+                                     f"open on one interval's steps")
 
     book, held, rows, funding = {}, np.zeros(len(clock), dtype=bool), [], 0.0
     for part in parts:
@@ -1312,27 +1330,27 @@ def _kept(named, settlement):
     assets, None where none says, refusing a book whose accounts are kept in assets
     that do not add."""
     if settlement is not None and not (isinstance(settlement, str) and settlement):
-        raise TypeError(f"settlement: {settlement!r}; name the asset the book is kept in, "
-                        f"such as \"USDT\"")
+        raise ProbatumTypeError(f"settlement: {settlement!r}; name the asset the book "
+                                f"is kept in, such as \"USDT\"")
 
     coins = [name for name, part in named if part.provenance["markets"] == ["inverse"]]
     if coins and len(coins) < len(named):
         other = next(name for name, _ in named if name not in coins)
-        raise ValueError(f"results: {coins[0]} trades an inverse contract and {other} "
-                         f"does not, so their equity in the quote does not add; combine "
-                         f"each kind on its own")
+        raise ProbatumValueError(f"results: {coins[0]} trades an inverse contract and "
+                                 f"{other} does not, so their equity in the quote does "
+                                 f"not add; combine each kind on its own")
 
     assets = list(dict.fromkeys(part.provenance["settlement"] for _, part in named))
 
     if coins:
         if len(assets) > 1 or (assets[0] is None and len(coins) > 1):
-            raise ValueError(f"results: accounts kept in coins that are not one known "
-                             f"coin, {', '.join(map(str, assets))}; combine accounts "
-                             f"kept in one coin")
+            raise ProbatumValueError(f"results: accounts kept in coins that are not "
+                                     f"one known coin, {', '.join(map(str, assets))}; "
+                                     f"combine accounts kept in one coin")
         if settlement not in (None, assets[0]):
-            raise ValueError(f"settlement: {settlement!r} for accounts kept in their coin; "
-                             f"a book of a coin is kept in that coin, so leave "
-                             f"settlement out")
+            raise ProbatumValueError(f"settlement: {settlement!r} for accounts kept in "
+                                     f"their coin; a book of a coin is kept in that "
+                                     f"coin, so leave settlement out")
         return assets[0]
 
     known = [asset for asset in assets if asset is not None]
@@ -1340,26 +1358,27 @@ def _kept(named, settlement):
     if odd:
         if len(assets) > 1:
             other = next(asset for asset in assets if asset != odd[0])
-            raise ValueError(f"results: accounts kept in {odd[0]} and "
-                             f"{other or 'an asset their bars do not name'}, which do not "
-                             f"add; combine accounts kept in one asset")
+            raise ProbatumValueError(f"results: accounts kept in {odd[0]} and "
+                                     f"{other or 'an asset their bars do not name'}, "
+                                     f"which do not add; combine accounts kept in one "
+                                     f"asset")
         if settlement not in (None, odd[0]):
-            raise ValueError(f"settlement: {settlement!r} for accounts kept in {odd[0]}, "
-                             f"which is no dollar asset to count at par; leave settlement "
-                             f"out")
+            raise ProbatumValueError(f"settlement: {settlement!r} for accounts kept in "
+                                     f"{odd[0]}, which is no dollar asset to count at "
+                                     f"par; leave settlement out")
         return odd[0]
 
     if settlement is not None:
         if known and settlement not in DOLLARS:
-            raise ValueError(f"settlement: {settlement!r} for accounts kept in "
-                             f"{' and '.join(known)}; name the dollar asset the book is "
-                             f"kept in, as \"{known[0]}\"")
+            raise ProbatumValueError(f"settlement: {settlement!r} for accounts kept in "
+                                     f"{' and '.join(known)}; name the dollar asset "
+                                     f"the book is kept in, as \"{known[0]}\"")
         return settlement
 
     if len(known) > 1:
-        raise ValueError(f"results: accounts kept in {known[0]} and {known[1]}; pass "
-                         f"settlement= to count them at par in one, as "
-                         f"settlement=\"{known[0]}\"")
+        raise ProbatumValueError(f"results: accounts kept in {known[0]} and "
+                                 f"{known[1]}; pass settlement= to count them at par "
+                                 f"in one, as settlement=\"{known[0]}\"")
 
     return known[0] if known else None
 

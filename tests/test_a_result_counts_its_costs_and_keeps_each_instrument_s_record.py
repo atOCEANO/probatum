@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 import probatum
+from probatum import ProbatumAttributeError, ProbatumKeyError, ProbatumTypeError
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (
     VENUE, bars, pair, weights)
 from test_a_result_hands_its_tables_to_any_arrow_reader import runs
@@ -124,15 +125,16 @@ def test_one_instrument_s_run_answers_for_it_and_several_s_names_the_one_to_ask(
         assert np.array_equal(getattr(alone, field), getattr(alone["BTCUSD"], field))
 
     several = results["pair"]
-    with pytest.raises(AttributeError, match=r"result\.pnl: the run holds 2 "
-                                             r"instruments; use result\[\"BTCUSDT\"\]\.pnl"):
+    with pytest.raises(ProbatumAttributeError, match=r"result\.pnl: the run holds 2 "
+                                                     r"instruments; use "
+                                                     r"result\[\"BTCUSDT\"\]\.pnl"):
         several.pnl
 
-    with pytest.raises(KeyError, match="no such instrument; use one of 'BTCUSDT', "
-                                       "'ETHUSDT'"):
+    with pytest.raises(ProbatumKeyError, match="no such instrument; use one of "
+                                               "'BTCUSDT', 'ETHUSDT'"):
         several["SOLUSDT"]
 
-    with pytest.raises(TypeError, match="an instrument is named by a string"):
+    with pytest.raises(ProbatumTypeError, match="an instrument is named by a string"):
         several[0]
 
     with pytest.raises(TypeError):
@@ -170,13 +172,15 @@ def test_a_book_names_every_venue_that_holds_a_name_and_asks_for_two_strings():
 
     book = probatum.combine({"C": d, "A": d, "B": d})
 
-    with pytest.raises(KeyError, match="ETHUSDT is held at A, B and C; give its venue, "
-                                       "as result\\[\"A\", \"ETHUSDT\"\\]"):
+    with pytest.raises(ProbatumKeyError, match="ETHUSDT is held at A, B and C; give "
+                                               "its venue, as result\\[\"A\", "
+                                               "\"ETHUSDT\"\\]"):
         book["ETHUSDT"]
 
     for key in ((0, "ETHUSDT"), ("A", 0), (None, "ETHUSDT")):
-        with pytest.raises(TypeError, match="an instrument is named by a string; give its "
-                                            "venue and its name"):
+        with pytest.raises(ProbatumTypeError, match="an instrument is named by a "
+                                                    "string; give its venue and its "
+                                                    "name"):
             book[key]
 
     assert book["B", "ETHUSDT"].name == "ETHUSDT"

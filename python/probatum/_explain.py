@@ -7,6 +7,7 @@ import math
 import numpy as np
 
 from ._data import _when
+from ._errors import ProbatumTypeError, ProbatumValueError
 from ._result import DOLLARS
 from ._strategy import Order
 
@@ -21,13 +22,14 @@ def told(result, item):
 
     if isinstance(item, Order):
         if book:
-            raise TypeError(f"item: {item!r}, a handle on one account of the book; "
-                            f"pass a row of book.orders, which names its venue")
+            raise ProbatumTypeError(f"item: {item!r}, a handle on one account of the "
+                                    f"book; pass a row of book.orders, which names its "
+                                    f"venue")
 
         token = None if result._record is None else result._record.token
         if token is None or item._run.token is not token:
-            raise ValueError(f"item: {item!r}, of a run this Result does not hold; "
-                             f"pass a row of this Result's order log")
+            raise ProbatumValueError(f"item: {item!r}, of a run this Result does not "
+                                     f"hold; pass a row of this Result's order log")
         return _order(result, item.id, None)
 
     if isinstance(item, dict) and "reference" in item:
@@ -35,12 +37,13 @@ def told(result, item):
 
     if isinstance(item, dict) and "kind" in item:
         if item.get("order") is None:
-            raise ValueError("item: an event of no order, such as a transfer's clamp; "
-                             "pass an event of an order, or a fill")
+            raise ProbatumValueError("item: an event of no order, such as a "
+                                     "transfer's clamp; pass an event of an order, or "
+                                     "a fill")
         _found(result.orders, item, "order log")
         return _order(result, item["order"], item.get("venue"))
 
-    raise TypeError(f"item: {item!r}; {FIX}")
+    raise ProbatumTypeError(f"item: {item!r}; {FIX}")
 
 
 def _found(table, row, named):
@@ -51,8 +54,8 @@ def _found(table, row, named):
             if table[int(at)] == row:
                 return int(at)
 
-    raise ValueError(f"item: a row this Result's {named} does not hold; pass one of "
-                     f"its rows")
+    raise ProbatumValueError(f"item: a row this Result's {named} does not hold; pass "
+                             f"one of its rows")
 
 
 def _account(result, venue):
@@ -164,8 +167,8 @@ def _reference(result, n, fill):
                 else "where the account was closed out")
 
     if reason not in ("limit", "take_profit", "stop"):
-        raise ValueError(f"item: a fill of reason {reason}, which explain does not "
-                         f"tell; pass a fill of another reason")
+        raise ProbatumValueError(f"item: a fill of reason {reason}, which explain does "
+                                 f"not tell; pass a fill of another reason")
 
     asked = _asked(result, n, fill)
     if reason == "stop":
@@ -213,8 +216,8 @@ def _order(result, order, venue):
     held   = np.ma.filled(orders["order"] == order, False)
     events = [orders[at] for at in _rows(orders, venue, held)]
     if not events:
-        raise ValueError(f"item: order {order}, which this Result's order log does not "
-                         f"hold; pass one of its rows")
+        raise ProbatumValueError(f"item: order {order}, which this Result's order log "
+                                 f"does not hold; pass one of its rows")
 
     filled = iter(_rows(fills, venue, np.ma.filled(fills["order"] == order, False)))
     lines  = []

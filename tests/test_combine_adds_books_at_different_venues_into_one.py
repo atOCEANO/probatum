@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 import probatum
-from probatum import Venue
+from probatum import ProbatumTypeError, ProbatumValueError, Venue
 from probatum._result import OWN, SCHEMAS
 from test_a_data_from_the_router_is_every_bar_it_asked_for import Router
 from test_a_data_from_the_router_is_every_bar_it_asked_for import bars as rows
@@ -260,34 +260,38 @@ def test_what_combine_cannot_add_is_refused():
     usdt   = probatum.backtest(np.full(40, 0.5), routed("USDT"), VENUE)
     usdc   = probatum.backtest(np.full(40, 0.5), routed("USDC"), VENUE)
     cases  = [
-        ([], ValueError, "results: none; give the Results to combine"),
-        (result, TypeError, "results: one Result; give a list of them"),
-        (None, TypeError, "results: None; give a list of Results, or a mapping of a "
-                          "name to each"),
-        ([result], ValueError, "results: a Result at a venue with no name; name each, "
-                               "as combine({\"a\": first, \"b\": second})"),
-        ([alpha, "x"], TypeError, "results: a str; give Results"),
-        ({1: result}, TypeError, "results: a name 1; name each Result with a string"),
-        ({"": result}, ValueError, "results: a name ''; give each Result a name"),
-        ([alpha, alpha], ValueError, "results: two at alpha; name each, as "
-                                     "combine({\"a\": first, \"b\": second})"),
-        ([probatum.combine({"a": result})], ValueError,
+        ([], ProbatumValueError, "results: none; give the Results to combine"),
+        (result, ProbatumTypeError, "results: one Result; give a list of them"),
+        (None, ProbatumTypeError,
+         "results: None; give a list of Results, or a mapping of a name to each"),
+        ([result], ProbatumValueError,
+         "results: a Result at a venue with no name; name each, as combine({\"a\": "
+         "first, \"b\": second})"),
+        ([alpha, "x"], ProbatumTypeError, "results: a str; give Results"),
+        ({1: result}, ProbatumTypeError,
+         "results: a name 1; name each Result with a string"),
+        ({"": result}, ProbatumValueError,
+         "results: a name ''; give each Result a name"),
+        ([alpha, alpha], ProbatumValueError,
+         "results: two at alpha; name each, as combine({\"a\": first, \"b\": second})"),
+        ([probatum.combine({"a": result})], ProbatumValueError,
          "results: a book already combined; combine the Results it was made of"),
-        ({"coin": inverse(), "dollars": result}, ValueError,
+        ({"coin": inverse(), "dollars": result}, ProbatumValueError,
          "results: coin trades an inverse contract and dollars does not, so their equity "
          "in the quote does not add; combine each kind on its own"),
-        ({"two": inverse(), "coins": inverse()}, ValueError,
+        ({"two": inverse(), "coins": inverse()}, ProbatumValueError,
          "results: accounts kept in coins that are not one known coin"),
-        ({"usdt": usdt, "usdc": usdc}, ValueError,
+        ({"usdt": usdt, "usdc": usdc}, ProbatumValueError,
          "results: accounts kept in USDT and USDC; pass settlement= to count them at "
          "par in one, as settlement=\"USDT\""),
         ({"hourly": result, "four": probatum.backtest(
-            np.full(40, 0.5), routed(freq="4h"), VENUE)}, ValueError,
+            np.full(40, 0.5), routed(freq="4h"), VENUE)}, ProbatumValueError,
          "results: bars of 1h and 4h; run them on one interval"),
         ({"a": result, "b": probatum.backtest(weights(), data, VENUE, risk_free=0.04)},
-         ValueError, "results: risk-free rates of 0.0 and 0.04; run them at one rate"),
+         ProbatumValueError,
+         "results: risk-free rates of 0.0 and 0.04; run them at one rate"),
         ({"a": result, "b": probatum.backtest(np.full(40, 0.5), routed(
-            start="2024-01-01 00:30"), VENUE)}, ValueError,
+            start="2024-01-01 00:30"), VENUE)}, ProbatumValueError,
          "results: b opens a row at 2024-01-01 00:30, between the 1h steps from "
          "2024-01-01 00:00; run them on bars that open on one interval's steps"),
     ]
@@ -304,13 +308,13 @@ def test_what_combine_cannot_add_is_refused():
         "settlement"] == "USDC"
 
     for given in (1, ""):
-        with pytest.raises(TypeError, match=f"settlement: {given!r}; name the asset the "
-                                            f"book is kept"):
+        with pytest.raises(ProbatumTypeError, match=f"settlement: {given!r}; name the "
+                                                    f"asset the book is kept"):
             probatum.combine({"coin": inverse()}, settlement=given)
 
-    with pytest.raises(ValueError, match=re.escape(
-            "settlement: 'USDT' for accounts kept in their coin; a book of a coin is kept "
-            "in that coin, so leave settlement out")):
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            "settlement: 'USDT' for accounts kept in their coin; a book of a coin is "
+            "kept in that coin, so leave settlement out")):
         probatum.combine({"coin": inverse()}, settlement="USDT")
 
     named = probatum.combine([alpha, probatum.backtest(
@@ -333,19 +337,19 @@ def test_accounts_kept_in_an_asset_other_than_a_dollar_add_only_to_their_own():
                          ({"usdt": usdt, "eur": eur}, "EUR and USDT")):
         # refused with or without a settlement, which no refusal offers
         for settlement in (None, "USDT"):
-            with pytest.raises(ValueError, match=re.escape(
+            with pytest.raises(ProbatumValueError, match=re.escape(
                     f"results: accounts kept in {other}, which do not add; combine "
                     f"accounts kept in one asset")):
                 probatum.combine(given, settlement=settlement)
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(ProbatumValueError, match=re.escape(
             "settlement: 'USDT' for accounts kept in BTC, which is no dollar asset to "
             "count at par; leave settlement out")):
         probatum.combine({"btc": btc, "again": btc}, settlement="USDT")
 
-    with pytest.raises(ValueError, match=re.escape(
-            "settlement: 'BTC' for accounts kept in USDT and USDC; name the dollar asset "
-            "the book is kept in, as \"USDT\"")):
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            "settlement: 'BTC' for accounts kept in USDT and USDC; name the dollar "
+            "asset the book is kept in, as \"USDT\"")):
         probatum.combine({"usdt": usdt, "usdc": usdc}, settlement="BTC")
 
     twice = probatum.combine({"btc": btc, "again": btc}, settlement="BTC")
@@ -355,9 +359,9 @@ def test_accounts_kept_in_an_asset_other_than_a_dollar_add_only_to_their_own():
     assert probatum.combine({"usdt": usdt, "again": usdt}).provenance[
         "settlement"] == "USDT"
 
-    with pytest.raises(ValueError, match=re.escape(
-            "results: coin trades an inverse contract and btc does not, so their equity "
-            "in the quote does not add")):
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            "results: coin trades an inverse contract and btc does not, so their "
+            "equity in the quote does not add")):
         probatum.combine({"coin": inverse(), "btc": btc})
 
     # an inverse contract from the router names its coin, which a frame's does not
@@ -368,14 +372,14 @@ def test_accounts_kept_in_an_asset_other_than_a_dollar_add_only_to_their_own():
 
     assert probatum.combine({"a": coin, "b": coin}).provenance["settlement"] == "BTC"
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(ProbatumValueError, match=re.escape(
             "results: accounts kept in coins that are not one known coin, None, BTC")):
         probatum.combine({"unnamed": inverse(), "btc": coin})
 
 
 def test_the_binding_s_statistics_refuse_a_year_of_no_bars():
-    with pytest.raises(ValueError, match="^periods_per_year: 0; give the bars a year as "
-                                         "a finite number above 0$"):
+    with pytest.raises(ValueError, match="^periods_per_year: 0; give the bars a year "
+                                         "as a finite number above 0$"):
         probatum._probatum.stats_of(1.0, np.ones(2), np.zeros(0), 0.0, 0.0, 0, 0, 0.0)
 
 

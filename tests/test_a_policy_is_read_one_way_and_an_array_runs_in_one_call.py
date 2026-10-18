@@ -15,7 +15,8 @@ import pandas as pd
 import pytest
 
 import probatum
-from probatum import Venue
+from probatum import (DataError, PolicyError, ProbatumNotImplementedError,
+                      ProbatumTypeError, ProbatumValueError, Venue, VenueError)
 from probatum._venue import _run
 from test_every_depth_gives_one_ledger import placed
 
@@ -163,8 +164,8 @@ def test_a_pandas_series_is_a_table_of_one_column():
 
     same_run(probatum.backtest(series, data, VENUE), stepped(rows, data))
 
-    with pytest.raises(ValueError, match="an unnamed pandas series for a universe of 2 "
-                                         "instruments"):
+    with pytest.raises(ProbatumValueError, match="an unnamed pandas series for a "
+                                                 "universe of 2 instruments"):
         probatum.backtest(series, pair(), VENUE)
 
 
@@ -192,29 +193,31 @@ def test_a_table_that_does_not_match_the_data_is_refused():
     data, rows = pair(), weights()
     table = indexed(data, rows)
 
-    with pytest.raises(ValueError, match="no column for ETHUSDT; give one for each of "
-                                         "BTCUSDT, ETHUSDT"):
+    with pytest.raises(ProbatumValueError, match="no column for ETHUSDT; give one for "
+                                                 "each of BTCUSDT, ETHUSDT"):
         probatum.backtest(table[["BTCUSDT"]], data, VENUE)
-    with pytest.raises(ValueError, match="column SOLUSDT, which the data does not hold"):
+    with pytest.raises(ProbatumValueError, match="column SOLUSDT, which the data does "
+                                                 "not hold"):
         probatum.backtest(table.assign(SOLUSDT=0.0), data, VENUE)
-    with pytest.raises(ValueError, match="column ETHUSDT holds values of (object|str); "
-                                         "give numbers"):
+    with pytest.raises(ProbatumValueError, match="column ETHUSDT holds values of "
+                                                 "(object|str); give numbers"):
         probatum.backtest(table.assign(ETHUSDT="buy"), data, VENUE)
-    with pytest.raises(ValueError, match=r"no row at 2024-01-01 05:00.*NaN to hold"):
+    with pytest.raises(ProbatumValueError, match=r"no row at 2024-01-01 05:00.*NaN to "
+                                                 r"hold"):
         probatum.backtest(table.drop(table.index[5]), data, VENUE)
 
     shifted = table.set_axis(table.index + pd.Timedelta(minutes=30))
-    with pytest.raises(ValueError, match="a table row at 2024-01-01 00:30, which is not "
-                                         "on the data's clock"):
+    with pytest.raises(ProbatumValueError, match="a table row at 2024-01-01 00:30, "
+                                                 "which is not on the data's clock"):
         probatum.backtest(shifted, data, VENUE)
 
-    with pytest.raises(ValueError, match="two rows at 2024-01-01 03:00"):
+    with pytest.raises(ProbatumValueError, match="two rows at 2024-01-01 03:00"):
         probatum.backtest(pd.concat([table, table.iloc[3:4]]), data, VENUE)
-    with pytest.raises(ValueError, match="policy: a table with no times"):
+    with pytest.raises(ProbatumValueError, match="policy: a table with no times"):
         probatum.backtest(table.reset_index(drop=True), data, VENUE)
 
     polars = pytest.importorskip("polars")
-    with pytest.raises(ValueError, match="policy: a table with no times"):
+    with pytest.raises(ProbatumValueError, match="policy: a table with no times"):
         probatum.backtest(polars.Series("BTCUSDT", rows[:, 0]), one(), VENUE)
 
 
@@ -243,6 +246,22 @@ def test_an_array_is_read_through_any_interface_the_host_can_read():
              expected)
 
 
+class WrongArray:
+    """A producer whose array interface hands over a dict for its capsules."""
+
+
+    def __arrow_c_array__(self, requested_schema=None):
+        return {"not": "a capsule"}
+
+
+class WrongStream:
+    """A producer whose stream interface hands over a dict for its capsule."""
+
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        return {"not": "a capsule"}
+
+
 @pytest.mark.parametrize("name", ["policy", "stop", "take_profit"])
 def test_a_daily_table_in_an_unknown_zone_is_refused_by_the_name_it_came_as(name):
     pyarrow = pytest.importorskip("pyarrow")
@@ -254,23 +273,34 @@ def test_a_daily_table_in_an_unknown_zone_is_refused_by_the_name_it_came_as(name
         "policy": weights(width=1),
         name:     table,
     }
-
-    with pytest.raises(ValueError, match=f"{name}: times in the zone 'Mars/Olympus'"):
+    with pytest.raises(ProbatumValueError,
+                       match=f"{name}: times in the zone 'Mars/Olympus'") as caught:
         probatum.backtest(data=daily, venue=VENUE, **given)
+
+    assert caught.type is ProbatumValueError
 
 
 @pytest.mark.parametrize("name", ["policy", "stop", "take_profit"])
-def test_an_array_the_reader_refuses_is_refused_by_the_name_it_came_as(name):
+def test_what_the_reader_refuses_is_refused_by_the_name_it_came_as(name):
     pyarrow = pytest.importorskip("pyarrow")
-    past    = OnlyAnArray(pyarrow.array([2**62], pyarrow.timestamp("s")))
-    given   = {"policy": past} if name == "policy" else {
-        "policy": weights(width=1),
-        name:     past,
-    }
+    past    = pyarrow.array([2**62], pyarrow.timestamp("s"))
+    wrong   = PolicyError if name == "policy" else ProbatumTypeError
 
-    with pytest.raises(ValueError,
-                       match=f"{name}: column \"\" holds 4611686018427387904 ticks"):
-        probatum.backtest(data=one(), venue=VENUE, **given)
+    for given, error, says in (
+            (OnlyAnArray(past), ProbatumValueError,
+             "column \"\" holds 4611686018427387904"),
+            (pyarrow.table({"time": past, "BTCUSDT": [0.5]}), ProbatumValueError,
+             "column \"time\" holds 4611686018427387904"),
+            (WrongArray(), wrong, "__arrow_c_array__ gave a dict"),
+            (WrongStream(), wrong, "__arrow_c_stream__ gave a dict")):
+        asked = ({"policy": given} if name == "policy" else
+                 {"policy": weights(width=1), name: given})
+        with pytest.raises(error, match=f"{name}: {says}") as caught:
+            probatum.backtest(data=one(), venue=VENUE, **asked)
+
+        # a wrong value in a policy or a barrier is no fault in bars, whatever class
+        # the reader gave it
+        assert caught.type is error
 
 
 class Cross(probatum.Strategy):
@@ -288,43 +318,48 @@ class Fitted:
 def test_what_backtest_does_not_run_is_answered_with_what_to_do_instead():
     data = pair()
 
-    with pytest.raises(TypeError, match=r"got the class Cross, not an instance; pass "
-                                        r"Cross\(\)"):
+    with pytest.raises(PolicyError, match=r"got the class Cross, not an instance; pass "
+                                          r"Cross\(\)"):
         probatum.backtest(Cross, data, VENUE)
-    with pytest.raises(TypeError, match="an object of type Fitted, a model that fits, "
-                                        "which backtest does not fit; pass its "
-                                        "predictions as an array"):
+    with pytest.raises(PolicyError, match="an object of type Fitted, a model that "
+                                          "fits, which backtest does not fit; pass its "
+                                          "predictions as an array"):
         probatum.backtest(Fitted(), data, VENUE)
-    with pytest.raises(NotImplementedError, match="a function, which backtest does not "
-                                                  "run as an agent yet"):
+    with pytest.raises(ProbatumNotImplementedError, match="a function, which backtest "
+                                                          "does not run as an agent "
+                                                          "yet"):
         probatum.backtest(lambda observation: 0.0, data, VENUE)
-    with pytest.raises(TypeError, match=r"an object of type str; pass a \(T, N\) array"):
+    with pytest.raises(PolicyError, match=r"an object of type str; pass a \(T, N\) "
+                                          r"array"):
         probatum.backtest("weights", data, VENUE)
-    with pytest.raises(TypeError, match="an object of type list; pass"):
+    with pytest.raises(PolicyError, match="an object of type list; pass"):
         probatum.backtest([[1.0, 0.0]] * 40, data, VENUE)
 
 
 def test_an_array_that_does_not_fit_the_data_is_refused_naming_where():
     data = pair()
 
-    with pytest.raises(ValueError, match=r"a \(T,\) array for a universe of 2 "
-                                         r"instruments; pass a \(T, 2\) array"):
+    with pytest.raises(ProbatumValueError, match=r"a \(T,\) array for a universe of 2 "
+                                                 r"instruments; pass a \(T, 2\) array"):
         probatum.backtest(np.ones(40), data, VENUE)
-    with pytest.raises(ValueError, match=r"shape \(39, 2\) for a Data of 40 rows and 2 "
-                                         r"instruments; pass one of \(40, 2\)"):
+    with pytest.raises(ProbatumValueError, match=r"shape \(39, 2\) for a Data of 40 "
+                                                 r"rows and 2 instruments; pass one of "
+                                                 r"\(40, 2\)"):
         probatum.backtest(np.ones((39, 2)), data, VENUE)
-    with pytest.raises(ValueError, match=r"shape \(39,\) for a Data of 40 rows and 1 "
-                                         r"instrument; pass one of \(40, 1\)"):
+    with pytest.raises(ProbatumValueError, match=r"shape \(39,\) for a Data of 40 rows "
+                                                 r"and 1 instrument; pass one of \(40, "
+                                                 r"1\)"):
         probatum.backtest(np.ones(39), one(), VENUE)
 
     rows = weights()
     rows[3, 1] = np.inf
-    with pytest.raises(ValueError, match=r"inf at row 3 \(2024-01-01 03:00.*\) for "
-                                         r"ETHUSDT; give a finite value, or NaN to hold"):
+    with pytest.raises(ProbatumValueError, match=r"inf at row 3 \(2024-01-01 03:00.*\) "
+                                                 r"for ETHUSDT; give a finite value, "
+                                                 r"or NaN to hold"):
         probatum.backtest(rows, data, VENUE)
 
-    with pytest.raises(TypeError, match="policy: an array of booleans; give weights, 1.0 "
-                                        "to enter, 0.0 to leave and NaN to hold"):
+    with pytest.raises(PolicyError, match="policy: an array of booleans; give weights, "
+                                          "1.0 to enter, 0.0 to leave and NaN to hold"):
         probatum.backtest(np.zeros((40, 2), dtype=bool), data, VENUE)
 
 
@@ -334,7 +369,7 @@ def test_an_array_that_does_not_fit_the_data_is_refused_naming_where():
     (dict(risk_free=math.nan), "risk_free: nan; give the annual rate as a finite number"),
 ])
 def test_a_setting_the_run_cannot_take_is_refused_before_it_runs(given, says):
-    with pytest.raises(ValueError, match=says):
+    with pytest.raises(ProbatumValueError, match=says):
         probatum.backtest(weights(), pair(), VENUE, **given)
 
 
@@ -343,23 +378,30 @@ def test_a_short_on_spot_is_refused_before_the_run():
     rows = np.full(40, np.nan)
     rows[5] = -0.5
 
-    with pytest.raises(ValueError, match=r"-0.5 at row 5 \(2024-01-01 05:00.*\) for "
-                                         r"BTCUSDT, which is spot and cannot be short"):
+    with pytest.raises(ProbatumValueError, match=r"-0.5 at row 5 \(2024-01-01 "
+                                                 r"05:00.*\) for BTCUSDT, which is "
+                                                 r"spot and cannot be short"):
         probatum.backtest(rows, data, VENUE)
 
 
 def test_a_venue_that_decides_at_random_and_an_empty_data_are_refused():
-    with pytest.raises(ValueError, match="venue: intrabar is \"random\""):
+    with pytest.raises(VenueError, match="venue: intrabar is \"random\""):
         probatum.backtest(weights(), pair(), VENUE.replace(intrabar="random"))
-    with pytest.raises(ValueError, match="data: no bars to run"):
+    with pytest.raises(DataError, match="data: no bars to run"):
         probatum.backtest(weights(n=0), pair()["2030-01-01":], VENUE)
 
 
-@pytest.mark.parametrize("given", [0.0, -0.04, math.inf, math.nan, True, "0.04",
-                                   [0.04] * 40, np.array(True)])
-def test_a_barrier_that_is_no_return_above_zero_is_refused(given):
-    with pytest.raises((TypeError, ValueError), match="stop: "):
+@pytest.mark.parametrize("given, error", [
+    (0.0, ProbatumValueError), (-0.04, ProbatumValueError),
+    (math.inf, ProbatumValueError), (math.nan, ProbatumValueError),
+    (True, ProbatumTypeError), ("0.04", ProbatumTypeError),
+    ([0.04] * 40, ProbatumTypeError), (np.array(True), ProbatumTypeError)])
+def test_a_barrier_that_is_no_return_above_zero_is_refused(given, error):
+    with pytest.raises(error, match="stop: ") as caught:
         probatum.backtest(weights(), pair(), VENUE, stop=given)
+
+    # a barrier's wrong type is the root's, where the policy's is a PolicyError
+    assert caught.type is error
 
 
 def test_a_barrier_of_one_value_any_way_written_is_a_number():
@@ -383,11 +425,12 @@ def test_a_barrier_of_rows_is_checked_cell_by_cell_and_takes_nan_for_none():
                 probatum.backtest(weights(), data, VENUE, take_profit=returns).orders)
 
     returns[7, 0] = 0.0
-    with pytest.raises(ValueError, match=r"take_profit: 0.0 at row 7 .* for BTCUSDT; "
-                                         r"give a return above 0, or NaN for none"):
+    with pytest.raises(ProbatumValueError, match=r"take_profit: 0.0 at row 7 .* for "
+                                                 r"BTCUSDT; give a return above 0, or "
+                                                 r"NaN for none"):
         probatum.backtest(weights(), data, VENUE, take_profit=returns)
 
-    with pytest.raises(ValueError, match=r"stop: an array of shape \(40, 3\)"):
+    with pytest.raises(ProbatumValueError, match=r"stop: an array of shape \(40, 3\)"):
         probatum.backtest(weights(), data, VENUE, stop=np.full((40, 3), 0.03))
 
 

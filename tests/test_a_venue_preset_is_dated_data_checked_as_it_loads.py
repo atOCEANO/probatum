@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import probatum
-from probatum import venues
+from probatum import DataError, VenueError, venues
 
 HEAD = """
 [venue]
@@ -167,7 +167,7 @@ def test_two_inverse_contracts_are_refused_together_since_each_runs_alone():
     preset = venues._read(HEAD.replace('"linear"', '"inverse"')
                           + "[instruments.BTCUSD]\n[instruments.ETHUSD]\n", "made")
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(DataError, match=re.escape(
             "made: an inverse contract among 2 instruments; run it alone")):
         venues._settings(preset, ["BTCUSD", "ETHUSD"])
 
@@ -266,12 +266,12 @@ def test_two_inverse_contracts_are_refused_together_since_each_runs_alone():
      "made: 'BTCUSDT' names no kind; name an instrument of a preset that mixes kinds"),
 ])
 def test_a_preset_the_loader_cannot_trust_is_refused(text, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         venues._check(venues._read(text, "made"))
 
 
 def test_a_preset_it_does_not_hold_is_refused_naming_those_it_does():
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(VenueError, match=re.escape(
             "venue: 'binance_futures' is not a preset; use one of")):
         venues._preset("binance_futures")
 
@@ -319,7 +319,7 @@ def test_a_combination_is_refused_unless_its_parts_are_of_one_kind_each_and_agre
     combining = venues._read(HEAD.replace('kind = "linear"\n',
                                           'combines = ["part0", "part1"]\n'), "made")
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         venues._combine(combining, [part(k, *each) for k, each in enumerate(parts)])
 
 
@@ -333,5 +333,5 @@ def test_a_combination_is_refused_unless_its_parts_are_of_one_kind_each_and_agre
      "made: venue: combines 'a'; give the list of the presets it combines"),
 ])
 def test_a_combining_preset_is_refused_unless_it_names_its_parts_alone(text, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         venues._read(text, "made")

@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 import probatum
+from probatum import DataError
 from probatum._data import features
 
 
@@ -49,13 +50,13 @@ def test_a_value_lost_after_the_warm_up_is_refused_naming_where():
     lost = values()
     lost[4, 1, 1] = np.nan
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(DataError, match=re.escape(
             "features: NaN at bar 4 (2024-01-01 04:00) for ETHUSDT, feature 1; "
             "pass fill=")):
         features(universe(), lost)
 
     lost[4, 1, 1] = np.inf
-    with pytest.raises(ValueError, match=re.escape("features: inf at bar 4")):
+    with pytest.raises(DataError, match=re.escape("features: inf at bar 4")):
         features(universe(), lost)
 
 
@@ -79,7 +80,7 @@ def test_a_bar_an_instrument_did_not_print_is_passed_over_and_not_filled_from():
     lost = np.ones((6, 2, 1))
     lost[:, 1, 0] = [10.0, 11.0, 12.0, np.nan, np.nan, 15.0]
 
-    with pytest.raises(ValueError, match=re.escape("features: NaN at bar 4")):
+    with pytest.raises(DataError, match=re.escape("features: NaN at bar 4")):
         features(data, lost)
 
     lost[4, 1, 0] = 14.0
@@ -101,7 +102,7 @@ def counted(history):
 
 
 def test_a_function_is_judged_from_the_first_bar_it_was_given():
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(DataError, match=re.escape(
             "features: NaN at bar 0 (2024-01-01 03:00) for BTCUSDT, feature 0; "
             "pass fill=")):
         features(universe()[3:], counted)
@@ -123,5 +124,5 @@ def test_a_function_is_judged_from_the_first_bar_it_was_given():
 ])
 def test_a_feature_of_the_wrong_shape_or_a_fill_it_cannot_use_is_refused(given, fill,
                                                                           says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(DataError, match=re.escape(says)):
         features(universe()[2:4] if callable(given) else universe(), given, fill=fill)

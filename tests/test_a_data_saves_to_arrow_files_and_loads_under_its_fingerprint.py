@@ -14,6 +14,7 @@ import pyarrow as pa
 import pytest
 
 import probatum
+from probatum import DataError, ProbatumValueError
 from probatum._data import features
 
 
@@ -166,8 +167,22 @@ def test_bars_changed_after_they_were_saved_are_refused(tmp_path):
 
     rewritten(tmp_path / "pair" / "bars.arrow", nudged)
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(DataError, match=re.escape(
             f"path: the bars in {str(tmp_path / 'pair')!r} give the fingerprint b2:")):
+        probatum.Data.load(tmp_path / "pair")
+
+
+def test_saved_bars_that_are_not_bars_are_refused_by_their_path(tmp_path):
+    universe().save(tmp_path / "pair")
+
+    def crossed(table):
+        return table.set_column(table.schema.get_field_index("high"), "high",
+                                pa.array(table["low"].to_numpy() - 1.0))
+
+    rewritten(tmp_path / "pair" / "bars.arrow", crossed)
+
+    with pytest.raises(DataError, match=re.escape(
+            "path: BTCUSDT's bar at 2024-01-01 00:00 is not a bar: open 100, high 98")):
         probatum.Data.load(tmp_path / "pair")
 
 
@@ -215,10 +230,6 @@ def damaged(path):
                             lambda table: table.replace_schema_metadata(None)),
      "holds bars this version of probatum did not save; give a directory a Data was "
      "saved into"),
-    (lambda path: rewritten(path / "bars.arrow", lambda table: table.set_column(
-        table.schema.get_field_index("high"), "high",
-        pa.array(table["low"].to_numpy() - 1.0))),
-     "path: BTCUSDT's bar at 2024-01-01 00:00 is not a bar: open 100, high 98"),
 ])
 def test_a_load_it_cannot_make_is_refused(tmp_path, change, says):
     path = tmp_path / "pair"
@@ -226,16 +237,21 @@ def test_a_load_it_cannot_make_is_refused(tmp_path, change, says):
         universe().save(path)
         change(path)
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(ProbatumValueError, match=re.escape(says)) as caught:
         probatum.Data.load(path)
 
+    # a file that is not what save writes is no fault in bars
+    assert caught.type is ProbatumValueError
 
-@pytest.mark.parametrize("make, says", [
-    (lambda path: universe()[:0].save(path), "data: no bars to save; save a Data that "
-                                            "has some"),
-    (lambda path: (path.write_text("x"), universe().save(path)),
+
+@pytest.mark.parametrize("make, error, says", [
+    (lambda path: universe()[:0].save(path), DataError,
+     "data: no bars to save; save a Data that has some"),
+    (lambda path: (path.write_text("x"), universe().save(path)), ProbatumValueError,
      "is a file; name a directory"),
 ])
-def test_a_save_it_cannot_make_is_refused(tmp_path, make, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+def test_a_save_it_cannot_make_is_refused(tmp_path, make, error, says):
+    with pytest.raises(error, match=re.escape(says)) as caught:
         make(tmp_path / "pair")
+
+    assert caught.type is error

@@ -10,6 +10,9 @@ import numbers
 import numpy as np
 
 from ._data import Data
+from ._errors import (ProbatumAttributeError, ProbatumIndexError, ProbatumKeyError,
+                      ProbatumNotImplementedError, ProbatumTypeError,
+                      ProbatumValueError)
 
 EPOCH  = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 FIELDS = ("open", "high", "low", "close", "volume")
@@ -67,8 +70,8 @@ class Strategy:
 
 
     def next(self, bar, account):
-        raise NotImplementedError(f"next: {type(self).__name__} does not write it; give "
-                                  f"the strategy a next(bar, account)")
+        raise ProbatumNotImplementedError(f"next: {type(self).__name__} does not write "
+                                          f"it; give the strategy a next(bar, account)")
 
 
     def on_inherit(self, account):
@@ -79,7 +82,8 @@ def _warmup(strategy):
     """``strategy``'s warm-up, read after its ``init``."""
     warmup = getattr(strategy, "warmup", 0)
     if isinstance(warmup, bool) or not isinstance(warmup, numbers.Integral) or warmup < 0:
-        raise ValueError(f"warmup: {warmup!r}; give a whole number of bars from 0")
+        raise ProbatumValueError(f"warmup: {warmup!r}; give a whole number of bars "
+                                 f"from 0")
     return int(warmup)
 
 
@@ -134,7 +138,7 @@ def _flag(name, value):
     """Refuse ``value``, given as the flag ``name``, where it is not True or False."""
     # numpy's bool is one, as the binding reads it
     if not isinstance(value, (bool, np.bool_)):
-        raise TypeError(f"{name}: {value!r}; give True or False")
+        raise ProbatumTypeError(f"{name}: {value!r}; give True or False")
 
 
 class _Run:
@@ -263,9 +267,10 @@ class _Run:
 
     def column(self, name):
         """The column of the instrument ``name``."""
-        if name not in self.columns:
-            raise KeyError(f"{self.named}: no instrument {name!r}; use one of "
-                           f"{', '.join(self.names)}")
+        if not isinstance(name, str) or name not in self.columns:
+            raise ProbatumKeyError(f"{self.named}: no instrument {name!r}; use one of "
+                                   f"{', '.join(self.names)}")
+
         return self.columns[name]
 
 
@@ -275,9 +280,10 @@ class _Run:
         the account holds several."""
         if self.width != 1:
             fix = f"{self.named}.{plural} or " if plural else ""
-            raise AttributeError(f"{self.named}.{field}: the account holds {self.width} "
-                                 f"instruments; use {fix}{self.named}"
-                                 f"[\"{self.names[0]}\"].{field}")
+            raise ProbatumAttributeError(f"{self.named}.{field}: the account holds "
+                                         f"{self.width} instruments; use "
+                                         f"{fix}{self.named}"
+                                         f"[\"{self.names[0]}\"].{field}")
 
         return 0
 
@@ -387,15 +393,15 @@ class _Run:
             return None
 
         if not _number(value):
-            raise TypeError(f"{name}: {value!r}; give a price")
+            raise ProbatumTypeError(f"{name}: {value!r}; give a price")
 
         value = float(value)
         if not math.isfinite(value):
-            raise ValueError(f"{name}: {value}; give a finite price")
+            raise ProbatumValueError(f"{name}: {value}; give a finite price")
 
         if self.inverse and value <= 0.0:
-            raise ValueError(f"{name}: {value}, which an inverse contract cannot trade "
-                             f"at; give a price above 0")
+            raise ProbatumValueError(f"{name}: {value}, which an inverse contract "
+                                     f"cannot trade at; give a price above 0")
 
         return value
 
@@ -403,8 +409,8 @@ class _Run:
     def size(self, size):
         """``size``, an order's size in base units or contracts."""
         if not _number(size):
-            raise TypeError(f"size: {size!r}; give a number of base units, or of "
-                            f"contracts on an inverse contract")
+            raise ProbatumTypeError(f"size: {size!r}; give a number of base units, or "
+                                    f"of contracts on an inverse contract")
 
         return float(size)
 
@@ -414,27 +420,27 @@ class _Run:
         size = self.size(size)
         price, trigger = self.price("limit", limit), self.price("stop", stop)
         if price is not None and trigger is not None:
-            raise ValueError(f"{side}: a limit of {price} and a stop of {trigger}; give "
-                             f"one or the other")
+            raise ProbatumValueError(f"{side}: a limit of {price} and a stop of "
+                                     f"{trigger}; give one or the other")
 
         kind = ("limit" if price is not None else "stop" if trigger is not None
                 else "market")
 
         if not isinstance(tif, str):
-            raise TypeError(f"tif: {tif!r}; use \"gtc\", \"ioc\" or \"fok\"")
+            raise ProbatumTypeError(f"tif: {tif!r}; use \"gtc\", \"ioc\" or \"fok\"")
         if tif.lower() not in TIFS:
-            raise ValueError(f"tif: {tif!r}; use \"gtc\", \"ioc\" or \"fok\"")
+            raise ProbatumValueError(f"tif: {tif!r}; use \"gtc\", \"ioc\" or \"fok\"")
 
         _flag("post_only", post_only)
         _flag("reduce_only", reduce_only)
 
         if post_only and kind != "limit":
-            raise ValueError(f"post_only: a {kind} order takes liquidity; give limit= "
-                             f"to rest one")
+            raise ProbatumValueError(f"post_only: a {kind} order takes liquidity; give "
+                                     f"limit= to rest one")
 
         if kind == "stop" and tif.lower() != "gtc":
-            raise ValueError(f"tif: {tif!r} for a stop, which rests until it triggers; "
-                             f"leave tif out")
+            raise ProbatumValueError(f"tif: {tif!r} for a stop, which rests until it "
+                                     f"triggers; leave tif out")
 
         before = self.engine.num_events()
         order  = self.engine.order(side, size, kind, price, trigger, reduce_only,
@@ -445,10 +451,11 @@ class _Run:
     def value(self, side, amount, tif, reduce_only, k):
         """A market order on column ``k`` for ``amount`` of the quote currency."""
         if not _number(amount):
-            raise TypeError(f"amount: {amount!r}; give an amount of the quote currency")
+            raise ProbatumTypeError(f"amount: {amount!r}; give an amount of the quote "
+                                    f"currency")
 
         if not isinstance(tif, str):
-            raise TypeError(f"tif: {tif!r}; use \"ioc\" or \"fok\"")
+            raise ProbatumTypeError(f"tif: {tif!r}; use \"ioc\" or \"fok\"")
 
         _flag("reduce_only", reduce_only)
 
@@ -460,7 +467,8 @@ class _Run:
     def bracket(self, stop, take_profit, k):
         """A bracket's two legs on column ``k``."""
         if stop is None and take_profit is None:
-            raise ValueError("bracket: no stop and no take_profit; give either or both")
+            raise ProbatumValueError("bracket: no stop and no take_profit; give "
+                                     "either or both")
 
         stop        = self.price("stop", stop)
         take_profit = self.price("take_profit", take_profit)
@@ -497,8 +505,8 @@ class _Run:
     def own(self, order):
         """``order``, refused where it is not a handle this account handed out."""
         if not isinstance(order, Order) or order._run is not self:
-            raise TypeError(f"order: {order!r}; pass an Order this {self.named}'s verbs "
-                            f"returned")
+            raise ProbatumTypeError(f"order: {order!r}; pass an Order this "
+                                    f"{self.named}'s verbs returned")
         return order
 
 
@@ -523,8 +531,9 @@ class _Run:
         for name, given, takes in (("price", price, "limit"),
                                    ("trigger", trigger, "stop")):
             if given is not None and kind != takes:
-                raise ValueError(f"{name}: {given} for a {kind} order, which has none; "
-                                 f"move a limit by its price and a stop by its trigger")
+                raise ProbatumValueError(f"{name}: {given} for a {kind} order, which "
+                                         f"has none; move a limit by its price and a "
+                                         f"stop by its trigger")
         size        = None if size is None else self.size(size)
         self.synced = False
         moved       = self.engine.replace(order.id, size, price, trigger)
@@ -534,8 +543,8 @@ class _Run:
     def target(self, weights, tolerance, transfer):
         """The legs that bring each instrument to its weight of equity."""
         if not _number(tolerance):
-            raise TypeError(f"tolerance: {tolerance!r}; give a fraction of equity "
-                            f"from 0")
+            raise ProbatumTypeError(f"tolerance: {tolerance!r}; give a fraction of "
+                                    f"equity from 0")
 
         _flag("transfer", transfer)
 
@@ -548,21 +557,22 @@ class _Run:
             given = {}
             for name, weight in weights.items():
                 if not isinstance(name, str) or name not in self.columns:
-                    raise KeyError(f"weights: no instrument {name!r}; use one of "
-                                   f"{', '.join(self.names)}")
+                    raise ProbatumKeyError(f"weights: no instrument {name!r}; use one "
+                                           f"of {', '.join(self.names)}")
                 given[self.columns[name]] = weight
         elif _number(weights):
-            raise ValueError(f"weights: {weights!r}, one number, for {self.width} "
-                             f"instruments; give one for each, or a dict from name to "
-                             f"weight")
+            raise ProbatumValueError(f"weights: {weights!r}, one number, for "
+                                     f"{self.width} instruments; give one for each, or "
+                                     f"a dict from name to weight")
         else:
             # as objects, so a bool or a number written as text reaches weight as it
             # came rather than read as a number
             values = np.asarray(weights, dtype=object)
             if values.shape != (self.width,):
-                raise ValueError(f"weights: an array of shape {values.shape} for "
-                                 f"{self.width} instrument{'s' * (self.width > 1)}; "
-                                 f"give one of ({self.width},)")
+                raise ProbatumValueError(f"weights: an array of shape {values.shape} "
+                                         f"for {self.width} "
+                                         f"instrument{'s' * (self.width > 1)}; give "
+                                         f"one of ({self.width},)")
 
             given = dict(enumerate(values.tolist()))
 
@@ -574,16 +584,18 @@ class _Run:
     def weight(self, k, weight):
         """``weight``, a target's on column ``k``, as a float."""
         if not _number(weight):
-            raise TypeError(f"weights: {weight!r} for {self.names[k]}; give a number")
+            raise ProbatumTypeError(f"weights: {weight!r} for {self.names[k]}; give a "
+                                    f"number")
 
         weight = float(weight)
         if not math.isfinite(weight):
-            raise ValueError(f"weights: {weight} for {self.names[k]}; give a finite "
-                             f"number")
+            raise ProbatumValueError(f"weights: {weight} for {self.names[k]}; give a "
+                                     f"finite number")
 
         if weight < 0.0 and self.spot[k]:
-            raise ValueError(f"weights: {weight} for {self.names[k]}, which is spot and "
-                             f"cannot be short; trade a perpetual instead")
+            raise ProbatumValueError(f"weights: {weight} for {self.names[k]}, which is "
+                                     f"spot and cannot be short; trade a perpetual "
+                                     f"instead")
 
         return weight
 
@@ -672,9 +684,10 @@ class Bar:
 
     def __getitem__(self, name):
         run = self._run
-        if name not in run.columns:
-            raise KeyError(f"bar: no instrument {name!r}; use one of "
-                           f"{', '.join(run.names)}")
+        if not isinstance(name, str) or name not in run.columns:
+            raise ProbatumKeyError(f"bar: no instrument {name!r}; use one of "
+                                   f"{', '.join(run.names)}")
+
         return InstrumentBar(run, self.i, run.columns[name])
 
 
@@ -705,9 +718,9 @@ class Bar:
     def _one(self, field):
         run = self._run
         if run.width != 1:
-            raise AttributeError(f"bar.{field}: the universe has {run.width} "
-                                 f"instruments; use bar.{field}s or "
-                                 f"bar[\"{run.names[0]}\"].{field}")
+            raise ProbatumAttributeError(f"bar.{field}: the universe has {run.width} "
+                                         f"instruments; use bar.{field}s or "
+                                         f"bar[\"{run.names[0]}\"].{field}")
 
         return getattr(InstrumentBar(run, self.i, 0), field)
 
@@ -783,8 +796,8 @@ class Bar:
             return Data._of(data._root, (0, end), data._cols)
 
         if isinstance(n, bool) or not isinstance(n, numbers.Integral) or n < 1:
-            raise ValueError(f"n: {n!r}; give history a whole number of bars from 1, or "
-                             f"leave n out for every bar so far")
+            raise ProbatumValueError(f"n: {n!r}; give history a whole number of bars "
+                                     f"from 1, or leave n out for every bar so far")
 
         return Data._of(data._root, (max(0, end - int(n)), end), data._cols)
 
@@ -949,9 +962,9 @@ class Account(_Verbs):
     def _column(self, verb):
         run = self._run
         if run.width != 1:
-            raise AttributeError(f"{run.named}.{verb}: the account holds {run.width} "
-                                 f"instruments; use {run.named}[\"{run.names[0]}\"]."
-                                 f"{verb}")
+            raise ProbatumAttributeError(f"{run.named}.{verb}: the account holds "
+                                         f"{run.width} instruments; use "
+                                         f"{run.named}[\"{run.names[0]}\"].{verb}")
         return 0
 
 
@@ -1036,10 +1049,10 @@ class Account(_Verbs):
         """Move ``amount`` of cash into the ``to`` wallet, "spot" or "margin", at the
         start of the next bar, held to what the wallet it leaves may give (ADR 0008)."""
         if not _number(amount):
-            raise TypeError(f"amount: {amount!r}; give the cash to move")
+            raise ProbatumTypeError(f"amount: {amount!r}; give the cash to move")
 
         if not isinstance(to, str):
-            raise TypeError(f"to: {to!r}; use \"spot\" or \"margin\"")
+            raise ProbatumTypeError(f"to: {to!r}; use \"spot\" or \"margin\"")
 
         self._run.engine.transfer(amount, to)
 
@@ -1333,21 +1346,23 @@ class Trades:
             try:
                 return self._columns[key]
             except KeyError:
-                raise KeyError(f"trades: no column {key!r}; use one of "
-                               f"{', '.join(self._columns)}") from None
+                raise ProbatumKeyError(f"trades: no column {key!r}; use one of "
+                                       f"{', '.join(self._columns)}") from None
 
         if isinstance(key, numbers.Integral) and not isinstance(key, bool):
             at = int(key) + self._length if key < 0 else int(key)
             if not self._length:
-                raise IndexError(f"row: {int(key)} of no round trips; check "
-                                 f"len(account.trades) first")
+                raise ProbatumIndexError(f"row: {int(key)} of no round trips; check "
+                                         f"len(account.trades) first")
             if not 0 <= at < self._length:
-                raise IndexError(f"row: {int(key)} of {self._length:,} round trips; give "
-                                 f"one from {-self._length:,} to {self._length - 1:,}")
+                raise ProbatumIndexError(f"row: {int(key)} of {self._length:,} round "
+                                         f"trips; give one from {-self._length:,} to "
+                                         f"{self._length - 1:,}")
             return {name: column[at].item() if isinstance(column[at], np.generic)
                     else column[at] for name, column in self._columns.items()}
 
-        raise TypeError(f"key: {key!r}; give a column's name or a row's position")
+        raise ProbatumTypeError(f"key: {key!r}; give a column's name or a row's "
+                                f"position")
 
 
     def __iter__(self):
@@ -1356,20 +1371,20 @@ class Trades:
 
     def __contains__(self, item):
         if isinstance(item, str):
-            raise TypeError(f"{item!r} in trades: the round trips are rows, as dicts; ask "
-                            f"{item!r} in trades.columns")
+            raise ProbatumTypeError(f"{item!r} in trades: the round trips are rows, as "
+                                    f"dicts; ask {item!r} in trades.columns")
 
         return any(row == item for row in self)
 
 
     def __getattr__(self, name):
         if name.startswith("_"):
-            raise AttributeError(name)
+            raise ProbatumAttributeError(name)
 
         columns = self.__dict__["_columns"]
         if name not in columns:
-            raise AttributeError(f"trades: no column {name!r}; use one of "
-                                 f"{', '.join(columns)}")
+            raise ProbatumAttributeError(f"trades: no column {name!r}; use one of "
+                                         f"{', '.join(columns)}")
         return columns[name]
 
 

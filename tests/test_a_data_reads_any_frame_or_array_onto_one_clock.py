@@ -17,6 +17,7 @@ import pyarrow as pa
 import pytest
 
 import probatum
+from probatum import DataError, ProbatumTypeError
 
 HOUR  = 3_600_000_000_000
 START = 1_704_067_200_000_000_000      # 2024-01-01 00:00 UTC
@@ -218,7 +219,7 @@ def test_the_interval_is_the_median_gap_or_the_one_given_or_declared():
      "them in UTC"),
 ])
 def test_a_clock_the_bars_cannot_keep_is_refused(make, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(DataError, match=re.escape(says)):
         make()
 
 
@@ -243,7 +244,7 @@ def broken(row, **values):
                              "give a volume of 0 or more"),
 ])
 def test_a_bar_the_engine_cannot_simulate_is_refused_where_it_sits(bars, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(DataError, match=re.escape(says)):
         probatum.Data(bars, symbol="X")
 
 
@@ -255,56 +256,57 @@ def test_a_row_with_no_bar_is_an_instrument_that_did_not_print():
 
 
 @pytest.mark.parametrize("make, error, says", [
-    (lambda: probatum.Data(frame().drop(columns=["volume"]), symbol="X"), ValueError,
+    (lambda: probatum.Data(frame().drop(columns=["volume"]), symbol="X"), DataError,
      "data: no volume column; give open, high, low, close and volume"),
-    (lambda: probatum.Data(frame().assign(close="x"), symbol="X"), ValueError,
+    (lambda: probatum.Data(frame().assign(close="x"), symbol="X"), DataError,
      "data: column close holds text; give numbers"),
     (lambda: probatum.Data(frame().assign(close=lambda f: pd.Categorical(f.close)),
-                           symbol="X"), ValueError,
+                           symbol="X"), DataError,
      "data: column close holds categories of floats; give numbers"),
     (lambda: probatum.Data(frame().assign(close=lambda f: f.index), symbol="X"),
-     ValueError, "data: column close holds times; give numbers"),
+     DataError, "data: column close holds times; give numbers"),
     (lambda: probatum.Data(frame().reset_index().assign(
-        datetime=lambda f: f.datetime.where(f.index != 2)), symbol="X"), ValueError,
+        datetime=lambda f: f.datetime.where(f.index != 2)), symbol="X"), DataError,
      "data: X's bar at row 2 has no open time; give every bar its open time"),
-    (lambda: probatum.Data(frame().reset_index(drop=True), symbol="X"), ValueError,
+    (lambda: probatum.Data(frame().reset_index(drop=True), symbol="X"), DataError,
      "data: no time column; give the bars' open times in a datetime column or index"),
     (lambda: probatum.Data(frame().reset_index().assign(
-        close_time=lambda f: f.datetime), symbol="X"), ValueError,
+        close_time=lambda f: f.datetime), symbol="X"), DataError,
      "data: times in datetime, close_time; keep the bars' open times alone"),
     (lambda: probatum.Data(frame().assign(close_time=lambda f: f.index), symbol="X"),
-     ValueError, "data: times in close_time, datetime; keep the bars' open times "
+     DataError, "data: times in close_time, datetime; keep the bars' open times "
                  "alone"),
-    (lambda: probatum.Data(np.ones((3, 5))), TypeError,
+    (lambda: probatum.Data(np.ones((3, 5))), ProbatumTypeError,
      "time: none for an array of bars; pass time=, each bar's open time"),
-    (lambda: probatum.Data(np.ones((3, 5)), time=["2024-01-01"] * 3), TypeError,
+    (lambda: probatum.Data(np.ones((3, 5)), time=["2024-01-01"] * 3), ProbatumTypeError,
      "time: values of <U10; give datetimes or int64 nanoseconds since 1970"),
-    (lambda: probatum.Data(np.ones((3, 5)), time=np.arange(2)), ValueError,
+    (lambda: probatum.Data(np.ones((3, 5)), time=np.arange(2)), DataError,
      "time: 2 times for 3 bars; give each bar its open time"),
-    (lambda: probatum.Data(np.ones((3, 4)), time=np.arange(3)), ValueError,
+    (lambda: probatum.Data(np.ones((3, 4)), time=np.arange(3)), DataError,
      "data: an array of shape (3, 4); give (T, 5) bars of one instrument"),
     (lambda: probatum.Data(np.ones((3, 2, 5)), time=np.arange(3), symbol="X"),
-     ValueError, "symbol: 'X' for 2 instruments; give a list of 2 names"),
+     DataError, "symbol: 'X' for 2 instruments; give a list of 2 names"),
     (lambda: probatum.Data(np.ones((3, 2, 5)), time=np.arange(3), symbol=["X", "X"]),
-     ValueError, "symbol: ['X', 'X'] names X twice; name each once"),
-    (lambda: probatum.Data(frame(), symbol=["X"]), TypeError,
+     DataError, "symbol: ['X', 'X'] names X twice; name each once"),
+    (lambda: probatum.Data(frame(), symbol=["X"]), ProbatumTypeError,
      "symbol: ['X'] for one instrument's bars; give its name"),
-    (lambda: probatum.Data({1: frame()}), TypeError,
+    (lambda: probatum.Data({1: frame()}), ProbatumTypeError,
      "data: a key of 1; key each frame by its symbol"),
-    (lambda: probatum.Data(probatum.Data(frame(), symbol="X"), symbol="Y"), TypeError,
+    (lambda: probatum.Data(probatum.Data(frame(), symbol="X"), symbol="Y"),
+     ProbatumTypeError,
      "data: a Data with settings beside it; build the Data with them, or pass it "
      "alone"),
-    (lambda: probatum.Data(routed(), symbol="ETHUSDT"), ValueError,
+    (lambda: probatum.Data(routed(), symbol="ETHUSDT"), DataError,
      "symbol: 'ETHUSDT' for a frame of BTCUSDT; leave it out, the frame names itself"),
-    (lambda: probatum.Data(routed(), market="spot"), ValueError,
+    (lambda: probatum.Data(routed(), market="spot"), DataError,
      "market: 'spot' for a frame of the linear market; leave it out"),
-    (lambda: probatum.Data(routed(market="inverse", volume_unit="base")), ValueError,
+    (lambda: probatum.Data(routed(market="inverse", volume_unit="base")), DataError,
      "data: BTCUSDT's volume is in base, and an inverse contract's volume is counted "
      "in contracts"),
-    (lambda: probatum.Data(frame(), symbol="X", market="futures"), ValueError,
+    (lambda: probatum.Data(frame(), symbol="X", market="futures"), DataError,
      "market: 'futures'; use spot, linear, inverse"),
     (lambda: probatum.Data({"A": frame(), "B": frame().assign()}, symbol="C"),
-     TypeError, "symbol: 'C' beside a dict of frames, whose keys name its "
+     ProbatumTypeError, "symbol: 'C' beside a dict of frames, whose keys name its "
                 "instruments; leave it out"),
 ])
 def test_a_source_it_cannot_read_bars_from_is_refused(make, error, says):

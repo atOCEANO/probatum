@@ -26,6 +26,8 @@ import pyarrow.compute
 import pytest
 
 import probatum
+from probatum import (ProbatumAttributeError, ProbatumIndexError, ProbatumKeyError,
+                      ProbatumTypeError, ProbatumValueError)
 from probatum._result import SCHEMAS, OrderLog, Table
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (
     VENUE, bars, one, pair, weights)
@@ -366,7 +368,8 @@ def test_a_table_reads_by_column_row_slice_and_mask(results):
 
     assert trades.instrument.dtype == object and not trades.open.flags.writeable
     assert trades[0] == next(iter(trades)) and trades[-1] == list(trades)[-1]
-    with pytest.raises(IndexError, match=f"row: {count} of a table of {count} rows"):
+    with pytest.raises(ProbatumIndexError, match=f"row: {count} of a table of {count} "
+                                                 f"rows"):
         trades[count]
 
     assert list(trades[1:3]) == list(trades)[1:3]
@@ -382,30 +385,31 @@ def test_a_table_reads_by_column_row_slice_and_mask(results):
 
     assert isinstance(close, np.ma.MaskedArray) and close.dtype == np.int64
     np.testing.assert_array_equal(np.ma.getmaskarray(close), trades.open)
-    with pytest.raises(TypeError, match=r"'pnl' in table: a table holds rows, as dicts; "
-                                        r"ask 'pnl' in table.columns"):
+    with pytest.raises(ProbatumTypeError, match=r"'pnl' in table: a table holds rows, "
+                                                r"as dicts; ask 'pnl' in "
+                                                r"table.columns"):
         "pnl" in trades
 
     assert trades[0] in trades
     assert trades == results["pair"].trades and trades != results["idle"].trades
     assert repr(trades).startswith(f"Table({count} rows: instrument, side, size")
-    with pytest.raises(KeyError, match="table: no column 'symbol'; use one of "
-                                       "instrument, side"):
+    with pytest.raises(ProbatumKeyError, match="table: no column 'symbol'; use one of "
+                                               "instrument, side"):
         trades["symbol"]
-    with pytest.raises(AttributeError, match="table: no column 'symbol'"):
+    with pytest.raises(ProbatumAttributeError, match="table: no column 'symbol'"):
         trades.symbol
-    with pytest.raises(TypeError, match="key: 1.5; give a column's name"):
+    with pytest.raises(ProbatumTypeError, match="key: 1.5; give a column's name"):
         trades[1.5]
-    with pytest.raises(IndexError, match="key: a mask of 2 rows"):
+    with pytest.raises(ProbatumIndexError, match="key: a mask of 2 rows"):
         trades[np.array([True, False])]
 
     assert list(trades[::-2]) == list(trades)[::-2]
     assert len(trades[[]]) == 0 and trades[[]].columns == trades.columns
-    with pytest.raises(IndexError, match=f"key: position {-count - 1} of a table of "
-                                         f"{count} rows; give one from {-count} to "
-                                         f"{count - 1}"):
+    with pytest.raises(ProbatumIndexError, match=f"key: position {-count - 1} of a "
+                                                 f"table of {count} rows; give one "
+                                                 f"from {-count} to {count - 1}"):
         trades[np.array([0, -count - 1])]
-    with pytest.raises(IndexError, match=re.escape(
+    with pytest.raises(ProbatumIndexError, match=re.escape(
             "row: 0 of a table with no rows; check len(table) first")):
         results["idle"].trades[0]
 
@@ -423,8 +427,9 @@ def test_a_column_that_can_miss_a_value_is_masked_and_a_masked_position_names_no
     order = results["takeover"].fills.order
 
     assert isinstance(order, np.ma.MaskedArray) and np.ma.count_masked(order) == 2
-    with pytest.raises(IndexError, match=f"key: positions of which {trades.open.sum()} are "
-                                         f"masked, and a masked position names no row"):
+    with pytest.raises(ProbatumIndexError, match=f"key: positions of which "
+                                                 f"{trades.open.sum()} are masked, and "
+                                                 f"a masked position names no row"):
         ledger[trades.close_bar]
 
     closed = trades[~trades.open]
@@ -439,7 +444,8 @@ def test_positions_of_any_width_of_integer_read_the_rows_they_name():
 
     assert list(ledger[np.array([1, -1], dtype=np.int8)]) == [ledger[1], ledger[-1]]
     assert list(ledger[np.array([299], dtype=np.uint16)]) == [ledger[299]]
-    with pytest.raises(IndexError, match="key: position 18446744073709551615 of a table"):
+    with pytest.raises(ProbatumIndexError, match="key: position 18446744073709551615 "
+                                                 "of a table"):
         ledger[np.array([2**64 - 1], dtype=np.uint64)]
 
 
@@ -459,20 +465,21 @@ def test_the_binding_s_table_names_what_it_refuses_and_the_fix(results):
     held = results["pair"].trades._held
     rows = len(held)
 
-    with pytest.raises(KeyError, match="name: no column \"symbol\"; use one of instrument"):
+    with pytest.raises(KeyError, match="name: no column \"symbol\"; use one of "
+                                       "instrument"):
         held.column("symbol")
-    with pytest.raises(IndexError, match=f"row: {rows} of a table of {rows} rows; give one "
-                                         f"below {rows}"):
+    with pytest.raises(IndexError, match=f"row: {rows} of a table of {rows} rows; give "
+                                         f"one below {rows}"):
         held.row(rows)
-    with pytest.raises(IndexError, match=f"indices: {rows} of a table of {rows} rows; give "
-                                         f"positions from 0 to {rows - 1}"):
+    with pytest.raises(IndexError, match=f"indices: {rows} of a table of {rows} rows; "
+                                         f"give positions from 0 to {rows - 1}"):
         held.take(np.array([rows]))
 
     engine = probatum._probatum.Engine(np.ones((3, 5)), report=True)
     engine.reset()
 
-    with pytest.raises(ValueError, match="times: none, so no row of a table has a time; "
-                                         "build the engine with times="):
+    with pytest.raises(ValueError, match="times: none, so no row of a table has a "
+                                         "time; build the engine with times="):
         engine.tables(0, ["BTCUSDT"])
 
     # numpy lets a view put any byte in a bool array, and any byte but 0 reads as true
@@ -501,7 +508,8 @@ def test_an_order_log_keeps_one_kind_of_event_and_refuses_another(results):
     assert type(filled) is OrderLog and len(filled) == len(results["pair"].fills)
     assert set(filled.kind) == {"filled"}
     assert list(filled)     == [row for row in orders if row["kind"] == "filled"]
-    with pytest.raises(ValueError, match="kind: 'fill'; use one of placed, armed"):
+    with pytest.raises(ProbatumValueError, match="kind: 'fill'; use one of placed, "
+                                                 "armed"):
         orders.events("fill")
 
 

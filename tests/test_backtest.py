@@ -5,7 +5,7 @@ engine and bundle stats, the equity curve, and the trade log.
 import numpy as np
 import pytest
 
-from probatum import Backtester, BacktestResult, Strategy
+from probatum import Backtester, BacktestResult, ProbatumNotImplementedError, Strategy
 
 
 def series():
@@ -48,7 +48,7 @@ def test_backtester_returns_stats_equity_and_trades():
 def test_base_strategy_next_must_be_overridden():
     bt = Backtester(series())
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ProbatumNotImplementedError):
         bt.run(Strategy())
 
 

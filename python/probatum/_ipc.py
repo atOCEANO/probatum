@@ -13,6 +13,8 @@ import struct
 
 import numpy as np
 
+from ._errors import ProbatumValueError
+
 MAGIC        = b"ARROW1"
 CONTINUATION = b"\xff\xff\xff\xff"
 # the format's numbers for its metadata version, its message kinds and the types a
@@ -64,8 +66,9 @@ def write(path, columns, metadata):
             data = [b"" if value is None else value.encode() for value in values]
             ends = np.cumsum([0] + [len(item) for item in data], dtype=np.int64)
             if ends[-1] > np.iinfo(np.int32).max:
-                raise ValueError(f"{name}: {ends[-1]:,} bytes of text, past the 2 GiB "
-                                 f"an Arrow text column holds; write fewer rows")
+                raise ProbatumValueError(f"{name}: {ends[-1]:,} bytes of text, past "
+                                         f"the 2 GiB an Arrow text column holds; write "
+                                         f"fewer rows")
             parts += [ends.astype("<i4").view(np.uint8), b"".join(data)]
         else:
             values = np.ascontiguousarray(values, dtype=KINDS[kind][2])

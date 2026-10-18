@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 import probatum
+from probatum import ProbatumAttributeError, ProbatumValueError, ProbatumWarning
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import VENUE, bars, pair
 from test_a_result_hands_its_tables_to_any_arrow_reader import runs
 
@@ -383,11 +384,11 @@ def test_a_run_without_costs_that_raises_or_stops_leaves_its_column_missing():
 
     try:
         STOP.update(now=True, error=RuntimeError("the model went away"))
-        with pytest.warns(UserWarning,
+        with pytest.warns(ProbatumWarning,
                           match="raised RuntimeError: the model went away") as caught:
             table = raised.baselines
 
-        assert caught.pop(UserWarning).filename == __file__
+        assert caught.pop(ProbatumWarning).filename == __file__
         assert np.isnan(table["frictionless"]).all()
         assert not np.isnan(table["buy_and_hold"]).any()
 
@@ -398,10 +399,10 @@ def test_a_run_without_costs_that_raises_or_stops_leaves_its_column_missing():
         STOP.update(now=False)
 
     # the copy that stopped is gone, so it is not played a second time
-    with pytest.warns(UserWarning, match="stopped before it finished") as caught:
+    with pytest.warns(ProbatumWarning, match="stopped before it finished") as caught:
         table = stopped.baselines
 
-    assert caught.pop(UserWarning).filename == __file__
+    assert caught.pop(ProbatumWarning).filename == __file__
     assert np.isnan(table["frictionless"]).all()
     assert stopped.baselines is table
 
@@ -416,19 +417,21 @@ def test_a_result_pickled_before_its_baselines_were_read_cannot_give_or_save_the
 
     early = pickle.loads(pickle.dumps(result))
 
-    with pytest.raises(AttributeError, match="not computed before this Result was "
-                                             "pickled; read result.baselines before"):
+    with pytest.raises(ProbatumAttributeError, match="not computed before this Result "
+                                                     "was pickled; read "
+                                                     "result.baselines before"):
         early.baselines
     assert early.to_dict()["baselines"] is None
-    with pytest.raises(ValueError, match="so it wrote nothing"):
+    with pytest.raises(ProbatumValueError, match="so it wrote nothing"):
         early.save(tmp_path / "early")
     assert not (tmp_path / "early").exists()
 
     book = probatum.combine({"A": early, "B": result})
 
-    with pytest.raises(AttributeError, match="A was pickled before its baselines"):
+    with pytest.raises(ProbatumAttributeError, match="A was pickled before its "
+                                                     "baselines"):
         book.baselines
-    with pytest.raises(ValueError, match="A was pickled before"):
+    with pytest.raises(ProbatumValueError, match="A was pickled before"):
         book.save(tmp_path / "book")
     assert not (tmp_path / "book").exists()
 

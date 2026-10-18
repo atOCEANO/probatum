@@ -18,6 +18,7 @@ import pyarrow.ipc
 import pytest
 
 import probatum
+from probatum import ProbatumValueError
 from probatum._result import SCHEMAS
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (
     VENUE, bars, one, pair, weights)
@@ -248,21 +249,23 @@ def test_a_format_this_version_does_not_read_is_refused(results, tmp_path):
     results["array"].save(tmp_path)
     manifest_of(tmp_path, format=2, version="9.9.9")
 
-    with pytest.raises(ValueError, match=r"holds a Result saved in format 2 by probatum "
-                                         r"9\.9\.9, and this version, .*, reads format "
-                                         r"1; load it with the version that saved it"):
+    with pytest.raises(ProbatumValueError, match=r"holds a Result saved in format 2 by "
+                                                 r"probatum 9\.9\.9, and this version, "
+                                                 r".*, reads format 1; load it with "
+                                                 r"the version that saved it"):
         probatum.Result.load(tmp_path)
 
     for given in (0, "1", 1.0, True, None):
         manifest_of(tmp_path, format=given)
-        with pytest.raises(ValueError, match="result.json is not a manifest save writes"
-                           if not isinstance(given, int) or isinstance(given, bool)
-                           else "saved in format 0"):
+        says = ("result.json is not a manifest save writes"
+                if not isinstance(given, int) or isinstance(given, bool)
+                else "saved in format 0")
+        with pytest.raises(ProbatumValueError, match=says):
             probatum.Result.load(tmp_path)
 
     (tmp_path / "result.json").write_text('{"format": 1, "bust": NaN}', encoding="utf-8")
 
-    with pytest.raises(ValueError, match="is not a manifest save writes"):
+    with pytest.raises(ProbatumValueError, match="is not a manifest save writes"):
         probatum.Result.load(tmp_path)
 
 
@@ -390,7 +393,7 @@ def test_files_save_does_not_write_are_refused(broken, said, results, tmp_path,
         probatum._ipc.write(tmp_path / "ledger.arrow",
                             probatum._result._stored(results["array"].ledger), {})
 
-    with pytest.raises(ValueError, match=said):
+    with pytest.raises(ProbatumValueError, match=said):
         probatum.Result.load(tmp_path)
 
 
@@ -436,7 +439,7 @@ def test_a_save_that_stops_partway_leaves_the_result_that_was_there_or_none(
         with pytest.raises(OSError):
             strategy.save(tmp_path)
 
-    with pytest.raises(ValueError, match="holds no result.json"):
+    with pytest.raises(ProbatumValueError, match="holds no result.json"):
         probatum.Result.load(tmp_path)
 
     strategy.save(tmp_path)
@@ -444,7 +447,8 @@ def test_a_save_that_stops_partway_leaves_the_result_that_was_there_or_none(
     assert not (tmp_path / "policy.npy").exists()
     assert not [name for name in os.listdir(tmp_path) if name.endswith(".partial")]
     same(probatum.Result.load(tmp_path), strategy)
-    with pytest.raises(ValueError, match="path: .* is a file; name a directory"):
+    with pytest.raises(ProbatumValueError, match="path: .* is a file; name a "
+                                                 "directory"):
         array.save(tmp_path / "result.json")
 
 
@@ -482,7 +486,7 @@ def test_a_book_whose_account_is_described_in_part_is_refused(results, tmp_path)
         if key is None:
             assert probatum.Result.load(tmp_path).provenance == provenance
         else:
-            with pytest.raises(ValueError, match=MANIFEST):
+            with pytest.raises(ProbatumValueError, match=MANIFEST):
                 probatum.Result.load(tmp_path)
 
 

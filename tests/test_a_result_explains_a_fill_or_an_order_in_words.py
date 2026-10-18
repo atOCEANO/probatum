@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 import probatum
+from probatum import ProbatumTypeError, ProbatumValueError
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (
     VENUE, pair, weights)
 from test_a_result_counts_its_costs_and_keeps_each_instrument_s_record import CHARGED
@@ -735,28 +736,28 @@ def test_only_the_run_that_handed_out_a_handle_tells_it(tmp_path):
     assert result.explain(next(row for row in result.orders if row["order"] == 1)) == told
 
     other = stories()
-    with pytest.raises(ValueError, match="of a run this Result does not hold"):
+    with pytest.raises(ProbatumValueError, match="of a run this Result does not hold"):
         other.explain(handle)
 
     unpickled = pickle.loads(pickle.dumps(result))
-    with pytest.raises(ValueError, match="of a run this Result does not hold"):
+    with pytest.raises(ProbatumValueError, match="of a run this Result does not hold"):
         unpickled.explain(handle)
 
     result.save(tmp_path / "run")
     loaded = probatum.Result.load(tmp_path / "run")
-    with pytest.raises(ValueError, match="of a run this Result does not hold"):
+    with pytest.raises(ProbatumValueError, match="of a run this Result does not hold"):
         loaded.explain(handle)
 
     book = probatum.combine({"A": result, "B": held()})
-    with pytest.raises(TypeError, match="pass a row of book.orders"):
+    with pytest.raises(ProbatumTypeError, match="pass a row of book.orders"):
         book.explain(handle)
-    with pytest.raises(TypeError, match="pass a row of result.fills"):
+    with pytest.raises(ProbatumTypeError, match="pass a row of result.fills"):
         result.explain(0)
 
     changed = dict(result.fills[0], price=1.0)
-    with pytest.raises(ValueError, match="fill log does not hold"):
+    with pytest.raises(ProbatumValueError, match="fill log does not hold"):
         result.explain(changed)
-    with pytest.raises(ValueError, match="order log does not hold"):
+    with pytest.raises(ProbatumValueError, match="order log does not hold"):
         result.explain(dict(result.orders[0], bar=99))
 
 
@@ -770,7 +771,7 @@ def test_a_transfer_s_clamp_names_no_order_to_tell():
     result = probatum.backtest(Script(plan), both, venue)
     clamp  = next(row for row in result.orders if row["order"] is None)
 
-    with pytest.raises(ValueError, match="an event of no order"):
+    with pytest.raises(ProbatumValueError, match="an event of no order"):
         result.explain(clamp)
 
 

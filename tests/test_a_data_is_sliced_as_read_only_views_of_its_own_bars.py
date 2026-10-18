@@ -13,6 +13,8 @@ import pandas as pd
 import pytest
 
 import probatum
+from probatum import (DataError, ProbatumAttributeError, ProbatumKeyError,
+                      ProbatumTypeError)
 
 HOUR = 3_600_000_000_000
 
@@ -73,12 +75,12 @@ def test_one_instrument_reads_in_the_singular_and_several_in_the_plural():
     assert data.closes.shape == (48, 2)
     assert data["ETHUSDT"].close.shape == (48,)
 
-    with pytest.raises(AttributeError, match=re.escape(
+    with pytest.raises(ProbatumAttributeError, match=re.escape(
             'data.close: the universe has 2 instruments; use data.closes or '
             'data["BTCUSDT"].close')):
         data.close
 
-    with pytest.raises(KeyError, match=re.escape(
+    with pytest.raises(ProbatumKeyError, match=re.escape(
             "data: no instrument 'SOLUSDT'; use one of BTCUSDT, ETHUSDT")):
         data["SOLUSDT"]
 
@@ -133,20 +135,23 @@ def test_select_takes_instruments_in_the_order_named():
 
 
 @pytest.mark.parametrize("take, error, says", [
-    (lambda data: data["soon":], ValueError, "start: 'soon' is not a time; give one"),
-    (lambda data: data[:"NaT"], ValueError, "stop: 'NaT' is not a time"),
-    (lambda data: data.split(""), ValueError, "when: '' is not a time"),
-    (lambda data: data.split(None), ValueError, "when: None is not a time"),
-    (lambda data: data.after(1.5), TypeError,
+    (lambda data: data["soon":], DataError, "start: 'soon' is not a time; give one"),
+    (lambda data: data[:"NaT"], DataError, "stop: 'NaT' is not a time"),
+    (lambda data: data.split(""), DataError, "when: '' is not a time"),
+    (lambda data: data.split(None), DataError, "when: None is not a time"),
+    (lambda data: data.after(1.5), ProbatumTypeError,
      "when: 1.5; give a time or the text of one"),
-    (lambda data: data[::2], TypeError, "data: a step of 2; slice bars without one"),
-    (lambda data: data[["BTCUSDT"]], TypeError,
+    (lambda data: data[::2], ProbatumTypeError,
+     "data: a step of 2; slice bars without one"),
+    (lambda data: data[["BTCUSDT"]], ProbatumTypeError,
      "data: indexed by ['BTCUSDT']; use an instrument's name or a slice of times"),
-    (lambda data: data.select(["X"]), KeyError, "names: no instrument 'X'"),
-    (lambda data: data.select("BTCUSDT"), TypeError,
+    (lambda data: data.select(["X"]), ProbatumKeyError, "names: no instrument 'X'"),
+    (lambda data: data.select("BTCUSDT"), ProbatumTypeError,
      "names: 'BTCUSDT'; give a list of names, or index the Data by one"),
-    (lambda data: data.select([]), ValueError, "names: none; name at least one"),
-    (lambda data: data.select(["BTCUSDT", "BTCUSDT"]), ValueError,
+    (lambda data: data.select(None), ProbatumTypeError,
+     "names: None; give a list of names, or index the Data by one"),
+    (lambda data: data.select([]), DataError, "names: none; name at least one"),
+    (lambda data: data.select(["BTCUSDT", "BTCUSDT"]), DataError,
      "names: ['BTCUSDT', 'BTCUSDT'] names BTCUSDT twice; name each once"),
 ])
 def test_a_slice_or_a_selection_it_cannot_make_is_refused(take, error, says):
@@ -163,16 +168,16 @@ def test_a_join_puts_two_markets_on_one_clock_under_their_market_names():
     assert both.available[:, 1].tolist()   == [False, False] + [True] * 46
     assert both["linear:BTCUSDT"].close[2] == 103.0
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(DataError, match=re.escape(
             "other: holds binance:spot:BTCUSDT too; join Datas of different "
             "instruments")):
         spot.join(spot)
 
     four = probatum.Data(frame()[::4], symbol="X")
-    with pytest.raises(ValueError, match=re.escape("other: 4h bars beside 1h")):
+    with pytest.raises(DataError, match=re.escape("other: 4h bars beside 1h")):
         spot.join(four)
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(DataError, match=re.escape(
             "other: instrument 0's bar at 2024-01-01 00:00 is not a bar")):
         spot.join(frame().assign(high=50.0))
 

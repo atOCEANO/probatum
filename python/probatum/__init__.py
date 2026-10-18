@@ -10,9 +10,16 @@ self-contained HTML document for a notebook cell or a file, computing nothing it
 ``Venue`` holds a venue's rules, and ``venues`` the presets, each one a Venue.
 ``backtest`` runs a policy on a Data at a venue and returns the ``Result`` it
 recorded, ``Strategy`` is a policy that decides at each close, and ``combine`` adds
-Results from accounts at different venues into one book.
+Results from accounts at different venues into one book. Every error probatum raises
+is a ``ProbatumError`` and the built-in it means, and every warning a
+``ProbatumWarning``, outside the modules carried from emsl, which raise the built-ins
+and warn with ``UserWarning`` or ``RuntimeWarning``.
 """
 
+from ._errors import (DataError, LookaheadError, MissingDependency, PolicyError,
+                      ProbatumAttributeError, ProbatumError, ProbatumIndexError,
+                      ProbatumKeyError, ProbatumNotImplementedError, ProbatumTypeError,
+                      ProbatumValueError, ProbatumWarning, SpecError, VenueError)
 from ._probatum import Batch
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
@@ -31,6 +38,10 @@ __all__ = [
     "BacktestResult", "Backtester", "Batch", "Data", "Engine", "Instrument", "Market",
     "Result", "Strategy", "Venue", "backtest", "chart", "chart_defaults", "combine",
     "to_ohlcv", "tune", "walk_forward", "metrics", "plot", "rl", "ta", "venues",
+    "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
+    "ProbatumIndexError", "ProbatumAttributeError", "ProbatumNotImplementedError",
+    "DataError", "VenueError", "SpecError", "LookaheadError", "PolicyError",
+    "MissingDependency", "ProbatumWarning",
 ]
 
 try:
@@ -52,4 +63,4 @@ def __getattr__(name):
         import importlib
         return importlib.import_module(".sb3", __name__)
 
-    raise AttributeError(f"module 'probatum' has no attribute {name!r}")
+    raise ProbatumAttributeError(f"module 'probatum' has no attribute {name!r}")

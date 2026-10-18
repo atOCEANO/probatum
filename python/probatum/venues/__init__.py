@@ -12,6 +12,7 @@ import tomllib
 
 import numpy as np
 
+from .._errors import DataError, ProbatumAttributeError, VenueError
 from .._probatum import Engine
 
 KINDS = ("spot", "linear", "inverse")
@@ -87,7 +88,7 @@ def _file(name):
 def _preset(name):
     """The packaged preset ``name``, read and checked once."""
     if name not in _names():
-        raise ValueError(f"venue: {name!r} is not a preset; use one of "
+        raise VenueError(f"venue: {name!r} is not a preset; use one of "
                          f"{', '.join(_names())}")
 
     preset = _file(name)
@@ -95,7 +96,7 @@ def _preset(name):
     if preset["combines"]:
         for part in preset["combines"]:
             if part not in _names():
-                raise ValueError(f"{name}: venue: combines {part!r}, which is not a "
+                raise VenueError(f"{name}: venue: combines {part!r}, which is not a "
                                  f"preset; use one of {', '.join(_names())}")
         preset = _combine(preset, [_file(part) for part in preset["combines"]])
 
@@ -108,7 +109,7 @@ def _table(origin, where, value):
     """``value`` where a table belongs, at ``where`` in ``origin``."""
     if not isinstance(value, dict):
         noun = _noun(origin)
-        raise ValueError(f"{_said(origin, where)}: {value!r} is not a {noun}; give a "
+        raise VenueError(f"{_said(origin, where)}: {value!r} is not a {noun}; give a "
                          f"{noun}")
 
     return value
@@ -118,7 +119,7 @@ def _known(origin, where, table, allowed):
     """``table`` at ``where``, every key of it one of ``allowed``."""
     for key in table:
         if key not in allowed:
-            raise ValueError(f"{_said(origin, where)}: {key!r} is not a setting; give "
+            raise VenueError(f"{_said(origin, where)}: {key!r} is not a setting; give "
                              f"{', '.join(allowed)}")
 
     return table
@@ -129,7 +130,7 @@ def _number(origin, where, value, whole=False):
     kinds = (int,) if whole else (int, float)
     if isinstance(value, bool) or not isinstance(value, kinds):
         need = "a whole number" if whole else "a number"
-        raise ValueError(f"{_said(origin, where)}: {value!r} is not {need}; give "
+        raise VenueError(f"{_said(origin, where)}: {value!r} is not {need}; give "
                          f"{need}")
 
     return value
@@ -144,17 +145,17 @@ def _typed(origin, where, name, value):
         return _number(origin, f"{where}.{name}", value, whole=True)
 
     if name in WORDS and not isinstance(value, str):
-        raise ValueError(f"{_said(origin, f'{where}.{name}')}: {value!r} is not a "
+        raise VenueError(f"{_said(origin, f'{where}.{name}')}: {value!r} is not a "
                          f"word; give its name")
 
     if name in WORDS and value != value.lower():
         # the loader and the Venue compare the words as written
-        raise ValueError(f"{_said(origin, f'{where}.{name}')}: {value!r}; write it "
+        raise VenueError(f"{_said(origin, f'{where}.{name}')}: {value!r}; write it "
                          f"in lowercase, {value.lower()!r}")
 
     if name == "reduce_only_exempt" and not isinstance(value, bool):
         said = "True or False" if origin is None else "true or false"
-        raise ValueError(f"{_said(origin, f'{where}.{name}')}: {value!r}; give {said}")
+        raise VenueError(f"{_said(origin, f'{where}.{name}')}: {value!r}; give {said}")
 
     return value
 
@@ -169,7 +170,7 @@ def _read(text, origin):
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         said = str(error)
-        raise ValueError(f"{origin}: {said[:1].lower()}{said[1:]}; give TOML") from None
+        raise VenueError(f"{origin}: {said[:1].lower()}{said[1:]}; give TOML") from None
 
     _known(origin, "the file", data, ("venue", "defaults", "kinds", "instruments"))
     venue = _known(origin, "venue", _table(origin, "venue", data.get("venue")),
@@ -177,7 +178,7 @@ def _read(text, origin):
 
     name = venue.get("name")
     if not isinstance(name, str) or not name:
-        raise ValueError(f"{origin}: venue: name {name!r}; give the preset's name")
+        raise VenueError(f"{origin}: venue: name {name!r}; give the preset's name")
 
     taken = venue.get("taken")
     if isinstance(taken, datetime.date):
@@ -188,21 +189,21 @@ def _read(text, origin):
         day = None
 
     if day != taken:
-        raise ValueError(f"{origin}: venue: taken {taken!r} is not a day; give the day "
+        raise VenueError(f"{origin}: venue: taken {taken!r} is not a day; give the day "
                          f"the tables were taken, as YYYY-MM-DD")
 
     kind = venue.get("kind")
     if kind is not None and kind not in KINDS:
-        raise ValueError(f"{origin}: venue: kind {kind!r}; use {', '.join(KINDS)}")
+        raise VenueError(f"{origin}: venue: kind {kind!r}; use {', '.join(KINDS)}")
 
     combines = venue.get("combines", [])
     if not isinstance(combines, list) or not all(isinstance(part, str)
                                                  for part in combines):
-        raise ValueError(f"{origin}: venue: combines {combines!r}; give the list of "
+        raise VenueError(f"{origin}: venue: combines {combines!r}; give the list of "
                          f"the presets it combines")
 
     if combines and (kind is not None or set(data) != {"venue"}):
-        raise ValueError(f"{origin}: venue: combines {combines!r} beside settings of "
+        raise VenueError(f"{origin}: venue: combines {combines!r} beside settings of "
                          f"its own; give a combining preset its venue alone")
 
     return dict(name=name, taken=taken, kind=kind, combines=combines,
@@ -223,10 +224,10 @@ def _tables(origin, data, kind):
 
     if kind is not None and kinds:
         if origin is None:
-            raise ValueError(f"kinds: {', '.join(kinds)}, beside kind={kind!r}; give "
+            raise VenueError(f"kinds: {', '.join(kinds)}, beside kind={kind!r}; give "
                              f"every instrument's settings with the venue's, or "
                              f"leave kind out")
-        raise ValueError(f"{origin}: kinds: {', '.join(kinds)}, in a preset of one "
+        raise VenueError(f"{origin}: kinds: {', '.join(kinds)}, in a preset of one "
                          f"kind, {kind}; give every instrument's settings in defaults")
 
     tables = {"defaults": defaults}
@@ -238,7 +239,7 @@ def _tables(origin, data, kind):
     instruments = _table(origin, "instruments", data.get("instruments", {}))
     for key, table in instruments.items():
         if not isinstance(key, str):
-            raise ValueError(f"{_said(origin, 'instruments')}: a key of {key!r}; key "
+            raise VenueError(f"{_said(origin, 'instruments')}: a key of {key!r}; key "
                              f"each instrument by its symbol as text")
 
         _kind_of(origin, key, kind)
@@ -277,7 +278,7 @@ def _combine(preset, parts):
     for part in parts:
         kind = part["kind"]
         if kind is None or kind in kinds:
-            raise ValueError(f"{origin}: combines {part['name']!r}; combine presets of "
+            raise VenueError(f"{origin}: combines {part['name']!r}; combine presets of "
                              f"one kind each, no two of a kind")
 
         kinds[kind] = {name: value for name, value in part["defaults"].items()
@@ -289,7 +290,7 @@ def _combine(preset, parts):
             if name in INSTRUMENT or (name == "funding" and value == "none"):
                 continue
             if defaults.get(name, value) != value:
-                raise ValueError(f"{origin}: combines {part['name']!r}, whose {name} "
+                raise VenueError(f"{origin}: combines {part['name']!r}, whose {name} "
                                  f"{value!r} is not the {defaults[name]!r} another "
                                  f"gives; give the parts one {name}")
             defaults[name] = value
@@ -308,10 +309,10 @@ def _kind_of(origin, key, kind):
     found = re.fullmatch(r"(spot|linear|inverse):(.+)", key)
     if found is None:
         if origin is None:
-            raise ValueError(f"instruments: {key!r} names no kind; key it as "
+            raise VenueError(f"instruments: {key!r} names no kind; key it as "
                              f"kind:SYMBOL, with kind one of {', '.join(KINDS)}, or "
                              f"give the venue's kind with kind=")
-        raise ValueError(f"{origin}: {key!r} names no kind; name an instrument of a "
+        raise VenueError(f"{origin}: {key!r} names no kind; name an instrument of a "
                          f"preset that mixes kinds as kind:SYMBOL, with kind one of "
                          f"{', '.join(KINDS)}")
 
@@ -331,19 +332,19 @@ def _rows(origin, where, tiers):
     rate and amount, an amount left out being 0."""
     noun = _noun(origin)
     if not isinstance(tiers, list):
-        raise ValueError(f"{_said(origin, where)}: {tiers!r} is not a list; give a "
+        raise VenueError(f"{_said(origin, where)}: {tiers!r} is not a list; give a "
                          f"list of {noun}s of {', '.join(TIER)}")
 
     rows = []
     for k, row in enumerate(tiers):
         at = f"{where}[{k}]"
         if not isinstance(row, dict):
-            raise ValueError(f"{_said(origin, at)}: {row!r} is not a {noun}; give a "
+            raise VenueError(f"{_said(origin, at)}: {row!r} is not a {noun}; give a "
                              f"{noun} of {', '.join(TIER)}")
         _known(origin, at, row, TIER)
         for name in ("up_to", "leverage", "rate"):
             if name not in row:
-                raise ValueError(f"{_said(origin, at)}: no {name}; give "
+                raise VenueError(f"{_said(origin, at)}: no {name}; give "
                                  f"{', '.join(TIER)}")
 
         rows.append(tuple(_number(origin, f"{at}.{name}", row.get(name, 0.0))
@@ -364,7 +365,7 @@ def _choice(origin, where, value, plain, given):
 
     shape  = "{{\"{}\": n}}" if origin is None else "{{ {} = n }}"
     shapes = [repr(word) for word in plain] + [shape.format(key) for key in given]
-    raise ValueError(f"{_said(origin, where)}: {value!r}; use {' or '.join(shapes)}")
+    raise VenueError(f"{_said(origin, where)}: {value!r}; use {' or '.join(shapes)}")
 
 
 def _venue_settings(preset):
@@ -386,7 +387,7 @@ def _venue_settings(preset):
     if isinstance(funding, dict):
         _known(origin, "defaults.funding", funding, ("every", "every_bars", "rate"))
         if ("every" in funding) == ("every_bars" in funding) or "rate" not in funding:
-            raise ValueError(f"{said}: {funding!r}; give every, in hours, or "
+            raise VenueError(f"{said}: {funding!r}; give every, in hours, or "
                              f"every_bars, and the rate")
 
         if "every" in funding:
@@ -400,7 +401,7 @@ def _venue_settings(preset):
         shapes = (('{"every": hours, "rate": r}', '{"every_bars": n, "rate": r}')
                   if origin is None else
                   ("{ every = hours, rate = r }", "{ every_bars = n, rate = r }"))
-        raise ValueError(f"{said}: {funding!r}; use 'none', 'data', {shapes[0]} or "
+        raise VenueError(f"{said}: {funding!r}; use 'none', 'data', {shapes[0]} or "
                          f"{shapes[1]}")
 
     fills = defaults["fills"]
@@ -484,8 +485,8 @@ def _settings(preset, keys, contract=None):
 
     if any(spec["market"] == "inverse" for spec in specs):
         origin = _origin(preset) or "data"
-        raise ValueError(f"{origin}: an inverse contract among {len(keys)} "
-                         f"instruments; run it alone, as its account holds it")
+        raise DataError(f"{origin}: an inverse contract among {len(keys)} "
+                        f"instruments; run it alone, as its account holds it")
 
     out["market"]      = "perp"
     out["instruments"] = specs
@@ -556,9 +557,9 @@ def _check(preset):
             found = re.match(r"([a-z_]+)(\W.*)", said, re.DOTALL)
             if found is not None and found.group(1) in SPOKEN:
                 said = SPOKEN[found.group(1)] + found.group(2)
-            raise ValueError(said if name is None else f"{name}: {said}")
+            raise VenueError(said if name is None else f"{name}: {said}")
 
-        raise ValueError(f"{origin if name is None else f'{origin}: {name}'}: {said}")
+        raise VenueError(f"{origin if name is None else f'{origin}: {name}'}: {said}")
 
     def run(chosen):
         said = refused(chosen, checked)
@@ -603,10 +604,17 @@ def _check(preset):
                         tiers=[(float("inf"), 10.0, 0.01, 0.0)])
         if "funding_hours" in settings:
             settings["times"] = np.zeros(1, dtype=np.int64)
+
+        said = None
         try:
             Engine(np.ones((1, 5)), **settings)
         except (ValueError, TypeError) as error:
-            raised(None, str(error))
+            said = str(error)
+
+        # raised outside the handler, as run raises, so the traceback is the venue's
+        # refusal alone and not the engine's with the venue's after it
+        if said is not None:
+            raised(None, said)
 
 
 @functools.cache
@@ -619,7 +627,7 @@ def _venue(name):
 def __getattr__(name):
     if name in _names():
         return _venue(name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    raise ProbatumAttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__():
