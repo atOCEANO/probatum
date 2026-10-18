@@ -36,10 +36,15 @@ class ProbatumAttributeError(ProbatumError, AttributeError):
     universe."""
 
 
-class ProbatumNotImplementedError(ProbatumError, NotImplementedError):
+class ProbatumRuntimeError(ProbatumError, RuntimeError):
+    """A search that cannot go on: its workers lost, every trial of it failed, or its
+    winner run again not matching its trial."""
+
+
+class ProbatumNotImplementedError(ProbatumRuntimeError, NotImplementedError):
     """What is not done yet: a Strategy that writes no ``next``, an agent, which
     ``backtest`` does not run yet, and the transitions level, which it does not record
-    yet."""
+    yet. It is a ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
 
 
 class DataError(ProbatumValueError):

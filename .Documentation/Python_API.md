@@ -40,6 +40,9 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
 | `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, the totals of its costs, each modelling choice it made, graded, three baselines beside it, each instrument's record, its statistics and its provenance, saved as files any tool reads. [Below](#the-result). |
 | `probatum.combine` | Add Results from accounts at different venues into one book. [Below](#combining-books). |
+| `probatum.Int` | A whole number a search draws, on a lattice. [Below](#the-space). |
+| `probatum.Float` | A number a search draws, from an interval or a lattice. [Below](#the-space). |
+| `probatum.Categorical` | One of the choices a search draws among. [Below](#the-space). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
@@ -883,6 +886,27 @@ print(book.baselines.to_pandas().tail())        # cash, buying and holding, no c
 
 <br>
 
+## Search
+
+`probatum.Int`, `probatum.Float` and `probatum.Categorical` name the range of each parameter a search draws, each checked as it is built and never changed after ([Specification](Specification.md#samplers)).
+
+### The space
+
+- `Int(low, high, step=1, log=False)`: a whole number from `low` to `high`, both included, on the lattice `low + k * step`, the step a whole number from 1 that divides the span; `log=True` draws it evenly in its logarithm, with a `low` from 1 and a step of 1.
+- `Float(low, high, step=None, log=False)`: a number from `low` to `high`, with no step the interval `[low, high)`, and with one the lattice from `low` whose last point is `high` exactly, the step dividing the span as their decimals do, so `Float(0.01, 0.1, step=0.01)` is ten points; `log=True` draws it evenly in its logarithm, with a `low` above 0 and no step.
+- `Categorical(choices)`: one of a list of None, bools, numbers and strings, no two of them equal, so `1`, `1.0` and `True` are one choice.
+
+A trial receives each value as a plain Python int, float, bool, str or None. A range compares and hashes by what it holds and pickles as the call that builds it.
+
+```python
+space = {"fast": probatum.Int(5, 40), "slow": probatum.Int(40, 200, step=10),
+         "stop": probatum.Float(0.01, 0.05, step=0.01),
+         "kind": probatum.Categorical(["ema", "sma"])}
+print(space["slow"], space["stop"])      # Int(40, 200, step=10) Float(0.01, 0.05, step=0.01)
+```
+
+<br>
+
 ## Tuning
 
 `probatum.tune` searches a strategy's parameters for the configuration that maximizes (or minimizes) an objective. Each trial is a full backtest through the same `Backtester` above, so the `Strategy` you backtest is the `Strategy` you tune: declare the tunable parameters as constructor arguments and store them as fields, and `tune` builds a fresh strategy per trial from the sampled values. The search runs across worker processes, rebuilding the engine in each worker rather than shipping a live one across the boundary, so it scales over cores ([ADR 0032](Decisions.md)). It needs optuna and cloudpickle, which the `[tune]` extra pulls in; probatum is not on PyPI, so install it from a release as the [README](../README.md#install) shows.
@@ -1253,6 +1277,7 @@ Every error probatum raises is one of its own classes and the built-in it means,
 | `probatum.ProbatumKeyError` | `KeyError` | A name none of a set's holds, such as an instrument a Data does not have. |
 | `probatum.ProbatumIndexError` | `IndexError` | A position past the end of a table. |
 | `probatum.ProbatumAttributeError` | `AttributeError` | An attribute an object does not have, such as one instrument's `close` on a universe, which `hasattr` reads as missing. |
+| `probatum.ProbatumRuntimeError` | `RuntimeError` | A search that cannot go on: its workers lost, every trial of it failed, or its winner run again not matching its trial, and `ProbatumNotImplementedError`, as `NotImplementedError` is a `RuntimeError`. |
 | `probatum.ProbatumNotImplementedError` | `NotImplementedError` | A Strategy that writes no `next`, an agent, which `backtest` does not run yet, and the transitions level, which it does not record yet. |
 | `probatum.MissingDependency` | `ImportError` | A package a call needs that is not installed, named with the line that installs it. |
 

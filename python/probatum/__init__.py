@@ -18,11 +18,13 @@ and warn with ``UserWarning`` or ``RuntimeWarning``.
 
 from ._errors import (DataError, LookaheadError, MissingDependency, PolicyError,
                       ProbatumAttributeError, ProbatumError, ProbatumIndexError,
-                      ProbatumKeyError, ProbatumNotImplementedError, ProbatumTypeError,
-                      ProbatumValueError, ProbatumWarning, SpecError, VenueError)
+                      ProbatumKeyError, ProbatumNotImplementedError, ProbatumRuntimeError,
+                      ProbatumTypeError, ProbatumValueError, ProbatumWarning, SpecError,
+                      VenueError)
 from ._probatum import Batch
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
+from ._space import Categorical, Float, Int
 from . import metrics, plot, rl, ta, venues
 from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
@@ -35,13 +37,14 @@ from ._walk import walk_forward
 from ._chart import chart, chart_defaults
 
 __all__ = [
-    "BacktestResult", "Backtester", "Batch", "Data", "Engine", "Instrument", "Market",
-    "Result", "Strategy", "Venue", "backtest", "chart", "chart_defaults", "combine",
-    "to_ohlcv", "tune", "walk_forward", "metrics", "plot", "rl", "ta", "venues",
+    "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
+    "Instrument", "Int", "Market", "Result", "Strategy", "Venue", "backtest", "chart",
+    "chart_defaults", "combine", "to_ohlcv", "tune", "walk_forward", "metrics", "plot",
+    "rl", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
-    "ProbatumIndexError", "ProbatumAttributeError", "ProbatumNotImplementedError",
-    "DataError", "VenueError", "SpecError", "LookaheadError", "PolicyError",
-    "MissingDependency", "ProbatumWarning",
+    "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
+    "ProbatumNotImplementedError", "DataError", "VenueError", "SpecError",
+    "LookaheadError", "PolicyError", "MissingDependency", "ProbatumWarning",
 ]
 
 try:

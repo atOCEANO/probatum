@@ -135,5 +135,8 @@ def test_each_kind_sits_under_the_root_s_class_for_its_built_in():
         assert issubclass(kind, probatum.ProbatumValueError)
 
     assert issubclass(probatum.PolicyError, probatum.ProbatumTypeError)
+    # as NotImplementedError is a RuntimeError
+    assert issubclass(probatum.ProbatumNotImplementedError, probatum.ProbatumRuntimeError)
+    assert issubclass(probatum.ProbatumRuntimeError, RuntimeError)
     assert issubclass(probatum.MissingDependency, ImportError)
     assert issubclass(probatum.ProbatumWarning, UserWarning)
