@@ -3259,10 +3259,10 @@ impl Batch {
                 "features must have one row per candle: got {n_rows} rows for {num_bars} bars"
             )));
         }
-        self.features = features
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("features must be a contiguous 2-D float64 array"))?
-            .to_vec();
+        // copied in the rows' order whatever order numpy holds them in, since the
+        // gathers read row r at r * F; an array held by column, as a transpose or a
+        // frame's values often are, copied as stored gave every bar another's features
+        self.features = features.as_array().iter().copied().collect();
         self.n_features = n_features;
         Ok(())
     }

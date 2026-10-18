@@ -877,6 +877,20 @@ def test_batch_set_features_rejects_a_short_matrix():
         b.set_features(np.zeros((2, 4), dtype=np.float64))  # 2 rows != 3 bars
 
 
+@pytest.mark.parametrize("features, first", [
+    (np.arange(6.0).reshape(3, 2), [0.0, 1.0]),
+    (np.asfortranarray(np.arange(6.0).reshape(3, 2)), [0.0, 1.0]),
+    (np.arange(12.0).reshape(3, 4)[:, ::2], [0.0, 2.0]),
+])
+def test_batch_features_are_read_by_row_whatever_order_numpy_holds_them_in(features,
+                                                                           first):
+    b = probatum.Batch(series(), num_envs=2)
+    b.reset_all()
+    b.set_features(features)
+
+    np.testing.assert_array_equal(b.observe_features(1), [[first], [first]])
+
+
 class BuyAndHold:
     """Buys once on the first bar, then holds, through the engine's own API."""
 
