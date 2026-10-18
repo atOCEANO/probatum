@@ -845,13 +845,22 @@ class Simulator:
         return out
 
 
-    def log(self, kind, order, reason, size=None, price=None):
+    def log(self, kind, order, reason, size=None, price=None, side=None):
         self.events.append(dict(
             time=self.times[self.t], bar=self.t, kind=kind,
             order=None if order is None else order["id"],
             instrument=None if order is None else order["instrument"],
-            size=size, price=price, reason=reason,
+            side=side, size=size, price=price, reason=reason,
         ))
+
+
+    def log_order(self, kind, order, reason):
+        """The fill log and the order log: a placed or armed event records the order as
+        it is queued or rests, its side, its whole size and a limit's price or a
+        stop's trigger."""
+        price = order["price"] if order["kind"] == "limit" else order["trigger"]
+        self.log(kind, order, reason, size=order["size"], price=price,
+                 side=order["side"])
 
 
     def lot_down(self, i, size):
@@ -918,10 +927,10 @@ class Simulator:
                      value=None if value is None else float(value),
                      price=None if price is None else float(price),
                      trigger=None if trigger is None else float(trigger),
+                     given=None if size is None else float(size),
                      filled=0.0, placed=self.t, seen=0, status="pending", tif=tif,
                      post_only=post_only, reduce_only=reduce_only, reason=reason,
                      pair=None, leg=None, armed=True, armed_at=None, armed_by=None)
-
         self.next_id += 1
         self.orders[order["id"]] = order
 
@@ -929,8 +938,13 @@ class Simulator:
 
 
     def refuse(self, order, why):
+        """The order log: a refused event records the side and the size the call gave,
+        and a leg asked on an instrument yet to print has no size."""
         order["status"] = "refused"
-        self.log("refused", order, why)
+        given = order["given"]
+        self.log("refused", order, why, side=order["side"],
+                 size=None if given is None or math.isnan(given) else given)
+
         return order["id"]
 
 
@@ -1005,7 +1019,10 @@ class Simulator:
         if why is not None:
             return self.refuse(order, why)
 
-        self.log("placed", order, order["reason"])
+        # Orders, Units: a value order on spot or a linear contract is placed for its
+        # amount
+        self.log_order("placed", order, order["reason"] if order["value"] is None
+                       else f"value of {order['value']}")
         self.log_hold(order)
         self.pending.append(order)
 
@@ -1102,7 +1119,7 @@ class Simulator:
             return self.refuse(order, why)
 
         self.rest(order)
-        self.log("placed", order, order["reason"])
+        self.log_order("placed", order, order["reason"])
         self.log_hold(order)
 
         return order["id"]
@@ -1199,7 +1216,7 @@ class Simulator:
                 self.hit("a bracket armed")
                 if q < 0.0:
                     self.hit("a bracket armed on a short")
-                self.log("armed", order, order["leg"])
+                self.log_order("armed", order, order["leg"])
 
         return [order["id"] for order in legs]
 
@@ -1224,7 +1241,7 @@ class Simulator:
             order["armed"], order["armed_at"], order["seen"] = True, self.t, 0
             order["armed_by"] = None if filling is None else filling["kind"]
             order["side"]     = "sell" if q > 0.0 else "buy"
-            self.log("armed", order, order["leg"])
+            self.log_order("armed", order, order["leg"])
 
             others = [o for o in self.resting(i) if o is not order]
             own    = self.crossing(order, others)
@@ -1282,6 +1299,11 @@ class Simulator:
             return None
 
         moved = dict(old)
+        # the order log: a refused replace records the order's side and, where the
+        # call gave a size, what the order filled with it
+        given = dict(side=old["side"],
+                     size=None if size is None else float(size) + old["filled"])
+
         if price is not None:
             moved["price"] = self.round_price(old["instrument"], float(price))
         if trigger is not None:
@@ -1292,7 +1314,8 @@ class Simulator:
             # the size asked is what is left to fill, which has to be something
             remaining = moved["size"] - old["filled"]
             if not math.isfinite(remaining) or remaining <= 0.0:
-                self.log("refused", old, f"replace: size: {remaining} cannot fill")
+                self.log("refused", old, f"replace: size: {remaining} cannot fill",
+                         **given)
                 return None
 
         if moved["kind"] == "limit" and moved["price"] != old["price"]:
@@ -1301,14 +1324,14 @@ class Simulator:
 
         why = self.resting_refusal(moved, replacing=old)
         if why is not None:
-            self.log("refused", old, f"replace: {why}")
+            self.log("refused", old, f"replace: {why}", **given)
             return None
 
         self.hit("a replace", self.t + 1)
         self.slots[self.slots.index(old)] = None
         old.update(moved)
         self.rest(old)
-        self.log("placed", old, "replace")
+        self.log_order("placed", old, "replace")
         self.log_hold(old)
 
         return old["id"]
@@ -1382,7 +1405,8 @@ class Simulator:
             if close is None:
                 if weight != 0.0:
                     self.hit("a target leg on an instrument yet to print")
-                    growing.append((i, math.nan))
+                    # the order log gives it the side of its weight
+                    growing.append((i, math.copysign(math.nan, weight)))
                 continue
 
             unit   = inst.notional(1.0, close)
@@ -1430,8 +1454,10 @@ class Simulator:
         placed = []
         for legs, reduce_only in ((reducing, True), (growing, False)):
             for i, leg in legs:
-                order_id = self.order(i, "buy" if leg > 0.0 else "sell", abs(leg),
-                                      reduce_only=reduce_only, reason="rebalance")
+                side     = "buy" if math.copysign(1.0, leg) > 0.0 else "sell"
+                order_id = self.order(i, side, abs(leg), reduce_only=reduce_only,
+                                      reason="rebalance")
+
                 order = self.orders[order_id]
                 self.target_legs.append(order)
                 if order["status"] != "refused":

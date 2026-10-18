@@ -109,7 +109,9 @@ def test_two_buys_enter_at_the_harmonic_mean_and_a_value_order_buys_contracts():
     e.step()
 
     assert e.order_value("buy", -50.0) is None
-    assert e.order_log()[-1]["reason"] == "amount: -50 cannot fill"
+    # the refusal keeps the side its call gave, as every refusal does
+    assert (e.order_log()[-1]["side"], e.order_log()[-1]["reason"]) == (
+        "buy", "amount: -50 cannot fill")
 
     e.order_value("buy", 30_000.0)
     state = e.step()
@@ -272,8 +274,9 @@ def test_a_value_order_that_is_no_amount_is_refused_for_its_amount():
     venue  = dict(market="inverse", contract=100.0, quote=1.0)
     played = probatum._probatum.run(bars((60_000.0,) * 4, (60_000.0,) * 4), venue, script)
 
-    assert [(event["kind"], event["reason"]) for event in played["order_log"][:2]] == [
-        ("refused", "amount: -50 cannot fill"), ("placed", "market")]
+    assert [(event["kind"], event["side"], event["reason"])
+            for event in played["order_log"][:2]] == [
+        ("refused", "buy", "amount: -50 cannot fill"), ("placed", "sell", "market")]
 
 
 def test_a_fok_order_the_cap_cuts_is_logged_in_contracts():

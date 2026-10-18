@@ -329,8 +329,8 @@ class _Run:
         handle = self.handles.get(order)
         if handle is None:
             handle = self.handles[order] = Order(
-                self, order, event["instrument"], self.bar(event["bar"]), "market", None,
-                None, None, None, ENDS.get(event["kind"]))
+                self, order, event["instrument"], self.bar(event["bar"]), "market",
+                event["side"], None, None, None, ENDS.get(event["kind"]))
 
         return handle
 
@@ -1074,11 +1074,10 @@ class InstrumentAccount(_Verbs):
 
 class Order:
     """A live handle on one order, showing it as it stands: ``id``; ``instrument``, its
-    name; ``side``, "buy" or "sell", None for a bracket's leg until it arms and for a
-    target's leg refused before it took one; ``kind``, "market", "limit" or "stop";
-    ``size``, None for a bracket's leg that closes the position it finds and for a
-    value order, whose ``filled`` is what its amount bought;
-    ``filled``, what has filled of it; ``price`` and ``trigger``, a limit's price and
+    name; ``side``, "buy" or "sell", None for a bracket's leg until it arms; ``kind``,
+    "market", "limit" or "stop"; ``size``, None for a bracket's leg that closes the
+    position it finds and for a value order, whose ``filled`` is what its amount
+    bought; ``filled``, what has filled of it; ``price`` and ``trigger``, a limit's price and
     a stop's trigger; ``placed``, the Data's row it was placed at; ``status``,
     "pending" while a market order waits for the next open and "resting" while a
     limit or a stop is on the book, then "filled", "cancelled", "expired" or
@@ -1204,10 +1203,13 @@ class Event:
     """One thing that happened to the account's orders: ``kind``, "placed", "armed",
     "filled", "clamped", "refused", "not_filled", "expired" or "cancelled";
     ``order``, its `Order`, None for a transfer's clamp; ``instrument``, its name;
-    ``bar``, the Data's row it happened at; ``size`` and ``price``, a fill's or a
-    clamp's; and ``reason``."""
+    ``bar``, the Data's row it happened at; ``side``, "buy" or "sell", what a placed,
+    refused or armed event's order asked, None elsewhere and for a bracket's leg
+    until it arms; ``size`` and ``price``, a fill's or a clamp's, or what a placed or
+    armed event's order asks in all at its limit's price or its stop's trigger, a
+    refused one's size what the call gave; and ``reason``."""
 
-    __slots__ = ("kind", "order", "instrument", "bar", "size", "price", "reason")
+    __slots__ = ("kind", "order", "instrument", "bar", "side", "size", "price", "reason")
 
 
     def __init__(self, run, event):
@@ -1216,6 +1218,7 @@ class Event:
         k               = event["instrument"]
         self.instrument = None if k is None else run.names[k]
         self.bar        = run.bar(event["bar"])
+        self.side       = event["side"]
         self.size       = event["size"]
         self.price      = event["price"]
         self.reason     = event["reason"]

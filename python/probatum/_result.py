@@ -44,7 +44,7 @@ SCHEMAS = {
     + [("taker", "bool", False), ("reason", "text", False)],
     "orders": [("bar", "int", False), ("time", "time", False), ("kind", "text", False),
                ("order", "int", True), ("instrument", "text", True),
-               ("size", "float", True), ("price", "float", True),
+               ("side", "text", True), ("size", "float", True), ("price", "float", True),
                ("reason", "text", False)],
     "trades": [("instrument", "text", False), ("side", "text", False)]
     + [(name, "float", True) for name in ("size", "entry", "exit")]

@@ -599,6 +599,7 @@ pub(crate) fn tables(
                 .iter()
                 .map(|event| event.instrument.map(|k| names[k].as_str())),
         ),
+        Column::text_or_null("side", events.iter().map(|event| event.side.map(side_str))),
         Column::float_or_null("size", events.iter().map(|event| event.size)),
         Column::float_or_null("price", events.iter().map(|event| event.price)),
         Column::text("reason", reasons.iter().map(String::as_str)),

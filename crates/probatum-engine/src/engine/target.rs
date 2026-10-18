@@ -158,7 +158,7 @@ impl Engine {
                 // leg on: a weight of zero there asks for nothing, and any other
                 // places a leg refused as any order there is
                 if weight != 0.0 {
-                    growing.push((i, f64::NAN));
+                    growing.push((i, f64::NAN.copysign(weight)));
                 }
                 continue;
             }
@@ -205,7 +205,13 @@ impl Engine {
         let mut needed = -self.account.spot_cash;
         for (legs, reduce_only) in [(&reducing, true), (&growing, false)] {
             for &(i, leg) in legs {
-                let side = if leg > 0.0 { Side::Buy } else { Side::Sell };
+                // the sign alone, which the leg of a weight on an instrument yet to print
+                // carries on its NaN
+                let side = if leg.is_sign_positive() {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
                 let tif = TimeInForce::Ioc;
                 let reason = EventReason::Rebalance;
                 let Some(id) = self.queue(i, side, leg.abs(), reduce_only, tif, reason) else {
@@ -552,6 +558,18 @@ mod tests {
         assert_eq!((legs.len(), refused(&e)), (1, 0));
         e.target(&[(1, 0.3)], 0.0, false).expect("perps");
         assert_eq!(refused(&e), 1);
+        // each refusal gives the side of its weight, and no size, which a leg with no
+        // close to be sized on has none of
+        e.target(&[(1, -0.3)], 0.0, false).expect("perps");
+        let given: Vec<_> = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .iter()
+            .filter(|event| event.kind == EventKind::Refused)
+            .map(|event| (event.side, event.size))
+            .collect();
+        assert_eq!(given, [(Some(Side::Buy), None), (Some(Side::Sell), None)]);
     }
 
     /// Two perps, the second at 10 printing no bar on the third and fourth rows, on

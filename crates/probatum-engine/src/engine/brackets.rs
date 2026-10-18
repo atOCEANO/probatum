@@ -82,16 +82,9 @@ impl Engine {
             }
         }
         if held != 0.0 {
-            for (id, kind) in [(stop, OrderType::Stop), (take_profit, OrderType::Limit)] {
-                if let Some(id) = id {
-                    self.log_event(
-                        EventKind::Armed,
-                        Some(id),
-                        Some(instrument),
-                        None,
-                        None,
-                        reason(kind),
-                    );
+            for id in [stop, take_profit].into_iter().flatten() {
+                if let Some(order) = self.book.get(id).copied() {
+                    self.log_order(EventKind::Armed, &order, reason(order.kind));
                 }
             }
         }
@@ -138,14 +131,7 @@ impl Engine {
                 leg.armed = true;
             }
             let order = *order;
-            self.log_event(
-                EventKind::Armed,
-                Some(id),
-                Some(i),
-                None,
-                None,
-                reason(order.kind),
-            );
+            self.log_order(EventKind::Armed, &order, reason(order.kind));
             if let Some(own) = self.crossed(&order) {
                 self.book.cancel(id);
                 self.log_event(
@@ -226,6 +212,36 @@ mod tests {
         log.iter()
             .map(|event| (event.order.map_or(0, |id| id.0), event.kind, event.reason))
             .collect()
+    }
+
+    #[test]
+    fn a_refused_replace_gives_the_side_a_leg_has_and_a_size_only_where_the_call_did() {
+        // a bracket placed while flat has no side, so its take-profit replaced with a
+        // size of 0 is refused with none and the 0 the call gave; armed on a long of
+        // 1, the take-profit moved by price alone onto the account's own bid at 99 is
+        // refused with the side it took and no size
+        let mut e = spot(&[FLAT, FLAT], Intrabar::Pessimistic);
+        let take_profit = e.bracket(0, Some(95.0), Some(110.0)).1.expect("rests");
+        let given = |e: &Engine| {
+            let refused = e
+                .reporter()
+                .expect("reporting is on")
+                .events()
+                .last()
+                .copied();
+            refused.map(|event| (event.kind, event.side, event.size, event.price))
+        };
+        assert_eq!(e.replace(take_profit, Some(0.0), None, None), None);
+        let sizeless = (EventKind::Refused, None, Some(0.0), None);
+        assert_eq!(given(&e), Some(sizeless));
+        e.market_buy(1.0);
+        e.step();
+        e.limit_buy(1.0, 99.0).expect("rests");
+        assert_eq!(e.replace(take_profit, None, Some(99.0), None), None);
+        assert_eq!(
+            given(&e),
+            Some((EventKind::Refused, Some(Side::Sell), None, None))
+        );
     }
 
     fn fills(e: &Engine) -> Vec<(u64, f64, f64, FillReason)> {

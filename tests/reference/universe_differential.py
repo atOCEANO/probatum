@@ -901,10 +901,11 @@ def run(case, reached):
 
 FILL_FIELDS = ("bar", "instrument", "order", "side", "size", "price", "reference",
                "spread", "slippage", "impact", "fee", "adjustment", "taker", "reason")
-EVENT_FIELDS = ("bar", "kind", "order", "instrument", "size", "price", "reason")
-TRIP_FIELDS  = ("instrument", "side", "size", "entry", "exit", "open_bar",
-                "close_bar", "fees", "funding", "pnl", "ret", "best", "worst",
-                "reason", "open")
+EVENT_FIELDS = ("bar", "kind", "order", "instrument", "side", "size", "price",
+                "reason")
+TRIP_FIELDS = ("instrument", "side", "size", "entry", "exit", "open_bar",
+               "close_bar", "fees", "funding", "pnl", "ret", "best", "worst",
+               "reason", "open")
 ACCOUNT_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spread",
                   "slippage", "impact", "liquidation", "dust", "margin_used",
                   "maintenance", "gross_exposure", "net_exposure", "leverage")

@@ -1530,6 +1530,7 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::Rebalance => "rebalance".to_string(),
         EventReason::Retargeted => "replaced by a later target".to_string(),
         EventReason::Replace => "replace".to_string(),
+        EventReason::Value { amount } => format!("value of {amount}"),
         EventReason::Refused(why) => refusal_text(why),
         EventReason::Replacing(why) => format!("replace: {}", refusal_text(why)),
         EventReason::Fits { asked, by } => format!("{} {}", cause_text(by), allows(size, asked)),
@@ -1583,6 +1584,7 @@ fn event_to_dict<'py>(
     d.set_item("kind", event.kind.name())?;
     d.set_item("order", event.order.map(|id| id.0))?;
     d.set_item("instrument", event.instrument)?;
+    d.set_item("side", event.side.map(side_str))?;
     d.set_item("size", event.size)?;
     d.set_item("price", event.price)?;
     d.set_item("reason", reason_text(event))?;
@@ -2404,7 +2406,7 @@ impl Engine {
             ),
             _ => self
                 .inner
-                .order_value(instrument, side, amount, reduce_only, tif),
+                .order_value(instrument, units.side(side), amount, reduce_only, tif),
         };
         Ok(id.map(|id| id.0))
     }
@@ -2485,8 +2487,9 @@ impl Engine {
 
     /// The order log as a list of dicts, one per event in the order they happened,
     /// or None when reporting is off. Each carries its bar and open time, its kind
-    /// (placed, refused, clamped, filled, not_filled, expired or cancelled), the
-    /// order (None for a transfer's clamp), the size and price it concerns, and its
+    /// (placed, armed, refused, clamped, filled, not_filled, expired or cancelled),
+    /// the order and its instrument (None for a transfer's clamp), the side a placed,
+    /// refused or armed event's order asked, the size and price it concerns, and its
     /// reason. A refused placement is here under the id it would have had
     /// (ADRs 0010, 0022).
     fn order_log<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {

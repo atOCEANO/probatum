@@ -34,6 +34,7 @@ impl Engine {
                 kind,
                 order,
                 instrument,
+                side: None,
                 size,
                 price,
                 reason,
@@ -41,18 +42,64 @@ impl Engine {
         }
     }
 
-    /// Log `id` on `instrument` refused for `why`, and answer the placement with
-    /// nothing.
-    fn refuse(&mut self, id: OrderId, instrument: usize, why: Refusal) -> Option<OrderId> {
-        self.log_event(
-            EventKind::Refused,
-            Some(id),
-            Some(instrument),
-            None,
-            None,
-            EventReason::Refused(why),
-        );
+    /// Log `order` placed or armed as `kind`, for `reason`, as it is queued or rests:
+    /// its side where it has one, the whole size it asks where it has one, and a
+    /// limit's price or a stop's trigger (ADR 0022).
+    pub(super) fn log_order(&mut self, kind: EventKind, order: &Order, reason: EventReason) {
+        let Some(reporter) = self.reporter.as_mut() else {
+            return;
+        };
+        let size = order.size.get();
+        // a leg that closes the position it finds, and a value order, size themselves
+        // as they fill
+        let sized = order.leg.is_none_or(|leg| !leg.sizeless) && size.is_finite();
+        reporter.record_event(OrderEvent {
+            tick: self.tick,
+            kind,
+            order: Some(order.id),
+            instrument: Some(order.instrument),
+            side: order.leg.is_none_or(|leg| leg.armed).then_some(order.side),
+            size: sized.then_some(size),
+            price: order.price.or(order.trigger).map(Price::get),
+            reason,
+        });
+    }
+
+    /// Log `id` on `instrument` refused for `why`, with the side and the size the call
+    /// gave, and answer the placement with nothing.
+    fn refuse(
+        &mut self,
+        id: OrderId,
+        instrument: usize,
+        given: (Option<Side>, Option<f64>),
+        why: Refusal,
+    ) -> Option<OrderId> {
+        self.log_refused(id, instrument, given, EventReason::Refused(why));
         None
+    }
+
+    /// Log `id` on `instrument` refused for `reason`, with the side and the size the
+    /// call gave and no price.
+    fn log_refused(
+        &mut self,
+        id: OrderId,
+        instrument: usize,
+        (side, size): (Option<Side>, Option<f64>),
+        reason: EventReason,
+    ) {
+        if let Some(reporter) = self.reporter.as_mut() {
+            reporter.record_event(OrderEvent {
+                tick: self.tick,
+                kind: EventKind::Refused,
+                order: Some(id),
+                instrument: Some(instrument),
+                side,
+                // a leg asked on an instrument yet to print has no size to give
+                size: size.filter(|size| !size.is_nan()),
+                price: None,
+                reason,
+            });
+        }
     }
 
     /// `order`'s price and trigger on its instrument's grid, where the venue's sizes
@@ -162,10 +209,11 @@ impl Engine {
         // Every placement takes an id, a refused one included, so the order log can
         // name what it refused (ADR 0010).
         let id = self.next_id();
+        let given = (Some(side), Some(size));
         // an instrument enters at its first bar, and before it there is no price to
         // fill or check an order against
         if self.marks[instrument].is_nan() {
-            return self.refuse(id, instrument, Refusal::Unlisted);
+            return self.refuse(id, instrument, given, Refusal::Unlisted);
         }
         // The same guard the resting book has carried since ADR 0007, extended to
         // the queue on the day ADR 0010 made the queue a bounded resource too. A
@@ -173,12 +221,12 @@ impl Engine {
         // of a real order refused it: `qty_from_weight` returns exactly zero on a
         // flat mark, which is how a strategy places one without meaning to.
         if !positive(size) {
-            return self.refuse(id, instrument, Refusal::Size(size));
+            return self.refuse(id, instrument, given, Refusal::Size(size));
         }
         let held = if self.config.sizes {
             let mut sized = Order::market(id, side, Qty(size), reduce_only).on(instrument);
             if let Some(why) = self.sized(&mut sized) {
-                return self.refuse(id, instrument, why);
+                return self.refuse(id, instrument, given, why);
             }
             sized.size.get()
         } else {
@@ -193,23 +241,13 @@ impl Engine {
             .filter(|order| order.instrument == instrument)
             .count();
         if waiting >= self.config.max_open_orders {
-            return self.refuse(
-                id,
-                instrument,
-                Refusal::Waiting(self.config.max_open_orders),
-            );
+            let full = Refusal::Waiting(self.config.max_open_orders);
+            return self.refuse(id, instrument, given, full);
         }
         let mut order = Order::market(id, side, Qty(held), reduce_only).on(instrument);
         order.tif = tif;
         self.pending.push(order);
-        self.log_event(
-            EventKind::Placed,
-            Some(id),
-            Some(instrument),
-            None,
-            None,
-            reason,
-        );
+        self.log_order(EventKind::Placed, &order, reason);
         self.log_held(&order, size);
         Some(id)
     }
@@ -305,18 +343,17 @@ impl Engine {
             self.on_grid(&mut order);
         }
         let asked = order.size.get();
+        // a leg yet to arm has no side, and one that closes the position it finds no
+        // size of its own
+        let given = (
+            order.leg.is_none_or(|leg| leg.armed).then_some(order.side),
+            order.leg.is_none_or(|leg| !leg.sizeless).then_some(asked),
+        );
         if let Some(why) = self.resting_refusal(&mut order, None) {
-            return self.refuse(order.id, order.instrument, why);
+            return self.refuse(order.id, order.instrument, given, why);
         }
         let id = self.book.place(order).ok()?;
-        self.log_event(
-            EventKind::Placed,
-            Some(id),
-            Some(order.instrument),
-            None,
-            None,
-            reason,
-        );
+        self.log_order(EventKind::Placed, &order, reason);
         self.log_held(&order, asked);
         Some(id)
     }
@@ -429,17 +466,20 @@ impl Engine {
         tif: TimeInForce,
     ) -> Option<OrderId> {
         let id = self.next_id();
+        // an amount is no size, which the order has only as it fills
+        let given = (Some(side), None);
         if self.marks[instrument].is_nan() {
-            return self.refuse(id, instrument, Refusal::Unlisted);
+            return self.refuse(id, instrument, given, Refusal::Unlisted);
         }
         if !positive(amount) {
-            return self.refuse(id, instrument, Refusal::Amount(amount));
+            return self.refuse(id, instrument, given, Refusal::Amount(amount));
         }
         if self.config.sizes {
             let sizes = self.candles.sizes(instrument);
             let least = sizes.min_notional;
             if amount < least && !(reduce_only && sizes.reduce_only_exempt) {
-                return self.refuse(id, instrument, Refusal::MinAmount { amount, least });
+                let short = Refusal::MinAmount { amount, least };
+                return self.refuse(id, instrument, given, short);
             }
         }
         let waiting = self
@@ -448,11 +488,8 @@ impl Engine {
             .filter(|order| order.instrument == instrument)
             .count();
         if waiting >= self.config.max_open_orders {
-            return self.refuse(
-                id,
-                instrument,
-                Refusal::Waiting(self.config.max_open_orders),
-            );
+            let full = Refusal::Waiting(self.config.max_open_orders);
+            return self.refuse(id, instrument, given, full);
         }
         // the size is set as it fills, and what the queue holds in its place fills
         // nothing by itself
@@ -460,14 +497,7 @@ impl Engine {
         order.tif = tif;
         self.pending.push(order);
         self.values.push((id, amount));
-        self.log_event(
-            EventKind::Placed,
-            Some(id),
-            Some(instrument),
-            None,
-            None,
-            EventReason::Market,
-        );
+        self.log_order(EventKind::Placed, &order, EventReason::Value { amount });
         Some(id)
     }
 
@@ -604,25 +634,15 @@ impl Engine {
             // other one would have had. "Nothing happened" has to include the
             // queue (ADR 0010).
             self.book.restore(slot, old);
-            self.log_event(
-                EventKind::Refused,
-                Some(id),
-                Some(old.instrument),
-                None,
-                None,
-                EventReason::Replacing(why),
-            );
+            // the order's own side, which a leg yet to arm has not taken, and a size
+            // only where the call gave one, with what the order filled
+            let side = old.leg.is_none_or(|leg| leg.armed).then_some(old.side);
+            let given = (side, size.map(|size| old.filled.get() + size));
+            self.log_refused(id, old.instrument, given, EventReason::Replacing(why));
             return None;
         }
         self.book.place(moved).ok()?;
-        self.log_event(
-            EventKind::Placed,
-            Some(id),
-            Some(old.instrument),
-            None,
-            None,
-            EventReason::Replace,
-        );
+        self.log_order(EventKind::Placed, &moved, EventReason::Replace);
         self.log_held(&moved, asked);
         Some(id)
     }
@@ -703,7 +723,7 @@ mod tests {
     use crate::engine::{Engine, EngineConfig};
     use crate::reporter::{Cause, EventKind, EventReason, OrderEvent, Refusal};
     use crate::sizes::{PriceRule, Sizes};
-    use probatum_core::{Market, OrderId, OrderType, Side, TimeInForce};
+    use probatum_core::{Market, OrderId, OrderType, Price, Side, TimeInForce};
 
     fn events(e: &Engine) -> Vec<(u64, EventKind)> {
         log(e)
@@ -1181,6 +1201,43 @@ mod tests {
     }
 
     #[test]
+    fn a_leg_a_replace_gives_a_size_logs_its_whole_size() {
+        // a stop leg armed on a holding of 2 and replaced with a size of 1 no longer
+        // closes what it finds, so its placement records the side and size it asks
+        let mut e = Engine::new(series(), report_cfg());
+        e.reset();
+        e.market_buy(2.0).expect("queued");
+        e.step();
+        let stop = e.bracket(0, Some(150.0), None).0.expect("rests");
+        assert_eq!(e.replace(stop, Some(1.0), None, None), Some(stop));
+        let placed = log(&e).last().copied().expect("logged");
+        let asked = (placed.kind, placed.side, placed.size, placed.price);
+        let sell = (EventKind::Placed, Some(Side::Sell), Some(1.0), Some(150.0));
+        assert_eq!((asked, placed.reason), (sell, EventReason::Replace));
+    }
+
+    #[test]
+    fn a_bracket_leg_refused_a_slot_logs_no_side_size_or_price() {
+        // placed while flat, a leg has no side yet and the call gave it no size: one
+        // slot holds the stop, and the take-profit's refusal records neither
+        let config = EngineConfig {
+            max_open_orders: 1,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        let (stop, take_profit) = e.bracket(0, Some(100.0), Some(200.0));
+        assert!(stop.is_some() && take_profit.is_none());
+        let refused = log(&e).last().copied().expect("logged");
+        let given = (refused.kind, refused.side, refused.size, refused.price);
+        let resting = EventReason::Refused(Refusal::Resting(1));
+        assert_eq!(
+            (given, refused.reason),
+            ((EventKind::Refused, None, None, None), resting)
+        );
+    }
+
+    #[test]
     fn an_ioc_limit_its_bar_does_not_reach_expires_and_a_partial_fok_fills_nothing() {
         // the same example: an ioc buy limit at 96 that its first bar does not reach
         // expires after that bar, and a fok market buy the spot wallet's cash pays
@@ -1469,6 +1526,16 @@ mod tests {
         let resting = e.book.get(id).expect("resting");
         assert!((resting.size.get() - 0.2).abs() < 1e-15);
         assert!((resting.price.expect("a limit").get() - 99.40).abs() < 1e-9);
+        // its placed event records it as it rests, not as it was asked
+        let placed = log(&e)
+            .iter()
+            .find(|event| event.order == Some(id))
+            .expect("the placement is logged");
+        let rests = (Some(resting.size.get()), resting.price.map(Price::get));
+        assert_eq!(
+            (placed.side, (placed.size, placed.price)),
+            (Some(Side::Buy), rests)
+        );
         let log = log(&e);
         assert_eq!(
             log[0].reason,
@@ -1489,13 +1556,13 @@ mod tests {
         assert_eq!(
             of(Some(held)),
             [
-                (EventKind::Placed, None, EventReason::Market),
+                (EventKind::Placed, Some(1.0), EventReason::Market),
                 (EventKind::Clamped, Some(1.0), hold),
             ]
         );
         let refused = log.last().expect("the refusal is logged").order;
         let post_only = EventReason::Refused(Refusal::PostOnly);
-        assert_eq!(of(refused), [(EventKind::Refused, None, post_only)]);
+        assert_eq!(of(refused), [(EventKind::Refused, Some(5.0), post_only)]);
         assert_eq!(e.pending[0].size.get(), 1.0);
     }
 
@@ -1556,7 +1623,8 @@ mod tests {
 
     #[test]
     fn a_maximum_off_the_lot_holds_an_order_to_the_lot_below_it() {
-        // a maximum of 1.0005 under a lot of 0.001 holds a buy of 5 to 1.000
+        // a maximum of 1.0005 under a lot of 0.001 holds a buy of 5 to 1.000, the
+        // size its placed event records
         let sizes = Sizes {
             lot: 0.001,
             max_qty: 1.0005,
@@ -1564,12 +1632,14 @@ mod tests {
         };
         let config = EngineConfig {
             sizes: true,
+            report: true,
             ..perp_cfg()
         };
         let mut e = Engine::new(series().with_sizes(sizes), config);
         e.reset();
         e.market_buy(5.0).expect("held and placed");
         assert_eq!(e.pending[0].size.get(), 1.0);
+        assert_eq!(log(&e)[0].size, Some(1.0));
     }
 
     #[test]
@@ -1593,8 +1663,12 @@ mod tests {
         let id = e.limit_buy(1.0, 99.0).expect("rests");
         assert!((e.step().position - 0.6).abs() < 1e-12);
         assert_eq!(e.replace(id, Some(0.05), None, None), None);
-        let refused = log(&e).last().expect("the refusal is logged").reason;
-        assert_eq!(refused, EventReason::Replacing(Refusal::Size(0.0)));
+        let refused = log(&e).last().copied().expect("the refusal is logged");
+        assert_eq!(refused.reason, EventReason::Replacing(Refusal::Size(0.0)));
+        // the refusal records what the order had filled with what the call gave
+        assert_eq!(refused.side, Some(Side::Buy));
+        let given = refused.size.expect("the call gave a size");
+        assert!((given - 0.65).abs() < 1e-12, "{given}");
     }
 
     #[test]
@@ -1683,12 +1757,12 @@ mod tests {
                 .map(|event| (event.kind, event.size, event.reason))
                 .collect::<Vec<_>>()
         };
-        let placed = (EventKind::Placed, None, EventReason::Market);
+        let placed = |amount| (EventKind::Placed, None, EventReason::Value { amount });
         let mut e = traded(1_000.0);
         let whole = e.order_value(0, Side::Buy, 200.1, false, TimeInForce::Ioc);
         e.step();
         let filled = (EventKind::Filled, Some(1.0), EventReason::Market);
-        assert_eq!(of(&e, whole), [placed, filled]);
+        assert_eq!(of(&e, whole), [placed(200.1), filled]);
         let hold = EventReason::HeldTo { asked: 1.5 };
         let held = (EventKind::Clamped, Some(1.0), hold);
         let by = Cause::Budget;
@@ -1708,7 +1782,7 @@ mod tests {
             let mut e = traded(0.6);
             let order = e.order_value(0, Side::Buy, 300.0, false, tif);
             e.step();
-            let logged = [vec![placed, held], then].concat();
+            let logged = [vec![placed(300.0), held], then].concat();
             assert_eq!(of(&e, order), logged, "{tif:?}");
         }
     }
@@ -1732,6 +1806,18 @@ mod tests {
         assert!(e
             .order_value(0, Side::Sell, 5.0, true, TimeInForce::Ioc)
             .is_some());
+    }
+
+    #[test]
+    fn a_value_order_for_exactly_the_minimum_notional_is_placed() {
+        // only an amount below the minimum of 10 is refused, so 10 is placed and buys
+        // 10 / 200 = 0.05 at the next open
+        let mut e = sized(false);
+        let id = e.order_value(0, Side::Buy, 10.0, false, TimeInForce::Ioc);
+        assert!(id.is_some());
+        e.step();
+        let fill = e.reporter().expect("reporting is on").fills()[0];
+        assert_eq!((fill.order, fill.size, fill.price), (id, 0.05, 200.0));
     }
 
     #[test]

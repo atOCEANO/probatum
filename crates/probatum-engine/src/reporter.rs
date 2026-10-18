@@ -156,6 +156,11 @@ pub enum EventReason {
     Rebalance,
     /// Placed again by a replace, keeping its id.
     Replace,
+    /// A market order placed for `amount` of the quote currency, on spot or a linear
+    /// contract.
+    Value {
+        amount: f64,
+    },
     /// A placement refused, or a bracket's take-profit cancelled as it arms against
     /// the account's own order.
     Refused(Refusal),
@@ -216,9 +221,14 @@ pub struct OrderEvent {
     pub order: Option<OrderId>,
     /// Its order's instrument, or `None` for a transfer's clamp.
     pub instrument: Option<usize>,
-    /// The size a fill or a clamp came to.
+    /// The side its order asked, on a placed, refused or armed event, and `None`
+    /// elsewhere and for a bracket leg placed while flat until it arms.
+    pub side: Option<Side>,
+    /// The size a fill or a clamp came to, or what a placed or armed event's order
+    /// asks in all, or a refused one's call gave.
     pub size: Option<f64>,
-    /// The price a fill was booked at.
+    /// The price a fill was booked at, or a placed or armed limit's price or stop's
+    /// trigger.
     pub price: Option<f64>,
     pub reason: EventReason,
 }

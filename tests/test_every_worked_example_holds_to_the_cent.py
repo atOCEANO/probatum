@@ -580,7 +580,7 @@ def test_a_minimum_of_10_refuses_0_05_at_150_and_a_maximum_of_1_0005_holds_5_to_
 
     # the hold is logged after the placement it holds
     held = [(event["kind"], event["size"]) for event in sim.events if event["order"] == 3]
-    assert held == [("placed", None), ("clamped", 1.0), ("filled", 1.0)]
+    assert held == [("placed", 1.0), ("clamped", 1.0), ("filled", 1.0)]
 
 
 def test_a_holding_of_0_0004_under_a_lot_of_0_001_is_swept_at_250_as_dust_of_0_1():

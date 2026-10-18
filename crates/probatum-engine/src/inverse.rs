@@ -202,7 +202,7 @@ impl Units {
             },
             // an inverse contract's amount, in dollars, buys the contracts it is worth,
             // a size the order has as it is placed, and one that is no amount is
-            // refused as one
+            // refused as one, its side in the engine's terms as every order's is
             Action::Value {
                 instrument,
                 side,
@@ -221,7 +221,13 @@ impl Units {
                     post_only: false,
                     tif,
                 },
-                _ => action,
+                _ => Action::Value {
+                    instrument,
+                    side: self.side(side),
+                    amount,
+                    reduce_only,
+                    tif,
+                },
             },
             Action::Bracket {
                 instrument,
@@ -364,6 +370,7 @@ impl Units {
             other => other,
         };
         OrderEvent {
+            side: event.side.map(|side| self.side(side)),
             size: event.size.map(|size| self.contracts(size)),
             price: event.price.map(|price| self.dollars(price)),
             reason: match event.reason {
@@ -439,8 +446,8 @@ impl Units {
 #[cfg(test)]
 mod tests {
     use super::Units;
-    use crate::reporter::RoundTrip;
-    use probatum_core::{Candle, Side, Tier, TierBasis, Tiers};
+    use crate::reporter::{Cause, EventKind, EventReason, OrderEvent, RoundTrip};
+    use probatum_core::{Candle, OrderId, Side, Tier, TierBasis, Tiers};
 
     const INVERSE: Units = Units::Inverse(100.0);
 
@@ -526,5 +533,34 @@ mod tests {
         );
         assert_eq!((out.high, out.low), (60_000.0, 40_000.0));
         assert!((out.best - 0.25).abs() < 1e-12 && (out.worst + 1.0 / 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_event_in_the_venues_terms_takes_its_side_and_counts_its_sizes_in_contracts() {
+        // the engine trades an inverse contract in the reciprocal, its side the other
+        // way round and its sizes in dollars, so a fok buy the cap holds to 120,000 of
+        // the 200,000 asked is at the venue a sale held to 1,200 of 2,000 contracts
+        let event = OrderEvent {
+            tick: 1,
+            kind: EventKind::NotFilled,
+            order: Some(OrderId(1)),
+            instrument: Some(0),
+            side: Some(Side::Buy),
+            size: None,
+            price: None,
+            reason: EventReason::Fok {
+                by: Cause::Cap,
+                size: 120_000.0,
+                asked: 200_000.0,
+            },
+        };
+        let shown = INVERSE.event(event);
+        assert_eq!(shown.side, Some(Side::Sell));
+        let fok = EventReason::Fok {
+            by: Cause::Cap,
+            size: 1_200.0,
+            asked: 2_000.0,
+        };
+        assert_eq!(shown.reason, fok);
     }
 }

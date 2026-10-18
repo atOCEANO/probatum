@@ -559,6 +559,10 @@ def test_a_refused_order_is_a_handle_with_its_reason():
                 self.short  = account.sell(1.0, limit=bar.close * 0.5, post_only=True)
                 self.bought = account.buy_value(1_000.0)
                 self.exits  = account.bracket(take_profit=bar.close * 1.5)
+            elif bar.i == 4:
+                self.placed = [(event.side, event.size, event.reason)
+                               for event in account.events
+                               if event.order is self.bought and event.kind == "placed"]
             elif bar.i == 5:
                 self.bought_then = (self.bought.status, self.bought.size,
                                     self.bought.filled, account.position)
@@ -572,6 +576,8 @@ def test_a_refused_order_is_a_handle_with_its_reason():
 
     status, size, filled, position = strategy.bought_then
     assert (status, size, filled) == ("filled", None, position)
+    # a value order is placed for its amount, its size set as it fills
+    assert strategy.placed == [("buy", None, "value of 1000")]
     assert filled == pytest.approx(1_000.0 / data.open[4], rel=1e-12)
     assert strategy.exits.stop is None
     assert strategy.exits.take_profit.side   == "sell"
@@ -664,8 +670,9 @@ def test_a_target_s_leg_refused_as_it_is_placed_is_handed_back_refused():
     strategy = probatum.backtest(Crowded(), one(), crowded).policy
     [leg] = strategy.legs
 
+    # the refusal records the side the leg asked, which the handle takes
     assert (leg.kind, leg.status, leg.placed, leg.side, leg.size) == (
-        "market", "refused", 3, None, None)
+        "market", "refused", 3, "buy", None)
     assert leg.reason == "max_open_orders: 1 already waiting"
     assert [event.order for event in strategy.events if event.kind == "refused"] == [leg]
 
