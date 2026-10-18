@@ -247,7 +247,7 @@ impl Engine {
                 Some(instrument),
                 None,
                 None,
-                EventReason::OpenedThrough,
+                EventReason::OpenedThrough { inside: false },
             );
         }
         let fills = self.offers();
@@ -652,7 +652,7 @@ impl Engine {
                     Some(i),
                     None,
                     None,
-                    EventReason::OpenedThrough,
+                    EventReason::OpenedThrough { inside: true },
                 );
                 continue;
             }
@@ -1464,7 +1464,10 @@ mod tests {
             let last = reporter.events().last().expect("an event");
             assert_eq!(
                 (last.kind, last.reason),
-                (EventKind::Cancelled, EventReason::OpenedThrough)
+                (
+                    EventKind::Cancelled,
+                    EventReason::OpenedThrough { inside: false }
+                )
             );
         }
         let quiet = ohlc(100.0, 100.5, 99.5, 100.0, 1e6);

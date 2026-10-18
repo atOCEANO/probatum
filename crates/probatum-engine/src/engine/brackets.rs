@@ -657,9 +657,10 @@ mod tests {
         let s = e.step();
         assert_eq!(fills(&e).len(), 1);
         assert_eq!(s.position, 1.0);
+        let inside = EventReason::OpenedThrough { inside: true };
         assert_eq!(
             events(&e).last().copied(),
-            Some((sale, EventKind::Cancelled, EventReason::OpenedThrough))
+            Some((sale, EventKind::Cancelled, inside))
         );
     }
 

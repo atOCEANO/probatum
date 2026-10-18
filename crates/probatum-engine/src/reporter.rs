@@ -159,8 +159,11 @@ pub enum EventReason {
     /// An ioc or fok limit, gone after its one bar.
     OneBar(TimeInForce),
     CancelledByAccount,
-    /// A post_only limit its first bar opened at or through.
-    OpenedThrough,
+    /// A post_only limit its first bar opened at or through, at the open, or
+    /// `inside` the bar, where the part of it after a fill opened so.
+    OpenedThrough {
+        inside: bool,
+    },
     /// A bracket leg whose position closed or flipped.
     PositionClosed,
     /// A bracket leg whose partner filled.

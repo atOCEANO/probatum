@@ -73,6 +73,7 @@ RULES = [
     "a position held through a row without its bar",
     "a position's exits reordered",
     "a post_only limit its first bar opened through",
+    "a post_only limit the part of its first bar after a fill opened through",
     "a post_only order refused at the last close",
     "a price put on a tick",
     "a price put on significant figures",
@@ -190,6 +191,7 @@ BUILT = {
     "a wallet a fill left within rounding of zero set to zero",
     "an exit held back from a position the bar's orders opened",
     "the exits of a position the bar's orders opened reordered",
+    "a post_only limit the part of its first bar after a fill opened through",
 }
 
 

@@ -434,6 +434,14 @@ BUILT = {
         "an order held to the maximum quantity", held("fok", 1.5, budget=6e-7)),
     "an ioc value order held to the largest order that its budget cuts": (
         "an order held to the maximum quantity", held("market", 1.5, budget=6e-7)),
+    # on spot a post_only sale at 104 survives the open at 100, and a buy stop at 105
+    # then buys the holding it could sell: the part of the bar after that fill opens
+    # through the sale, so it is cancelled there
+    "a post_only sale the part of its first bar after a fill opens through": (
+        "a post_only limit the part of its first bar after a fill opened through",
+        changed(built(at("stop_entry", "buy", 1.0, 105.0),
+                      at("post", "sell", 1.0, 104.0), shaped=(100.0, 108.0, 98.0, 103.0)),
+                market="spot")),
 }
 
 

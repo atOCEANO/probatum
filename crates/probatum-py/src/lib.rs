@@ -1515,7 +1515,12 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::OneBar(TimeInForce::Fok) => "fok: one bar".to_string(),
         EventReason::OneBar(_) => "ioc: one bar".to_string(),
         EventReason::CancelledByAccount => "cancelled by the account".to_string(),
-        EventReason::OpenedThrough => "post_only: the first bar opened through".to_string(),
+        EventReason::OpenedThrough { inside: false } => {
+            "post_only: the first bar opened through".to_string()
+        }
+        EventReason::OpenedThrough { inside: true } => {
+            "post_only: the part of the first bar after a fill opened through".to_string()
+        }
         EventReason::PositionClosed => "its position closed".to_string(),
         EventReason::PartnerFilled => "its OCO partner filled".to_string(),
         EventReason::Liquidation => "liquidation".to_string(),

@@ -2688,8 +2688,10 @@ class Simulator:
             if order["kind"] == "limit" and order["post_only"] and taker:
                 # Order types: a post-only limit the part of its first bar after a
                 # fill opens at or through is cancelled there, as at the open
-                self.hit("a post_only limit its first bar opened through")
-                self.cancel(order["id"], "post_only: the first bar opened through")
+                self.hit("a post_only limit the part of its first bar after a fill "
+                         "opened through")
+                self.cancel(order["id"], "post_only: the part of the first bar after a "
+                                         "fill opened through")
                 continue
 
             remaining = (abs(self.position[i]) if order["size"] is None
