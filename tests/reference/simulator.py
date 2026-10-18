@@ -2386,9 +2386,13 @@ class Simulator:
 
             allowed = min(wanted, budget)
             price, costs = self.taker_price(i, side, bar.open, allowed, bar)
-            if order["value"] is not None:
+
+            # Orders, Units: on a spent budget no fill prices a value order, and it
+            # asks its amount over the open
+            if order["value"] is not None and budget > 0.0:
                 wanted  = self.held(i, inst.units(order["value"], price))
                 allowed = min(wanted, budget)
+
             if budget < wanted:
                 self.hit("the liquidity budget")
             size = self.lot_down(i, self.clamp(i, side, allowed, price,

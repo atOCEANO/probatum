@@ -251,6 +251,18 @@ def joined_and_sold():
     return bars, times, cfg, actions
 
 
+def spent(side, size, **settings):
+    """A fok value order of `size` at a close of 100, decided after three bars that
+    traded nothing, so under a window of 3 its bar's budget is spent; with 5 bps of
+    slippage its amount over the open buys more than over the price a fill would pay
+    on a buy, and less on a sale."""
+    bars, times, cfg, actions = built(None, None, None, ("fok", side, size, 0.7),
+                                      shaped=(100.0, 101.0, 99.0, 100.0))
+    bars[1:4] = [Bar(100.0, 100.0, 100.0, 100.0, 0.0)] * 3
+    cfg.update(window=3, slippage_bps=5.0, **settings)
+    return bars, times, cfg, actions
+
+
 def changed(case, **settings):
     """`case` with `settings` in place of its own."""
     bars, times, cfg, actions = case
@@ -393,6 +405,17 @@ BUILT = {
         "book then backstop selling on the book", sold_in_its_coin()),
     "a long with a leg joined during the bar sold on the book": (
         "book then backstop selling on the book", joined_and_sold()),
+    # a fok value order on a spent budget asks its amount over the open: 100 asks 1,
+    # 10.002 asks the lot of 0.1 it buys there, which over a buy's slipped price of
+    # 100.05 it does not, and a sale of 9.998 asks none, where over 99.95 it would
+    "a fok value order on a spent budget": (
+        "a fok order filling nothing", spent("buy", 1.0)),
+    "a fok value order that buys a lot at the open on a spent budget": (
+        "a fok order filling nothing", spent("buy", 0.10002, sizes=True,
+                                             rules=[dict(lot=0.1)])),
+    "a fok value sale that sells a lot only at its slipped price on a spent budget": (
+        "a market order filling nothing", spent("sell", 0.09998, sizes=True,
+                                                rules=[dict(lot=0.1)])),
 }
 
 
