@@ -305,9 +305,10 @@ def _run(venue, data, seed=None):
     at random draws from. Each instrument takes its tables from the venue, keyed by its
     symbol, or as kind:SYMBOL on a venue of several kinds, and each order limit the
     router gave it where no table of the venue gives one; the rows none of the
-    instruments printed are left out. Refused are an empty Data; an account at two
-    venues or whose cash would be two assets; an instrument of no market or a kind the
-    venue does not list; an inverse contract of no size the bars give; one balance for
+    instruments printed are left out. Refused are an empty Data; an unnamed instrument
+    where the venue keys tables by symbol; an account at two venues or whose cash would
+    be two assets; an instrument of no market or a kind the venue does not list; an
+    inverse contract of no size the bars give; one balance for
     an account that uses both wallets, and the two of them for an inverse contract's,
     which has one; funding from the data where it holds none for a perpetual; an
     instrument without the lot and price rule the venue's sizes hold every order to,
@@ -320,6 +321,13 @@ def _run(venue, data, seed=None):
         raise ValueError("data: no bars to run; give a Data that has some")
 
     instruments, names = data.instruments, data.names
+    # an unnamed instrument is keyed by its position or its empty name, which no table
+    # of a venue names
+    if venue._preset["instruments"] and any(not instrument.symbol
+                                           for instrument in instruments):
+        raise ValueError("data: an unnamed instrument; pass probatum.Data(frame, "
+                         "symbol=...)")
+
     markets = [_market(instrument, name, venue, origin)
                for instrument, name in zip(instruments, names)]
     held = sorted({instrument.venue for instrument in instruments if instrument.venue})

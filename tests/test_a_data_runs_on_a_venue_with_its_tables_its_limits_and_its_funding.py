@@ -211,6 +211,13 @@ def two(*frames):
     (probatum.venues.binance_perp.replace(funding="none"), two(routed("FOOUSDT")),
      "venue: binance_perp gives FOOUSDT no lot and no tick, and its sizes hold every "
      "order to them"),
+    ("binance_perp", probatum.Data(frame(), market="linear"),
+     "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
+    (probatum.venues.binance_perp.replace(fills={"sizes": "off"}, funding="none"),
+     probatum.Data(frame(), market="linear"),
+     "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
+    ("binance_perp", probatum.Data(frame(), symbol="", market="linear"),
+     "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
     (probatum.venues.hyperliquid_perp.replace(funding="none"), two(routed("FOOUSDC")),
      "venue: hyperliquid_perp gives FOOUSDC significant figures and no decimals, the "
      "cap its price rule needs; give FOOUSDC its decimals in instruments"),

@@ -184,6 +184,7 @@ print(cheaper.to_dict()["fees"])            # {'maker': 0.0002, 'taker': 0.0004}
 
 **A Data runs on a venue as one account.** Each instrument takes the venue's tables by its symbol, or as `kind:SYMBOL` on a venue of several kinds, a market the Data leaves out being the venue's, and the minimum notional and largest size the router gave it, each where no table of the venue gives one. The run reads the bars before a slice, which its window warms up on, leaves out the rows none of its instruments printed, as a selection from a wider universe holds, and where the venue's funding is `"data"`, reads the Data's funding events. Refused before it runs are:
 - an empty Data, and instruments at two venues;
+- an unnamed instrument where the venue keys tables by symbol, since none can name it;
 - an account whose cash would be two assets: perpetuals that settle in two, or spot pairs quoted in another asset than the account's;
 - an instrument with no market on a venue of several kinds, or of a kind the venue does not list;
 - an inverse contract whose bars do not give its size, or beside other instruments;
