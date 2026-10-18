@@ -857,7 +857,7 @@ class Data:
         names = list(names)
         own   = self.names
         if not names:
-            raise KeyError("names: none; name at least one instrument")
+            raise ValueError("names: none; name at least one instrument")
 
         missing = [name for name in names if name not in own]
         if missing:

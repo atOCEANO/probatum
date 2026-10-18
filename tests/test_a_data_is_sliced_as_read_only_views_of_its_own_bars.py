@@ -145,7 +145,7 @@ def test_select_takes_instruments_in_the_order_named():
     (lambda data: data.select(["X"]), KeyError, "names: no instrument 'X'"),
     (lambda data: data.select("BTCUSDT"), TypeError,
      "names: 'BTCUSDT'; give a list of names, or index the Data by one"),
-    (lambda data: data.select([]), KeyError, "names: none; name at least one"),
+    (lambda data: data.select([]), ValueError, "names: none; name at least one"),
     (lambda data: data.select(["BTCUSDT", "BTCUSDT"]), ValueError,
      "names: ['BTCUSDT', 'BTCUSDT'] names BTCUSDT twice; name each once"),
 ])
