@@ -582,6 +582,12 @@ impl Engine {
         self
     }
 
+    /// A new engine over this one's bars and settings, as `new` builds one from them,
+    /// the bars shared rather than copied or read again, recording at `level`.
+    pub fn fresh(&self, level: Record) -> Engine {
+        Engine::new(self.candles.clone(), self.config).recording(level)
+    }
+
     /// True when the account died since the last reset: its equity, both wallets
     /// together, reached zero, on either market. A takeover does that unless the
     /// spot wallet holds cash. The RL env's terminal signal (ADR 0008).
@@ -978,6 +984,24 @@ mod tests {
         assert_eq!(e.candles_all(), bars.as_slice());
         assert_eq!((e.open_time(2), e.open_time(3)), (Some(4 * day), None));
         assert_eq!(Engine::new(series(), cfg()).open_time(0), None);
+    }
+
+    #[test]
+    fn a_fresh_engine_shares_its_source_s_bars_and_runs_as_one_built_anew() {
+        let source = Engine::new(series(), report_cfg());
+        let mut fresh = source.fresh(Record::Stats);
+        assert_eq!(fresh.candles_all().as_ptr(), source.candles_all().as_ptr());
+        let mut anew = Engine::new(series(), report_cfg()).recording(Record::Stats);
+        for e in [&mut fresh, &mut anew] {
+            e.reset();
+            e.market_buy(1.0);
+            e.step();
+            e.step();
+        }
+        let stats = |e: &Engine| format!("{:?}", e.stats(365.0, 0.0));
+        assert_eq!(stats(&fresh), stats(&anew));
+        let reporter = fresh.reporter().expect("reporting is on");
+        assert!(reporter.ledger().is_empty());
     }
 
     #[test]

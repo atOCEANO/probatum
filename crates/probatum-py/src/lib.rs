@@ -22,6 +22,7 @@ use numpy::{
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple, PyType};
 use pyo3::PyTypeInfo;
+use rayon::prelude::*;
 
 use probatum_core::candle::floats;
 use probatum_core::{
@@ -593,6 +594,20 @@ fn check_window(window: usize) -> PyResult<()> {
 /// or a call's, whichever area asked. The candle array is already checked for exactly
 /// this, and a NaN knob is no less poisonous: a NaN quote makes every state field NaN
 /// (ADR 0007).
+/// Refuse an annualisation the statistics cannot be taken at and a risk-free rate that
+/// is no number: a non-positive annualisation has no square root and no per-period
+/// rate, and the statistics must never come back NaN (ADRs 0007, 0030).
+fn annualised(periods_per_year: f64, risk_free: f64) -> PyResult<()> {
+    if !(periods_per_year.is_finite() && periods_per_year > 0.0) {
+        return Err(ProbatumValueError::new_err(format!(
+            "periods_per_year: {periods_per_year}; give the bars a year as a finite number \
+             above 0"
+        )));
+    }
+    finite::<ProbatumValueError>("risk_free", risk_free)?;
+    Ok(())
+}
+
 fn finite<E: PyTypeInfo>(name: &str, value: f64) -> PyResult<f64> {
     if !value.is_finite() {
         return Err(PyErr::new::<E, _>(format!(
@@ -2518,15 +2533,7 @@ impl Engine {
         periods_per_year: f64,
         risk_free: f64,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
-        // A non-positive annualization has no square root and no per-period rate,
-        // and the stats set must never come back NaN (ADRs 0007, 0030).
-        if !(periods_per_year.is_finite() && periods_per_year > 0.0) {
-            return Err(ProbatumValueError::new_err(format!(
-                "periods_per_year: {periods_per_year}; give the bars a year as a finite \
-                 number above 0"
-            )));
-        }
-        finite::<ProbatumValueError>("risk_free", risk_free)?;
+        annualised(periods_per_year, risk_free)?;
         match self.inner.stats(periods_per_year, risk_free) {
             Some(stats) => Ok(Some(stats_to_dict(py, &stats)?)),
             None => Ok(None),
@@ -2806,6 +2813,77 @@ impl Engine {
 }
 
 impl Engine {
+    /// `rows`, what an array asks of each instrument from bar `start`, with its sizing,
+    /// tolerance and barriers, as the array the engine runs, refused where it is not one
+    /// row a bar and instrument from `start`, holds an infinite value, or asks a spot
+    /// instrument to go short (Specification, An array).
+    fn array(
+        &self,
+        rows: PyReadonlyArray2<'_, f64>,
+        sizing: &str,
+        tolerance: f64,
+        stop: Option<Bound<'_, PyAny>>,
+        take_profit: Option<Bound<'_, PyAny>>,
+        start: usize,
+    ) -> PyResult<Array> {
+        let (bars, width, units) = (self.inner.num_bars(), self.inner.width(), self.units);
+        let values = rows.as_array();
+        if start >= bars || values.dim() != (bars - start, width) {
+            return Err(ProbatumValueError::new_err(format!(
+                "rows: an array of shape {:?} from bar {start} of {bars} over {width} \
+                 instruments; give one row for each bar from the first",
+                values.dim()
+            )));
+        }
+        let sizing = match sizing {
+            "weight" => Sizing::Weight,
+            "quantity" => Sizing::Quantity,
+            _ => {
+                return Err(ProbatumValueError::new_err(format!(
+                    "sizing: {sizing:?}; use \"weight\" or \"quantity\""
+                )))
+            }
+        };
+        let tolerance = read_tolerance("", tolerance)?;
+        if let Some(((k, i), value)) = values
+            .indexed_iter()
+            .find(|(_, &value)| value.is_infinite())
+        {
+            return Err(ProbatumValueError::new_err(format!(
+                "rows: {value} at row {k} for instrument {i}; give a finite value, or NaN \
+                 to hold"
+            )));
+        }
+        let spot = |i: usize| self.inner.market(i) == Market::Spot;
+        if let Some(((k, i), value)) = values
+            .indexed_iter()
+            .find(|&((_, i), &value)| value < 0.0 && spot(i))
+        {
+            return Err(ProbatumValueError::new_err(format!(
+                "rows: {value} at row {k} for instrument {i}, which is spot and cannot be \
+                 short; give it a value from 0"
+            )));
+        }
+        let values = values
+            .iter()
+            .map(|&value| match sizing {
+                Sizing::Weight => units.signed(value),
+                Sizing::Quantity => units.size(units.signed(value)),
+            })
+            .collect();
+        let stop = barrier_of("stop", stop, bars - start, width)?;
+        let take_profit = barrier_of("take_profit", take_profit, bars - start, width)?;
+        Ok(Array::new(
+            values,
+            width,
+            sizing,
+            tolerance,
+            stop,
+            take_profit,
+            units,
+        ))
+    }
+
     /// `instrument`, refused where the engine holds no such instrument.
     fn instrument(&self, instrument: usize) -> PyResult<usize> {
         let width = self.inner.width();
@@ -4372,58 +4450,82 @@ fn run_array(
     start: usize,
 ) -> PyResult<()> {
     let mut engine = engine.try_borrow_mut()?;
-    let (bars, width, units) = (engine.inner.num_bars(), engine.inner.width(), engine.units);
-    let values = rows.as_array();
-    if start >= bars || values.dim() != (bars - start, width) {
-        return Err(ProbatumValueError::new_err(format!(
-            "rows: an array of shape {:?} from bar {start} of {bars} over {width} \
-             instruments; give one row for each bar from the first",
-            values.dim()
-        )));
-    }
-    let sizing = match sizing {
-        "weight" => Sizing::Weight,
-        "quantity" => Sizing::Quantity,
-        _ => {
-            return Err(ProbatumValueError::new_err(format!(
-                "sizing: {sizing:?}; use \"weight\" or \"quantity\""
-            )))
-        }
-    };
-    let tolerance = read_tolerance("", tolerance)?;
-    if let Some(((k, i), value)) = values
-        .indexed_iter()
-        .find(|(_, &value)| value.is_infinite())
-    {
-        return Err(ProbatumValueError::new_err(format!(
-            "rows: {value} at row {k} for instrument {i}; give a finite value, or NaN to hold"
-        )));
-    }
-    let spot = |i: usize| engine.inner.market(i) == Market::Spot;
-    if let Some(((k, i), value)) = values
-        .indexed_iter()
-        .find(|&((_, i), &value)| value < 0.0 && spot(i))
-    {
-        return Err(ProbatumValueError::new_err(format!(
-            "rows: {value} at row {k} for instrument {i}, which is spot and cannot be \
-             short; give it a value from 0"
-        )));
-    }
-    let values = values
-        .iter()
-        .map(|&value| match sizing {
-            Sizing::Weight => units.signed(value),
-            Sizing::Quantity => units.size(units.signed(value)),
-        })
-        .collect();
-    let stop = barrier_of("stop", stop, bars - start, width)?;
-    let take_profit = barrier_of("take_profit", take_profit, bars - start, width)?;
-    let mut array = Array::new(values, width, sizing, tolerance, stop, take_profit, units);
+    let mut array = engine.array(rows, sizing, tolerance, stop, take_profit, start)?;
     let inner = &mut engine.inner;
     py.detach(|| {
         run_from(inner, &mut array, start);
     });
     Ok(())
+}
+
+/// One array of a search, its rows, sizing, tolerance, stop and take-profit as
+/// `run_array` takes them.
+type Trial<'py> = (
+    PyReadonlyArray2<'py, f64>,
+    String,
+    f64,
+    Option<Bound<'py, PyAny>>,
+    Option<Bound<'py, PyAny>>,
+);
+
+/// A trial's statistics and its equity curve, as `run_arrays` hands them back.
+type Scored<'py> = (Bound<'py, PyDict>, Bound<'py, PyArray1<f64>>);
+
+/// `trials`, arrays each read as `run_array` reads one, run in one call on engines of
+/// `engine`'s bars and settings: each trial on an engine of its own that keeps only what
+/// its statistics read, built over the shared bars, opened at bar `start`, run and
+/// dropped, in parallel with the GIL released. Each comes back as its statistics at
+/// `periods_per_year` and `risk_free` and its equity curve, in the order given, so a
+/// search runs its array trials with no Python between bars (ADR 0032).
+#[pyfunction]
+#[pyo3(signature = (engine, trials, start, periods_per_year, risk_free = 0.0))]
+fn run_arrays<'py>(
+    py: Python<'py>,
+    engine: &Bound<'py, Engine>,
+    trials: Vec<Trial<'py>>,
+    start: usize,
+    periods_per_year: f64,
+    risk_free: f64,
+) -> PyResult<Vec<Scored<'py>>> {
+    annualised(periods_per_year, risk_free)?;
+    let engine = engine.try_borrow()?;
+    if engine.inner.reporter().is_none() {
+        return Err(ProbatumValueError::new_err(
+            "engine: built with report=False, which keeps no statistics; build it with \
+             report=True",
+        ));
+    }
+    let arrays = trials
+        .into_iter()
+        .map(|(rows, sizing, tolerance, stop, take_profit)| {
+            engine.array(rows, &sizing, tolerance, stop, take_profit, start)
+        })
+        .collect::<PyResult<Vec<Array>>>()?;
+    let inner = &engine.inner;
+    let ran: Vec<(Stats, Vec<f64>)> = py.detach(|| {
+        arrays
+            .into_par_iter()
+            .map(|mut array| {
+                let mut each = inner.fresh(Record::Stats);
+                run_from(&mut each, &mut array, start);
+                let stats = each
+                    .stats(periods_per_year, risk_free)
+                    .expect("reporting is on");
+                let curve = each.reporter().expect("reporting is on").equity_curve();
+                (stats, curve.to_vec())
+            })
+            .collect()
+    });
+    ran.into_iter()
+        .map(|(stats, curve)| Ok((stats_to_dict(py, &stats)?, PyArray1::from_vec(py, curve))))
+        .collect()
+}
+
+/// How many threads `run_arrays` runs its trials on at once: rayon's, which follow
+/// `RAYON_NUM_THREADS` or the CPUs the process may use, a container's quota among them.
+#[pyfunction]
+fn threads() -> usize {
+    rayon::current_num_threads()
 }
 
 /// The natural logarithm of `x` through `libm`, the same bits on every machine, which a
@@ -4541,6 +4643,8 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stats_of, m)?)?;
     m.add_function(wrap_pyfunction!(run_script, m)?)?;
     m.add_function(wrap_pyfunction!(run_array, m)?)?;
+    m.add_function(wrap_pyfunction!(run_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(threads, m)?)?;
     m.add_function(wrap_pyfunction!(arrow::arrow_columns, m)?)?;
     Ok(())
 }

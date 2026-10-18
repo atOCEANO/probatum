@@ -284,4 +284,13 @@ def run_array(
     take_profit: Optional[float | np.ndarray] = ...,
     start: int = ...,
 ) -> None: ...
+def run_arrays(
+    engine: Engine,
+    trials: list[tuple[np.ndarray, str, float, Optional[float | np.ndarray],
+                       Optional[float | np.ndarray]]],
+    start: int,
+    periods_per_year: float,
+    risk_free: float = ...,
+) -> list[tuple[dict[str, Any], np.ndarray]]: ...
+def threads() -> int: ...
 def arrow_columns(data: Any) -> list[tuple[str, str, Optional[np.ndarray], str]]: ...

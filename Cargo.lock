@@ -621,6 +621,7 @@ dependencies = [
  "probatum-core",
  "probatum-engine",
  "pyo3",
+ "rayon",
 ]
 
 [[package]]

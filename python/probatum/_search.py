@@ -20,7 +20,7 @@ from ._data import Data, _before, _row, _when
 from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
                       ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
                       ProbatumWarning)
-from ._probatum import Engine, Table as _Held, run_array
+from ._probatum import Engine, Table as _Held, run_array, run_arrays, threads
 from ._result import COUNTS, STATS, Table, _environment, _returns, _text, _version
 from ._samplers import _Grid, _Random, _Tpe
 from ._space import Categorical, Float, Int, _whole
@@ -33,6 +33,9 @@ DIRECTIONS = ("maximize", "minimize")
 KEEPS      = ("all", "none")
 # the columns the trials table has of its own, which no parameter is named
 OWN = ("number", "state", "score", "error") + STATS
+# what the trials run together in Rust may hold, each one's arrays twice, Python's and
+# Rust's, and its equity curve, beyond one a thread
+CHUNK = 256 * 2**20
 # the package's files, which a warning skips to name the caller's line
 PACKAGE = (os.path.dirname(__file__),)
 
@@ -124,21 +127,30 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
                 named, sampler, f"{cut:,}", f"{len(data) - cut:,}")
 
     made, checked = [], None
-    for number in range(draws.count):
-        trial = runner.trial(number, draws.ask(number))
-        draws.tell(number, trial)
-        if keep == "none":
-            trial.returns = None
-        made.append(trial)
-        LOGGER.debug("search: trial %s %s%s", number, trial.state,
-                     "" if trial.score is None else f", {objective} {trial.score:.6g}")
+    while len(made) < draws.count:
+        number = len(made)
+        # once checked, weights a random or grid search draws run together in Rust,
+        # and TPE, which chooses each trial from the last, runs them one at a time
+        if checked is not None and sampler != "tpe" and runner.made == "weights":
+            arrived = runner.together(number, draws)
+        else:
+            arrived = [runner.trial(number, draws.ask(number))]
 
-        # the first trial that ran and decided something is checked before any other
-        # runs (Specification, The causality check)
-        if checked is None and trial.state != "failed" and _check(
-                policy, kind, trial.params, inside, held, run):
-            checked = trial.params
-            LOGGER.info("search: trial %s's decisions are causal", number)
+        for trial in arrived:
+            draws.tell(trial.number, trial)
+            if keep == "none":
+                trial.returns = None
+            made.append(trial)
+            LOGGER.debug("search: trial %s %s%s", trial.number, trial.state,
+                         "" if trial.score is None
+                         else f", {objective} {trial.score:.6g}")
+
+            # the first trial that ran and decided something is checked before any
+            # other runs (Specification, The causality check)
+            if checked is None and trial.state != "failed" and _check(
+                    policy, kind, trial.params, inside, held, run):
+                checked = trial.params
+                LOGGER.info("search: trial %s's decisions are causal", trial.number)
 
     winner = _winner(made, direction, min_trades)
     if checked is not None and winner.params != checked:
@@ -432,17 +444,24 @@ class _Runner:
         return stats, _returns(equity)
 
 
+    def kind_of(self, params):
+        """What the policy decides with ``params``, refused where it is of another kind
+        than the trials before decided."""
+        made, decided = self.decided(params)
+
+        if self.made is not None and made != self.made:
+            given  = "a Strategy" if made == "strategy" else "weights"
+            before = "a Strategy" if self.made == "strategy" else "weights"
+            raise PolicyError(f"policy: returned {given}, where the trials before it "
+                              f"returned {before}; return one kind for every parameter")
+
+        return made, decided
+
+
     def trial(self, number, params):
         """Trial ``number``, run with ``params``."""
         try:
-            made, decided = self.decided(params)
-            if self.made is not None and made != self.made:
-                given  = "a Strategy" if made == "strategy" else "weights"
-                before = "a Strategy" if self.made == "strategy" else "weights"
-                raise PolicyError(f"policy: returned {given}, where the trials before it "
-                                  f"returned {before}; return one kind for every "
-                                  f"parameter")
-
+            made, decided = self.kind_of(params)
             stats, returns = self.played(made, decided)
         except Exception as error:
             # a search raises from its last failure alone, and each one's traceback
@@ -460,6 +479,45 @@ class _Runner:
 
         self.made = made
         return _scored(number, params, stats, returns, self.objective, self.min_trades)
+
+
+    def together(self, first, draws):
+        """The trials from ``first`` on that a chunk holds, as many as there are threads
+        and then until their arrays reach ``CHUNK``, each decided in turn, one that
+        raises or decides otherwise than weights failing alone, and every one that
+        decided run together on an engine of its own over the shared bars."""
+        least = threads()
+        made, played, size = [], [], 0
+        while first + len(made) < draws.count and (len(played) < least or size < CHUNK):
+            number = first + len(made)
+            params = draws.ask(number)
+            try:
+                decided = self.kind_of(params)[1]
+            except Exception as error:
+                # no search raises from a failure here, as one trial was checked, and
+                # its traceback would hold the chunk
+                made.append(_Trial(number, params, "failed", error=_told(error)))
+                continue
+
+            made.append(_Trial(number, params, None))
+            played.append(decided)
+            size += 8 * len(decided[0]) + 2 * sum(
+                given.nbytes for given in decided if isinstance(given, np.ndarray))
+
+        engine = self.engine("account")
+        # what the trials run alone recorded there, which nothing reads any more
+        engine.reset()
+        ran = iter(run_arrays(engine, played, self.run.start, self.rate,
+                              self.risk_free))
+
+        for k, trial in enumerate(made):
+            if trial.state is None:
+                stats, curve = next(ran)
+                returns = _returns(np.concatenate([[self.opening], curve]))
+                made[k] = _scored(trial.number, trial.params, stats, returns,
+                                  self.objective, self.min_trades)
+
+        return made
 
 
 def _given(given, data, run):
