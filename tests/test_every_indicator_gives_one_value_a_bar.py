@@ -125,6 +125,50 @@ def test_the_warm_up_is_a_gap_and_the_rest_is_not():
         assert np.isfinite(out[-1]), f"{name} never warmed up"
 
 
+def test_each_line_first_gives_a_value_on_the_bar_its_convention_names():
+    # at LINES' lengths, by hand: a window of L fills on bar L - 1, a change needs one
+    # bar before it, so rsi, roc, mfi and adx's two strengths wait one bar more, and a
+    # smoother of a line that has its own warm-up waits out both: macd's signal at
+    # slow + signal - 2, stoch's d at L + smooth - 2, hma at L + floor(sqrt(L)) - 2
+    # and the ADX itself at 2L - 1
+    firsts = {
+        "sma":        [4],
+        "ema":        [4],
+        "wma":        [4],
+        "rsi":        [5],
+        "roc":        [5],
+        "stdev":      [4],
+        "zscore":     [4],
+        "atr":        [4],
+        "true_range": [0],
+        "vwap":       [4],
+        "macd":       [5, 7, 7],
+        "stoch":      [4, 6],
+        "bbands":     [4, 4, 4],
+        "donchian":   [4, 4, 4],
+        "hma":        [6],
+        "vwma":       [4],
+        "willr":      [4],
+        "cci":        [4],
+        "natr":       [4],
+        "keltner":    [4, 4, 4],
+        "highest":    [4],
+        "lowest":     [4],
+        "shift":      [3],
+        "change":     [3],
+        "supertrend": [4, 4, 4, 4],
+        "adx":        [9, 5, 5],
+        "obv":        [1],
+        "mfi":        [5],
+    }
+
+    assert firsts.keys() == LINES.keys()
+
+    for name, call in LINES.items():
+        got = [int(np.flatnonzero(np.isfinite(line))[0]) for line in call(*ramp_bars())]
+        assert got == firsts[name], f"{name} first gives a value on {got}"
+
+
 def test_a_pandas_series_works_without_pandas_being_a_dependency():
     pd = pytest.importorskip("pandas")
 
