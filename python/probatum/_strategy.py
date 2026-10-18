@@ -156,6 +156,9 @@ class _Run:
 
         # what an error calls the view of the whole account
         self.named = "account"
+        # what the run's handles carry through its end, so a Result tells the handles
+        # of its own run alone
+        self.token = object()
         self.reset()
 
 
@@ -217,7 +220,7 @@ class _Run:
         the run holds no engine and the run goes once nothing else holds it."""
         self.sync()
 
-        left = _Left(self.names)
+        left = _Left(self.names, self.token)
         for handle in self.handles.values():
             handle._run = left
 
@@ -1165,14 +1168,24 @@ class Order:
 
 
 class _Left:
-    """What a handle reads of its run once the run has ended: the names, and nothing to
-    bring the handle up to date from."""
+    """What a handle reads of its run once the run has ended: the names, the run's
+    token, and nothing to bring the handle up to date from."""
 
-    __slots__ = ("names",)
+    __slots__ = ("names", "token")
 
 
-    def __init__(self, names):
+    def __init__(self, names, token):
         self.names = names
+        self.token = token
+
+
+    def __copy__(self):
+        return self
+
+
+    def __deepcopy__(self, memo):
+        # a copy of a handle tells of the run the handle came from
+        return self
 
 
     def sync(self):

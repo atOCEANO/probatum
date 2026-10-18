@@ -375,14 +375,16 @@ def _tables(held):
 class _Record:
     """What a run's Result keeps of its run, which its assumptions read: the ``venue``,
     the ``data``, and the Engine's ``settings`` with ``start``, the row of the Data's
-    first bar among the Engine's, as `_run` gave them."""
+    first bar among the Engine's, as `_run` gave them, and the ``token`` of a run whose
+    account handed out handles, which explain checks one against."""
 
-    __slots__ = ("venue", "data", "settings", "start")
+    __slots__ = ("venue", "data", "settings", "start", "token")
 
 
-    def __init__(self, venue, data, run):
+    def __init__(self, venue, data, run, token=None):
         self.venue, self.data = venue, data
         self.settings, self.start = run.settings, run.start
+        self.token = token
 
 
 class InstrumentResult:
@@ -500,6 +502,16 @@ class Result:
             table = self._assumptions = Assumptions._of(_assumptions.ran(self._record,
                                                                          self))
         return table
+
+
+    def explain(self, item):
+        """How one fill's price or one order's life came about, as text: ``item`` is a
+        row of the fill log, a row of the order log, which tells that row's order, or an
+        `Order` this run's account handed out, which a Result loaded, unpickled or
+        combined refuses, a book's rows naming their venue (Python_API,
+        Transparency)."""
+        from . import _explain
+        return _explain.told(self, item)
 
 
     @property
@@ -956,15 +968,21 @@ def _stats(path, folder, fix):
 
 
 def _described(provenance):
-    """Whether ``provenance`` holds what a Result's repr and combine read of it."""
+    """Whether ``provenance`` holds what a Result's repr, combine and explain read of
+    it, each account's in a book."""
     if "results" in provenance:
-        return isinstance(provenance["results"], dict) and all(
-            key in provenance for key in ("settlement", "risk_free", "periods_per_year"))
+        parts = provenance["results"]
+        return isinstance(parts, dict) and all(
+            key in provenance for key in ("settlement", "risk_free", "periods_per_year")
+        ) and all(isinstance(part, dict) and all(
+            key in part for key in ("markets", "settlement", "contract"))
+            for part in parts.values())
 
     data = provenance.get("data")
     return isinstance(data, dict) and "interval" in data and all(
         key in provenance for key in ("venue", "venue_name", "policy", "markets",
-                                      "settlement", "risk_free", "periods_per_year"))
+                                      "settlement", "contract", "risk_free",
+                                      "periods_per_year"))
 
 
 def _laid_out(holdings, rows):
@@ -1039,11 +1057,12 @@ def _provenance(data, venue, markets, policy, risk_free, rate, seed=None, **give
     of the policy's settings."""
     streams = {"intrabar": "ChaCha20"} if venue._intrabar == "random" else {}
     # the binding calls a linear perpetual perp, where every other surface says linear
-    named = ["linear" if market == "perp" else market for market in markets]
+    named    = ["linear" if market == "perp" else market for market in markets]
+    contract = data.instruments[0].contract if named == ["inverse"] else None
 
     return dict(data=data.provenance, venue=repr(venue), venue_name=venue.name,
                 markets=named, settlement=_settlement(data.instruments, markets),
-                policy=policy, **given, seed=seed, streams=streams,
+                contract=contract, policy=policy, **given, seed=seed, streams=streams,
                 risk_free=float(risk_free), periods_per_year=rate, version=_version(),
                 **_environment())
 

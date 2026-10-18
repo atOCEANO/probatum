@@ -462,6 +462,26 @@ def test_a_book_and_its_parts_saved_and_loaded_combine_as_they_did(results, tmp_
     assert loaded.stats == book.stats
 
 
+def test_a_book_whose_account_is_described_in_part_is_refused(results, tmp_path):
+    results["book"].save(tmp_path)
+
+    file = tmp_path / "result.json"
+    # not through manifest_of, which leaves out a key of None, the book's policy too
+    manifest = json.loads(file.read_text(encoding="utf-8"))
+    provenance, part = manifest["provenance"], manifest["provenance"]["results"]["b"]
+
+    for key in (None, "markets", "settlement", "contract"):
+        kept = {name: value for name, value in part.items() if name != key}
+        file.write_text(json.dumps(dict(manifest, provenance=dict(
+            provenance, results=dict(provenance["results"], b=kept)))), encoding="utf-8")
+
+        if key is None:
+            assert probatum.Result.load(tmp_path).provenance == provenance
+        else:
+            with pytest.raises(ValueError, match=MANIFEST):
+                probatum.Result.load(tmp_path)
+
+
 def test_a_part_another_hand_wrote_again_combines_as_the_part_it_was(results, tmp_path):
     array, strategy = results["array"], results["strategy"]
     array.save(tmp_path)

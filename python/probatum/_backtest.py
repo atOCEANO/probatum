@@ -135,7 +135,8 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
     engine = Engine(run.candles, report=True, **run.settings)
     copied = copy.deepcopy(strategy)
 
-    _play(copied, _Run(engine, data, run.start, _markets(run)))
+    played = _Run(engine, data, run.start, _markets(run))
+    _play(copied, played)
 
     rate       = _annualised(data)
     stats      = None if rate is None else engine.stats(rate, float(risk_free))
@@ -143,7 +144,8 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
                              rate)
 
     return Result._of(engine.tables(run.start, list(data.names)), stats, copied,
-                      engine.is_bust(), provenance, _Record(held, data, run))
+                      engine.is_bust(), provenance,
+                      _Record(held, data, run, played.token))
 
 
 def _repeatable(venue):
