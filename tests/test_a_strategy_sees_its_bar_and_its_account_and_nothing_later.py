@@ -865,6 +865,30 @@ def test_a_verb_on_one_instrument_of_several_is_taken_through_its_view():
          ValueError, "tif: 'ioc' for a stop, which rests until it triggers"),
         (lambda bar, account: account["ETHUSDT"].buy(1.0, tif="day"), ValueError,
          "tif: 'day'; use \"gtc\", \"ioc\" or \"fok\""),
+        (lambda bar, account: account["ETHUSDT"].buy(1.0, tif=5), TypeError,
+         "tif: 5; use \"gtc\", \"ioc\" or \"fok\""),
+        (lambda bar, account: account["ETHUSDT"].buy(1.0, limit=9.0, post_only=1),
+         TypeError, "post_only: 1; give True or False"),
+        (lambda bar, account: account["ETHUSDT"].sell(1.0, reduce_only="yes"),
+         TypeError, "reduce_only: 'yes'; give True or False"),
+        (lambda bar, account: account["ETHUSDT"].buy_value(10.0, tif=None), TypeError,
+         "tif: None; use \"ioc\" or \"fok\""),
+        (lambda bar, account: account["ETHUSDT"].sell_value(10.0, reduce_only=0),
+         TypeError, "reduce_only: 0; give True or False"),
+        (lambda bar, account: account.target([0.5, 0.5], tolerance="0.01"), TypeError,
+         "tolerance: '0.01'; give a fraction of equity from 0"),
+        (lambda bar, account: account.target([0.5, 0.5], transfer=1), TypeError,
+         "transfer: 1; give True or False"),
+        (lambda bar, account: account.target([True, False]), TypeError,
+         "weights: True for BTCUSDT; give a number"),
+        (lambda bar, account: account.target(["0.5", "0.5"]), TypeError,
+         "weights: '0.5' for BTCUSDT; give a number"),
+        (lambda bar, account: account.target([0.5, True]), TypeError,
+         "weights: True for ETHUSDT; give a number"),
+        (lambda bar, account: account.transfer("100"), TypeError,
+         "amount: '100'; give the cash to move"),
+        (lambda bar, account: account.transfer(100.0, to=None), TypeError,
+         "to: None; use \"spot\" or \"margin\""),
         (lambda bar, account: account["ETHUSDT"].buy("1"), TypeError,
          "size: '1'; give a number of base units"),
         (lambda bar, account: account["ETHUSDT"].buy(1.0, limit=math.inf), ValueError,
@@ -884,6 +908,10 @@ def test_a_verb_on_one_instrument_of_several_is_taken_through_its_view():
     for call, kind, says in cases:
         with pytest.raises(kind, match=re.escape(says)):
             run(call)
+
+    # numpy's bool is a flag, as the binding reads one
+    run(lambda bar, account: account["ETHUSDT"].buy(1.0, limit=9.0, post_only=np.True_,
+                                                    reduce_only=np.False_))
 
 
 def test_a_spot_weight_below_zero_is_refused_naming_the_instrument():

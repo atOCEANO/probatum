@@ -130,6 +130,13 @@ def _number(value):
     return isinstance(value, numbers.Real)
 
 
+def _flag(name, value):
+    """Refuse ``value``, given as the flag ``name``, where it is not True or False."""
+    # numpy's bool is one, as the binding reads it
+    if not isinstance(value, (bool, np.bool_)):
+        raise TypeError(f"{name}: {value!r}; give True or False")
+
+
 class _Run:
     """What the views of one account share: the binding's engine, opened at the Data's
     first row its instruments printed and holding a bar for every such row; the
@@ -413,8 +420,13 @@ class _Run:
         kind = ("limit" if price is not None else "stop" if trigger is not None
                 else "market")
 
-        if not isinstance(tif, str) or tif.lower() not in TIFS:
+        if not isinstance(tif, str):
+            raise TypeError(f"tif: {tif!r}; use \"gtc\", \"ioc\" or \"fok\"")
+        if tif.lower() not in TIFS:
             raise ValueError(f"tif: {tif!r}; use \"gtc\", \"ioc\" or \"fok\"")
+
+        _flag("post_only", post_only)
+        _flag("reduce_only", reduce_only)
 
         if post_only and kind != "limit":
             raise ValueError(f"post_only: a {kind} order takes liquidity; give limit= "
@@ -434,6 +446,11 @@ class _Run:
         """A market order on column ``k`` for ``amount`` of the quote currency."""
         if not _number(amount):
             raise TypeError(f"amount: {amount!r}; give an amount of the quote currency")
+
+        if not isinstance(tif, str):
+            raise TypeError(f"tif: {tif!r}; use \"ioc\" or \"fok\"")
+
+        _flag("reduce_only", reduce_only)
 
         before = self.engine.num_events()
         order  = self.engine.order_value(side, float(amount), reduce_only, tif, k)
@@ -516,6 +533,12 @@ class _Run:
 
     def target(self, weights, tolerance, transfer):
         """The legs that bring each instrument to its weight of equity."""
+        if not _number(tolerance):
+            raise TypeError(f"tolerance: {tolerance!r}; give a fraction of equity "
+                            f"from 0")
+
+        _flag("transfer", transfer)
+
         if self.width == 1 and _number(weights):
             weight = self.weight(0, weights)
             before = self.engine.num_events()
@@ -533,7 +556,9 @@ class _Run:
                              f"instruments; give one for each, or a dict from name to "
                              f"weight")
         else:
-            values = np.asarray(weights, dtype=np.float64)
+            # as objects, so a bool or a number written as text reaches weight as it
+            # came rather than read as a number
+            values = np.asarray(weights, dtype=object)
             if values.shape != (self.width,):
                 raise ValueError(f"weights: an array of shape {values.shape} for "
                                  f"{self.width} instrument{'s' * (self.width > 1)}; "
@@ -1010,6 +1035,12 @@ class Account(_Verbs):
     def transfer(self, amount, to="margin"):
         """Move ``amount`` of cash into the ``to`` wallet, "spot" or "margin", at the
         start of the next bar, held to what the wallet it leaves may give (ADR 0008)."""
+        if not _number(amount):
+            raise TypeError(f"amount: {amount!r}; give the cash to move")
+
+        if not isinstance(to, str):
+            raise TypeError(f"to: {to!r}; use \"spot\" or \"margin\"")
+
         self._run.engine.transfer(amount, to)
 
 
