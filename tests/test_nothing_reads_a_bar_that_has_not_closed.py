@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import probatum
-from test_every_indicator_gives_one_value_a_bar import LINES
+from test_every_indicator_gives_one_value_a_bar import FLAGS, LINES
 
 HOUR  = 3_600_000_000_000
 START = 1_704_067_200_000_000_000
@@ -144,7 +144,8 @@ def test_no_indicator_can_see_the_future():
     bar inside the loop, so a value at bar i that depended on bar i+1 would be
     silent lookahead in every strategy that used it, and would flatter every one
     of them. Truncating the series must therefore change nothing about the bars
-    that remain.
+    that remain, to the bit, whether the cut leaves a line its first value alone or
+    most of the series.
     """
     rng    = np.random.default_rng(4)
     close  = 100.0 + np.cumsum(rng.normal(0.0, 1.0, 90))
@@ -152,19 +153,18 @@ def test_no_indicator_can_see_the_future():
     low    = close - rng.uniform(0.1, 1.0, 90)
     volume = rng.uniform(500.0, 1500.0, 90)
 
-    for name, call in LINES.items():
-        whole = call(high, low, close, volume)
-        for cut in (20, 45, 89, 90):
+    for name, call in {**LINES, **FLAGS}.items():
+        whole  = call(high, low, close, volume)
+        firsts = {int(np.flatnonzero(np.isfinite(line))[0]) + 1 for line in whole
+                  if line.dtype != bool}
+        for cut in sorted(firsts | {20, 45, 89, 90}):
             part = call(high[:cut], low[:cut], close[:cut], volume[:cut])
             for line, (full, upto) in enumerate(zip(whole, part)):
-                assert len(upto) == cut, f"{name} line {line} at cut {cut}"
-                for i in range(cut):
-                    a, b = full[i], upto[i]
-                    same = (np.isnan(a) and np.isnan(b)) or a == pytest.approx(b)
-                    assert same, (
-                        f"{name} line {line} bar {i} moved from {a} to {b} when "
-                        f"the series was cut at {cut}: it can see the future"
-                    )
+                np.testing.assert_array_equal(upto, full[:cut], err_msg=(
+                    f"{name} line {line} moved when the series was cut at {cut}: it "
+                    f"can see the future"))
+
+        assert name in LINES or whole[0].any(), f"{name} never fired, so proved nothing"
 
 
 def test_removing_the_future_outright_changes_no_past_value():
@@ -177,14 +177,24 @@ def test_removing_the_future_outright_changes_no_past_value():
     moved = close.copy()
     moved[60:] += 500.0
 
-    for name, call in LINES.items():
+    for name, call in {**LINES, **FLAGS}.items():
         before = call(high, low, close, volume)
         after  = call(high, low, moved, volume)
         for line, (a, b) in enumerate(zip(before, after)):
-            assert np.allclose(a[:60], b[:60], equal_nan=True), (
-                f"{name} line {line} changed a bar before 60 when only bars after "
-                f"60 were moved"
-            )
+            np.testing.assert_array_equal(a[:60], b[:60], err_msg=(
+                f"{name} line {line} changed a bar before 60 when only bars after 60 "
+                f"were moved"))
+
+
+def test_a_smoother_cut_beside_a_seam_of_its_blocks_reads_nothing_past_the_cut():
+    # the one step whose reach depends on the series' length: `_decay` sums in
+    # blocks counted from the seed, and a cut shortens the block it falls in
+    close = 100.0 + 10.0 * np.sin(np.arange(700.0) / 23.0)
+    whole = probatum.ta.ema(close, 2)
+    seam  = 2 + probatum.ta._block(1.0 - 2.0 / 3.0)
+
+    for cut in (seam - 1, seam, seam + 1, 2 * seam - 2, 2 * seam - 1):
+        np.testing.assert_array_equal(probatum.ta.ema(close[:cut], 2), whole[:cut])
 
 
 @pytest.mark.parametrize("length", [3, 16, 20, 50, 100])

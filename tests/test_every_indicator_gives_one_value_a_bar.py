@@ -52,7 +52,7 @@ LINES = {
 # not the NaN ones (ADR 0037)
 FLAGS = {
     "crossover": lambda h, l, c, v: [ta.crossover(ta.sma(c, 3), ta.sma(c, 5))],
-    "crossunder": lambda h, l, c, v: [ta.crossunder(ta.sma(c, 3), 10.0)],
+    "crossunder": lambda h, l, c, v: [ta.crossunder(ta.sma(c, 3), 100.0)],
 }
 
 
