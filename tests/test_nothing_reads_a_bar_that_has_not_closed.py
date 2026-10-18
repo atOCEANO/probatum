@@ -185,3 +185,14 @@ def test_removing_the_future_outright_changes_no_past_value():
                 f"{name} line {line} changed a bar before 60 when only bars after "
                 f"60 were moved"
             )
+
+
+@pytest.mark.parametrize("length", [3, 16, 20, 50, 100])
+def test_a_series_of_one_window_gives_its_bar_what_a_longer_series_gives_there(length):
+    draw = np.random.default_rng(length)
+
+    for _ in range(25):
+        close = 100.0 * np.exp(np.cumsum(draw.normal(0.0, 0.01, 4 * length)))
+        whole = probatum.ta.wma(close, length)
+        np.testing.assert_array_equal(probatum.ta.wma(close[:length], length),
+                                      whole[:length])

@@ -379,9 +379,17 @@ def wma(values, length):
     values  = _series(values, "wma")
     length  = _length(length, values.size, "wma")
     weights = np.arange(1.0, length + 1.0)
-    out     = _blank(values.size)
+    windows = _windows(values, length)
+    summed  = np.zeros(len(windows))
 
-    out[length - 1:] = _windows(values, length) @ (weights / weights.sum())
+    # one weight at a time, in order, which is how numpy's matmul sums many windows;
+    # it hands a single one to BLAS, which sums in another order, so a series of one
+    # window gave its bar other bits than a longer series gives there
+    for k, weight in enumerate(weights / weights.sum()):
+        summed += windows[:, k] * weight
+
+    out = _blank(values.size)
+    out[length - 1:] = summed
     return out
 
 
