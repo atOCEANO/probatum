@@ -1,12 +1,14 @@
 """Nothing reads a bar that has not closed. What is known at the end of bar t is the
 same whether the bars after t are there or not, and whatever they hold: the coarse bars
-`resample` builds from these bars, and the values `asof` puts on their clock.
+`resample` builds from these bars, the values `asof` puts on their clock, and every
+line of every indicator in `probatum.ta`.
 """
 
 import numpy as np
 import pytest
 
 import probatum
+from test_every_indicator_gives_one_value_a_bar import LINES
 
 HOUR  = 3_600_000_000_000
 START = 1_704_067_200_000_000_000
@@ -133,3 +135,53 @@ def test_a_value_put_on_the_clock_is_the_same_whatever_comes_after_it(seed):
         shifted[known > end] = -1.0
 
         np.testing.assert_array_equal(whole.asof(shifted, known)[:t + 1], at[:t + 1])
+
+
+def test_no_indicator_can_see_the_future():
+    """The invariant everything else rests on.
+
+    These are computed once over the whole series in ``init`` and then read bar by
+    bar inside the loop, so a value at bar i that depended on bar i+1 would be
+    silent lookahead in every strategy that used it, and would flatter every one
+    of them. Truncating the series must therefore change nothing about the bars
+    that remain.
+    """
+    rng    = np.random.default_rng(4)
+    close  = 100.0 + np.cumsum(rng.normal(0.0, 1.0, 90))
+    high   = close + rng.uniform(0.1, 1.0, 90)
+    low    = close - rng.uniform(0.1, 1.0, 90)
+    volume = rng.uniform(500.0, 1500.0, 90)
+
+    for name, call in LINES.items():
+        whole = call(high, low, close, volume)
+        for cut in (20, 45, 89, 90):
+            part = call(high[:cut], low[:cut], close[:cut], volume[:cut])
+            for line, (full, upto) in enumerate(zip(whole, part)):
+                assert len(upto) == cut, f"{name} line {line} at cut {cut}"
+                for i in range(cut):
+                    a, b = full[i], upto[i]
+                    same = (np.isnan(a) and np.isnan(b)) or a == pytest.approx(b)
+                    assert same, (
+                        f"{name} line {line} bar {i} moved from {a} to {b} when "
+                        f"the series was cut at {cut}: it can see the future"
+                    )
+
+
+def test_removing_the_future_outright_changes_no_past_value():
+    # the same invariant from the other side: rewrite the tail and the head must
+    # not move by a single ulp
+    rng   = np.random.default_rng(7)
+    close = 100.0 + np.cumsum(rng.normal(0.0, 1.0, 90))
+    high, low, volume = close + 1.0, close - 1.0, np.full(90, 1000.0)
+
+    moved = close.copy()
+    moved[60:] += 500.0
+
+    for name, call in LINES.items():
+        before = call(high, low, close, volume)
+        after  = call(high, low, moved, volume)
+        for line, (a, b) in enumerate(zip(before, after)):
+            assert np.allclose(a[:60], b[:60], equal_nan=True), (
+                f"{name} line {line} changed a bar before 60 when only bars after "
+                f"60 were moved"
+            )
