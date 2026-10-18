@@ -463,10 +463,11 @@ class Data:
         nothing earlier is asked once more, and where it brings nothing again the
         venue's history is taken to begin there, which the provenance records and a
         warning names, as another names bars that end before ``end``. A symbol the
-        router failed on is refused rather than left out, and so is a funding series
-        that misses part of its instrument's span: one that begins more than a cycle
-        after its first bar, ends more than a cycle before its last bar ends, misses
-        events between or holds one with no rate, so a run never charges nothing in
+        router failed on raises the router's own error rather than being left out, as
+        a pull of that symbol alone does, and a funding series that misses part of its
+        instrument's span is refused: one that begins more than a cycle after its
+        first bar, ends more than a cycle before its last bar ends, misses events
+        between or holds one with no rate, so a run never charges nothing in
         silence."""
         fetch = getattr(router, "get_candles", None)
         if fetch is None:
@@ -529,9 +530,14 @@ class Data:
 
             if batch.failed:
                 symbol, error = next(iter(batch.failed.items()))
-                raise ValueError(f"symbols: the router failed on {symbol}: "
-                                 f"{getattr(error, 'detail', error)}; leave it out, or "
-                                 f"fetch it again once the router can serve it")
+                if len(batch.failed) == len(symbols):
+                    error.add_note(f"symbols: the router failed on all {len(symbols)}; "
+                                   f"fetch them again once it can serve them")
+                else:
+                    error.add_note(f"symbols: the router failed on {symbol}; leave it "
+                                   f"out, or fetch it again once the router can serve "
+                                   f"it")
+                raise error
 
             initial = batch.data()
 

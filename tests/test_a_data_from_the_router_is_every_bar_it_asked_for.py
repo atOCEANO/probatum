@@ -2,10 +2,11 @@
 through an exchange-router object, chaining calls back from the newest, since one call
 walks back only so far. A call that brings nothing earlier is asked once more, and
 where it brings nothing again the venue's history begins there, which the provenance
-records and a warning names. A symbol the router fails on is refused, not left out,
-and so is a funding series that misses part of its instrument's span, at its head, at
-its tail or between, so a run never charges nothing in silence. Each instrument takes
-its base asset and order limits from the router's symbol information.
+records and a warning names. A symbol the router fails on raises the router's own
+error rather than being left out, and a funding series that misses part of its
+instrument's span, at its head, at its tail or between, is refused, so a run never
+charges nothing in silence. Each instrument takes its base asset and order limits from
+the router's symbol information.
 """
 
 import asyncio
@@ -219,16 +220,24 @@ def test_bars_that_end_before_the_end_are_warned_of():
         fetch(Router(held), held)
 
 
-def test_several_symbols_come_from_one_batch_and_a_failed_one_is_refused():
+def test_several_symbols_come_from_one_batch_and_one_it_failed_on_raises_its_error():
     held = {"BTCUSDT": bars(48), "ETHUSDT": bars(48, close=10.0)}
     data = fetch(Router(held), held)
 
     assert data.names == ("BTCUSDT", "ETHUSDT") and data.closes.shape == (48, 2)
 
-    with pytest.raises(ValueError, match=re.escape(
-            "symbols: the router failed on ETHUSDT: upstream 503; leave it out, or "
-            "fetch it again once the router can serve it")):
+    with pytest.raises(RuntimeError, match="upstream 503") as caught:
         fetch(Router(held, failing=("ETHUSDT",)), held)
+
+    assert caught.value.__notes__ == [
+        "symbols: the router failed on ETHUSDT; leave it out, or fetch it again once "
+        "the router can serve it"]
+
+    with pytest.raises(RuntimeError, match="upstream 503") as caught:
+        fetch(Router(held, failing=("BTCUSDT", "ETHUSDT")), held)
+
+    assert caught.value.__notes__ == [
+        "symbols: the router failed on all 2; fetch them again once it can serve them"]
 
 
 def test_each_instrument_takes_its_base_asset_and_order_limits_from_the_router():
