@@ -19,7 +19,7 @@ use probatum_core::arrow::{
     self, bit, ArrowArrayStream, ArrowSchema, Column, Given, Table, Values,
 };
 use probatum_core::Side;
-use probatum_engine::reporter::{FillRecord, LedgerRow};
+use probatum_engine::reporter::{FillRecord, LedgerRow, Record};
 use probatum_engine::{Engine as BarEngine, RoundTrip, Units};
 
 use crate::arrow::text;
@@ -445,14 +445,15 @@ fn built(columns: Vec<Column>) -> PyTable {
 }
 
 /// The run's ledger, holdings, fills, order log and round trips as tables, in that
-/// order, every bar counted from `start`, the account's first row, and each instrument
-/// by its name in `names`, or None when reporting is off (ADR 0026).
+/// order, the ledger and the round trips alone below the full level, every bar counted
+/// from `start`, the account's first row, and each instrument by its name in `names`,
+/// or None when reporting is off (ADR 0026).
 pub(crate) fn tables(
     engine: &BarEngine,
     units: Units,
     start: usize,
     names: &[String],
-) -> PyResult<Option<[(&'static str, PyTable); 5]>> {
+) -> PyResult<Option<Vec<(&'static str, PyTable)>>> {
     let Some(reporter) = engine.reporter() else {
         return Ok(None);
     };
@@ -537,7 +538,8 @@ pub(crate) fn tables(
     let holdings = built(vec![
         Column::int("bar", bars),
         Column::time("time", times),
-        Column::cycled("instrument", names, rows.len()),
+        // the rows the legs cover, which are none below the full level
+        Column::cycled("instrument", names, reporter.legs().len() / width),
         Column::float("position", position),
         Column::float("entry", entry),
         Column::float("mark", mark),
@@ -667,7 +669,10 @@ pub(crate) fn tables(
         Column::boolean("open", trips.iter().map(|trip| trip.close_tick.is_none())),
     ]);
 
-    Ok(Some([
+    if reporter.level() != Record::Full {
+        return Ok(Some(vec![("ledger", ledger), ("trades", trades)]));
+    }
+    Ok(Some(vec![
         ("ledger", ledger),
         ("holdings", holdings),
         ("fills", fills),

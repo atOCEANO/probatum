@@ -29,7 +29,7 @@ use probatum_core::{
     TimeInForce, Wallet,
 };
 use probatum_engine::reporter::{
-    Cause, EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal,
+    Cause, EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Record, Refusal, Reporter,
 };
 use probatum_engine::schedule::every;
 use probatum_engine::{
@@ -66,6 +66,35 @@ errors!(
     ProbatumKeyError,
     ProbatumIndexError
 );
+
+/// What a reporting engine records: everything, or its account's records alone
+/// (ADR 0022).
+fn parse_record(record: &str, report: bool) -> PyResult<Record> {
+    let level = match record {
+        "full" => Record::Full,
+        "account" => Record::Account,
+        _ => {
+            return Err(ProbatumValueError::new_err(format!(
+                "record: {record:?}; use \"full\" or \"account\""
+            )))
+        }
+    };
+    if level != Record::Full && !report {
+        return Err(ProbatumValueError::new_err(format!(
+            "record: {record:?} with report=False, which records nothing; pass \
+             report=True"
+        )));
+    }
+    Ok(level)
+}
+
+/// The reporter of `engine` where it keeps the fill log and the order log, as the
+/// full level does.
+fn booked(engine: &BarEngine) -> Option<&Reporter> {
+    engine
+        .reporter()
+        .filter(|reporter| reporter.level() == Record::Full)
+}
 
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
 /// stream named from the run's `seed`, case-insensitively.
@@ -1655,7 +1684,7 @@ fn fills_of<'py>(
     engine: &BarEngine,
     units: Units,
 ) -> PyResult<Option<Bound<'py, PyList>>> {
-    let Some(reporter) = engine.reporter() else {
+    let Some(reporter) = booked(engine) else {
         return Ok(None);
     };
     let list = PyList::empty(py);
@@ -1671,8 +1700,9 @@ fn fills_of<'py>(
 
 /// The ledger as columns, an instrument's eight as a value a bar, or for a `universe` as
 /// a row of one per instrument a bar, so code that reads an instrument's column of a
-/// universe reads one of a single instrument the same way. Each row is in the
-/// account's `units`, with its equity valued in dollars beside it.
+/// universe reads one of a single instrument the same way, which a level below the
+/// full one leaves out. Each row is in the account's `units`, with its equity valued
+/// in dollars beside it.
 fn ledger_of<'py>(
     py: Python<'py>,
     engine: &BarEngine,
@@ -1723,6 +1753,9 @@ fn ledger_of<'py>(
         "equity_in_quote",
         PyArray1::from_vec(py, in_quote.collect()),
     )?;
+    if reporter.level() != Record::Full {
+        return Ok(Some(d));
+    }
     let legs: Vec<Leg> = reporter
         .legs()
         .iter()
@@ -1752,14 +1785,15 @@ fn ledger_of<'py>(
     Ok(Some(d))
 }
 
-/// The order log from event `from` on, or None when reporting is off.
+/// The order log from event `from` on, or None when reporting is off or keeps no
+/// order log.
 fn order_log_of<'py>(
     py: Python<'py>,
     engine: &BarEngine,
     units: Units,
     from: usize,
 ) -> PyResult<Option<Bound<'py, PyList>>> {
-    let Some(reporter) = engine.reporter() else {
+    let Some(reporter) = booked(engine) else {
         return Ok(None);
     };
     let list = PyList::empty(py);
@@ -1890,6 +1924,7 @@ impl Engine {
         window = Window(24),
         max_open_orders = Slots(8),
         report = false,
+        record = "full",
         leverage = 10.0,
         impact = 0.0,
         impact_model = "linear",
@@ -1932,6 +1967,7 @@ impl Engine {
         window: Window,
         max_open_orders: Slots,
         report: bool,
+        record: &str,
         leverage: f64,
         impact: f64,
         impact_model: &str,
@@ -2007,7 +2043,7 @@ impl Engine {
             liquidation_fee,
         )?;
         Ok(Engine {
-            inner: BarEngine::new(series, config),
+            inner: BarEngine::new(series, config).recording(parse_record(record, report)?),
             universe,
             units,
         })
@@ -2513,7 +2549,7 @@ impl Engine {
     }
 
     /// The fill log as a list of dicts, one per fill in the order they landed, or
-    /// None when reporting is off. Each carries its bar and open time, the order
+    /// None when reporting is off or below the full level. Each carries its bar and open time, the order
     /// that made it (None for a forced close), its side, size and price, the
     /// reference it is measured from, the spread, slippage, impact and adjustment
     /// beyond that per unit, what of the adjustment the margin bound lifted and what
@@ -2526,15 +2562,15 @@ impl Engine {
     /// on, or None when reporting is off: the bar and its open time, equity, each
     /// wallet's cash, gross and net exposure, leverage, margin used and the
     /// maintenance requirement, what the bar cost in fees, funding, spread, slippage,
-    /// impact, the liquidation charge and dust, each `(T,)`, and the position, its
-    /// entry, mark, notional, unrealized PnL, weight, drift and pnl, `(T,)` for one
-    /// instrument and `(T, N)` for a universe (ADR 0022).
+    /// impact, the liquidation charge and dust, each `(T,)`, and at the full level
+    /// the position, its entry, mark, notional, unrealized PnL, weight, drift and
+    /// pnl, `(T,)` for one instrument and `(T, N)` for a universe (ADR 0022).
     fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
         ledger_of(py, &self.inner, self.universe, self.units)
     }
 
     /// The order log as a list of dicts, one per event in the order they happened,
-    /// or None when reporting is off. Each carries its bar and open time, its kind
+    /// or None when reporting is off or below the full level. Each carries its bar and open time, its kind
     /// (placed, armed, refused, clamped, filled, not_filled, expired or cancelled),
     /// the order and its instrument (None for a transfer's clamp), the side a placed,
     /// refused or armed event's order asked, the size and price it concerns, and its
@@ -2545,7 +2581,7 @@ impl Engine {
     }
 
     /// The events of the order log from event `first` on, as `order_log` gives them,
-    /// or None when reporting is off.
+    /// or None when reporting is off or below the full level.
     fn order_log_since<'py>(
         &self,
         py: Python<'py>,
@@ -2585,7 +2621,8 @@ impl Engine {
         })
     }
 
-    /// The events the order log holds, none when reporting is off.
+    /// The events the order log holds, none when reporting is off or below the full
+    /// level.
     fn num_events(&self) -> usize {
         self.inner
             .reporter()
@@ -2593,9 +2630,10 @@ impl Engine {
     }
 
     /// The run's ledger, holdings, fills, order log and round trips as tables any Arrow
-    /// reader takes, in a dict under those names, every bar counted from `start`, the
-    /// account's first row, and each instrument by its name in `names`, or None when
-    /// reporting is off (ADR 0026).
+    /// reader takes, in a dict under those names, the ledger and the round trips alone
+    /// below the full level, every bar counted from `start`, the account's first row,
+    /// and each instrument by its name in `names`, or None when reporting is off
+    /// (ADR 0026).
     fn tables<'py>(
         &self,
         py: Python<'py>,
@@ -2614,12 +2652,12 @@ impl Engine {
     }
 
     /// The account as the last close left it, in the venue's terms, or None when
-    /// reporting is off: the ledger's last row, each wallet's equity, and the margin
+    /// reporting is off or below the full level: the ledger's last row, each wallet's equity, and the margin
     /// wallet's room under the cap, its equity less the margin the cap asks, floored at
     /// zero; and each instrument's position, entry, mark, notional, unrealized PnL,
     /// weight and drift, as a list over the instruments.
     fn account<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(reporter) = self.inner.reporter() else {
+        let Some(reporter) = booked(&self.inner) else {
             return Ok(None);
         };
         let row = self

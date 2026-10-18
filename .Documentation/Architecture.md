@@ -93,7 +93,7 @@ The candle series lives once behind an `Arc<[Candle]>`, so thousands of envs sha
 
 ### Reporting
 
-By default the engine records nothing but the running state, so its memory does not grow with the length of the run. With `report=True` it keeps an equity curve, sampled each step, the ledger, a row per bar from the opening balance, the round trips, a log of every fill and a log of every order's events ([ADRs 0022, 0023](Decisions.md)). Performance statistics (return, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, and the trade metrics over the closed round trips) are derived from the curve and the round trips. Reporting stays off for RL and is never part of the state the agent sees.
+By default the engine records nothing but the running state, so its memory does not grow with the length of the run. With `report=True` it keeps an equity curve, sampled each step, the ledger, a row per bar from the opening balance, the round trips, a log of every fill and a log of every order's events ([ADRs 0022, 0023](Decisions.md)). That is the full level: at the account level it keeps the curve, the ledger without its columns for each instrument and the round trips, and a search's array trials keep the curve and the round trips alone. Performance statistics (return, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, and the trade metrics over the closed round trips) are derived from the curve and the round trips. Reporting stays off for RL and is never part of the state the agent sees.
 
 <br>
 

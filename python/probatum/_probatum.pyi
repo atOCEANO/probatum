@@ -43,6 +43,7 @@ class Engine:
         window: int = ...,
         max_open_orders: int = ...,
         report: bool = ...,
+        record: str = ...,
         leverage: float = ...,
         impact: float = ...,
         impact_model: str = ...,

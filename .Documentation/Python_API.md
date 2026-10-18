@@ -497,6 +497,7 @@ eng = probatum._probatum.Engine(
     window=24,               # the bars before a fill its window reads
     max_open_orders=8,       # resting-order slots
     report=False,            # True keeps the equity curve, round trips and logs
+    record="full",           # or "account", which keeps no legs, fills or order log
     leverage=10.0,           # perp margin cap on notional; 10x default, 0.0 = none
     impact=0.0,              # impact coefficient on the window; 0.0 means none
     impact_model="linear",   # or "sqrt", in the fill's share of the trailing volume
@@ -666,6 +667,8 @@ With `report=True`, seven accessors read the recorded run (each returns `None` w
 - `fills()` returns a list of [fill dicts](#fills), one per fill in the order they landed.
 - `order_log()` returns a list of [order events](#the-order-log), every order's life in the order it happened.
 - `tables(start, names)` returns the run's ledger, holdings, fill log, order log and round trips as a dict of the binding's tables under those names, which a [Result](#the-tables) wraps, each read through the Arrow C stream or by `column(name)` and `row(i)`, every bar counted from `start` and each instrument by its name in `names`; it needs an engine built with `times=`.
+
+An engine built with `record="account"` keeps less: `fills()` and `order_log()` return `None` with reporting on, `ledger()` has none of the columns for each instrument, and `tables()` gives the ledger and the round trips alone ([Specification](Specification.md#recording-levels)).
 
 `periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. The engine's `stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
 

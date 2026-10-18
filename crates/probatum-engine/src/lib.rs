@@ -27,7 +27,7 @@ pub use clock::Clock;
 pub use engine::{Engine, EngineConfig, Intrabar, Liquidation, TargetError};
 pub use execution::{FillCosts, FillModel, Impact, Limit, Spread};
 pub use inverse::Units;
-pub use reporter::{Reporter, RoundTrip};
+pub use reporter::{Record, Reporter, RoundTrip};
 pub use schedule::Schedule;
 pub use script::{Action, OrderRef, Script};
 pub use sizes::{PriceRule, Sizes};

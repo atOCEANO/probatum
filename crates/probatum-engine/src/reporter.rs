@@ -449,10 +449,27 @@ pub struct Leg {
     pub pnl: f64,
 }
 
+/// What a reporter books, a recording level (ADR 0022).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Record {
+    /// The ledger and its legs, the round trips, the fill log and the order log.
+    #[default]
+    Full,
+    /// The ledger without its legs, and the round trips. A run's statistics read only
+    /// the equity curve, the closed round trips and the engine's own counts, so they
+    /// are the full level's.
+    Account,
+    /// The equity curve and the round trips alone, for a run read only for its
+    /// statistics.
+    Stats,
+}
+
 /// Side buffers for the equity curve, the ledger, the round trips and the logs.
 /// Never part of the hot-path state or the RL observation.
 #[derive(Clone, Debug, Default)]
 pub struct Reporter {
+    /// What it books, which a reset keeps.
+    level: Record,
     equity_curve: Vec<f64>,
     trades: Vec<RoundTrip>,
     /// Each instrument's round trip still open, grown to the highest instrument
@@ -476,9 +493,22 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    /// An empty reporter.
+    /// An empty reporter that books everything.
     pub fn new() -> Reporter {
         Reporter::default()
+    }
+
+    /// An empty reporter that books what `level` keeps.
+    pub fn at(level: Record) -> Reporter {
+        Reporter {
+            level,
+            ..Reporter::default()
+        }
+    }
+
+    /// What it books.
+    pub fn level(&self) -> Record {
+        self.level
     }
 
     /// Append the equity value for the current step, counting the step as exposure
@@ -554,14 +584,18 @@ impl Reporter {
         }
     }
 
-    /// Append a fill to the fill log.
+    /// Append a fill to the fill log, which only the full level keeps.
     pub fn record_fill(&mut self, fill: FillRecord) {
-        self.fills.push(fill);
+        if self.level == Record::Full {
+            self.fills.push(fill);
+        }
     }
 
-    /// Append an event to the order log.
+    /// Append an event to the order log, which only the full level keeps.
     pub fn record_event(&mut self, event: OrderEvent) {
-        self.events.push(event);
+        if self.level == Record::Full {
+            self.events.push(event);
+        }
     }
 
     /// The equity sampled at each recorded step: one point per bar the engine

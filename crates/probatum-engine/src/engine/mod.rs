@@ -55,7 +55,7 @@ use rand_chacha::ChaCha20Rng;
 use crate::candles::{printed, Candles};
 use crate::clock::Clock;
 use crate::execution::{FillModel, Impact, Limit, Spread};
-use crate::reporter::{BarCosts, LedgerRow, Leg, Reporter, RoundTrip};
+use crate::reporter::{BarCosts, LedgerRow, Leg, Record, Reporter, RoundTrip};
 use crate::stats::Stats;
 use crate::streams;
 
@@ -481,13 +481,26 @@ impl Engine {
         }
     }
 
-    /// Append the ledger row of the current bar and each instrument's leg of it,
-    /// reporting being on.
+    /// Append the ledger row of the current bar and each instrument's leg of it, as
+    /// far as the reporter's level keeps them.
     fn record_ledger(&mut self) {
+        let level = match self.reporter.as_mut() {
+            None => return,
+            Some(reporter) if reporter.level() == Record::Stats => {
+                // the statistics read no ledger, so none is built, and what the bar
+                // cost is let go with it
+                *reporter.costs_mut() = BarCosts::default();
+                return;
+            }
+            Some(reporter) => reporter.level(),
+        };
         let row = self.ledger_row();
         let equity = row.equity;
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.record_row(row);
+            if level != Record::Full {
+                return;
+            }
             for (i, position) in self.account.positions.iter().enumerate() {
                 let qty = position.qty.get();
                 let mark = self.marks[i];
@@ -552,11 +565,21 @@ impl Engine {
         // what an earlier episode took of a bar's budget is not taken in this one
         self.budget.fill((usize::MAX, 0.0));
         self.leg_fills.fill(usize::MAX);
-        if self.reporter.is_some() {
-            self.reporter = Some(Reporter::new());
+        if let Some(reporter) = &self.reporter {
+            self.reporter = Some(Reporter::at(reporter.level()));
             self.record_ledger();
         }
         self.state()
+    }
+
+    /// The engine `new` built, recording at `level` where reporting is on, which every
+    /// reset keeps (ADR 0022).
+    pub fn recording(mut self, level: Record) -> Engine {
+        if self.reporter.is_some() {
+            self.reporter = Some(Reporter::at(level));
+            self.record_ledger();
+        }
+        self
     }
 
     /// True when the account died since the last reset: its equity, both wallets
@@ -934,6 +957,7 @@ mod tests {
     use crate::candles::{printed, Candles, Instrument};
     use crate::clock::Clock;
     use crate::execution::{Impact, Limit, Spread};
+    use crate::reporter::Record;
     use probatum_core::TimeInForce::Ioc;
     use probatum_core::{Candle, Market, OrderType, Side, State};
     use proptest::prelude::*;
@@ -1577,6 +1601,66 @@ mod tests {
                     (change - (pnl - costs)).abs() <= 1e-9 * scale,
                     "row {}: equity moved {}, price PnL {} less costs {}", t, change, pnl, costs
                 );
+            }
+        }
+
+        #[test]
+        fn a_level_below_full_books_what_the_full_level_books_of_what_it_keeps(
+            (markets, bars, actions) in universe_and_actions(20, 20),
+        ) {
+            // the account level keeps the ledger and the round trips, and the stats
+            // level the curve and the round trips, each the full level's to the bit,
+            // with no leg, fill or event, through a reset as before it (ADR 0022)
+            let width = markets.len();
+            let specs: Vec<Instrument> = markets
+                .iter()
+                .map(|&market| Instrument { market: Some(market), ..Instrument::default() })
+                .collect();
+            let record = |level: Record| {
+                let universe = Candles::universe(bars.clone(), width, None)
+                    .with_instruments(specs.clone());
+                let mut e = Engine::new(universe, every_cost()).recording(level);
+                let mut runs = Vec::new();
+                for _ in 0..2 {
+                    e.reset();
+                    for &(i, action) in &actions {
+                        let close = e.mark(i);
+                        if close.is_finite() {
+                            let side = if action > 0.0 { Side::Buy } else { Side::Sell };
+                            let size = action.abs() * 1_000.0 / close;
+                            let (kind, exit) = (OrderType::Market, OrderType::Stop);
+                            e.order_on(i, side, size, kind, None, None, false, false, Ioc);
+                            let trigger = close * if action > 0.0 { 0.9 } else { 1.1 };
+                            let other = side.opposite();
+                            e.order_on(i, other, size, exit, None, Some(trigger), true, false, Ioc);
+                        }
+                        e.step();
+                        if e.done() {
+                            break;
+                        }
+                    }
+                    let reporter = e.reporter().expect("reporting is on");
+                    let kept = (reporter.legs().len(), reporter.fills().len(),
+                                reporter.events().len());
+                    runs.push((
+                        format!("{:?}", reporter.ledger()),
+                        format!("{:?}", e.round_trips()),
+                        format!("{:?}", reporter.equity_curve()),
+                        format!("{:?}", e.stats(8_760.0, 0.0)),
+                        kept,
+                    ));
+                }
+                runs
+            };
+            let full = record(Record::Full);
+            prop_assert!(full.iter().all(|run| run.4 .0 > 0));
+            for level in [Record::Account, Record::Stats] {
+                for (run, whole) in record(level).iter().zip(&full) {
+                    let ledger = if level == Record::Stats { "[]" } else { &whole.0 };
+                    prop_assert_eq!(&run.0, ledger);
+                    prop_assert_eq!((&run.1, &run.2, &run.3), (&whole.1, &whole.2, &whole.3));
+                    prop_assert_eq!(run.4, (0, 0, 0));
+                }
             }
         }
     }
