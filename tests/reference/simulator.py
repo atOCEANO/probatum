@@ -968,7 +968,7 @@ class Simulator:
         most = self.largest(i)
         if rounded > most:
             self.hit("an order held to the maximum quantity")
-            self.log("clamped", order, f"size: {rounded} held to {most}", size=most)
+            order["asked"] = rounded
             rounded = most
 
         order["size"] = rounded
@@ -999,9 +999,19 @@ class Simulator:
             return self.refuse(order, why)
 
         self.log("placed", order, order["reason"])
+        self.log_hold(order)
         self.pending.append(order)
 
         return order["id"]
+
+
+    def log_hold(self, order):
+        """Sizes and dust: an order held to the largest order logs the hold once its
+        placement stands, and a refused one never does."""
+        asked = order.pop("asked", None)
+        if asked is not None:
+            self.log("clamped", order, f"size: {asked} held to {order['size']}",
+                     size=order["size"])
 
 
     def crossing(self, order, others):
@@ -1086,6 +1096,8 @@ class Simulator:
 
         self.rest(order)
         self.log("placed", order, order["reason"])
+        self.log_hold(order)
+
         return order["id"]
 
 
@@ -1290,6 +1302,7 @@ class Simulator:
         old.update(moved)
         self.rest(old)
         self.log("placed", old, "replace")
+        self.log_hold(old)
 
         return old["id"]
 
@@ -2390,8 +2403,15 @@ class Simulator:
             # Orders, Units: on a spent budget no fill prices a value order, and it
             # asks its amount over the open
             if order["value"] is not None and budget > 0.0:
-                wanted  = self.held(i, inst.units(order["value"], price))
+                bought  = inst.units(order["value"], price)
+                wanted  = self.held(i, bought)
                 allowed = min(wanted, budget)
+                # Sizes and dust: the hold is logged on the bar that prices the fill,
+                # where the lots the amount buys are more than the largest order
+                rounded, most = self.lot_down(i, bought), self.largest(i)
+                if self.venue.sizes and rounded > most:
+                    self.log("clamped", order, f"size: {rounded} held to {most}",
+                             size=most)
 
             if budget < wanted:
                 self.hit("the liquidity budget")

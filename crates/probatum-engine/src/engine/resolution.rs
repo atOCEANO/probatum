@@ -155,10 +155,10 @@ impl Engine {
     /// What a value order of `amount` asks of `bar` and the fill the bar offers it:
     /// its amount over the open, held to the largest order where the venue's sizes
     /// are on, prices a taker's fill of what `available` allows of it, and over that
-    /// price again it is the size the fill takes, rounded down to the lot
-    /// (Specification, Units).
+    /// price again it is the size the fill takes, rounded down to the lot, the hold
+    /// logged there where it binds (Specification, Units).
     fn value_fill(
-        &self,
+        &mut self,
         order: &Order,
         amount: f64,
         bar: &Candle,
@@ -176,6 +176,7 @@ impl Engine {
         let (fill, costs) =
             self.fill_model
                 .taker_fill(order.side, wanted.min(available), bar.open, bar, trailing);
+        self.log_held(order, amount / fill.price.get());
         let wanted = held(amount / fill.price.get());
         let size = down(wanted.min(available));
         let made = positive(size).then_some((

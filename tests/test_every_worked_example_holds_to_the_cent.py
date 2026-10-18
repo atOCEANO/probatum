@@ -558,6 +558,10 @@ def test_a_minimum_of_10_refuses_0_05_at_150_and_a_maximum_of_1_0005_holds_5_to_
     assert (sim.orders[2]["status"] != "refused") is exempt
     assert sim.orders[3]["size"] == pytest.approx(1.0, abs=1e-12)
 
+    # the hold is logged after the placement it holds
+    held = [(event["kind"], event["size"]) for event in sim.events if event["order"] == 3]
+    assert held == [("placed", None), ("clamped", 1.0), ("filled", 1.0)]
+
 
 def test_a_holding_of_0_0004_under_a_lot_of_0_001_is_swept_at_250_as_dust_of_0_1():
     bars = [[flat(150.0)], [Bar(200.0, 260.0, 190.0, 250.0, 1_000.0)]]

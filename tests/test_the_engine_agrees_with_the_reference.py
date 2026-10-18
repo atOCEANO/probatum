@@ -263,6 +263,14 @@ def spent(side, size, **settings):
     return bars, times, cfg, actions
 
 
+def held(kind, size, budget=1.0):
+    """A value buy of `size` at a close of 100 under a lot of 0.001 and a largest
+    order of 1, filled at the next open of 100 on a bar whose budget is `budget` of
+    the trailing volume of 1,000,000."""
+    return changed(built((kind, "buy", size, 0.7), shaped=(100.0, 101.0, 99.0, 100.0)),
+                   sizes=True, rules=[dict(lot=0.001, max_qty=1.0)], budget=budget)
+
+
 def changed(case, **settings):
     """`case` with `settings` in place of its own."""
     bars, times, cfg, actions = case
@@ -416,6 +424,16 @@ BUILT = {
     "a fok value sale that sells a lot only at its slipped price on a spent budget": (
         "a market order filling nothing", spent("sell", 0.09998, sizes=True,
                                                 rules=[dict(lot=0.1)])),
+    # a value order's hold is logged on the bar that prices its fill, before anything
+    # else of it there: 100.05 buys 1.0005, which the lot takes down to the largest
+    # order of 1, so nothing holds it, and 150 buys 1.5, held to 1, which a budget of
+    # 0.6 then cuts, all or nothing and not
+    "a value order the lot takes down to the largest order": (
+        "a value order", held("market", 1.0005)),
+    "a fok value order held to the largest order that its budget cuts": (
+        "an order held to the maximum quantity", held("fok", 1.5, budget=6e-7)),
+    "an ioc value order held to the largest order that its budget cuts": (
+        "an order held to the maximum quantity", held("market", 1.5, budget=6e-7)),
 }
 
 
