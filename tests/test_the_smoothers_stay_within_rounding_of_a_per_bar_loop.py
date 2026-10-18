@@ -1,6 +1,6 @@
 """The recursive smoothers are one vectorized pass, taken in blocks short enough that no
 weight overflows, and stay within rounding of the recurrence taken one bar at a time:
-across every block's seam, after a gap, over a hundred thousand bars, and at a short
+across every block's seam, across a gap, over a hundred thousand bars, and at a short
 length and a long one over the same series.
 """
 
@@ -23,26 +23,26 @@ def block_size(alpha):
 
 def rolled_ema(values, length):
     # the recurrence written the slow, obvious way, one bar at a time: the mean of
-    # the first clean window seeds it, one multiply-add carries it, and a gap ends
-    # the run so the next clean window seeds a fresh one. Written out here rather
-    # than taken from the module, since a reference computed by the code under test
+    # the first `length` values seeds it, one multiply-add carries it, and a value
+    # that is not finite is skipped, NaN where it sits. Written out here rather than
+    # taken from the module, since a reference computed by the code under test
     # agrees with it however wrong both are (ADR 0043)
     alpha   = 2.0 / (length + 1.0)
     keep    = 1.0 - alpha
     plain   = values.tolist()
     out     = [float("nan")] * len(plain)
     running = None
-    clean   = 0
+    seen    = []
 
     for i, value in enumerate(plain):
         if not math.isfinite(value):
-            running, clean = None, 0
             continue
-        clean += 1
+
         if running is None:
-            if clean == length:
+            seen.append(i)
+            if len(seen) == length:
                 # the same numpy call the module makes, so the seed is bit for bit
-                running = float(values[i - length + 1:i + 1].mean())
+                running = float(values[seen].mean())
                 out[i] = running
         else:
             running = alpha * value + keep * running
@@ -87,13 +87,11 @@ def test_the_exponential_pass_matches_the_plain_recurrence_across_many_blocks():
         ), f"the carry into the block starting at bar {seam} was dropped"
 
 
-def test_a_gap_between_two_multi_block_stretches_reseeds_and_carries_correctly():
-    # the blocking is per clean stretch, so the second stretch counts its blocks
-    # from the bar the gap ended on and its seams land at a different phase from the
-    # first stretch's. No test has ever run a stretch past one block, let alone two
-    # stretches at two phases, so a `_decay` blocking the whole array rather than
-    # each stretch, or carrying the value from before the gap across it, passes
-    # everything else in this file
+def test_a_gap_between_two_multi_block_stretches_is_carried_across():
+    # the average carries across the hole on the value after it, so its blocks count
+    # the series' own values from the seed and every seam after the hole sits three
+    # rows later than it would without one. A `_decay` blocking by rows rather than by
+    # values, or seeding again after the hole, passes everything else in this file
     length  = 5
     alpha   = 2.0 / (length + 1.0)
     keep    = 1.0 - alpha
@@ -109,25 +107,21 @@ def test_a_gap_between_two_multi_block_stretches_reseeds_and_carries_correctly()
     expected = rolled_ema(close, length)
 
     assert np.allclose(out, expected, rtol=1e-12, atol=0.0, equal_nan=True)
-    # the hole, the warm-up behind it, and the fresh seed from the next clean window
-    assert np.isfinite(out[head - 1])
-    assert np.isnan(out[head:restart + length - 1]).all()
-    assert out[restart + length - 1] == pytest.approx(
-        float(close[restart:restart + length].mean())
-    )
-    assert np.isfinite(out[-1]), "one hole killed the rest of the series"
+    # the hole, and the average carried across it on the first value after
+    assert np.isnan(out[head:restart]).all() and np.isfinite(out[restart:]).all()
+    assert out[restart] == pytest.approx(
+        alpha * close[restart] + keep * out[head - 1], rel=1e-12)
 
-    # both stretches cross two seams, and the second stretch's sit at a phase the
-    # first's do not, so blocking from bar zero would put them somewhere else
-    first  = [length + block, length + 2 * block]
-    second = [restart + length + block, restart + length + 2 * block]
-
-    assert first[-1] < head and second[-1] < size
-    assert (second[0] - first[0]) % block != 0
-    for seam in first + second:
-        assert out[seam] == pytest.approx(
-            alpha * close[seam] + keep * out[seam - 1], rel=1e-12
-        ), f"the carry into the block starting at bar {seam} was dropped"
+    # a seam every `block` values from the seed: two before the hole, at their own
+    # rows, and two after it, three rows on
+    seams = [length + m * block for m in range(1, 5)]
+    rows  = [seam if seam < head else seam + restart - head for seam in seams]
+    assert rows[1] < head <= rows[2] and rows[-1] < size
+    for row in rows:
+        before = row - 1 if not head <= row - 1 < restart else head - 1
+        assert out[row] == pytest.approx(
+            alpha * close[row] + keep * out[before], rel=1e-12
+        ), f"the carry into the block starting at bar {row} was dropped"
 
 
 def test_a_short_length_over_a_hundred_thousand_bars_stays_finite_throughout():

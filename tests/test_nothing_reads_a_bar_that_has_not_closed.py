@@ -206,3 +206,34 @@ def test_a_series_of_one_window_gives_its_bar_what_a_longer_series_gives_there(l
         whole = probatum.ta.wma(close, length)
         np.testing.assert_array_equal(probatum.ta.wma(close[:length], length),
                                       whole[:length])
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_an_indicator_over_a_universe_reads_nothing_after_its_bar(seed):
+    # each instrument lists late, misses bars and delists early, so a cut can leave
+    # one a few bars, none, or its first window alone
+    out, times = universe(seed)
+    whole = data(out, times)
+    draw  = np.random.default_rng(seed + 5_000)
+
+    def fields(view):
+        return view.highs, view.lows, view.closes, view.volumes
+
+    for t in cuts(seed, whole):
+        later = times > whole.time[t]
+        moved = out.copy()
+        moved[later] = np.nan
+        for k in range(moved.shape[1]):
+            rows = np.flatnonzero(later & (draw.random(len(times)) > 0.3))
+            moved[rows, k] = bars(draw, len(rows))
+
+        changed = data(moved, times)
+
+        for name, call in {**LINES, **FLAGS}.items():
+            for line, (full, upto, other) in enumerate(zip(
+                    call(*fields(whole)), call(*fields(whole[:t + 1])),
+                    call(*fields(changed)))):
+                np.testing.assert_array_equal(upto, full[:t + 1], err_msg=(
+                    f"{name} line {line} moved when the universe was cut at {t}"))
+                np.testing.assert_array_equal(other[:t + 1], full[:t + 1], err_msg=(
+                    f"{name} line {line} moved when the bars after {t} changed"))

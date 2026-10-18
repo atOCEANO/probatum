@@ -1119,17 +1119,19 @@ prints one row per run, leading with the data fingerprint, and returns the rows.
 
 ```python
 class Cross(probatum.Strategy):
-    def init(self, engine):
-        self.fast = probatum.ta.ema(engine.closes, 20)
-        self.slow = probatum.ta.ema(engine.closes, 60)
+    def init(self, data):
+        self.fast = probatum.ta.ema(data.close, 20)
+        self.slow = probatum.ta.ema(data.close, 60)
         self.warmup = 60
 
-    def next(self, state, engine):
-        i = state["tick_index"]
-        if state["position"] == 0 and self.fast[i] > self.slow[i]:
-            engine.market_buy(1.0)
-        elif state["position"] > 0 and self.fast[i] < self.slow[i]:
-            engine.close()
+    def next(self, bar, account):
+        if account.position == 0.0 and self.fast[bar.i] > self.slow[bar.i]:
+            account.buy(1.0)
+        elif account.position > 0.0 and self.fast[bar.i] < self.slow[bar.i]:
+            account.close()
+
+
+result = probatum.backtest(Cross(), data, "frictionless")
 ```
 
 | Group | Functions |
@@ -1142,31 +1144,44 @@ class Cross(probatum.Strategy):
 | Participation | `obv(close, volume)`, `mfi(high, low, close, volume, length=14)` |
 | Comparison | `shift(values, bars=1)`, `change(values, bars=1)`, `crossover(values, other)`, `crossunder(values, other)` |
 
-**The comparison group is the one that is about safety rather than convenience.** `shift(values, n)` is how you look back: written by hand, `values[i - n]` on an early bar is a negative index, which numpy resolves from the END of the array, so the rule reads a price from the far future and raises nothing. `Strategy.warmup` ([ADR 0025](Decisions.md)) closes that only when the declared warm-up is at least as deep as the lookback, and declaring the indicator's warm-up and then reaching further back inside `next` is the natural way to get it wrong. `shift` pads rather than wrapping, so there is no index left to get wrong.
+Every function also takes `axis`, the axis time runs along, 0 by default.
 
-`crossover` and `crossunder` return **booleans**, and they are the only functions here that do not pad with `NaN`. `bool(nan)` is `True` in Python, so a float warm-up would fire a rule on precisely the bars where nothing is known; they pad with `False` instead ([ADR 0037](Decisions.md)). `other` may be a second series or a plain number, since crossing a level is the commoner case:
+**The comparison group is the one that is about safety rather than convenience.** `shift(values, n)` is how you look back: written by hand, `values[i - n]` on an early bar is a negative index, which numpy resolves from the END of the array, so the rule reads a price from the far future and raises nothing. `Strategy.warmup` ([ADR 0025](Decisions.md)) closes that only when the declared warm-up is at least as deep as the lookback, and declaring the indicator's warm-up and then reaching further back inside `next` is the natural way to get it wrong. `shift` pads rather than wrapping, so there is no index left to get wrong. On a universe an index also counts rows, so the row before an instrument's bar can be one it printed nothing on, where `shift` lags each instrument over its own bars; and `warmup` counts rows too, so `next` can run while an instrument that lists late is still in its own warm-up.
+
+`crossover` and `crossunder` return **booleans**, and they are the only functions here that do not pad with `NaN`. `bool(nan)` is `True` in Python, so a float warm-up would fire a rule on precisely the bars where nothing is known; they pad with `False` instead, and a cross across a bar either of the two lacks is reported on the first bar after it that both have ([ADR 0037](Decisions.md)). `other` may be a second series of the same shape or a plain number, since crossing a level is the commoner case:
 
 ```python
 class Cross(probatum.Strategy):
-    def init(self, engine):
-        self.up = probatum.ta.crossover(probatum.ta.ema(engine.closes, 20),
-                                    probatum.ta.ema(engine.closes, 60))
-        self.strong = probatum.ta.adx(engine.highs, engine.lows, engine.closes).adx
+    def init(self, data):
+        self.up = probatum.ta.crossover(probatum.ta.ema(data.close, 20),
+                                        probatum.ta.ema(data.close, 60))
+        self.strong = probatum.ta.adx(data.high, data.low, data.close).adx
         self.warmup = 80
 
-    def next(self, state, engine):
-        i = state["tick_index"]
-        if self.up[i] and self.strong[i] > 25.0:      # a cross, in a trend
-            engine.market_buy(engine.qty_from_weight(1.0))
+    def next(self, bar, account):
+        if self.up[bar.i] and self.strong[bar.i] > 25.0:      # a cross, in a trend
+            account.target(1.0)
+
+
+result = probatum.backtest(Cross(), data, "frictionless")
 ```
 
-**Three rules hold for every one of them**, and they are why this is in the library rather than in your notebook.
+**Four rules hold for every one of them**, and they are why this is in the library rather than in your notebook.
 
-*One length, one alignment.* Every function returns a float64 array of length `T` aligned so entry `i` is bar `i`, with the warm-up as `NaN`, never a shorter array. So the same object goes into your rule and into [`probatum.chart`](#plotting) with no padding decision in between, and a gap in the input stays a gap in the output rather than being bridged.
+*One value a bar, each instrument over its own.* Every function takes a series `(T,)`, or a universe `(T, N)` with a column for each instrument, time along `axis`, and returns a float64 array of the same shape aligned so entry `i` is bar `i`, with the warm-up as `NaN`, never a shorter array. Each column runs over its own values: a value that is `NaN` or infinite is a row the column does not have and a gap in the output, and a window, a smoother, a lookback and a crossing carry across it rather than restarting. A Data's fields are `NaN` exactly where an instrument printed no bar, so a closure, a halt or a late listing costs an indicator only those rows, and a series too short for its warm-up is all warm-up rather than an error, only one of no bars being refused, so a cut of a series that has a bar gives the first rows of the whole. `funding_rate` and what `asof` puts on the clock hold their last value through a closure, so an indicator runs over those rows as well; where an instrument's own bars are meant, mask a `(T, N)` one with `numpy.where(data.available, x, numpy.nan)`, and one instrument's `(T,)` line with `data.available[:, 0]`. A plain two-dimensional array is a column each, so a `(T, 5)` frame comes back as five series, and an `(N, T)` array takes `axis=1`. So the same object goes into your rule and into [`probatum.chart`](#plotting), a column at a time, with no padding decision in between ([ADR 0037](Decisions.md)).
+
+```python
+gapped = bars.copy()
+gapped[500:510] = numpy.nan                     # ETHUSDT prints nothing for ten hours
+pair = probatum.Data(numpy.stack([bars, gapped], axis=1), symbol=["BTCUSDT", "ETHUSDT"],
+                     market="linear", time=hours)
+trend = probatum.ta.ema(pair.closes, 50)        # (1000, 2), each over its own bars
+print(trend[505], trend[510])                   # NaN in ETHUSDT's hole, then carried on
+```
 
 *The convention is written down.* `ema` is smoothed at `2 / (length + 1)` and seeded from the simple average of the first `length` values, not from the first value, which is TradingView's convention and stops one opening print steering the curve for hundreds of bars. `rsi`, `atr` and `adx` use Wilder's `1 / length`, which is what those indicators were defined with. `stdev` is population, dividing by `length`, because that is what `bbands` is defined against. `cci` divides by the mean **absolute** deviation and not the standard deviation, which is the definition and is what makes it behave differently from `zscore` on a fat-tailed series. `hma` floors both of its inner lengths to whole bars. Each function repeats its own choice in its docstring.
 
-*Where there is nothing to say, it says nothing rather than a number.* A window with no range has no position inside it, so `stoch` and `willr` are a gap there rather than a fifty; a window that traded nothing has no weighted price, so `vwap` and `vwma` are a gap rather than an unweighted average; a market with neither gains nor losses has no ratio of strength to weakness, so `rsi` and `mfi` are a gap rather than the 100 some implementations report, which would fire an overbought rule on a market that has not moved. `obv` restarts its running total after a gap rather than carrying across one, on the same rule the exponential averages use.
+*Where there is nothing to say, it says nothing rather than a number.* A window with no range has no position inside it, so `stoch` and `willr` are a gap there rather than a fifty, and `stoch`'s `d` averages over the bars `k` has a value on; a window that traded nothing has no weighted price, so `vwap` and `vwma` are a gap rather than an unweighted average; a market with neither gains nor losses has no ratio of strength to weakness, so `rsi` and `mfi` are a gap rather than the 100 some implementations report, which would fire an overbought rule on a market that has not moved. A `NaN` in an array of your own is a gap like any other, so a signal whose `NaN` means something else is lagged by rows with numpy rather than with `shift`.
 
 *Nothing knows about the engine.* These are functions of arrays: no state, no engine, no pandas needed. Computing once in `init` and handing the same array to the chart is what keeps the line on screen from drifting from the line that made the decision ([ADR 0042](Decisions.md)).
 

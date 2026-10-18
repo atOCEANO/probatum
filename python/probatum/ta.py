@@ -9,18 +9,22 @@ for years.
 Three rules hold for every function here, and they are the reason it lives in the
 library rather than in your notebook:
 
-**One length, one alignment, and gaps stay gaps.** Every function returns a
-float64 array of length ``T``, aligned so that entry ``i`` is bar ``i``, with the
-warm-up as ``NaN``. Never a shorter array. A missing bar is a gap in the output
-too, never bridged and never absorbed; an infinity in the input counts as missing,
-because it is not a price. Nothing here raises over a gap, it costs warm-up. The
-chart's length contract is the sharpest idea in this library and a second
-convention beside it would undo that, so the same array goes straight into a rule
-and into ``probatum.chart`` with no padding decision in between. The two functions
-that answer a yes-or-no question, ``crossover`` and ``crossunder``, return
-booleans and pad with ``False`` rather than ``NaN``, because ``bool(nan)`` is
-``True`` and a warm-up that reads as a signal is the one shape of this rule that
-would be dangerous (ADR 0037).
+**One value a bar, each instrument over its own.** Every function takes a series
+of shape ``(T,)``, or a universe of shape ``(T, N)`` with a column for each
+instrument, its time along ``axis``, the first by default, and returns float64 of
+the same shape, aligned so that entry ``i`` is bar ``i``, with the warm-up as
+``NaN``. Never a shorter array. Each column runs over its own values: a value that
+is ``NaN`` or infinite is a row the column does not have, so a window, a smoother,
+a lookback and a crossing carry across it, and the output there is ``NaN``. A
+Data's fields are ``NaN`` exactly where an instrument printed no bar, so a closure
+neither breaks an indicator nor restarts it, and a series too short for its
+warm-up is all warm-up rather than an error, only one of no bars being refused, so
+a cut of a series that has a bar gives the first rows of the whole. The same array
+goes straight into a rule and into ``probatum.chart``, a column at a time, with no
+padding decision in between. The two functions that answer a yes-or-no question,
+``crossover`` and ``crossunder``, return booleans and pad with ``False`` rather
+than ``NaN``, because ``bool(nan)`` is ``True`` and a warm-up that reads as a
+signal is the one shape of this rule that would be dangerous (ADR 0037).
 
 **The convention is written down.** Where implementations differ, and they differ
 most on how an exponential average is seeded and which smoothing an oscillator
@@ -34,9 +38,9 @@ object to the chart, so the line on screen cannot drift from the line that made
 the decision.
 
     class Cross(probatum.Strategy):
-        def init(self, engine):
-            self.fast = probatum.ta.ema(engine.closes, 20)
-            self.slow = probatum.ta.ema(engine.closes, 60)
+        def init(self, data):
+            self.fast = probatum.ta.ema(data.close, 20)
+            self.slow = probatum.ta.ema(data.close, 60)
             self.warmup = 60
 """
 
@@ -45,6 +49,8 @@ from __future__ import annotations
 import math
 
 import numpy as np
+
+from ._errors import DataError, ProbatumTypeError, ProbatumValueError
 
 __all__ = [
     "sma",
@@ -85,6 +91,10 @@ __all__ = [
 ]
 
 
+def _shown(line):
+    return f"{line.shape[0]} bars" if line.ndim == 1 else f"shape {line.shape}"
+
+
 class Bands:
     """Three lines around a middle: an upper, a middle and a lower."""
 
@@ -98,7 +108,7 @@ class Bands:
 
 
     def __repr__(self):
-        return f"Bands({len(self.middle)} bars)"
+        return f"Bands({_shown(self.middle)})"
 
 
 class Channel:
@@ -115,7 +125,7 @@ class Channel:
 
 
     def __repr__(self):
-        return f"Channel({len(self.middle)} bars)"
+        return f"Channel({_shown(self.middle)})"
 
 
 class Trend:
@@ -131,7 +141,7 @@ class Trend:
 
 
     def __repr__(self):
-        return f"Trend({len(self.adx)} bars)"
+        return f"Trend({_shown(self.adx)})"
 
 
 class Macd:
@@ -147,7 +157,7 @@ class Macd:
 
 
     def __repr__(self):
-        return f"Macd({len(self.line)} bars)"
+        return f"Macd({_shown(self.line)})"
 
 
 class Stochastic:
@@ -162,96 +172,132 @@ class Stochastic:
 
 
     def __repr__(self):
-        return f"Stochastic({len(self.k)} bars)"
+        return f"Stochastic({_shown(self.k)})"
 
 
-def _series(values, where):
-    # the shape is checked BEFORE any flattening. Ravelling first made the check
-    # unreachable, so a whole OHLCV frame handed in place of one of its columns
-    # was silently interleaved into a single series and every number that came
-    # back was computed from four columns at once, and looked entirely plausible
-    out = np.asarray(values, dtype=np.float64)
-    if out.ndim == 2 and out.shape[1] == 1:
-        out = out.ravel()
-
-    if out.ndim != 1:
-        raise ValueError(
-            f"{where} needs one series, but was given an array of shape "
-            f"{out.shape}; pass a single column, not the whole frame"
-        )
-
-    if out.size == 0:
-        raise ValueError(f"{where} needs a non-empty series")
-
-    # an infinity is not a price, so it is a gap for the same reason a NaN is.
-    # Handled once here rather than in thirty places: left alone it survived
-    # into arithmetic that produced NaN anyway, but by way of `inf - inf` and
-    # `inf / inf`, which numpy reports as a warning from the middle of whichever
-    # function happened to hit it first
-    return np.where(np.isfinite(out), out, np.nan)
+def _number(value):
+    """Whether ``value`` is a real number and no bool."""
+    return (isinstance(value, (int, float, np.integer, np.floating))
+            and not isinstance(value, (bool, np.bool_)))
 
 
-def _length(length, size, where):
+def _length(length, name, least=1):
+    """``length``, the argument ``name``, as a whole number of bars from ``least``."""
     # a fractional length is a mistake, not a request to round one way or the
     # other, and silently flooring it answered a question nobody asked
-    if length != int(length):
-        raise ValueError(f"{where} needs a whole number of bars, got {length}")
+    if not _number(length):
+        raise ProbatumTypeError(f"{name}: {length!r}; give a whole number of bars "
+                                f"from {least}")
 
-    length = int(length)
-    if length < 1:
-        raise ValueError(f"{where} needs a length of at least 1, got {length}")
+    whole = (isinstance(length, (int, np.integer))
+             or (math.isfinite(length) and float(length).is_integer()))
+    if not whole or length < least:
+        raise ProbatumValueError(f"{name}: {length!r}; give a whole number of bars "
+                                 f"from {least}")
 
-    if length > size:
-        raise ValueError(
-            f"{where} needs a length no longer than the series, but {length} was "
-            f"asked of {size} bars"
-        )
+    return int(length)
 
-    return length
+
+def _width(width, name, above=False):
+    """``width``, the argument ``name``, as a finite number of at least 0, or above it
+    where ``above`` says so."""
+    # a negative width turns a band inside out, upper below lower, and every
+    # comparison written against it then reads backwards
+    fix = "give a width above 0" if above else "give a width of at least 0"
+    if not _number(width):
+        raise ProbatumTypeError(f"{name}: {width!r}; {fix}")
+
+    width = float(width)
+    if not math.isfinite(width) or width < 0.0 or (above and width == 0.0):
+        raise ProbatumValueError(f"{name}: {width}; {fix}")
+
+    return width
+
+
+def _axis(axis, ndim):
+    """``axis``, the time axis of an array of ``ndim`` dimensions, counted from 0."""
+    if not isinstance(axis, (int, np.integer)) or isinstance(axis, (bool, np.bool_)):
+        raise ProbatumTypeError(f"axis: {axis!r}; give the time axis as a whole number")
+
+    if not -ndim <= axis < ndim:
+        axes = "0" if ndim == 1 else "0 or 1"
+        raise ProbatumValueError(f"axis: {axis} for an array of {ndim} "
+                                 f"dimension{'s' * (ndim > 1)}; give {axes}")
+
+    return int(axis) % ndim
 
 
 def _blank(size):
     return np.full(size, np.nan, dtype=np.float64)
 
 
+def _over(kernel, series, axis, lines=1, flag=False):
+    """``kernel`` run on each column of ``series``, a dict from each argument's name to
+    its values, along ``axis``: on the rows where every one of them has a value, in
+    order, each result written back on its row, and NaN, or False for a crossing, on
+    the rows a column does not have, so a column with no values never reaches the
+    kernel. One array of the series' shape, or a tuple of ``lines`` of them."""
+    arrays = {}
+    for name, values in series.items():
+        array = np.asarray(values, dtype=np.float64)
+        if array.ndim == 0:
+            raise DataError(f"{name}: {values!r}; give a series of bars")
+        if array.ndim > 2:
+            raise DataError(f"{name}: an array of shape {array.shape}; give a (T,) "
+                            f"series or a (T, N) array, a column for each instrument")
+        arrays[name] = array
+
+    (first, shape), *others = [(name, array.shape) for name, array in arrays.items()]
+    for name, other in others:
+        if other != shape:
+            owner = f"{first}'" if first.endswith("s") else f"{first}'s"
+            raise DataError(f"{name}: shape {other} beside {owner} {shape}; give "
+                            f"series of one shape")
+
+    axis = _axis(axis, len(shape))
+    rows = shape[axis]
+    if not rows:
+        raise DataError(f"{first}: no bars; give a series that has some")
+
+    # time first and a column for each instrument, as views of what was given
+    columns = [np.moveaxis(array, axis, 0).reshape(rows, -1)
+               for array in arrays.values()]
+
+    width = columns[0].shape[1]
+    out   = [np.zeros((rows, width), dtype=bool) if flag else
+             np.full((rows, width), np.nan) for _ in range(lines)]
+
+    for k in range(width):
+        own = np.isfinite(columns[0][:, k])
+        for column in columns[1:]:
+            own &= np.isfinite(column[:, k])
+        if not own.any():
+            continue
+        start = int(own.argmax())
+        # a column whose values run unbroken to its end, as a warm-up leaves one, goes
+        # over as a slice, sparing the copy and the scatter a mask costs, so a kernel
+        # never writes to what it is handed, which can be the caller's own array
+        pick  = slice(start, None) if own[start:].all() else own
+        given = kernel(*(np.ascontiguousarray(column[pick, k]) for column in columns))
+        for line, values in zip(out, given if lines > 1 else (given,)):
+            line[pick, k] = values
+
+    moved = np.moveaxis(arrays[first], axis, 0).shape
+    out   = [np.ascontiguousarray(np.moveaxis(line.reshape(moved), 0, axis))
+             for line in out]
+
+    return tuple(out) if lines > 1 else out[0]
+
+
 def _windows(values, length):
-    # every full window of `length`, as a (size - length + 1, length) view. A NaN
-    # anywhere inside a window carries through to that window's result, which is
-    # what makes a gap in the input stay a gap in the output
+    # every full window of `length`, as a (size - length + 1, length) view, and none
+    # where the series is shorter than one, as an empty view of one column, since
+    # numpy cannot size an empty one of `length` columns once that passes its
+    # largest index. A NaN inside a window carries through to its result, which is
+    # how a line built from a series' changes, such as mfi's flows, takes its warm-up
+    if values.size < length:
+        return np.empty((0, 1))
     return np.lib.stride_tricks.sliding_window_view(values, length)
-
-
-def _aligned(where, **named):
-    # every series a multi-input indicator reads has to describe the same bars,
-    # and the error names which one is the odd size rather than reporting a shape
-    series = {name: _series(values, where) for name, values in named.items()}
-    sizes  = {name: value.size for name, value in series.items()}
-
-    if len(set(sizes.values())) > 1:
-        shown = ", ".join(f"{name} {size}" for name, size in sizes.items())
-        raise ValueError(
-            f"{where} needs its series to be one length, got {shown}"
-        )
-
-    return tuple(series.values())
-
-
-def _against(other, size, where):
-    # the second argument of a comparison: another series, or a level, which is a
-    # constant series and is by far the more common thing to cross
-    if np.ndim(other) == 0:
-        value = float(other)
-        if not np.isfinite(value):
-            raise ValueError(f"{where} needs a finite level, got {value}")
-        return np.full(size, value, dtype=np.float64)
-
-    out = _series(other, where)
-    if out.size != size:
-        raise ValueError(
-            f"{where} needs two series of one length, got {size} and {out.size}"
-        )
-
-    return out
 
 
 def _smooth(values, alpha, length):
@@ -260,46 +306,26 @@ def _smooth(values, alpha, length):
     # single opening print steer the curve for hundreds of bars, and the simple
     # average is what TradingView and Wilder both use.
     #
-    # The seed is the first CLEAN window, and a gap restarts the search for one.
-    # A recurrence cannot carry across a missing bar, so the strict reading is
-    # that everything after one is undefined; that reading makes a year of
-    # candles with a single hole in it produce nothing at all from the hole
-    # onward, which is useless rather than rigorous. A gap ends the run and the
-    # next clean window seeds a fresh one, so a hole costs the same warm-up here
-    # as it does to a rolling window and the module behaves one way throughout.
+    # A value that is not finite is skipped, as everywhere in this module, and the
+    # output there is NaN. A smoother runs on a column's own values, so the only ones
+    # it meets lead the lines it is handed, rsi's first change, adx's first moves and
+    # dx's warm-up, longer where the bars open with no direction, and what follows them
+    # is, bit for bit, what the line without them gives.
     #
-    # The loop is over the gaps rather than over the bars. A per-bar Python loop
+    # The pass is vectorized rather than looped per bar. A per-bar Python loop
     # measured 191 ms for one EMA over 100k candles against 18 ms for the simple
     # average of the same length, which made two EMAs computed in `init` 42% of an
-    # entire backtest trial, paid again on every trial of every search. Each clean
-    # stretch is a plain geometric decay, so it runs as one vectorized pass and
-    # only the seeding and the gaps stay in Python (ADR 0037)
-    size   = values.size
-    out    = _blank(size)
+    # entire backtest trial, paid again on every trial of every search
+    out    = _blank(values.size)
     finite = np.isfinite(values)
-    if not finite.any():
+    given  = values[finite]
+    if given.size < length:
         return out
 
-    # the half-open bounds of every maximal run of finite values
-    edges  = np.flatnonzero(np.diff(finite.astype(np.int8)))
-    starts = np.concatenate((
-        np.array([0], dtype=np.int64) if finite[0] else np.empty(0, dtype=np.int64),
-        edges[finite[edges + 1]] + 1,
-    ))
-    stops = np.concatenate((
-        edges[~finite[edges + 1]] + 1,
-        np.array([size], dtype=np.int64) if finite[size - 1]
-        else np.empty(0, dtype=np.int64),
-    ))
-
-    for first, last in zip(starts, stops):
-        first, last = int(first), int(last)
-        if last - first < length:
-            continue
-        seed = first + length - 1
-        out[seed] = float(values[first:seed + 1].mean())
-        if last > seed + 1:
-            out[seed + 1:last] = _decay(values[seed + 1:last], out[seed], alpha)
+    smoothed = _blank(given.size)
+    smoothed[length - 1] = float(given[:length].mean())
+    smoothed[length:]    = _decay(given[length:], smoothed[length - 1], alpha)
+    out[finite]          = smoothed
 
     return out
 
@@ -309,7 +335,7 @@ def _block(keep):
     # keep**-block held under about 1e150, ten orders of magnitude inside the
     # largest finite double. A function rather than a line inside `_decay` so a
     # test can read the size the module actually uses instead of recomputing the
-    # formula beside it and agreeing with itself (ADR 0037)
+    # formula beside it and agreeing with itself
     return max(1, int(150.0 / -math.log10(keep)))
 
 
@@ -349,487 +375,548 @@ def _decay(values, seed, alpha):
     return out
 
 
-def sma(values, length):
-    """The simple moving average over ``length`` bars."""
-    values = _series(values, "sma")
-    length = _length(length, values.size, "sma")
-    out    = _blank(values.size)
-    out[length - 1:] = _windows(values, length).mean(axis=-1)
-    return out
+def sma(values, length, axis=0):
+    """The simple moving average over ``length`` bars; ``values`` is ``(T,)`` or
+    ``(T, N)`` along ``axis``, and the average has its shape."""
+    length = _length(length, "length")
+
+    def column(values):
+        out = _blank(values.size)
+        out[length - 1:] = _windows(values, length).mean(axis=-1)
+        return out
+
+    return _over(column, {"values": values}, axis)
 
 
-def ema(values, length):
-    """The exponential moving average over ``length`` bars.
+def ema(values, length, axis=0):
+    """The exponential moving average over ``length`` bars, of the shape of
+    ``values``.
 
     Smoothed at ``2 / (length + 1)`` and seeded from the simple average of the
     first ``length`` values, which is TradingView's convention. Seeding from the
     first value instead, as some implementations do, lets one opening print steer
     the curve for hundreds of bars.
     """
-    values = _series(values, "ema")
-    length = _length(length, values.size, "ema")
+    length = _length(length, "length")
+    return _over(lambda values: _smooth(values, 2.0 / (length + 1.0), length),
+                 {"values": values}, axis)
 
-    return _smooth(values, 2.0 / (length + 1.0), length)
 
-
-def wma(values, length):
-    """The linearly weighted moving average: the newest bar counts ``length``
-    times as much as the oldest.
+def wma(values, length, axis=0):
+    """The linearly weighted moving average, of the shape of ``values``: the newest
+    bar counts ``length`` times as much as the oldest.
     """
-    values  = _series(values, "wma")
-    length  = _length(length, values.size, "wma")
-    weights = np.arange(1.0, length + 1.0)
-    windows = _windows(values, length)
-    summed  = np.zeros(len(windows))
+    length = _length(length, "length")
 
-    # one weight at a time, in order, which is how numpy's matmul sums many windows;
-    # it hands a single one to BLAS, which sums in another order, so a series of one
-    # window gave its bar other bits than a longer series gives there
-    for k, weight in enumerate(weights / weights.sum()):
-        summed += windows[:, k] * weight
+    def column(values):
+        out = _blank(values.size)
+        if values.size < length:
+            # before its weights, which a length no series reaches would size
+            return out
 
-    out = _blank(values.size)
-    out[length - 1:] = summed
-    return out
+        weights = np.arange(1.0, length + 1.0)
+        windows = _windows(values, length)
+        summed  = np.zeros(len(windows))
+        # one weight at a time, in order, which is how numpy's matmul sums many
+        # windows; it hands a single one to BLAS, which sums in another order, so a
+        # series of one window gave its bar other bits than a longer series gives there
+        for k, weight in enumerate(weights / weights.sum()):
+            summed += windows[:, k] * weight
+
+        out[length - 1:] = summed
+        return out
+
+    return _over(column, {"values": values}, axis)
 
 
-def vwap(high, low, close, volume, length):
-    """The volume-weighted average price over a rolling window of ``length`` bars.
+def vwap(high, low, close, volume, length, axis=0):
+    """The volume-weighted average price over a rolling window of ``length`` bars,
+    of the shape of the four series, which share one.
 
     Rolling, not anchored to a session, because the engine has bars and no notion
     of a trading day. Priced on the typical price ``(high + low + close) / 3``.
-    A window whose volume is zero has no weighted price, so it is a gap.
+    A window whose volume is zero has no weighted price, so it is NaN.
     """
-    high   = _series(high, "vwap")
-    low    = _series(low, "vwap")
-    close  = _series(close, "vwap")
-    volume = _series(volume, "vwap")
+    length = _length(length, "length")
 
-    if not high.size == low.size == close.size == volume.size:
-        raise ValueError(
-            f"vwap needs four series of one length, got {high.size}, {low.size}, "
-            f"{close.size} and {volume.size}"
-        )
+    def column(high, low, close, volume):
+        typical = (high + low + close) / 3.0
+        paid    = _windows(typical * volume, length).sum(axis=-1)
+        traded  = _windows(volume, length).sum(axis=-1)
+        out     = _blank(close.size)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out[length - 1:] = np.where(traded > 0.0, paid / traded, np.nan)
 
-    length  = _length(length, close.size, "vwap")
-    typical = (high + low + close) / 3.0
-    paid    = _windows(typical * volume, length).sum(axis=-1)
-    traded  = _windows(volume, length).sum(axis=-1)
-    out     = _blank(close.size)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out[length - 1:] = np.where(traded > 0.0, paid / traded, np.nan)
+        return out
 
-    return out
+    return _over(column, {"high": high, "low": low, "close": close, "volume": volume},
+                 axis)
 
 
-def rsi(values, length=14):
-    """The relative strength index over ``length`` bars, 0 to 100.
+def rsi(values, length=14, axis=0):
+    """The relative strength index over ``length`` bars, 0 to 100, of the shape of
+    ``values``.
 
     Wilder's smoothing, ``1 / length`` rather than ``2 / (length + 1)``, which is
     what TradingView's ``ta.rsi`` uses and what the indicator was defined with.
 
     Rising with no losses at all is 100. Going **nowhere**, with neither gains nor
-    losses, is a gap: there is no ratio of strength to weakness when both are
-    zero, and the alternative conventions each pick a side of a coin that was
-    never tossed. Reporting 100 for a dead flat market, as some do, is a live trap
-    for the rule this exists to be traded on, since ``rsi > 70`` then fires on a
-    market that has not moved at all.
+    losses, is NaN: there is no ratio of strength to weakness when both are zero,
+    and the alternative conventions each pick a side of a coin that was never
+    tossed. Reporting 100 for a dead flat market, as some do, is a live trap for the
+    rule this exists to be traded on, since ``rsi > 70`` then fires on a market
+    that has not moved at all.
     """
-    values = _series(values, "rsi")
-    if int(length) >= values.size:
-        raise ValueError(
-            f"rsi needs more bars than its length, since the first bar makes no "
-            f"change to measure; {length} was asked of {values.size} bars"
-        )
+    length = _length(length, "length")
 
-    length = _length(length, values.size, "rsi")
-    change = np.diff(values, prepend=np.nan)
-    gain   = _smooth(np.maximum(change, 0.0), 1.0 / length, length)
-    loss   = _smooth(-np.minimum(change, 0.0), 1.0 / length, length)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out = np.where(loss > 0.0, 100.0 - 100.0 / (1.0 + gain / loss), 100.0)
+    def column(values):
+        change = np.diff(values, prepend=np.nan)
+        gain   = _smooth(np.maximum(change, 0.0), 1.0 / length, length)
+        loss   = _smooth(-np.minimum(change, 0.0), 1.0 / length, length)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = np.where(loss > 0.0, 100.0 - 100.0 / (1.0 + gain / loss), 100.0)
 
-    moved = (gain > 0.0) | (loss > 0.0)
-    return np.where(np.isfinite(gain) & np.isfinite(loss) & moved, out, np.nan)
+        moved = (gain > 0.0) | (loss > 0.0)
+        return np.where(np.isfinite(gain) & np.isfinite(loss) & moved, out, np.nan)
+
+    return _over(column, {"values": values}, axis)
 
 
-def macd(values, fast=12, slow=26, signal=9):
+def macd(values, fast=12, slow=26, signal=9, axis=0):
     """Moving average convergence divergence, as ``.line``, ``.signal`` and
-    ``.histogram``.
+    ``.histogram``, each of the shape of ``values``.
 
     The line is the fast exponential average less the slow one; the signal is an
-    exponential average of the line; the histogram is the gap. Each is length
-    ``T`` with its own warm-up, and the signal warms up after the line does.
+    exponential average of the line; the histogram is the gap. Each has its own
+    warm-up, and the signal warms up after the line does.
     """
-    values = _series(values, "macd")
-    if not int(fast) < int(slow):
-        raise ValueError(f"macd needs fast below slow, got {fast} and {slow}")
+    fast, slow = _length(fast, "fast"), _length(slow, "slow")
+    signal = _length(signal, "signal")
+    if not fast < slow:
+        raise ProbatumValueError(f"slow: {slow}, not above fast's {fast}; give fast "
+                                 f"below slow")
 
-    line     = ema(values, fast) - ema(values, slow)
-    smoothed = ema(line, signal)
-    return Macd(line, smoothed, line - smoothed)
+    def column(values):
+        line     = ema(values, fast) - ema(values, slow)
+        smoothed = ema(line, signal)
+        return line, smoothed, line - smoothed
+
+    return Macd(*_over(column, {"values": values}, axis, lines=3))
 
 
-def stoch(high, low, close, length=14, smooth=3):
-    """The stochastic oscillator, as ``.k`` and ``.d``, both 0 to 100.
+def stoch(high, low, close, length=14, smooth=3, axis=0):
+    """The stochastic oscillator, as ``.k`` and ``.d``, both 0 to 100 and of the
+    shape of the three series.
 
     ``k`` is where the close sits inside the last ``length`` bars' range, and
-    ``d`` is its simple average over ``smooth`` bars. A window with no range at
-    all has no position inside it, so it is a gap rather than a fifty.
+    ``d`` is its simple average over ``smooth`` bars, over the bars ``k`` has a
+    value on. A window with no range at all has no position inside it, so ``k`` is
+    NaN there rather than a fifty, and ``d`` averages across it.
 
     Both run 0 to 100 for well-formed bars. A close outside its own bar's high
     and low is not well-formed, and produces a value outside that range rather
     than being clamped, because a clamp would hide the only evidence that the
     data is wrong.
     """
-    high  = _series(high, "stoch")
-    low   = _series(low, "stoch")
-    close = _series(close, "stoch")
-    if not high.size == low.size == close.size:
-        raise ValueError(
-            f"stoch needs three series of one length, got {high.size}, "
-            f"{low.size} and {close.size}"
-        )
+    length, smooth = _length(length, "length"), _length(smooth, "smooth")
 
-    length = _length(length, close.size, "stoch")
-    _length(smooth, close.size, "stoch")  # named here, not from inside sma
+    def column(high, low, close):
+        top    = _blank(close.size)
+        bottom = _blank(close.size)
+        top[length - 1:]    = _windows(high, length).max(axis=-1)
+        bottom[length - 1:] = _windows(low, length).min(axis=-1)
 
-    top    = _blank(close.size)
-    bottom = _blank(close.size)
-    top[length - 1:]    = _windows(high, length).max(axis=-1)
-    bottom[length - 1:] = _windows(low, length).min(axis=-1)
+        span = top - bottom
+        with np.errstate(divide="ignore", invalid="ignore"):
+            k = np.where(span > 0.0, (close - bottom) / span * 100.0, np.nan)
 
-    span = top - bottom
-    with np.errstate(divide="ignore", invalid="ignore"):
-        k = np.where(span > 0.0, (close - bottom) / span * 100.0, np.nan)
+        return k, sma(k, smooth)
 
-    return Stochastic(k, sma(k, smooth))
+    return Stochastic(*_over(column, {"high": high, "low": low, "close": close}, axis,
+                             lines=2))
 
 
-def roc(values, length):
-    """The rate of change over ``length`` bars, in percent."""
-    values = _series(values, "roc")
-    length = _length(length, values.size, "roc")
-    out    = _blank(values.size)
-    past   = values[:-length]
+def roc(values, length, axis=0):
+    """The rate of change over ``length`` bars, in percent, of the shape of
+    ``values``."""
+    length = _length(length, "length")
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out[length:] = np.where(past != 0.0, (values[length:] / past - 1.0) * 100.0,
-                                np.nan)
+    def column(values):
+        out  = _blank(values.size)
+        past = values[:-length]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out[length:] = np.where(past != 0.0, (values[length:] / past - 1.0) * 100.0,
+                                    np.nan)
 
-    return out
+        return out
+
+    return _over(column, {"values": values}, axis)
 
 
-def true_range(high, low, close):
-    """The true range of each bar: its own range, or the gap from the previous
-    close if that is wider.
+def true_range(high, low, close, axis=0):
+    """The true range of each bar, of the shape of the three series: its own range,
+    or the gap from the previous close if that is wider.
 
-    The first bar has no previous close, so it is its own high less its low.
-
-    A missing bar anywhere else is a gap in the output, not a fallback to the
-    bar's own range. Taking the widest span while ignoring the missing ones was
-    the first version, and it is worse than useless: with the previous close gone
-    it quietly returned high less low, which on a gapping bar understated the true
-    range by whatever the gap was, so an ATR-sized stop came out far too tight on
-    exactly the data where the gap mattered.
+    The first bar has no previous close, so it is its own high less its low, and a
+    bar after one the series does not have takes the close of the last bar before
+    it, so a gap through a closure widens the range by what it moved.
     """
-    high  = _series(high, "true_range")
-    low   = _series(low, "true_range")
-    close = _series(close, "true_range")
-    if not high.size == low.size == close.size:
-        raise ValueError(
-            f"true_range needs three series of one length, got {high.size}, "
-            f"{low.size} and {close.size}"
-        )
+    def column(high, low, close):
+        previous = np.roll(close, 1)
+        previous[0] = np.nan
 
-    previous = np.roll(close, 1)
-    previous[0] = np.nan
+        spans = np.vstack([high - low, np.abs(high - previous),
+                           np.abs(low - previous)])
+        out = spans.max(axis=0)
 
-    spans = np.vstack([high - low, np.abs(high - previous), np.abs(low - previous)])
-    # propagating, so any missing leg makes the bar a gap
-    out = spans.max(axis=0)
+        # the first has no previous close by construction rather than by accident,
+        # and so is its own range
+        out[0] = high[0] - low[0]
+        return out
 
-    # except the first, which has no previous close by construction rather than by
-    # accident, and so is its own range
-    out[0] = high[0] - low[0]
-    return out
+    return _over(column, {"high": high, "low": low, "close": close}, axis)
 
 
-def atr(high, low, close, length=14):
-    """The average true range over ``length`` bars.
+def atr(high, low, close, length=14, axis=0):
+    """The average true range over ``length`` bars, of the shape of the three
+    series.
 
     Wilder's smoothing of the true range, ``1 / length``, matching ``rsi`` and
     TradingView's ``ta.atr``.
     """
-    ranges = true_range(high, low, close)
-    length = _length(length, ranges.size, "atr")
+    length = _length(length, "length")
 
-    return _smooth(ranges, 1.0 / length, length)
+    def column(high, low, close):
+        return _smooth(true_range(high, low, close), 1.0 / length, length)
+
+    return _over(column, {"high": high, "low": low, "close": close}, axis)
 
 
-def stdev(values, length):
-    """The rolling standard deviation over ``length`` bars.
+def stdev(values, length, axis=0):
+    """The rolling standard deviation over ``length`` bars, of the shape of
+    ``values``.
 
     Population, dividing by ``length`` rather than ``length - 1``, because that is
     what ``bbands`` is defined against and a band that disagrees with every chart
     by a factor of ``sqrt(n / (n - 1))`` is worse than no band.
     """
-    values = _series(values, "stdev")
-    length = _length(length, values.size, "stdev")
-    out    = _blank(values.size)
+    length = _length(length, "length")
 
-    # an infinity in the window makes the deviation undefined, and numpy says so
-    # through a warning on the way. The gap is the answer; the warning is noise
-    with np.errstate(invalid="ignore"):
+    def column(values):
+        out = _blank(values.size)
         out[length - 1:] = _windows(values, length).std(axis=-1)
+        return out
 
-    return out
+    return _over(column, {"values": values}, axis)
 
 
-def bbands(values, length=20, deviations=2.0):
-    """Bollinger bands, as ``.upper``, ``.middle`` and ``.lower``.
+def bbands(values, length=20, deviations=2.0, axis=0):
+    """Bollinger bands, as ``.upper``, ``.middle`` and ``.lower``, each of the shape
+    of ``values``.
 
     A simple moving average, with a band ``deviations`` population standard
     deviations either side of it.
     """
-    values     = _series(values, "bbands")
-    length     = _length(length, values.size, "bbands")
-    deviations = float(deviations)
-    if not np.isfinite(deviations) or deviations < 0.0:
-        raise ValueError(
-            f"bbands needs a width of at least 0, got {deviations}"
-        )
+    length     = _length(length, "length")
+    deviations = _width(deviations, "deviations")
 
-    middle = sma(values, length)
-    spread = stdev(values, length) * deviations
-    return Bands(middle + spread, middle, middle - spread)
+    def column(values):
+        middle = sma(values, length)
+        spread = stdev(values, length) * deviations
+        return middle + spread, middle, middle - spread
+
+    return Bands(*_over(column, {"values": values}, axis, lines=3))
 
 
-def donchian(high, low, length=20):
-    """The Donchian channel, as ``.upper``, ``.middle`` and ``.lower``: the
-    highest high and the lowest low of the last ``length`` bars, and their midpoint.
+def donchian(high, low, length=20, axis=0):
+    """The Donchian channel, as ``.upper``, ``.middle`` and ``.lower``, each of the
+    shape of the two series: the highest high and the lowest low of the last
+    ``length`` bars, and their midpoint.
 
     Both edges include the current bar, so a breakout of ``upper`` cannot happen
     on the bar that set it. Compare against the previous bar's edge if that is
     what you mean.
     """
-    high = _series(high, "donchian")
-    low  = _series(low, "donchian")
-    if high.size != low.size:
-        raise ValueError(
-            f"donchian needs two series of one length, got {high.size} and {low.size}"
-        )
+    length = _length(length, "length")
 
-    length = _length(length, high.size, "donchian")
-    top    = _blank(high.size)
-    bottom = _blank(low.size)
+    def column(high, low):
+        top    = _blank(high.size)
+        bottom = _blank(low.size)
+        top[length - 1:]    = _windows(high, length).max(axis=-1)
+        bottom[length - 1:] = _windows(low, length).min(axis=-1)
+        return top, (top + bottom) / 2.0, bottom
 
-    top[length - 1:]    = _windows(high, length).max(axis=-1)
-    bottom[length - 1:] = _windows(low, length).min(axis=-1)
-
-    return Bands(top, (top + bottom) / 2.0, bottom)
+    return Bands(*_over(column, {"high": high, "low": low}, axis, lines=3))
 
 
-def zscore(values, length):
+def zscore(values, length, axis=0):
     """How many rolling standard deviations the current value sits from its own
-    rolling mean. A window with no deviation at all is a gap, not a zero.
+    rolling mean, of the shape of ``values``. A window with no deviation at all has
+    no position, so it is NaN, not a zero.
     """
-    values = _series(values, "zscore")
-    length = _length(length, values.size, "zscore")
-    spread = stdev(values, length)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(spread > 0.0, (values - sma(values, length)) / spread, np.nan)
+    length = _length(length, "length")
+
+    def column(values):
+        spread = stdev(values, length)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(spread > 0.0, (values - sma(values, length)) / spread,
+                            np.nan)
+
+    return _over(column, {"values": values}, axis)
 
 
-def shift(values, bars=1):
-    """``values`` moved ``bars`` bars into the future, so entry ``i`` carries what
-    entry ``i - bars`` held. The first ``bars`` entries are the warm-up.
+def _lag(bars):
+    """``bars``, a lag, as a whole number of bars from 0."""
+    if _number(bars) and bars < 0:
+        raise ProbatumValueError(f"bars: {bars!r}, which would read the future; give a "
+                                 f"whole number of bars from 0")
+    return _length(bars, "bars", least=0)
+
+
+def shift(values, bars=1, axis=0):
+    """``values`` moved ``bars`` of its own bars into the future, of its shape, so a
+    column's ``i``-th value is carried to its ``i + bars``-th; the first ``bars``
+    are the warm-up.
 
     The safe way to look back. Written by hand, ``values[i - bars]`` on an early
     bar is a NEGATIVE index, which numpy resolves from the END of the array, so
     the rule reads a price from the far future, produces a spectacular result and
-    raises nothing at all. ``Strategy.warmup`` (ADR 0025) closes that only when
-    the declared warm-up is at least as deep as the lookback, and the natural
-    error is declaring the indicator's warm-up and then reaching further back
-    than it inside ``next``. Computed once here, the array is padded rather than
-    wrapped, and there is no index to get wrong (ADR 0037).
+    raises nothing at all; ``Strategy.warmup`` closes that only when the declared
+    warm-up is at least as deep as the lookback, and the natural error is declaring
+    the indicator's warm-up and then reaching further back than it inside ``next``.
+    It also reads rows, and on a universe the row before an instrument's bar can be
+    one it printed nothing on. Computed once here, the array is padded rather than
+    wrapped and lags each instrument's own bars, and there is no index to get wrong
+    (ADR 0037). A series whose NaN means "hold" is lagged with numpy, since every
+    NaN here is a row the series does not have.
 
     A negative ``bars`` is refused rather than read as a lead: shifting the other
     way is lookahead by construction, and this module has no honest use for it.
     """
-    values = _series(values, "shift")
-    if bars != int(bars):
-        raise ValueError(f"shift needs a whole number of bars, got {bars}")
+    bars = _lag(bars)
 
-    bars = int(bars)
-    if bars < 0:
-        raise ValueError(
-            f"shift moves values forward in time, so bars is zero or more, got "
-            f"{bars}; a negative shift would read the future into the past"
-        )
+    def column(values):
+        if bars == 0:
+            return values.copy()
 
-    if bars == 0:
-        return values.copy()
+        out = _blank(values.size)
+        if bars < values.size:
+            out[bars:] = values[:-bars]
 
-    out = _blank(values.size)
-    if bars < values.size:
-        out[bars:] = values[:-bars]
+        return out
 
-    return out
+    return _over(column, {"values": values}, axis)
 
 
-def change(values, bars=1):
-    """How much ``values`` moved over the last ``bars`` bars, in its own units."""
-    values = _series(values, "change")
-    return values - shift(values, bars)
+def change(values, bars=1, axis=0):
+    """How much ``values`` moved over its last ``bars`` bars, in its own units, of
+    its shape."""
+    bars = _lag(bars)
+    return _over(lambda values: values - shift(values, bars), {"values": values}, axis)
 
 
-def highest(values, length):
-    """The highest value of the last ``length`` bars, the current one included."""
-    values = _series(values, "highest")
-    length = _length(length, values.size, "highest")
-    out    = _blank(values.size)
-    out[length - 1:] = _windows(values, length).max(axis=-1)
-    return out
+def highest(values, length, axis=0):
+    """The highest value of the last ``length`` bars, the current one included, of
+    the shape of ``values``."""
+    length = _length(length, "length")
+
+    def column(values):
+        out = _blank(values.size)
+        out[length - 1:] = _windows(values, length).max(axis=-1)
+        return out
+
+    return _over(column, {"values": values}, axis)
 
 
-def lowest(values, length):
-    """The lowest value of the last ``length`` bars, the current one included."""
-    values = _series(values, "lowest")
-    length = _length(length, values.size, "lowest")
-    out    = _blank(values.size)
-    out[length - 1:] = _windows(values, length).min(axis=-1)
-    return out
+def lowest(values, length, axis=0):
+    """The lowest value of the last ``length`` bars, the current one included, of
+    the shape of ``values``."""
+    length = _length(length, "length")
+
+    def column(values):
+        out = _blank(values.size)
+        out[length - 1:] = _windows(values, length).min(axis=-1)
+        return out
+
+    return _over(column, {"values": values}, axis)
 
 
-def crossover(values, other):
+def _level(other):
+    """``other``, a crossing's second argument, as a level, or None where it is a
+    series."""
+    if np.ndim(other) > 0:
+        return None
+
+    if isinstance(other, np.ndarray):
+        other = other.item()
+
+    if not _number(other):
+        raise ProbatumTypeError(f"other: {other!r}; give a level, or a series of the "
+                                f"values' shape")
+
+    level = float(other)
+    if not math.isfinite(level):
+        raise ProbatumValueError(f"other: {level}; give a finite level, or a series")
+
+    return level
+
+
+def _crossing(values, other, above, axis):
+    """Where ``values`` crosses ``other``, above it or below it: compared on the rows
+    both have, each against the last before it."""
+    level = _level(other)
+
+    def column(values, other):
+        out = np.zeros(values.size, dtype=bool)
+        if above:
+            out[1:] = (values[1:] > other[1:]) & (values[:-1] <= other[:-1])
+        else:
+            out[1:] = (values[1:] < other[1:]) & (values[:-1] >= other[:-1])
+
+        return out
+
+    if level is None:
+        return _over(column, {"values": values, "other": other}, axis, flag=True)
+
+    return _over(lambda values: column(values, np.full(values.size, level)),
+                 {"values": values}, axis, flag=True)
+
+
+def crossover(values, other, axis=0):
     """``True`` on each bar where ``values`` crosses above ``other``: at or below
-    it on the previous bar, above it on this one.
+    it on the bar before, above it on this one, of the shape of ``values``.
 
-    ``other`` is a second series or a plain number, since crossing a level is the
-    commoner case. Returns **bool**, not float, and a bar whose comparison cannot
-    be made, either end of it missing or the very first bar, is ``False``. That is
-    the one deliberate exception to this module's NaN warm-up: ``bool(nan)`` is
-    ``True`` in Python, so a float warm-up would fire the rule on exactly the bars
-    where nothing is known.
+    ``other`` is a second series of the same shape or a plain number, since crossing
+    a level is the commoner case. Each pair is compared on the bars both have, so a
+    cross across a bar one of them does not have is reported on the first after it.
+    Returns **bool**, not float, and a bar whose comparison cannot be made, the very
+    first or one either of them does not have, is ``False``. That is the one
+    deliberate exception to this module's NaN warm-up: ``bool(nan)`` is ``True`` in
+    Python, so a float warm-up would fire the rule on exactly the bars where nothing
+    is known.
     """
-    values = _series(values, "crossover")
-    other  = _against(other, values.size, "crossover")
-    out    = np.zeros(values.size, dtype=bool)
-
-    # a comparison against a missing value is False in numpy, which is the answer
-    # wanted here: no evidence of a cross is not a cross
-    out[1:] = (values[1:] > other[1:]) & (values[:-1] <= other[:-1])
-    return out
+    return _crossing(values, other, True, axis)
 
 
-def crossunder(values, other):
+def crossunder(values, other, axis=0):
     """``True`` on each bar where ``values`` crosses below ``other``. The mirror
     of ``crossover``, and boolean for the same reason.
     """
-    values = _series(values, "crossunder")
-    other  = _against(other, values.size, "crossunder")
-    out    = np.zeros(values.size, dtype=bool)
-
-    out[1:] = (values[1:] < other[1:]) & (values[:-1] >= other[:-1])
-    return out
+    return _crossing(values, other, False, axis)
 
 
-def hma(values, length):
-    """Hull's moving average: two weighted averages differenced and smoothed again,
-    which turns far faster than a simple average of the same length for the same
-    amount of noise.
+def hma(values, length, axis=0):
+    """Hull's moving average, of the shape of ``values``: two weighted averages
+    differenced and smoothed again, which turns far faster than a simple average of
+    the same length for the same amount of noise.
 
     ``wma(2 * wma(values, length / 2) - wma(values, length), sqrt(length))``, with
     both inner lengths floored to whole bars, which is the published definition.
     """
-    values = _series(values, "hma")
-    length = _length(length, values.size, "hma")
+    length = _length(length, "length")
     half   = max(1, length // 2)
     root   = max(1, int(math.sqrt(length)))
-    raw    = 2.0 * wma(values, half) - wma(values, length)
 
-    return wma(raw, root)
+    def column(values):
+        raw = 2.0 * wma(values, half) - wma(values, length)
+        return wma(raw, root)
+
+    return _over(column, {"values": values}, axis)
 
 
-def vwma(values, volume, length):
-    """The volume-weighted moving average of ``values`` over ``length`` bars.
+def vwma(values, volume, length, axis=0):
+    """The volume-weighted moving average of ``values`` over ``length`` bars, of the
+    shape of the two series.
 
     ``sma`` treats a bar nobody traded as equal to one everybody did. A window
-    whose volume is zero has no weighted average, so it is a gap.
+    whose volume is zero has no weighted average, so it is NaN.
     """
-    values, volume = _aligned("vwma", values=values, volume=volume)
-    length = _length(length, values.size, "vwma")
-    paid   = _windows(values * volume, length).sum(axis=-1)
-    traded = _windows(volume, length).sum(axis=-1)
-    out    = _blank(values.size)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out[length - 1:] = np.where(traded > 0.0, paid / traded, np.nan)
+    length = _length(length, "length")
 
-    return out
+    def column(values, volume):
+        paid   = _windows(values * volume, length).sum(axis=-1)
+        traded = _windows(volume, length).sum(axis=-1)
+        out    = _blank(values.size)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out[length - 1:] = np.where(traded > 0.0, paid / traded, np.nan)
+
+        return out
+
+    return _over(column, {"values": values, "volume": volume}, axis)
 
 
-def willr(high, low, close, length=14):
-    """Williams %R over ``length`` bars, -100 to 0.
+def willr(high, low, close, length=14, axis=0):
+    """Williams %R over ``length`` bars, -100 to 0, of the shape of the three
+    series.
 
     Where the close sits inside the recent range, read from the top: 0 is the
     high of the window and -100 the low. The same measurement ``stoch`` makes and
     the opposite sign convention, which is why both exist rather than one. A
-    window with no range at all has no position inside it, so it is a gap.
+    window with no range at all has no position inside it, so it is NaN.
     """
-    high, low, close = _aligned("willr", high=high, low=low, close=close)
-    length = _length(length, close.size, "willr")
+    length = _length(length, "length")
 
-    top, bottom = highest(high, length), lowest(low, length)
-    span = top - bottom
+    def column(high, low, close):
+        top, bottom = highest(high, length), lowest(low, length)
+        span = top - bottom
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(span > 0.0, (close - top) / span * 100.0, np.nan)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(span > 0.0, (close - top) / span * 100.0, np.nan)
+    return _over(column, {"high": high, "low": low, "close": close}, axis)
 
 
-def cci(high, low, close, length=20):
-    """The commodity channel index over ``length`` bars.
+def cci(high, low, close, length=20, axis=0):
+    """The commodity channel index over ``length`` bars, of the shape of the three
+    series.
 
     How far the typical price ``(high + low + close) / 3`` sits from its own
     average, in units of its mean absolute deviation, scaled by the conventional
     0.015 so that most readings land inside -100 to 100. Mean ABSOLUTE deviation,
     not standard deviation, which is the definition and is what makes it react
     differently from ``zscore`` on a fat-tailed series. A window with no deviation
-    at all is a gap.
+    at all is NaN.
     """
-    high, low, close = _aligned("cci", high=high, low=low, close=close)
-    length  = _length(length, close.size, "cci")
-    typical = (high + low + close) / 3.0
-    frames  = _windows(typical, length)
-    with np.errstate(invalid="ignore"):
-        spread = np.abs(frames - frames.mean(axis=-1, keepdims=True)).mean(axis=-1)
+    length = _length(length, "length")
 
-    deviation = _blank(close.size)
-    deviation[length - 1:] = spread
-    middle = sma(typical, length)
+    def column(high, low, close):
+        typical = (high + low + close) / 3.0
+        frames  = _windows(typical, length)
+        with np.errstate(invalid="ignore"):
+            spread = np.abs(frames - frames.mean(axis=-1, keepdims=True)).mean(axis=-1)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(deviation > 0.0,
-                        (typical - middle) / (0.015 * deviation), np.nan)
+        deviation = _blank(close.size)
+        deviation[length - 1:] = spread
+
+        middle = sma(typical, length)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(deviation > 0.0,
+                            (typical - middle) / (0.015 * deviation), np.nan)
+
+    return _over(column, {"high": high, "low": low, "close": close}, axis)
 
 
-def natr(high, low, close, length=14):
-    """The average true range as a percent of the close.
+def natr(high, low, close, length=14, axis=0):
+    """The average true range as a percent of the close, of the shape of the three
+    series.
 
     The number to size a stop with across instruments and across time: an ATR of
     400 means one thing on a coin at 90,000 and another on one at 800, and the
     same strategy run over two years of a trending market is comparing two
     different sizes without this.
     """
-    high, low, close = _aligned("natr", high=high, low=low, close=close)
+    length = _length(length, "length")
 
-    ranges = atr(high, low, close, length)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(close > 0.0, ranges / close * 100.0, np.nan)
+    def column(high, low, close):
+        ranges = atr(high, low, close, length)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(close > 0.0, ranges / close * 100.0, np.nan)
+
+    return _over(column, {"high": high, "low": low, "close": close}, axis)
 
 
-def keltner(high, low, close, length=20, atr_length=10, multiplier=2.0):
-    """Keltner channels, as ``.upper``, ``.middle`` and ``.lower``.
+def keltner(high, low, close, length=20, atr_length=10, multiplier=2.0, axis=0):
+    """Keltner channels, as ``.upper``, ``.middle`` and ``.lower``, each of the shape
+    of the three series.
 
     An exponential average with bands ``multiplier`` average true ranges either
     side. Where ``bbands`` measures the spread of the closes, this measures the
@@ -838,74 +925,76 @@ def keltner(high, low, close, length=20, atr_length=10, multiplier=2.0):
     the question ``atr`` and ``metrics.excursions`` both point at and neither
     could answer.
     """
-    high, low, close = _aligned("keltner", high=high, low=low, close=close)
-    multiplier = float(multiplier)
-    if not np.isfinite(multiplier) or multiplier < 0.0:
-        raise ValueError(
-            f"keltner needs a width of at least 0, got {multiplier}"
-        )
+    length, atr_length = _length(length, "length"), _length(atr_length, "atr_length")
+    multiplier = _width(multiplier, "multiplier")
 
-    middle = ema(close, length)
-    spread = atr(high, low, close, atr_length) * multiplier
-    return Bands(middle + spread, middle, middle - spread)
+    def column(high, low, close):
+        middle = ema(close, length)
+        spread = atr(high, low, close, atr_length) * multiplier
+        return middle + spread, middle, middle - spread
+
+    return Bands(*_over(column, {"high": high, "low": low, "close": close}, axis,
+                        lines=3))
 
 
-def supertrend(high, low, close, length=10, multiplier=3.0):
+def supertrend(high, low, close, length=10, multiplier=3.0, axis=0):
     """The supertrend, as ``.upper``, ``.lower``, ``.middle`` (the line in force)
-    and ``.direction`` (``1.0`` while long, ``-1.0`` while short).
+    and ``.direction`` (``1.0`` while long, ``-1.0`` while short), each of the shape
+    of the three series.
 
     An ATR band that ratchets: each edge may only tighten toward price while the
     trend holds, and the line flips when the close closes through the far one.
     Read ``direction`` rather than comparing the close against ``middle``, since
     the line is the edge in force and the comparison is what set it.
 
-    A gap ends the ratchet and the next clean stretch starts a fresh one, on the
-    same rule the exponential averages use: a recurrence cannot carry across a
-    bar that is not there.
+    The ratchet starts on the first bar with a band, once the average true range
+    has warmed up, and carries across a bar the series does not have, as every
+    smoother here does.
     """
-    high, low, close = _aligned("supertrend", high=high, low=low, close=close)
-    multiplier = float(multiplier)
-    if not np.isfinite(multiplier) or multiplier <= 0.0:
-        raise ValueError(
-            f"supertrend needs a width above 0, got {multiplier}"
-        )
+    length     = _length(length, "length")
+    multiplier = _width(multiplier, "multiplier", above=True)
 
-    ranges       = atr(high, low, close, length)
-    middle_price = (high + low) / 2.0
-    raw_upper    = middle_price + multiplier * ranges
-    raw_lower    = middle_price - multiplier * ranges
-    size         = close.size
+    def column(high, low, close):
+        ranges       = atr(high, low, close, length)
+        middle_price = (high + low) / 2.0
+        raw_upper    = middle_price + multiplier * ranges
+        raw_lower    = middle_price - multiplier * ranges
+        size         = close.size
 
-    upper, lower, line = _blank(size), _blank(size), _blank(size)
-    direction = _blank(size)
-    running   = False
+        upper, lower, line = _blank(size), _blank(size), _blank(size)
+        direction = _blank(size)
+        running   = False
 
-    for i in range(size):
-        if not (np.isfinite(raw_upper[i]) and np.isfinite(raw_lower[i])
-                and np.isfinite(close[i])):
-            running = False
-            continue
+        for i in range(size):
+            if not (np.isfinite(raw_upper[i]) and np.isfinite(raw_lower[i])
+                    and np.isfinite(close[i])):
+                running = False
+                continue
 
-        if not running:
-            upper[i], lower[i], direction[i] = raw_upper[i], raw_lower[i], 1.0
-            running = True
-        else:
-            upper[i] = (raw_upper[i] if raw_upper[i] < upper[i - 1]
-                        or close[i - 1] > upper[i - 1] else upper[i - 1])
-            lower[i] = (raw_lower[i] if raw_lower[i] > lower[i - 1]
-                        or close[i - 1] < lower[i - 1] else lower[i - 1])
-            if direction[i - 1] > 0.0:
-                direction[i] = -1.0 if close[i] < lower[i] else 1.0
+            if not running:
+                upper[i], lower[i], direction[i] = raw_upper[i], raw_lower[i], 1.0
+                running = True
             else:
-                direction[i] = 1.0 if close[i] > upper[i] else -1.0
+                upper[i] = (raw_upper[i] if raw_upper[i] < upper[i - 1]
+                            or close[i - 1] > upper[i - 1] else upper[i - 1])
+                lower[i] = (raw_lower[i] if raw_lower[i] > lower[i - 1]
+                            or close[i - 1] < lower[i - 1] else lower[i - 1])
+                if direction[i - 1] > 0.0:
+                    direction[i] = -1.0 if close[i] < lower[i] else 1.0
+                else:
+                    direction[i] = 1.0 if close[i] > upper[i] else -1.0
 
-        line[i] = lower[i] if direction[i] > 0.0 else upper[i]
+            line[i] = lower[i] if direction[i] > 0.0 else upper[i]
 
-    return Channel(upper, line, lower, direction)
+        return upper, line, lower, direction
+
+    return Channel(*_over(column, {"high": high, "low": low, "close": close}, axis,
+                          lines=4))
 
 
-def adx(high, low, close, length=14):
-    """The average directional index, as ``.adx``, ``.plus`` and ``.minus``.
+def adx(high, low, close, length=14, axis=0):
+    """The average directional index, as ``.adx``, ``.plus`` and ``.minus``, each of
+    the shape of the three series.
 
     How strongly the market is trending, without saying which way: ``plus`` and
     ``minus`` are the two directional strengths and ``adx`` is how far apart they
@@ -913,73 +1002,71 @@ def adx(high, low, close, length=14):
     here", and it is the filter a moving-average cross is conventionally paired
     with, since a cross in a range is the most reliable way to lose money slowly.
 
-    Wilder's smoothing throughout, matching ``rsi`` and ``atr``.
+    Wilder's smoothing throughout, matching ``rsi`` and ``atr``. Bars that open a
+    series with no directional movement either way have no ``dx``, so the ADX warms
+    up after them.
     """
-    high, low, close = _aligned("adx", high=high, low=low, close=close)
-    length     = _length(length, close.size, "adx")
-    up         = high - shift(high, 1)
-    down       = shift(low, 1) - low
-    plus_move  = np.where((up > down) & (up > 0.0), up, 0.0)
-    minus_move = np.where((down > up) & (down > 0.0), down, 0.0)
+    length = _length(length, "length")
 
-    # a bar with no previous is not a zero move, it is an unknown one
-    missing        = ~(np.isfinite(up) & np.isfinite(down))
-    plus_move      = np.where(missing, np.nan, plus_move)
-    minus_move     = np.where(missing, np.nan, minus_move)
-    alpha          = 1.0 / length
-    ranges         = _smooth(true_range(high, low, close), alpha, length)
-    plus_smoothed  = _smooth(plus_move, alpha, length)
-    minus_smoothed = _smooth(minus_move, alpha, length)
+    def column(high, low, close):
+        up         = high - shift(high, 1)
+        down       = shift(low, 1) - low
+        plus_move  = np.where((up > down) & (up > 0.0), up, 0.0)
+        minus_move = np.where((down > up) & (down > 0.0), down, 0.0)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        plus  = np.where(ranges > 0.0, plus_smoothed / ranges * 100.0, np.nan)
-        minus = np.where(ranges > 0.0, minus_smoothed / ranges * 100.0, np.nan)
-        total = plus + minus
-        dx    = np.where(total > 0.0, np.abs(plus - minus) / total * 100.0, np.nan)
+        # a bar with no previous is not a zero move, it is an unknown one
+        missing        = ~(np.isfinite(up) & np.isfinite(down))
+        plus_move      = np.where(missing, np.nan, plus_move)
+        minus_move     = np.where(missing, np.nan, minus_move)
+        alpha          = 1.0 / length
+        ranges         = _smooth(true_range(high, low, close), alpha, length)
+        plus_smoothed  = _smooth(plus_move, alpha, length)
+        minus_smoothed = _smooth(minus_move, alpha, length)
 
-    return Trend(_smooth(dx, alpha, length), plus, minus)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            plus  = np.where(ranges > 0.0, plus_smoothed / ranges * 100.0, np.nan)
+            minus = np.where(ranges > 0.0, minus_smoothed / ranges * 100.0, np.nan)
+            total = plus + minus
+            dx    = np.where(total > 0.0, np.abs(plus - minus) / total * 100.0, np.nan)
+
+        return _smooth(dx, alpha, length), plus, minus
+
+    return Trend(*_over(column, {"high": high, "low": low, "close": close}, axis,
+                        lines=3))
 
 
-def obv(close, volume):
-    """On-balance volume: the running total of each bar's volume, signed by the
-    direction the close moved.
+def obv(close, volume, axis=0):
+    """On-balance volume, of the shape of the two series: the running total of each
+    bar's volume, signed by the direction the close moved.
 
     The one thing in this module that reads participation rather than price. A
     price making new highs on falling on-balance volume is the divergence it
     exists to show.
 
-    The total restarts from zero after a gap rather than carrying across it, on
-    the same rule the exponential averages use, so a hole costs the warm-up of one
-    bar and never silently absorbs a missing day's volume into the running sum.
+    The total carries across a bar the series does not have, on the same rule the
+    exponential averages use, from the close of the last bar before it.
     """
-    close, volume = _aligned("obv", close=close, volume=volume)
+    def column(close, volume):
+        out = _blank(close.size)
 
-    size    = close.size
-    out     = _blank(size)
-    running = None
+        # bar zero has no previous close at all, which is a warm-up rather than a
+        # zero, and the total starts flat after it
+        running = 0.0
+        for i in range(1, close.size):
+            if close[i] > close[i - 1]:
+                running += volume[i]
+            elif close[i] < close[i - 1]:
+                running -= volume[i]
+            out[i] = running
 
-    for i in range(1, size):
-        if not (np.isfinite(close[i]) and np.isfinite(volume[i])
-                and np.isfinite(close[i - 1])):
-            running = None
-            continue
+        return out
 
-        # the first bar of a fresh run has a direction but no history, so the
-        # total starts flat there. Bar zero has no previous close at all, which is
-        # a warm-up rather than a zero
-        if running is None:
-            running = 0.0
-        if close[i] > close[i - 1]:
-            running += volume[i]
-        elif close[i] < close[i - 1]:
-            running -= volume[i]
-        out[i] = running
-
-    return out
+    return _over(column, {"close": close, "volume": volume}, axis)
 
 
-def mfi(high, low, close, volume, length=14):
-    """The money flow index over ``length`` bars, 0 to 100.
+def mfi(high, low, close, volume, length=14, axis=0):
+    """The money flow index over ``length`` bars, 0 to 100, of the shape of the four
+    series.
 
     ``rsi`` weighted by what actually traded: the same up-against-down ratio, on
     the typical price times the volume rather than on the price change alone. A
@@ -987,28 +1074,29 @@ def mfi(high, low, close, volume, length=14):
     reading it beside ``rsi``.
 
     A window with flows in one direction only is 100 or 0. A window with no flow
-    at all is a gap, for the reason ``rsi`` gives: there is no ratio of strength
-    to weakness when both are zero.
+    at all is NaN, for the reason ``rsi`` gives: there is no ratio of strength to
+    weakness when both are zero.
     """
-    high, low, close, volume = _aligned(
-        "mfi", high=high, low=low, close=close, volume=volume
-    )
-    length   = _length(length, close.size, "mfi")
-    typical  = (high + low + close) / 3.0
-    flow     = typical * volume
-    rising   = typical > shift(typical, 1)
-    falling  = typical < shift(typical, 1)
-    known    = np.isfinite(flow) & np.isfinite(shift(typical, 1))
-    positive = np.where(known, np.where(rising, flow, 0.0), np.nan)
-    negative = np.where(known, np.where(falling, flow, 0.0), np.nan)
-    up       = _blank(close.size)
-    down     = _blank(close.size)
+    length = _length(length, "length")
 
-    up[length - 1:]   = _windows(positive, length).sum(axis=-1)
-    down[length - 1:] = _windows(negative, length).sum(axis=-1)
+    def column(high, low, close, volume):
+        typical  = (high + low + close) / 3.0
+        flow     = typical * volume
+        rising   = typical > shift(typical, 1)
+        falling  = typical < shift(typical, 1)
+        known    = np.isfinite(flow) & np.isfinite(shift(typical, 1))
+        positive = np.where(known, np.where(rising, flow, 0.0), np.nan)
+        negative = np.where(known, np.where(falling, flow, 0.0), np.nan)
+        up       = _blank(close.size)
+        down     = _blank(close.size)
+        up[length - 1:]   = _windows(positive, length).sum(axis=-1)
+        down[length - 1:] = _windows(negative, length).sum(axis=-1)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out = np.where(down > 0.0, 100.0 - 100.0 / (1.0 + up / down), 100.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = np.where(down > 0.0, 100.0 - 100.0 / (1.0 + up / down), 100.0)
 
-    moved = (up > 0.0) | (down > 0.0)
-    return np.where(np.isfinite(up) & np.isfinite(down) & moved, out, np.nan)
+        moved = (up > 0.0) | (down > 0.0)
+        return np.where(np.isfinite(up) & np.isfinite(down) & moved, out, np.nan)
+
+    return _over(column, {"high": high, "low": low, "close": close, "volume": volume},
+                 axis)
