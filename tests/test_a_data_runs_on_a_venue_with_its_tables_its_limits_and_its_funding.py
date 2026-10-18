@@ -5,6 +5,7 @@ data holds; a slice brings the bars before it for its window to read; and an acc
 the venue cannot hold is refused before it runs.
 """
 
+import math
 import re
 
 import numpy as np
@@ -143,6 +144,29 @@ def test_a_venue_built_by_hand_runs_bars_from_a_file_on_its_plain_rules():
     assert (drawn.settings["intrabar"], drawn.settings["seed"]) == ("random", 7)
 
     probatum._probatum.Engine(drawn.candles, **drawn.settings).reset()
+
+
+def test_the_funding_a_run_reports_is_the_total_of_its_payments():
+    # four thousand payments on a random walk, whose plain running sum lands six ulps
+    # from their exact sum, where the compensated total the statistics report keeps
+    # to it
+    closes = 100.0 * np.exp(np.cumsum(np.random.default_rng(7).normal(0.0, 0.01, 4_000)))
+    index  = pd.date_range("2024-01-01", periods=4_000, freq="h", tz="UTC", name="datetime")
+    walk   = pd.DataFrame({
+        "open":   closes,
+        "high":   closes * 1.001,
+        "low":    closes * 0.999,
+        "close":  closes,
+        "volume": 1e6,
+    }, index=index)
+    perp   = probatum.Data(walk, symbol="BTCUSDT", market="linear")
+    venue  = Venue(funding={"every_bars": 1, "rate": 0.0001})
+    result = probatum.backtest(np.ones(4_000), perp, venue, sizing="quantity")
+    paid   = result.ledger["funding"].tolist()
+
+    assert sum(payment != 0.0 for payment in paid) == 3_999
+    assert result.stats["funding_paid"] == pytest.approx(math.fsum(paid), rel=2 ** -52,
+                                                         abs=0.0)
 
 
 def test_an_inverse_contract_runs_alone_on_its_own_bars_in_its_coin():

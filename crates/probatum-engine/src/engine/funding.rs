@@ -11,12 +11,38 @@ use super::Engine;
 use crate::candles::printed;
 use crate::reporter::Reporter;
 
+/// A total reported over many bars, summed with Neumaier's compensation so that what
+/// rounding drops from each addition is carried rather than lost (Specification,
+/// Numbers that are the same everywhere).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct Total {
+    sum: f64,
+    carry: f64,
+}
+
+impl Total {
+    /// Add `x` to the total.
+    pub(super) fn add(&mut self, x: f64) {
+        let sum = self.sum + x;
+        self.carry += if self.sum.abs() >= x.abs() {
+            (self.sum - sum) + x
+        } else {
+            (x - sum) + self.sum
+        };
+        self.sum = sum;
+    }
+
+    pub(super) fn get(self) -> f64 {
+        self.sum + self.carry
+    }
+}
+
 /// Keep a funding payment on instrument `i` for the result and charge it to its bar
 /// and to the round trip it was paid on (ADRs 0020, 0022, 0023). It takes the two
 /// fields it writes, so a schedule borrowed from the candles can stay borrowed while
 /// it runs.
-fn pay(funding_paid: &mut f64, reporter: &mut Option<Reporter>, i: usize, payment: f64) {
-    *funding_paid += payment;
+fn pay(funding_paid: &mut Total, reporter: &mut Option<Reporter>, i: usize, payment: f64) {
+    funding_paid.add(payment);
     if let Some(reporter) = reporter.as_mut() {
         reporter.costs_mut().funding += payment;
         if let Some(trip) = reporter.trip_mut(i) {
@@ -174,6 +200,16 @@ mod tests {
     use crate::reporter::FillReason;
     use crate::schedule::every;
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
+
+    #[test]
+    fn a_reported_total_carries_what_each_addition_rounds_away() {
+        // 1e16 + 1 rounds back to 1e16, so a plain running sum of these is 0
+        let mut total = super::Total::default();
+        for payment in [1e16, 1.0, -1e16] {
+            total.add(payment);
+        }
+        assert_eq!(total.get(), 1.0);
+    }
 
     #[test]
     fn perp_funding_charges_a_held_long_each_interval() {

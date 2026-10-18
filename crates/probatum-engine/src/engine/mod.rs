@@ -40,6 +40,7 @@ mod resolution;
 mod target;
 mod transfers;
 
+use funding::Total;
 use path::{CheckLeg, FillNote, HeldLeg, Path};
 pub use target::TargetError;
 use target::Targets;
@@ -247,7 +248,7 @@ pub struct Engine {
     fills: usize,
     /// Funding paid since the last reset, in quote, positive when paid away. The
     /// account returned each payment and this is what keeps it (ADR 0020).
-    funding_paid: f64,
+    funding_paid: Total,
     /// Set when the account is dead: its equity, both wallets together, marked at
     /// or below zero, where a takeover leaves it unless the spot wallet holds
     /// cash (ADR 0008). A terminal event for the RL env. Cleared on reset.
@@ -361,7 +362,7 @@ impl Engine {
             tick: 0,
             id_counter: 1,
             fills: 0,
-            funding_paid: 0.0,
+            funding_paid: Total::default(),
             bust: false,
             marks: vec![f64::NAN; width],
             legs: vec![Vec::new(); width],
@@ -538,7 +539,7 @@ impl Engine {
         // handed out in one episode name a live order in the next, so a handle
         // carried across a reset cancelled somebody else's order (ADR 0010).
         self.fills = 0;
-        self.funding_paid = 0.0;
+        self.funding_paid = Total::default();
         self.bust = false;
         // what an earlier episode took of a bar's budget is not taken in this one
         self.budget.fill((usize::MAX, 0.0));
@@ -807,7 +808,7 @@ impl Engine {
                 periods_per_year,
                 risk_free,
                 self.fills,
-                self.funding_paid,
+                self.funding_paid.get(),
             )
         })
     }
@@ -903,7 +904,7 @@ impl Engine {
             } else {
                 self.account.unrealized(0, mark)
             },
-            funding_paid: self.funding_paid,
+            funding_paid: self.funding_paid.get(),
             open_orders: if self.book.is_empty() {
                 Vec::new()
             } else {
