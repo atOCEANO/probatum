@@ -7,6 +7,7 @@ no-lookahead rule holding through the binding.
 """
 
 import re
+import threading
 
 import numpy as np
 import pytest
@@ -1309,6 +1310,44 @@ def test_out_of_range_config_scalars_are_rejected():
     ):
         with pytest.raises(ValueError):
             probatum._probatum.Engine(series(), **kwargs)
+
+
+def test_a_call_into_an_engine_another_thread_is_running_is_a_runtime_error():
+    # run_array lets go of the GIL while it runs, so another thread can call into
+    # the engine it holds; a call that borrowed the engine outright panicked, as a
+    # PanicException, which `except Exception` misses
+    bars    = 200_000
+    close   = 100.0 + np.sin(np.arange(bars) / 50.0)
+    candles = np.column_stack([close, close + 1.0, close - 1.0, close,
+                               np.full(bars, 1e3)])
+
+    times = np.arange(bars, dtype=np.int64) * 3_600_000_000_000
+    held  = probatum._probatum.Engine(
+        candles,
+        times     = times,
+        report    = True,
+        market    = "spot",
+        quote     = 10_000.0,
+        fee_taker = 0.0,
+        fee_maker = 0.0,
+    )
+
+    rows   = np.tile([0.5, 0.0], bars // 2)[:, None]
+    worker = threading.Thread(target=probatum._probatum.run_array, args=(held, rows))
+    said   = set()
+
+    worker.start()
+    while worker.is_alive():
+        for call in (lambda: held.observation(1), lambda: held.data,
+                     lambda: held.closes):
+            try:
+                call()
+            except BaseException as error:
+                said.add(type(error))
+
+    worker.join()
+
+    assert said == {RuntimeError}
 
 
 def test_a_zero_window_raises_instead_of_panicking():

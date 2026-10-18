@@ -2028,19 +2028,19 @@ impl Engine {
     /// engine's immutable candle buffer directly with no copy; it is read-only
     /// because that buffer is shared across envs, and it holds the engine alive
     /// for as long as the view exists (ADR 0040).
-    fn observation<'py>(slf: Bound<'py, Self>, lookback: usize) -> Bound<'py, PyAny> {
+    fn observation<'py>(slf: Bound<'py, Self>, lookback: usize) -> PyResult<Bound<'py, PyAny>> {
         // The engine owns the Arc-backed candle buffer, so keeping it as the
         // array's base keeps the data alive for the whole life of the view.
         let container = slf.clone().into_any();
-        let engine = slf.borrow();
+        let engine = slf.try_borrow()?;
         if engine.universe {
             let width = engine.inner.width();
             let end = engine.inner.tick() + 1;
             let start = end.saturating_sub(lookback);
             let rows = &engine.inner.candles_all()[start * width..end * width];
-            return universe_view(rows, width, container).into_any();
+            return Ok(universe_view(rows, width, container).into_any());
         }
-        candle_view(engine.inner.candle_window(lookback), container).into_any()
+        Ok(candle_view(engine.inner.candle_window(lookback), container).into_any())
     }
 
     /// A zero-copy, read-only numpy view of the whole candle series: shape
@@ -2050,45 +2050,47 @@ impl Engine {
     /// view's life; it is the full-series companion, so `eng.data[:, 3]` reads every
     /// close (ADR 0040).
     #[getter]
-    fn data<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+    fn data<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let container = slf.clone().into_any();
-        let engine = slf.borrow();
+        let engine = slf.try_borrow()?;
         if engine.universe {
-            return universe_view(engine.inner.candles_all(), engine.inner.width(), container)
-                .into_any();
+            return Ok(
+                universe_view(engine.inner.candles_all(), engine.inner.width(), container)
+                    .into_any(),
+            );
         }
-        candle_view(engine.inner.candles_all(), container).into_any()
+        Ok(candle_view(engine.inner.candles_all(), container).into_any())
     }
 
     /// Every open, as a zero-copy read-only view, `(T,)`, or `(T, N)` over a universe.
     /// The named companions to `data`, so a strategy reads `engine.closes` rather
     /// than remembering that the close is column 3 of a `(T, 5)` array.
     #[getter]
-    fn opens<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+    fn opens<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         Engine::column(slf, 0)
     }
 
     /// Every high, as a zero-copy read-only view.
     #[getter]
-    fn highs<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+    fn highs<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         Engine::column(slf, 1)
     }
 
     /// Every low, as a zero-copy read-only view.
     #[getter]
-    fn lows<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+    fn lows<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         Engine::column(slf, 2)
     }
 
     /// Every close, as a zero-copy read-only view.
     #[getter]
-    fn closes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+    fn closes<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         Engine::column(slf, 3)
     }
 
     /// Every volume, as a zero-copy read-only view. Base units (ADR 0013).
     #[getter]
-    fn volumes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyAny> {
+    fn volumes<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         Engine::column(slf, 4)
     }
 
@@ -2682,7 +2684,7 @@ impl Engine {
         // the callback is free to re-enter the engine (place orders) without a
         // double-borrow panic.
         let mut state = {
-            let mut engine = slf.borrow_mut();
+            let mut engine = slf.try_borrow_mut()?;
             let state = engine.inner.reset();
             engine.state_of(py, state)?
         };
@@ -2706,12 +2708,12 @@ impl Engine {
         };
 
         let mut tick = 0usize;
-        while !slf.borrow().inner.done() {
+        while !slf.try_borrow()?.inner.done() {
             if tick >= warmup {
                 strategy.call_method1("next", (state.clone(), slf.clone()))?;
             }
             state = {
-                let mut engine = slf.borrow_mut();
+                let mut engine = slf.try_borrow_mut()?;
                 let state = engine.inner.step();
                 engine.state_of(py, state)?
             };
@@ -2786,15 +2788,16 @@ impl Engine {
 
     /// One field of every candle as a zero-copy read-only view, `(T,)`, or `(T, N)`
     /// over a universe.
-    fn column<'py>(slf: Bound<'py, Self>, column: usize) -> Bound<'py, PyAny> {
+    fn column<'py>(slf: Bound<'py, Self>, column: usize) -> PyResult<Bound<'py, PyAny>> {
         let container = slf.clone().into_any();
-        let engine = slf.borrow();
+        let engine = slf.try_borrow()?;
         if engine.universe {
             let width = engine.inner.width();
-            return universe_column(engine.inner.candles_all(), width, column, container)
-                .into_any();
+            return Ok(
+                universe_column(engine.inner.candles_all(), width, column, container).into_any(),
+            );
         }
-        column_view(engine.inner.candles_all(), column, container).into_any()
+        Ok(column_view(engine.inner.candles_all(), column, container).into_any())
     }
 }
 
@@ -4282,7 +4285,7 @@ fn run_array(
     take_profit: Option<Bound<'_, PyAny>>,
     start: usize,
 ) -> PyResult<()> {
-    let mut engine = engine.borrow_mut();
+    let mut engine = engine.try_borrow_mut()?;
     let (bars, width, units) = (engine.inner.num_bars(), engine.inner.width(), engine.units);
     let values = rows.as_array();
     if start >= bars || values.dim() != (bars - start, width) {
