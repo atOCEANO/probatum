@@ -91,12 +91,14 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
 
     values, chosen = _seen(rows, data.available.any(axis=1))
     engine = Engine(run.candles, report=True, **run.settings)
-    run_array(engine, values, sizing, float(tolerance),
+
+    # what the run is played with, which its Result keeps to play again without costs
+    played = (values, sizing, float(tolerance),
               *[None if barrier is None else
                 barrier if isinstance(barrier, float) else
                 np.ascontiguousarray(np.take_along_axis(barrier, chosen, axis=0))
-                for barrier in barriers.values()],
-              start=run.start)
+                for barrier in barriers.values()])
+    run_array(engine, *played, start=run.start)
 
     rate       = _annualised(data)
     stats      = None if rate is None else engine.stats(rate, float(risk_free))
@@ -107,7 +109,8 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
 
     rows.flags.writeable = False
     return Result._of(engine.tables(run.start, list(names)), stats, rows,
-                      engine.is_bust(), provenance, _Record(held, data, run))
+                      engine.is_bust(), provenance,
+                      _Record(held, data, run, policy=played))
 
 
 def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_free):
@@ -133,6 +136,10 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
     held   = _repeatable(venue)
     run    = _run(held, data)
     engine = Engine(run.candles, report=True, **run.settings)
+
+    # the second copy, taken at the call as the first is, is the one the Result plays
+    # again without costs (ADR 0024)
+    kept   = copy.deepcopy(strategy)
     copied = copy.deepcopy(strategy)
 
     played = _Run(engine, data, run.start, _markets(run))
@@ -145,7 +152,7 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
 
     return Result._of(engine.tables(run.start, list(data.names)), stats, copied,
                       engine.is_bust(), provenance,
-                      _Record(held, data, run, played.token))
+                      _Record(held, data, run, played.token, policy=kept))
 
 
 def _repeatable(venue):

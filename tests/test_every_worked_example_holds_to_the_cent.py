@@ -15,7 +15,7 @@ import pytest
 import probatum
 
 from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, periods_per_year,
-                                 run)
+                                 play_array, run)
 
 HOUR = 3_600 * 10**9
 DAY  = 24 * HOUR
@@ -1141,6 +1141,108 @@ def test_a_value_order_buys_60_contracts_and_a_fee_is_paid_in_the_coin():
     first, second = sim.fills
     assert first["fee"]   == pytest.approx(0.0005, rel=1e-12)
     assert second["size"] == pytest.approx(60.0, rel=1e-12)
+
+
+def walked(opens, closes, volume=1e9):
+    """Bars that open and close where given, their range the two."""
+    return [Bar(o, max(o, c), min(o, c), c, volume) for o, c in zip(opens, closes)]
+
+
+def played(bars, instruments, venue, rows):
+    """The equity on each row of ``rows`` of quantities played as an array is, which
+    is how buying and holding asks for its shares."""
+    sim = play_array(Simulator(hourly(len(bars)), bars, instruments, venue), rows,
+                     sizing="quantity")
+    return sim, [row["equity"] for row in sim.ledger]
+
+
+def test_the_costs_example_bought_and_held_reads_10_075_82_and_without_costs_10_040():
+    # a sixth of a bitcoin bought at the close of 60,000 and held, and the run's
+    # quantities of 0.1, 0 and NaN on the venue with its costs removed
+    bars = [[bar] for bar in (Bar(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e9),
+                              Bar(60_000.0, 60_600.0, 59_900.0, 60_500.0, 1e9),
+                              Bar(60_400.0, 60_500.0, 60_300.0, 60_450.0, 1e9))]
+    venue = Venue(
+        maker    = 0.0,
+        taker    = 0.0005,
+        spread   = ("fixed", 1.0),
+        slippage = 1.0,
+        funding  = ("every_bars", 1, 0.0001),
+    )
+
+    sim, equity = played(bars, [Instrument("BTCUSDT")], venue,
+                         [[10_000.0 / 60_000.0]] * 3)
+
+    assert sim.fills[0]["price"] == pytest.approx(60_009.0, abs=1e-9)
+    assert sim.fills[0]["fee"]   == pytest.approx(5.00075, abs=1e-9)
+    assert [row["funding"] for row in sim.ledger[1:]] == pytest.approx(
+        [1.008333, 1.0075], abs=5e-7)
+    assert equity == pytest.approx([10_000.0, 10_075.82, 10_066.48], abs=0.005)
+
+    _, equity = played(bars, [Instrument("BTCUSDT")], Venue(maker=0.0, taker=0.0),
+                       [[0.1], [0.0], [math.nan]])
+    assert equity == pytest.approx([10_000.0, 10_050.0, 10_040.0], abs=1e-9)
+
+
+@pytest.mark.parametrize("kind, equity", [("linear", [10_000.0, 10_289.90, 9_789.90]),
+                                          ("spot", [10_000.0, 10_286.74, 9_792.19])])
+def test_buying_and_holding_100_at_101_reads_9_789_90_and_on_spot_98_910990_of_it(
+        kind, equity):
+    bars = [[bar] for bar in walked([100.0, 101.0, 103.0], [100.0, 104.0, 99.0])]
+
+    sim, held = played(bars, [Instrument("BTCUSDT", kind=kind)],
+                       Venue(maker=0.0, taker=0.001), [[100.0]] * 3)
+
+    assert held == pytest.approx(equity, abs=0.005)
+    # on spot the rest of the 100 is asked again at the next close and fills nothing
+    assert [fill["size"] for fill in sim.fills] == pytest.approx(
+        [100.0 if kind == "linear" else 98.910990], abs=5e-7)
+
+
+def test_a_late_lister_bought_on_the_opening_balance_s_share_reads_10_150():
+    a = walked([100.0, 101.0, 103.0, 98.0], [100.0, 104.0, 99.0, 102.0])
+    b = [None, None] + walked([50.0, 51.0], [50.0, 52.0])
+
+    # A's share at its first close, and B's at its own, on row 2
+    rows = [[50.0, math.nan], [50.0, math.nan], [50.0, 100.0], [50.0, 100.0]]
+    pair = [Instrument("A"), Instrument("B")]
+
+    _, equity = played([list(row) for row in zip(a, b)], pair,
+                       Venue(maker=0.0, taker=0.0), rows)
+
+    assert equity == pytest.approx([10_000.0, 10_150.0, 9_900.0, 10_150.0], abs=1e-9)
+
+
+@pytest.mark.parametrize("liquidation, kept", [
+    ("takeover", 0.0), (("book_then_backstop", 2.0 / 3.0), 100.50)])
+def test_without_costs_the_long_is_closed_at_40_201_01_and_on_the_book_keeps_100_50(
+        liquidation, kept):
+    # the run without costs carries the same long into the bar on the same 10,000
+    sim = half_a_bitcoin([SLIDE], tiers=MAINTAINED, balance=10_000.0, maker=0.0,
+                         taker=0.0, liquidation=liquidation)
+
+    assert sim.fills[-1]["reason"] == "liquidation"
+    assert sim.fills[-1]["price"]  == pytest.approx(40_201.01, abs=0.005)
+    assert sim.margin_cash         == pytest.approx(kept, abs=0.005)
+
+
+def test_one_coin_bought_and_held_as_600_contracts_is_taken_over_at_30_120():
+    bars = [[flat(60_000.0)], [flat(60_000.0)],
+            [Bar(60_000.0, 60_000.0, 30_000.0, 31_000.0, 1_000.0)], [flat(31_000.0)]]
+    inverse = Instrument(
+        "BTCUSD",
+        kind     = "inverse",
+        contract = 100.0,
+        tiers    = [(1e12, 20.0, 0.004, 0.0)],
+    )
+
+    sim, equity = played(bars, [inverse], Venue(balance=1.0, maker=0.0, taker=0.0),
+                         [[1.0 * 60_000.0 / 100.0]] * 4)
+
+    close = sim.fills[-1]
+    assert close["reason"] == "liquidation"
+    assert close["price"]  == pytest.approx(30_120.0, abs=1e-6)
+    assert equity          == pytest.approx([1.0, 1.0, 0.0, 0.0], abs=1e-12)
 
 
 def hourly_bars(opens, closes, hours):

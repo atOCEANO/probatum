@@ -299,6 +299,8 @@ MANIFEST = "result.json is not a manifest save writes"
     ("another run's statistics", "stats.arrow does not count the fills and the round "
                                  "trips its tables hold"),
     ("a null bar", "fills.arrow holds a null in bar, a column that holds none"),
+    ("baselines of no rows", "baselines.arrow does not open at its equity.npy's first "
+                             "row"),
     ("a misaligned body", "ledger.arrow holds a buffer off the 8-byte boundary the "
                           "format puts it on"),
 ])
@@ -373,6 +375,8 @@ def test_files_save_does_not_write_are_refused(broken, said, results, tmp_path,
         rewritten(tmp_path, "fills", lambda table: table.set_column(
             0, pyarrow.field("bar", pyarrow.int64()),
             pyarrow.array([None] + table["bar"].to_pylist()[1:], pyarrow.int64())))
+    elif broken == "baselines of no rows":
+        rewritten(tmp_path, "baselines", lambda table: table.slice(0, 0))
     elif broken == "a misaligned body":
         framed, calls = probatum._ipc._framed, []
 

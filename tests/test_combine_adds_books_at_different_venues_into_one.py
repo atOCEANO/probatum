@@ -1,10 +1,10 @@
 """``combine`` adds Results from accounts at different venues into one book on the times
 any of them has a row: each account held at its opening balance before its first row
 and at its last equity after its end, the sum taken in the order given, the book's
-ledger its own, its other tables theirs joined with each row's venue, and its
-statistics those of the sum, computed as a run's are. One book combined is itself, two
-copies are twice it, and what does not add, in assets, intervals, grids or rates, is
-refused, naming the fix.
+ledger and baselines its own, its other tables theirs joined with each row's venue,
+and its statistics those of the sum, computed as a run's are. One book combined is
+itself, two copies are twice it, and what does not add, in assets, intervals, grids or
+rates, is refused, naming the fix.
 """
 
 import re
@@ -15,7 +15,7 @@ import pytest
 
 import probatum
 from probatum import Venue
-from probatum._result import SCHEMAS
+from probatum._result import OWN, SCHEMAS
 from test_a_data_from_the_router_is_every_bar_it_asked_for import Router
 from test_a_data_from_the_router_is_every_bar_it_asked_for import bars as rows
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (
@@ -40,7 +40,7 @@ def without_venue(result):
     """``result``'s joined tables as rows, each with its venue left out."""
     return {name: [{key: value for key, value in row.items() if key != "venue"}
                    for row in getattr(result, name)]
-            for name in SCHEMAS if name != "ledger"}
+            for name in SCHEMAS if name not in OWN}
 
 
 FUNDED = VENUE.replace(funding={"every": 8, "rate": 0.0001})

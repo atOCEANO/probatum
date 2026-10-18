@@ -784,12 +784,18 @@ def test_the_text_is_the_same_after_save_load_a_pickle_and_in_a_book(tmp_path):
     for k, result in enumerate((stories(), restless(0))):
         texts     = texts_of(result)
         unpickled = pickle.loads(pickle.dumps(result))
+        # save reads the baselines first, which plays the policy again
         result.save(tmp_path / f"run{k}")
         loaded = probatum.Result.load(tmp_path / f"run{k}")
-        assert texts_of(unpickled) == texts_of(loaded) == texts
+        assert texts_of(unpickled) == texts_of(loaded) == texts_of(result) == texts
 
     result = stories()
     book   = probatum.combine({"A": result, "B": held()})
+    texts  = texts_of(book)
+
+    book.baselines
+    assert texts_of(book) == texts
+
     n, fill = next((k, row) for k, row in enumerate(book.fills) if row["venue"] == "A")
     told = book.explain(fill).splitlines()
     assert told[0].startswith(f"fill {n}, A BTCUSDT buy ")

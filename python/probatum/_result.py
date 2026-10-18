@@ -25,8 +25,8 @@ from ._venue import _settlement
 # one will
 FORMAT = 1
 # each table a Result holds: its columns, of a kind each, and whether each can hold a
-# null, as the binding builds them, the assumptions as the Result reads them, and as a
-# saved Result's files hold them
+# null, as the binding builds them, the assumptions and the baselines as the Result
+# builds them, and as a saved Result's files hold them
 SCHEMAS = {
     "ledger": [("bar", "int", False), ("time", "time", False)]
     + [(name, "float", True) for name in (
@@ -58,7 +58,11 @@ SCHEMAS = {
     + [("reason", "text", True), ("open", "bool", False)],
     "assumptions": [(name, "text", False) for name in ("name", "value", "source", "grade")]
     + [("direction", "text", True), ("cost", "float", True)],
+    "baselines": [("bar", "int", False), ("time", "time", False)]
+    + [(name, "float", True) for name in ("cash", "buy_and_hold", "frictionless")],
 }
+# the tables a book holds of its own, which name no venue
+OWN = ("ledger", "baselines")
 # the statistics a run reports, in the order the binding gives them, the counts among
 # them integers
 STATS = ("total_return_pct", "net_profit_pct", "cagr_pct", "sharpe", "sortino", "calmar",
@@ -372,19 +376,39 @@ def _tables(held):
     return {name: CLASSES.get(name, Table)(table) for name, table in held.items()}
 
 
+def _baselined(time, cash, held, frictionless):
+    """The baselines of a Result on the rows ``time``: ``cash`` on every row, and on
+    each the equity ``held`` and ``frictionless`` give."""
+    rows    = len(time)
+    columns = dict(bar=np.arange(rows, dtype=np.int64),
+                   time=np.ascontiguousarray(time, dtype=np.int64),
+                   cash=np.full(rows, cash, dtype=np.float64),
+                   buy_and_hold=np.ascontiguousarray(held, dtype=np.float64),
+                   frictionless=np.ascontiguousarray(frictionless, dtype=np.float64))
+
+    return Table(_Held([(name, kind, nullable, columns[name], None, None)
+                        for name, kind, nullable in SCHEMAS["baselines"]]))
+
+
 class _Record:
-    """What a run's Result keeps of its run, which its assumptions read: the ``venue``,
-    the ``data``, and the Engine's ``settings`` with ``start``, the row of the Data's
-    first bar among the Engine's, as `_run` gave them, and the ``token`` of a run whose
-    account handed out handles, which explain checks one against."""
+    """What a run's Result keeps of its run, which its assumptions and its baselines
+    read, shared by every copy of the Result: the ``venue``, the ``data``, and the
+    Engine's ``settings`` with ``start``, the row of the Data's first bar among the
+    Engine's, as `_run` gave them; the ``token`` of a run whose account handed out
+    handles, which explain checks one against; the ``seed`` of a loop the caller
+    stepped; and the ``policy`` to play again without costs, an array's arguments or
+    the copy of a Strategy taken at the call, until the baselines are ``computed``,
+    with whether that play is ``playing``."""
 
-    __slots__ = ("venue", "data", "settings", "start", "token")
+    __slots__ = ("venue", "data", "settings", "start", "token", "seed", "policy",
+                 "computed", "playing")
 
 
-    def __init__(self, venue, data, run, token=None):
+    def __init__(self, venue, data, run, token=None, seed=None, policy=None):
         self.venue, self.data = venue, data
         self.settings, self.start = run.settings, run.start
-        self.token = token
+        self.token, self.seed, self.policy = token, seed, policy
+        self.computed, self.playing = None, False
 
 
 class InstrumentResult:
@@ -447,10 +471,13 @@ class Result:
         self.orders   = tables["orders"]
         self.trades   = tables["trades"]
 
-        # a run's assumptions are read from its record when first asked for, and every
-        # other Result holds them
+        # a run's assumptions and baselines are read from its record when first asked
+        # for and a book's baselines from its accounts'; tables holds them otherwise, an
+        # unpickled Result's baselines only where they were read before it was pickled
         self._assumptions = tables.get("assumptions")
+        self._baselines   = tables.get("baselines")
         self._record      = record
+        self._parts       = None
         self.stats        = stats
         self.policy       = _frozen(policy) if isinstance(policy, np.ndarray) else policy
         self.bust         = bool(bust)
@@ -502,6 +529,39 @@ class Result:
             table = self._assumptions = Assumptions._of(_assumptions.ran(self._record,
                                                                          self))
         return table
+
+
+    @property
+    def baselines(self):
+        """The run set beside three baselines on its own data and venue (Specification,
+        Baselines), as a table of a row per row of the Result: ``bar``, ``time``,
+        ``cash``, the opening equity, ``buy_and_hold``, an equal share of the opening
+        balance in every instrument bought at its first close and held, and
+        ``frictionless``, the same policy with the costs of trading removed and every
+        rule kept, missing for a loop the caller stepped. They are computed when first
+        read, the policy played again then, so a Result pickled before they were read
+        refuses them, and a book's are its accounts' summed as its equity is."""
+        table = self._ready()
+        if table is None:
+            from . import _baselines
+            table = self._baselines = _baselined(self.time, *_baselines.read(self))
+            # a book lets its accounts' records go once it holds their sum
+            self._parts = None
+
+        return table
+
+
+    def _ready(self):
+        """The baselines where they are computed, None where reading them would play a
+        policy."""
+        record = self._record
+        if self._baselines is None and record is not None and record.computed:
+            rows = len(self.time)
+            held, frictionless = record.computed
+            self._baselines = _baselined(self.time, self.equity[0], held[:rows],
+                                         frictionless[:rows])
+
+        return self._baselines
 
 
     def explain(self, item):
@@ -657,9 +717,13 @@ class Result:
 
     def __reduce__(self):
         # a pickled Strategy's copy or loop is described in the provenance, not kept,
-        # nor the record its assumptions are read from, which are read first
+        # nor the record its assumptions are read from, which are read first; pickling
+        # plays no policy, so it carries the baselines only once they are computed
         policy = self.policy if isinstance(self.policy, np.ndarray) else None
-        tables = {name: getattr(self, name) for name in SCHEMAS}
+        tables = {name: getattr(self, name) for name in SCHEMAS if name != "baselines"}
+        if self._ready() is not None:
+            tables["baselines"] = self._baselines
+
         return Result, (self.time, self.equity, tables, self.stats, policy, self.bust,
                         self.provenance)
 
@@ -684,16 +748,18 @@ class Result:
     def to_dict(self):
         """This Result as plain data: ``time``, ``equity`` and ``returns`` as lists,
         each table as a dict of its columns as lists, None where a value is missing,
-        ``costs``, and ``stats``, a ratio infinite where it earned something against no
-        measured risk, ``policy`` where it is an array, ``bust``, ``liquidations`` and
+        the baselines None until they are read, since this plays no policy, ``costs``,
+        and ``stats``, a ratio infinite where it earned something against no measured
+        risk, ``policy`` where it is an array, ``bust``, ``liquidations`` and
         ``provenance``."""
         out = dict(time=self.time.tolist(), equity=self.equity.tolist(),
                    returns=self.returns.tolist())
 
         for name in SCHEMAS:
-            table = getattr(self, name)
-            out[name] = {column: _listed(table._column(column, kept=False))
-                         for column in table.columns}
+            table = self._ready() if name == "baselines" else getattr(self, name)
+            out[name] = None if table is None else {
+                column: _listed(table._column(column, kept=False))
+                for column in table.columns}
 
         out.update(costs=self.costs,
                    stats=None if self.stats is None else dict(self.stats),
@@ -712,14 +778,21 @@ class Result:
         whether the policy was an array and whether the account went bust; ``time.npy``,
         ``equity.npy`` and ``returns.npy``; ``policy.npy`` where the policy was an
         array; each table as an Arrow IPC file, ``ledger.arrow``, ``holdings.arrow``,
-        ``fills.arrow``, ``orders.arrow``, ``trades.arrow`` and ``assumptions.arrow``,
-        read first where the run has not read them yet; and ``stats.arrow``, the
-        statistics as one row, none where the clock was too short to annualise. Every
-        file is written under another name first, all of them removed again where one
-        cannot be written, then the manifest already there and any policy.npy go, the
-        files are put in place, and the manifest last, so a save that an error or a
-        killed process stops leaves either the Result that was there or a directory with
-        no manifest, which load refuses."""
+        ``fills.arrow``, ``orders.arrow``, ``trades.arrow``, ``assumptions.arrow`` and
+        ``baselines.arrow``, the last two read first where the run has not read them
+        yet; and ``stats.arrow``, the statistics as one row, none where the clock was
+        too short to annualise. A Result pickled before its baselines were read, or a
+        book of one, is refused before anything is written. Every file is written under
+        another name first, all of them removed again where one cannot be written, then
+        the manifest already there and any policy.npy go, the files are put in place,
+        and the manifest last, so a save that an error or a killed process stops leaves
+        either the Result that was there or a directory with no manifest, which load
+        refuses."""
+        try:
+            self.baselines
+        except AttributeError as error:
+            raise ValueError(f"{error}, and save writes them, so it wrote nothing") from None
+
         folder = pathlib.Path(path)
         if folder.exists() and not folder.is_dir():
             raise ValueError(f"path: {str(path)!r} is a file; name a directory")
@@ -824,6 +897,14 @@ class Result:
             raise ValueError(f"path: the tables of {str(path)!r} do not hold the rows of "
                              f"its time.npy and equity.npy; {fix}")
 
+        baselines = tables["baselines"]
+        if (len(baselines) != rows or not np.array_equal(baselines["time"], time)
+                or not (baselines["cash"] == equity[0]).all()
+                or not all(np.isnan(value) or value == equity[0] for value in (
+                    baselines["buy_and_hold"][0], baselines["frictionless"][0]))):
+            raise ValueError(f"path: {str(path)!r}'s baselines.arrow does not open at its "
+                             f"equity.npy's first row on each of its rows; {fix}")
+
         stats = _stats(path, folder, fix)
         if stats is not None and (
                 stats["num_fills"] != len(tables["fills"])
@@ -907,11 +988,11 @@ def _read(path, folder, name, fix):
 def _loaded(path, folder, name, book, fix):
     """The table ``name``.arrow of ``folder``, the directory ``path`` names, refused
     where it lacks a column save writes or holds a null in a column that holds none, a
-    book's with its venue first but for its ledger, which is the book's own, its columns
-    in this version's order; a column a later version added comes back after them as it
-    was written."""
+    book's with its venue first but for its ledger and its baselines, which are the
+    book's own, its columns in this version's order; a column a later version added
+    comes back after them as it was written."""
     columns  = _read(path, folder, f"{name}.arrow", fix)
-    joined   = book and name != "ledger"
+    joined   = book and name not in OWN
     schema   = ([("venue", "text", False)] if joined else []) + SCHEMAS[name]
     kinds    = {stored: kind for kind, stored in STORED.items()}
     nullable = {column: can for column, _, can in schema}
@@ -1079,10 +1160,11 @@ def combine(results, settlement=None):
     run's are. Its ledger is the book's, a row per row of its clock: each account's
     cash held as its equity is, its exposure, margin and maintenance counted only inside
     its own span, its costs on the rows they were paid on, and the leverage gross
-    exposure over equity. Its other tables are theirs joined, each row with its venue
-    first and every bar counted on the book's clock, in order of bar, the round trips
-    closed in the order they closed and then those still open, and the assumptions in
-    the order the Results are given (Specification, Combining books).
+    exposure over equity. Its baselines are its own too, its accounts' summed as its
+    equity is. Its other tables are theirs joined, each row with its venue first and
+    every bar counted on the book's clock, in order of bar, the round trips closed in
+    the order they closed and then those still open, and the assumptions in the order
+    the Results are given (Specification, Combining books).
 
     ``settlement`` names the dollar asset a book of accounts kept in dollar assets, such
     as USDT and USDC, is kept in, each counted at par (Specification, Combining books).
@@ -1186,7 +1268,7 @@ def combine(results, settlement=None):
                                      for name, kind, nullable in SCHEMAS["ledger"]]))}
 
     for name in SCHEMAS:
-        if name != "ledger":
+        if name not in OWN:
             tables[name] = CLASSES.get(name, Table)(
                 _joined([getattr(part, name) for part in parts], labels, rows, name))
 
@@ -1203,8 +1285,23 @@ def combine(results, settlement=None):
                       settlement=kept, risk_free=risk_free, periods_per_year=rate,
                       version=_version(), **_environment())
 
-    return Result(clock, equity, tables, stats, None, bool((equity[1:] <= 0.0).any()),
+    # a book plays no policy: it keeps each account's baselines where they are
+    # computed, and otherwise the record they are read from, until its own are read
+    given = []
+    for label, part in zip(labels, parts):
+        ready = part._ready()
+        given.append((label, part.time, part.equity[0],
+                       None if ready is not None else part._record,
+                       None if ready is None else (ready["buy_and_hold"],
+                                                   ready["frictionless"])))
+
+    book = Result(clock, equity, tables, stats, None, bool((equity[1:] <= 0.0).any()),
                   provenance)
+    book._parts = given
+    if all(computed is not None for *_, computed in given):
+        book.baselines
+
+    return book
 
 
 def _kept(named, settlement):

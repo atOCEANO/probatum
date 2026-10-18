@@ -48,7 +48,7 @@ class Engine(Account):
         # the binding read the seed as an integer, and the provenance keeps it as one
         self._seed    = None if seed is None else operator.index(seed)
         self._markets = markets
-        self._record  = _Record(held, data, run, self._run.token)
+        self._record  = _Record(held, data, run, self._run.token, self._seed)
 
 
     def __repr__(self):
