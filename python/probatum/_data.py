@@ -901,7 +901,11 @@ class Data:
     def join(self, other):
         """This Data's instruments and ``other``'s on one clock, for a universe that
         holds both, such as a venue's spot and perpetual markets."""
-        other = Data(other)
+        try:
+            other = Data(other)
+        except (TypeError, ValueError) as error:
+            raise _renamed("other", error) from None
+
         if other.interval != self.interval:
             raise ValueError(f"other: {other.interval} bars beside {self.interval}; "
                              f"join bars on one interval")
@@ -1021,7 +1025,10 @@ class Data:
             values, known, shift = _stamped(values)
         else:
             if hasattr(when, "columns"):
-                when = Data(when)
+                try:
+                    when = Data(when)
+                except (TypeError, ValueError) as error:
+                    raise _renamed("when", error) from None
             if isinstance(when, Data):
                 known, shift = when.time, when._root.step
             else:
@@ -1170,7 +1177,10 @@ class Data:
         clock = np.array(time[::width])
 
         for k in range(width):
-            _check(names[k], clock, values[:, k])
+            try:
+                _check(names[k], clock, values[:, k])
+            except ValueError as error:
+                raise _renamed("path", error) from None
 
         off = np.flatnonzero((clock - clock[0]) % INTERVALS[record["interval"]])
         if len(off):
@@ -1584,6 +1594,13 @@ def _times(time, name="time"):
                     f"nanoseconds since 1970")
 
 
+def _renamed(name, error):
+    """``error``, a refusal of what a Data reads, again as a refusal of ``name``, the
+    argument the caller typed, in place of the reader's own ``data`` where it opens
+    with it."""
+    return type(error)(f"{name}: {str(error).removeprefix('data: ')}")
+
+
 def _columns(source):
     """A pandas frame's or series' columns, or those an Arrow stream or array exports:
     the times among them by name, a pandas datetime index as ``"the index"``, each as
@@ -1636,10 +1653,18 @@ def _stamped(source):
         raise ValueError(f"values: candles of {attrs.get('interval')!r}, an interval "
                          f"no Data runs on; give them on one of {', '.join(INTERVALS)}")
 
-    clocks, numbers, _ = _columns(source)
+    try:
+        clocks, numbers, _ = _columns(source)
+    except (TypeError, ValueError) as error:
+        raise _renamed("values", error) from None
+
     if hasattr(source, "columns") and {"open", "high", "low", "close"} <= set(numbers):
         # bars' times are their opens, and what a bar holds is known at its end
-        bars    = Data(source)
+        try:
+            bars = Data(source)
+        except (TypeError, ValueError) as error:
+            raise _renamed("values", error) from None
+
         printed = ~np.isnan(np.column_stack([np.asarray(numbers[name], dtype=np.float64)
                                              for name in _OHLCV])).all(axis=1)
         if not clocks:

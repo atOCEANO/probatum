@@ -215,6 +215,10 @@ def damaged(path):
                             lambda table: table.replace_schema_metadata(None)),
      "holds bars this version of probatum did not save; give a directory a Data was "
      "saved into"),
+    (lambda path: rewritten(path / "bars.arrow", lambda table: table.set_column(
+        table.schema.get_field_index("high"), "high",
+        pa.array(table["low"].to_numpy() - 1.0))),
+     "path: BTCUSDT's bar at 2024-01-01 00:00 is not a bar: open 100, high 98"),
 ])
 def test_a_load_it_cannot_make_is_refused(tmp_path, change, says):
     path = tmp_path / "pair"

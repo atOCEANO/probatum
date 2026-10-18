@@ -243,6 +243,36 @@ def test_an_array_is_read_through_any_interface_the_host_can_read():
              expected)
 
 
+@pytest.mark.parametrize("name", ["policy", "stop", "take_profit"])
+def test_a_daily_table_in_an_unknown_zone_is_refused_by_the_name_it_came_as(name):
+    pyarrow = pytest.importorskip("pyarrow")
+    daily   = probatum.Data(bars(freq="D"), symbol="BTCUSDT", market="linear")
+    table   = pyarrow.table({"time": pyarrow.array(daily.time, pyarrow.timestamp(
+        "ns", "Mars/Olympus")), "BTCUSDT": np.full(len(daily), 0.5)})
+
+    given = {"policy": table} if name == "policy" else {
+        "policy": weights(width=1),
+        name:     table,
+    }
+
+    with pytest.raises(ValueError, match=f"{name}: times in the zone 'Mars/Olympus'"):
+        probatum.backtest(data=daily, venue=VENUE, **given)
+
+
+@pytest.mark.parametrize("name", ["policy", "stop", "take_profit"])
+def test_an_array_the_reader_refuses_is_refused_by_the_name_it_came_as(name):
+    pyarrow = pytest.importorskip("pyarrow")
+    past    = OnlyAnArray(pyarrow.array([2**62], pyarrow.timestamp("s")))
+    given   = {"policy": past} if name == "policy" else {
+        "policy": weights(width=1),
+        name:     past,
+    }
+
+    with pytest.raises(ValueError,
+                       match=f"{name}: column \"\" holds 4611686018427387904 ticks"):
+        probatum.backtest(data=one(), venue=VENUE, **given)
+
+
 class Cross(probatum.Strategy):
 
     def next(self, state, engine):

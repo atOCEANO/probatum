@@ -172,6 +172,10 @@ def test_a_join_puts_two_markets_on_one_clock_under_their_market_names():
     with pytest.raises(ValueError, match=re.escape("other: 4h bars beside 1h")):
         spot.join(four)
 
+    with pytest.raises(ValueError, match=re.escape(
+            "other: instrument 0's bar at 2024-01-01 00:00 is not a bar")):
+        spot.join(frame().assign(high=50.0))
+
 
 def test_a_name_leaves_out_what_the_bars_do_not_say():
     plain = probatum.Data(frame(), symbol="BTCUSDT")

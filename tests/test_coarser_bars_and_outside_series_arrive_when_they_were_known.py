@@ -282,6 +282,12 @@ def monthly():
      "values: candles of '1M', an interval no Data runs on; give them on one of 1m"),
     (monthly(), None, ValueError,
      "values: candles of '1M', an interval no Data runs on"),
+    (pa.table({"time": pa.array([2**62], pa.timestamp("s")), "oi": [1.0]}), None,
+     ValueError, "values: column \"time\" holds 4611686018427387904 ticks"),
+    ([1.0], pa.table({"time": pa.array([2**62], pa.timestamp("s")), "oi": [1.0]}),
+     ValueError, "when: column \"time\" holds 4611686018427387904 ticks"),
+    (frame(n=3, freq="4h").assign(high=50.0), None, ValueError,
+     "values: instrument 0's bar at 2024-01-01 00:00 is not a bar"),
 ])
 def test_values_it_cannot_place_are_refused(values, when, error, says):
     hourly = probatum.Data(frame(n=12), symbol="BTCUSDT")

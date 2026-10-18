@@ -9,7 +9,7 @@ import types
 
 import numpy as np
 
-from ._data import DAY, Data, _columns, _dated, _when
+from ._data import DAY, Data, _columns, _dated, _renamed, _when
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
 from ._result import Result, _Record, _provenance
 from ._strategy import Strategy, _Run, _called, _play
@@ -245,7 +245,11 @@ def _host(value, name):
 
     if (hasattr(value, "__arrow_c_array__") and not hasattr(value, "__array__")
             and not _buffer(value)):
-        columns = arrow_columns(value)
+        try:
+            columns = arrow_columns(value)
+        except (TypeError, ValueError) as error:
+            raise _renamed(name, error) from None
+
         if len(columns) != 1:
             raise TypeError(f"{name}: an Arrow array of {len(columns)} columns; pass "
                             f"it as a table, or one column as an array")
@@ -321,8 +325,7 @@ def _table(name, given, data):
     try:
         clocks, numbers, others = _columns(given)
     except (TypeError, ValueError) as error:
-        said = str(error).removeprefix("data: ")
-        raise type(error)(f"{name}: {said}") from None
+        raise _renamed(name, error) from None
 
     numbers = {str(label): values for label, values in numbers.items()}
     others  = {str(label): held for label, held in others.items()}
@@ -342,7 +345,10 @@ def _table(name, given, data):
     times, zone = next(iter(clocks.values()))
     times = np.asarray(times, dtype=np.int64)
     if data._root.step >= DAY:
-        times = _dated(times, zone)
+        try:
+            times = _dated(times, zone)
+        except ValueError as error:
+            raise _renamed(name, error) from None
 
     for label in names:
         if label in others:
