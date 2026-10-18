@@ -45,6 +45,7 @@ fn pay(funding_paid: &mut Total, reporter: &mut Option<Reporter>, i: usize, paym
     funding_paid.add(payment);
     if let Some(reporter) = reporter.as_mut() {
         reporter.costs_mut().funding += payment;
+        reporter.flow(i, -payment);
         if let Some(trip) = reporter.trip_mut(i) {
             trip.funding += payment;
         }

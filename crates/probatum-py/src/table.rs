@@ -510,7 +510,7 @@ pub(crate) fn tables(
     let held = rows.len() * width;
     let mut bars = Vec::with_capacity(held);
     let mut times = Vec::with_capacity(held);
-    let mut fields: [Vec<f64>; 7] = std::array::from_fn(|_| Vec::with_capacity(held));
+    let mut fields: [Vec<f64>; 8] = std::array::from_fn(|_| Vec::with_capacity(held));
     for (row, legs) in rows.iter().zip(reporter.legs().chunks_exact(width)) {
         let (at, when) = (bar(row.tick), time(row.tick));
         for (i, &leg) in legs.iter().enumerate() {
@@ -525,12 +525,13 @@ pub(crate) fn tables(
                 leg.unrealized,
                 leg.weight,
                 leg.drift,
+                leg.pnl,
             ]) {
                 field.push(value);
             }
         }
     }
-    let [position, entry, mark, notional, unrealized, weight, drift] = fields;
+    let [position, entry, mark, notional, unrealized, weight, drift, pnl] = fields;
     let holdings = built(vec![
         Column::int("bar", bars),
         Column::time("time", times),
@@ -542,6 +543,7 @@ pub(crate) fn tables(
         Column::float("unrealized", unrealized),
         Column::float("weight", weight),
         Column::float("drift", drift),
+        Column::float("pnl", pnl),
     ]);
 
     let fills: Vec<_> = reporter

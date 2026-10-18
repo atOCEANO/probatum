@@ -1627,7 +1627,7 @@ fn fills_of<'py>(
     Ok(Some(list))
 }
 
-/// The ledger as columns, an instrument's seven as a value a bar, or for a `universe` as
+/// The ledger as columns, an instrument's eight as a value a bar, or for a `universe` as
 /// a row of one per instrument a bar, so code that reads an instrument's column of a
 /// universe reads one of a single instrument the same way. Each row is in the
 /// account's `units`, with its equity valued in dollars beside it.
@@ -1687,7 +1687,7 @@ fn ledger_of<'py>(
         .enumerate()
         .map(|(k, &leg)| units.leg(leg, close(rows[k / width].tick, k % width)))
         .collect();
-    let leg_columns: [(&str, LegColumn); 7] = [
+    let leg_columns: [(&str, LegColumn); 8] = [
         ("position", |leg| leg.position),
         ("entry", |leg| leg.entry),
         ("mark", |leg| leg.mark),
@@ -1695,6 +1695,7 @@ fn ledger_of<'py>(
         ("unrealized", |leg| leg.unrealized),
         ("weight", |leg| leg.weight),
         ("drift", |leg| leg.drift),
+        ("pnl", |leg| leg.pnl),
     ];
     for (name, get) in leg_columns {
         let values: Vec<f64> = legs.iter().map(get).collect();
@@ -2481,7 +2482,7 @@ impl Engine {
     /// wallet's cash, gross and net exposure, leverage, margin used and the
     /// maintenance requirement, what the bar cost in fees, funding, spread, slippage,
     /// impact, the liquidation charge and dust, each `(T,)`, and the position, its
-    /// entry, mark, notional, unrealized PnL, weight and drift, `(T,)` for one
+    /// entry, mark, notional, unrealized PnL, weight, drift and pnl, `(T,)` for one
     /// instrument and `(T, N)` for a universe (ADR 0022).
     fn ledger<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
         ledger_of(py, &self.inner, self.universe, self.units)

@@ -63,6 +63,7 @@ SHARED = [
     "a spot wallet a fill left a hair below zero set to zero",
     "a stop triggered",
     "a takeover",
+    "a takeover charge split by notional",
     "a taker's price held inside the bar",
     "a target",
     "a target leg skipped below the tolerance",

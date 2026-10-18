@@ -912,7 +912,7 @@ ACCOUNT_FIELDS = ("equity", "spot_cash", "margin_cash", "fees", "funding", "spre
                   "maintenance", "gross_exposure", "net_exposure", "leverage")
 LEG_FIELDS = (("position", "position"), ("entry", "entry"), ("mark", "mark"),
               ("notional", "notional"), ("unrealized", "upnl"), ("weight", "weight"),
-              ("drift", "drift"))
+              ("drift", "drift"), ("pnl", "pnl"))
 
 
 def ledger_difference(mine, theirs, end=None):

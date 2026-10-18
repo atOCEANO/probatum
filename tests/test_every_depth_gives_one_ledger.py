@@ -72,7 +72,7 @@ def records(engine):
 ACCOUNT = ("equity", "spot_cash", "margin_cash", "gross_exposure", "net_exposure",
            "leverage", "margin_used", "maintenance", "fees", "funding", "spread",
            "slippage", "impact", "liquidation", "dust", "equity_in_quote")
-LEGS = ("position", "entry", "mark", "notional", "unrealized", "weight", "drift")
+LEGS = ("position", "entry", "mark", "notional", "unrealized", "weight", "drift", "pnl")
 
 
 def rows_of(engine, names, start=0):

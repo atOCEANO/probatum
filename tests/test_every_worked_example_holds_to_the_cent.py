@@ -816,6 +816,49 @@ def test_ether_sold_at_its_high_marks_bitcoin_at_its_low_and_fits_3_94():
     assert sale["size"]  == pytest.approx(3.94, abs=0.005)
 
 
+def maintained_pair(row_two, **venue):
+    """A long of 1 BTC from 60,000 and of 20 ETH from 3,000 on 10,000 USDT of margin,
+    both at 20x, BTC keeping 0.5% maintenance and ETH 1%, with no fees, and then
+    ``row_two``."""
+    bars = [[flat(60_000.0), flat(3_000.0)], [flat(60_000.0), flat(3_000.0)], row_two]
+    return run(hourly(3), bars,
+               [Instrument("BTCUSDT", tiers=[(1e12, 20.0, 0.005, 0.0)]),
+                Instrument("ETHUSDT", tiers=[(1e12, 20.0, 0.01, 0.0)])],
+               Venue(balance=10_000.0, maker=0.0, taker=0.0, **venue),
+               script={0: [("buy", dict(instrument=0, size=1.0)),
+                           ("buy", dict(instrument=1, size=20.0))]})
+
+
+def test_a_takeover_gives_each_instrument_its_maintenance_of_the_831_234_left():
+    sim = maintained_pair([Bar(60_000.0, 60_000.0, 54_000.0, 54_000.0, 1_000.0),
+                           Bar(3_000.0, 3_000.0, 2_700.0, 2_700.0, 1_000.0)])
+
+    closes = [fill for fill in sim.fills if fill["reason"] == "liquidation"]
+    assert [fill["price"] for fill in closes] == pytest.approx([55_415.62, 2_770.78],
+                                                               abs=0.005)
+    assert sim.ledger[2]["liquidation"] == pytest.approx(831.234, abs=5e-4)
+
+    pnl = [row["pnl"] for row in sim.ledger[2]["instruments"]]
+    assert pnl      == pytest.approx([-4_861.461, -5_138.539], abs=5e-4)
+    assert sum(pnl) == pytest.approx(-10_000.0, abs=1e-6)
+
+
+def test_a_debit_at_the_closes_below_the_requirement_gives_each_its_share_of_484():
+    # the bars fall 7% and close at their lows, which the path never takes to the
+    # trigger, and 1% of funding at the closes takes equity from 1,600 to 484 against
+    # a requirement of 837
+    sim = maintained_pair([Bar(60_000.0, 60_000.0, 55_800.0, 55_800.0, 1_000.0),
+                           Bar(3_000.0, 3_000.0, 2_790.0, 2_790.0, 1_000.0)],
+                          funding=("every_bars", 2, 0.01))
+
+    assert sim.ledger[2]["funding"]     == pytest.approx(1_116.0)
+    assert sim.ledger[2]["liquidation"] == pytest.approx(484.0)
+
+    pnl = [row["pnl"] for row in sim.ledger[2]["instruments"]]
+    assert pnl == pytest.approx([-4_200.0 - 558.0 - 161.333, -4_200.0 - 558.0 - 322.667],
+                                abs=5e-4)
+
+
 def test_binance_tiers_ask_1_200_either_side_of_300_000():
     tiers = [(300_000.0, 125.0, 0.004, 0.0), (800_000.0, 100.0, 0.005, 300.0)]
     sim   = run(hourly(1), [[flat(60_000.0)]], [Instrument("BTCUSDT", tiers=tiers)])

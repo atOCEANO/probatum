@@ -517,9 +517,14 @@ def test_a_universe_with_an_instrument_nobody_trades_records_what_the_other_alon
 
     for name, column in alone["ledger"].items():
         mine = played["ledger"][name]
-        if name in ("position", "entry", "mark", "notional", "unrealized", "weight", "drift"):
+        if name in ("position", "entry", "mark", "notional", "unrealized", "weight", "drift",
+                    "pnl"):
             assert mine.shape == (3, 2)
+            if name == "pnl":
+                # the instrument nobody traded has made nothing on any row
+                assert not mine[:, 1].any()
             mine = mine[:, 0]
+
         np.testing.assert_array_equal(mine, column)
 
 

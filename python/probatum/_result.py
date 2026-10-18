@@ -34,7 +34,8 @@ SCHEMAS = {
     "holdings": [("bar", "int", False), ("time", "time", False),
                  ("instrument", "text", False)]
     + [(name, "float", True) for name in (
-        "position", "entry", "mark", "notional", "unrealized", "weight", "drift")],
+        "position", "entry", "mark", "notional", "unrealized", "weight", "drift",
+        "pnl")],
     "fills": [("bar", "int", False), ("time", "time", False),
               ("instrument", "text", False), ("order", "int", True),
               ("side", "text", False)]

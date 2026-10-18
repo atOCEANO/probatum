@@ -436,9 +436,14 @@ impl Engine {
             };
             let fee = size * sold * self.costs[i].fee_taker;
             let before = self.before_fill(i);
+            let wallet = self.account.margin_cash;
             self.account.apply_fill(i, &fill, fee);
             self.book_fill(i, size, sold, fee, before, FillReason::Liquidation, moment);
             if let Some(reporter) = self.reporter.as_mut() {
+                reporter.flow(i, self.account.margin_cash - wallet);
+                if self.account.perps_held() == 0 {
+                    reporter.set_closer(i);
+                }
                 // what the sale paid beyond its trigger price, each part in
                 // proportion where the bar held the price back
                 let paid = size * (sold - price).abs();
@@ -483,6 +488,8 @@ impl Engine {
         moment: Moment,
         maintained: bool,
     ) {
+        // each instrument closed, the size its legs closed and their notional there
+        let mut closed: Vec<(usize, f64, f64)> = Vec::new();
         for (k, &(i, q, price)) in closes.iter().enumerate() {
             // an instrument's last close takes what its position still holds, which
             // the closes of its other legs can leave a hair off their own size
@@ -511,9 +518,18 @@ impl Engine {
             };
             let fee = size * price * rate;
             let before = self.before_fill(i);
+            let wallet = self.account.margin_cash;
             self.account.apply_fill(i, &fill, fee);
             self.book_fill(i, size, price, fee, before, FillReason::Liquidation, moment);
             if let Some(reporter) = self.reporter.as_mut() {
+                match closed.iter_mut().find(|(j, ..)| *j == i) {
+                    Some((_, sum, notional)) => {
+                        *sum += size;
+                        *notional += size * price;
+                    }
+                    None => closed.push((i, size, size * price)),
+                }
+                reporter.flow(i, self.account.margin_cash - wallet);
                 reporter.costs_mut().fees += fee;
                 reporter.record_fill(FillRecord {
                     tick: self.tick,
@@ -535,9 +551,28 @@ impl Engine {
             }
         }
         // whatever the wallet still holds once the positions are closed, taken by
-        // the venue or absorbed by it, is the liquidation charge (ADR 0018)
-        if let Some(reporter) = self.reporter.as_mut() {
-            reporter.costs_mut().liquidation += self.account.margin_cash;
+        // the venue or absorbed by it, is the liquidation charge (ADR 0018), given to
+        // the instruments closed in proportion to each one's maintenance at the prices
+        // its legs closed at, or to their notional there where none keeps any
+        if self.reporter.is_some() {
+            let charge = self.account.margin_cash;
+            let mut shares: Vec<f64> = closed
+                .iter()
+                .map(|&(i, size, notional)| self.maintenance_of(i, size, notional))
+                .collect();
+            if shares.iter().sum::<f64>() <= 0.0 {
+                shares = closed.iter().map(|&(_, _, notional)| notional).collect();
+            }
+            let total: f64 = shares.iter().sum();
+            if let Some(reporter) = self.reporter.as_mut() {
+                reporter.costs_mut().liquidation += charge;
+                for (&(i, ..), share) in closed.iter().zip(shares) {
+                    reporter.flow(i, -charge * share / total);
+                }
+                if let Some(&(last, ..)) = closed.last() {
+                    reporter.set_closer(last);
+                }
+            }
         }
         // The bankruptcy price leaves nothing in exact arithmetic and a hair either
         // side of it in floating point, and a hair above zero is equity the cap
@@ -668,6 +703,174 @@ mod tests {
     use probatum_core::{
         Candle, Market, OrderType, Side, Tier, TierBasis, Tiers, TimeInForce, Wallet,
     };
+
+    /// The Specification's two-leg account: 10,000 of margin behind a long of 1 BTC
+    /// from 60,000 and of 20 ETH from 3,000, both at 20x, BTC keeping 0.5% maintenance
+    /// and ETH 1%, stepped through the bars in `last` under `config`, and each leg's
+    /// pnl on that row with the liquidation charge.
+    fn maintained_pair(last: [Candle; 2], config: EngineConfig) -> (Vec<f64>, f64) {
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = [
+            [flat(60_000.0), flat(3_000.0)],
+            [flat(60_000.0), flat(3_000.0)],
+            last,
+        ];
+        let instrument = |rate| {
+            let tier = Tier {
+                up_to: 1e12,
+                leverage: 20.0,
+                rate,
+                amount: 0.0,
+            };
+            Instrument {
+                market: Some(Market::Perp),
+                tiers: Tiers::new(TierBasis::Notional, vec![tier]).expect("a table"),
+                ..Instrument::default()
+            }
+        };
+        let bars = Candles::universe(rows.concat(), 2, None)
+            .with_instruments(vec![instrument(0.005), instrument(0.01)]);
+        let config = EngineConfig {
+            quote: 10_000.0,
+            report: true,
+            ..config
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        let ioc = TimeInForce::Ioc;
+        e.order_on(
+            1,
+            Side::Buy,
+            20.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let pnl = reporter.legs()[4..].iter().map(|leg| leg.pnl).collect();
+        (pnl, reporter.ledger()[2].costs.liquidation)
+    }
+
+    #[test]
+    fn a_takeover_gives_each_instrument_its_maintenance_of_the_charge() {
+        // both bars falling 10%: the trigger is 9,100 / 11,910 of the way down, and the
+        // 831.234 the wallet holds there goes 277.078 to BTC and 554.156 to ETH, whose
+        // pnl then sum to the account's -10,000
+        let (pnl, charge) = maintained_pair(
+            [
+                ohlc(60_000.0, 60_000.0, 54_000.0, 54_000.0, 1e6),
+                ohlc(3_000.0, 3_000.0, 2_700.0, 2_700.0, 1e6),
+            ],
+            perp_cfg(),
+        );
+        assert!((charge - 831.234).abs() < 5e-4, "charged {charge}");
+        let made = [-4_861.461, -5_138.539];
+        assert!(
+            pnl.iter().zip(made).all(|(a, b)| (a - b).abs() < 5e-4),
+            "{pnl:?}"
+        );
+        assert!((pnl[0] + pnl[1] + 10_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_debit_at_the_closes_below_the_requirement_gives_each_its_share_of_484() {
+        // both bars falling 7% to their closes, which the path never takes to the
+        // trigger, and 1% of funding there taking equity from 1,600 to 484 against a
+        // requirement of 837: the 484 goes as each leg's maintenance, 279 and 558, so
+        // 161.333 to BTC and 322.667 to ETH
+        let (pnl, charge) = maintained_pair(
+            [
+                ohlc(60_000.0, 60_000.0, 55_800.0, 55_800.0, 1e6),
+                ohlc(3_000.0, 3_000.0, 2_790.0, 2_790.0, 1e6),
+            ],
+            EngineConfig {
+                funding_rate: 0.01,
+                funding_interval: 2,
+                ..perp_cfg()
+            },
+        );
+        assert!((charge - 484.0).abs() < 1e-6, "charged {charge}");
+        let made = [-4_200.0 - 558.0 - 161.333, -4_200.0 - 558.0 - 322.667];
+        assert!(
+            pnl.iter().zip(made).all(|(a, b)| (a - b).abs() < 5e-4),
+            "{pnl:?}"
+        );
+        assert!((pnl[0] + pnl[1] + 10_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_takeover_gives_a_leg_grown_on_its_bar_the_maintenance_of_all_it_held() {
+        // the two-leg account with BTC on a quantity table, 0.5% to 1.2 BTC and 1% past
+        // it, and 0.5 BTC more bought at the open of the bar both fall 10% on: the 1.5
+        // BTC sit in the 1% tier, so equity of 10,000 - 15,000s meets the requirement
+        // of 1,500 - 150s at s = 8,500 / 14,850, and the 1,414.141 the wallet holds there
+        // goes 848.485 to BTC, its two legs counted as the one position, and 565.657 to
+        // ETH, whose pnl are then -6,000 and -4,000
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = [
+            [flat(60_000.0), flat(3_000.0)],
+            [flat(60_000.0), flat(3_000.0)],
+            [
+                ohlc(60_000.0, 60_000.0, 54_000.0, 54_000.0, 1e6),
+                ohlc(3_000.0, 3_000.0, 2_700.0, 2_700.0, 1e6),
+            ],
+        ];
+        let tier = |up_to, rate| Tier {
+            up_to,
+            leverage: 20.0,
+            rate,
+            amount: 0.0,
+        };
+        let perp = |basis, rows| Instrument {
+            market: Some(Market::Perp),
+            tiers: Tiers::new(basis, rows).expect("a table"),
+            ..Instrument::default()
+        };
+        let bitcoin = perp(
+            TierBasis::Quantity,
+            vec![tier(1.2, 0.005), tier(1e12, 0.01)],
+        );
+        let ether = perp(TierBasis::Notional, vec![tier(1e12, 0.01)]);
+        let bars = Candles::universe(rows.concat(), 2, None).with_instruments(vec![bitcoin, ether]);
+        let config = EngineConfig {
+            quote: 10_000.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(1.0);
+        let ioc = TimeInForce::Ioc;
+        e.order_on(
+            1,
+            Side::Buy,
+            20.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            ioc,
+        );
+        e.step();
+        e.market_buy(0.5);
+        e.step();
+        let reporter = e.reporter().expect("reporting is on");
+        let charge = reporter.ledger()[2].costs.liquidation;
+        assert!((charge - 1_414.141).abs() < 5e-4, "charged {charge}");
+        let pnl: Vec<f64> = reporter.legs()[4..].iter().map(|leg| leg.pnl).collect();
+        let made = [-6_000.0, -4_000.0];
+        assert!(
+            pnl.iter().zip(made).all(|(a, b)| (a - b).abs() < 5e-4),
+            "{pnl:?}"
+        );
+    }
 
     #[test]
     fn leveraged_long_is_liquidated_on_a_crashing_bar() {
@@ -2544,6 +2747,11 @@ mod tests {
             let booked = reporter.ledger()[2].costs.liquidation;
             assert!((booked - charge).abs() < 0.005, "charged {booked}");
             assert_eq!(last.position, 0.0);
+            // the long has made what the account did, its sale on the book or its
+            // takeover the close that left no perpetual held
+            let made = reporter.legs()[2].pnl - (last.equity - 10_015.0);
+            assert!(made.abs() < 1e-6, "{made} off on a low of {low}");
+            assert_eq!(reporter.closer(), Some(0));
         }
     }
 

@@ -443,6 +443,10 @@ pub struct Leg {
     /// The weight the latest target asked of the instrument less `weight`, NaN where
     /// no target has named it.
     pub drift: f64,
+    /// What the instrument has made since the run's first row: the cash its fills,
+    /// its funding and the charges given to it moved in the wallet it settles in, and
+    /// its position's value at the close, nothing while it is flat.
+    pub pnl: f64,
 }
 
 /// Side buffers for the equity curve, the ledger, the round trips and the logs.
@@ -463,6 +467,12 @@ pub struct Reporter {
     costs: BarCosts,
     /// Steps recorded while holding a nonzero position, for the exposure stat.
     in_position_steps: usize,
+    /// What each instrument's fills, funding and the charges given to it have moved in
+    /// the wallet it settles in, grown to the highest instrument that moved any.
+    flows: Vec<f64>,
+    /// The instrument whose fill or dust sweep last left no perpetual held, which a
+    /// margin wallet's deficit set to zero is given to.
+    closer: Option<usize>,
 }
 
 impl Reporter {
@@ -495,6 +505,31 @@ impl Reporter {
     /// Append one instrument's leg of the row just recorded.
     pub fn record_leg(&mut self, leg: Leg) {
         self.legs.push(leg);
+    }
+
+    /// Add `cash` to what instrument `i` has moved in the wallet it settles in.
+    pub fn flow(&mut self, i: usize, cash: f64) {
+        if self.flows.len() <= i {
+            self.flows.resize(i + 1, 0.0);
+        }
+        self.flows[i] += cash;
+    }
+
+    /// What instrument `i` has moved in the wallet it settles in since the run's first
+    /// row.
+    pub fn flow_of(&self, i: usize) -> f64 {
+        self.flows.get(i).copied().unwrap_or(0.0)
+    }
+
+    /// Record instrument `i` as the one whose fill or dust sweep last left no
+    /// perpetual held.
+    pub fn set_closer(&mut self, i: usize) {
+        self.closer = Some(i);
+    }
+
+    /// The instrument whose fill or dust sweep last left no perpetual held.
+    pub fn closer(&self) -> Option<usize> {
+        self.closer
     }
 
     /// Instrument `i`'s round trip still open, to grow, shrink or charge.

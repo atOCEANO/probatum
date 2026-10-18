@@ -100,6 +100,7 @@ impl Engine {
         // what the bar could not hold of the bound's lift is paid into the margin
         // wallet, and the close then realizes against it
         let cash = self.account.margin_cash;
+        let spot = self.account.spot_cash;
         self.account.margin_cash += credit;
         self.account.apply_fill(i, &fill, fee);
         // a close that leaves no perp held where the margin ran out leaves the wallet
@@ -200,6 +201,16 @@ impl Engine {
                 taker: fill.is_taker,
                 reason,
             });
+            // what the fill moved in the wallet it settles in, the bound's payment and
+            // a hair set to zero with it, is its instrument's
+            if perp {
+                reporter.flow(i, self.account.margin_cash - cash);
+                if self.account.perps_held() == 0 {
+                    reporter.set_closer(i);
+                }
+            } else {
+                reporter.flow(i, self.account.spot_cash - spot);
+            }
         }
         if applied + CLOSE_EPS < requested {
             self.log_event(
@@ -364,6 +375,9 @@ impl Engine {
             if let Some(reporter) = self.reporter.as_mut() {
                 reporter.costs_mut().dust += value;
                 reporter.close_trip(i, self.tick, FillReason::Dust);
+                if self.account.markets[i] == Market::Perp && self.account.perps_held() == 0 {
+                    reporter.set_closer(i);
+                }
             }
             self.disarm(i, None);
         }
@@ -1137,6 +1151,9 @@ mod tests {
         assert_eq!((leg.position, leg.entry, leg.mark), (2.0, 200.0, 250.0));
         assert_eq!((leg.notional, leg.unrealized), (500.0, 100.0));
         assert!((leg.weight - 500.0 / row.equity).abs() < 1e-12);
+        // what it made: the 400.4 of cash the buy cost against the 500 the holding is
+        // worth at the close
+        assert!((leg.pnl - 99.6).abs() < 1e-9, "made {}", leg.pnl);
         assert_eq!(ledger[2].costs, BarCosts::default());
     }
 
@@ -1389,6 +1406,124 @@ mod tests {
             assert!((dust - 0.04).abs() < 1e-12, "{dust}");
             assert_eq!(e.round_trips()[0].reason, Some(FillReason::Dust));
         }
+    }
+
+    #[test]
+    fn a_deficit_goes_to_the_perpetual_whose_fill_left_none_held() {
+        // two perpetuals at 100 on 6 of margin, no cap and a taker fee of 1%: buys of 1
+        // and 3 pay 4 and leave 2, the first's sale pays 1, and the second's, which the
+        // margin bound stops at its entry, pays 3 and leaves -2 with nothing held; rule
+        // 6 sets it to zero and gives it to the second, so the two have made -2 and -4
+        let at = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let perp = Instrument {
+            market: Some(Market::Perp),
+            ..Instrument::default()
+        };
+        let bars = Candles::universe(vec![at; 6], 2, None).with_instruments(vec![perp; 2]);
+        let config = EngineConfig {
+            quote: 6.0,
+            fee_taker: 0.01,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let (market, ioc) = (OrderType::Market, TimeInForce::Ioc);
+        for side in [Side::Buy, Side::Sell] {
+            for (i, size) in [(0, 1.0), (1, 3.0)] {
+                e.order_on(i, side, size, market, None, None, false, false, ioc);
+            }
+            e.step();
+        }
+        let reporter = e.reporter().expect("reporting is on");
+        assert_eq!(reporter.ledger()[2].costs.liquidation, -2.0);
+        let made: Vec<f64> = reporter.legs()[4..].iter().map(|leg| leg.pnl).collect();
+        assert_eq!(made, [-2.0, -4.0]);
+    }
+
+    #[test]
+    fn a_deficit_set_to_zero_goes_to_whichever_perpetual_left_none_held() {
+        // 5 of margin behind two perpetuals flat at 100, a taker fee of 1% and no cap: a
+        // buy of 3 on either pays 3 and its sale at its entry 3 more, so the wallet's -1
+        // is set to zero and given to that one, which has then made the account's -5,
+        // and the other nothing
+        let at = ohlc(100.0, 100.0, 100.0, 100.0, 1e6);
+        let perp = Instrument {
+            market: Some(Market::Perp),
+            ..Instrument::default()
+        };
+        let config = EngineConfig {
+            quote: 5.0,
+            fee_taker: 0.01,
+            report: true,
+            ..perp_cfg()
+        };
+        for traded in 0..2 {
+            let bars = Candles::universe(vec![at; 6], 2, None)
+                .with_instruments(vec![perp.clone(), perp.clone()]);
+            let mut e = Engine::new(bars, config);
+            e.reset();
+            for side in [Side::Buy, Side::Sell] {
+                let (market, ioc) = (OrderType::Market, TimeInForce::Ioc);
+                e.order_on(traded, side, 3.0, market, None, None, false, false, ioc);
+                e.step();
+            }
+            let reporter = e.reporter().expect("reporting is on");
+            assert_eq!(reporter.ledger()[2].costs.liquidation, -1.0);
+            let made: Vec<f64> = reporter.legs()[4..].iter().map(|leg| leg.pnl).collect();
+            let mut alone = [0.0; 2];
+            alone[traded] = -5.0;
+            assert_eq!(made, alone, "instrument {traded} traded");
+        }
+    }
+
+    #[test]
+    fn a_deficit_after_a_sweep_goes_to_the_perpetual_it_swept_and_not_to_a_spot_after_it() {
+        // a perpetual long of 0.0004 from 100 and a spot holding of 0.0004 at 50, each
+        // under a lot of 0.001, beside a margin wallet of -0.01 that the long's 0.02 at
+        // 150 keeps clear of its trigger: the close sweeps the long, which leaves no
+        // perpetual held, then the holding, and the next bar's rule 6 gives the 0.01 to
+        // the perpetual
+        let sizes = Sizes {
+            lot: 0.001,
+            ..Sizes::default()
+        };
+        let instrument = |market| Instrument {
+            market: Some(market),
+            sizes,
+            ..Instrument::default()
+        };
+        let row = [
+            ohlc(150.0, 150.0, 150.0, 150.0, 1e6),
+            ohlc(50.0, 50.0, 50.0, 50.0, 1e6),
+        ];
+        let bars = Candles::universe(row.repeat(3), 2, None)
+            .with_instruments(vec![instrument(Market::Perp), instrument(Market::Spot)]);
+        let config = EngineConfig {
+            sizes: true,
+            report: true,
+            quote: 0.0,
+            idle_cash: 1_000.0,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        for (i, price) in [(0, 100.0), (1, 50.0)] {
+            let fill = Fill {
+                side: Side::Buy,
+                size: Qty(0.0004),
+                price: Price(price),
+                is_taker: true,
+            };
+            e.account.apply_fill(i, &fill, 0.0);
+        }
+        e.account.margin_cash = -0.01;
+        e.step(); // both swept at the close
+        e.step(); // the wallet set to zero
+        let reporter = e.reporter().expect("reporting is on");
+        assert_eq!(reporter.ledger()[2].costs.liquidation, -0.01);
+        let made: Vec<f64> = reporter.legs()[4..].iter().map(|leg| leg.pnl).collect();
+        assert_eq!(made, [0.01, 0.0]);
     }
 
     #[test]

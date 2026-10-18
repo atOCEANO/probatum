@@ -95,6 +95,7 @@ RULES = [
     "a stop triggered",
     "a take-profit cancelled as it armed against the account's own",
     "a takeover",
+    "a takeover charge split by notional",
     "a taker's price held inside the bar",
     "a target",
     "a target in quantities",

@@ -467,7 +467,8 @@ class Trip:
 MUTABLE = ("position", "entry", "spot_cash", "margin_cash", "trip", "trips",
            "pending", "slots", "orders", "fills", "events", "costs", "budget_left",
            "legs", "next_id", "target_legs", "liquidations", "reached", "first",
-           "start", "inside", "entered", "reach", "clipped")
+           "start", "inside", "entered", "reach", "clipped", "charged", "made",
+           "closer")
 
 
 class Simulator:
@@ -542,16 +543,24 @@ class Simulator:
         self.wanted          = [None] * n
         self.asked_before    = list(self.asked)
         self.wanted_before   = list(self.wanted)
-        self.target_transfer = None                   # where this decision's shortfall was queued
-        self.paid_in         = 0.0                    # what the last bound paid into the wallet
-        self.reach           = 0.0                    # what the bar's perpetual fills put at stake
+        self.target_transfer = None    # where this decision's shortfall was queued
+        self.paid_in         = 0.0     # what the last bound paid into the wallet
+        self.reach           = 0.0     # what the bar's perpetual fills put at stake
         self.budget_left     = {}
         self.costs           = self.no_costs()
-        self.clipped         = {}
-        self.legs            = {}
-        self.liquidations    = 0
-        self.reached         = collections.Counter()  # how often each rule applied
-        self.first           = {}                     # and the bar it first applied on
+
+        # What a run records: each instrument's share of the bar's costs, what it has
+        # made since the first row, and the instrument whose fill or sweep last left
+        # no perpetual held, which a deficit set to zero is given to
+        self.charged      = [0.0] * n
+        self.made         = [0.0] * n
+        self.closer       = None
+        self.fills_before = 0
+        self.clipped      = {}
+        self.legs         = {}
+        self.liquidations = 0
+        self.reached      = collections.Counter()  # how often each rule applied
+        self.first        = {}                     # and the bar it first applied on
 
         # an account opened at row `start` of the series, as an env reset there is,
         # knowing every row up to it
@@ -838,6 +847,7 @@ class Simulator:
                 position=q, entry=self.entry[i], mark=mark, notional=abs(exposure),
                 upnl=inst.profit(q, self.entry[i], mark) if held else 0.0,
                 weight=weight, drift=math.nan if asked is None else asked - weight,
+                pnl=self.made[i],
             ))
 
         # and its leverage, gross exposure over equity, nothing once equity is gone
@@ -1499,9 +1509,11 @@ class Simulator:
             return False
 
         self.t += 1
-        t            = self.t
-        self.costs   = self.no_costs()
-        self.clipped = {}
+        t                 = self.t
+        self.costs        = self.no_costs()
+        self.charged      = [0.0] * len(self.instruments)
+        self.fills_before = len(self.fills)
+        self.clipped      = {}
 
         # Fills, The liquidity budget: what each instrument's fills may take this bar
         self.budget_left = {}
@@ -1535,8 +1547,32 @@ class Simulator:
         self.see_row(t)                                             # 9
 
         self.sweep_dust()
+        self.fold_pnl(t)
         self.ledger.append(self.row(t, self.costs))
         return True
+
+
+    def charge(self, name, i, amount):
+        """What a run records: `amount` of the bar's cost `name`, instrument `i`'s."""
+        self.costs[name] += amount
+        self.charged[i] += amount
+
+
+    def fold_pnl(self, t):
+        """What a run records: each instrument's pnl, the ledger identity split by
+        instrument, its price PnL from its references and marks less its share of
+        the bar's costs."""
+        before = self.ledger[-1]["instruments"]
+        fills  = self.fills[self.fills_before:]
+
+        for i, inst in enumerate(self.instruments):
+            mark  = self.mark[i]
+            moved = inst.profit(before[i]["position"], before[i]["mark"], mark)
+            for fill in fills:
+                if fill["instrument"] == i:
+                    signed = fill["size"] if fill["side"] == "buy" else -fill["size"]
+                    moved += inst.profit(signed, fill["reference"], mark)
+            self.made[i] += moved - self.charged[i]
 
 
     def snapshot(self):
@@ -1690,7 +1726,7 @@ class Simulator:
 
     def pay_funding(self, i, charge):
         self.margin_cash -= charge
-        self.costs["funding"] += charge
+        self.charge("funding", i, charge)
         if self.trip[i] is not None:
             self.trip[i].funding += charge
 
@@ -2102,7 +2138,7 @@ class Simulator:
         if not held:
             if self.margin_cash < 0.0:
                 self.hit("a wallet that fees left below zero set to zero")
-                self.costs["liquidation"] += self.margin_cash
+                self.charge("liquidation", self.closer, self.margin_cash)
                 self.margin_cash = 0.0
             return
 
@@ -2227,6 +2263,7 @@ class Simulator:
             self.hit("book then backstop falling back to takeover")
 
         self.hit("a takeover")
+        closed = {}
         for k, (i, q, price) in enumerate(closes):
             # an instrument's last close takes what its position still holds, which
             # the closes of its other legs can leave a hair off their own size
@@ -2238,10 +2275,24 @@ class Simulator:
             rate = 0.0 if maintained else self.closing_fee(i, False)
             self.apply(i, "sell" if q > 0.0 else "buy", abs(q), price, rate, False,
                        None, "liquidation", reference=price, moment=moment)
+            size, notional = closed.get(i, (0.0, 0.0))
+            closed[i] = (size + abs(q),
+                         notional + abs(self.instruments[i].notional(abs(q), price)))
 
         # whatever the margin wallet still holds is the liquidation charge, and the
-        # wallet ends at exactly zero
-        self.costs["liquidation"] += self.margin_cash
+        # wallet ends at exactly zero; What a run records: the charge is given to the
+        # instruments closed, in proportion to each one's maintenance at the prices
+        # its legs closed at, or to their notional there where none keeps any
+        shares = {i: self.maintenance_of(i, size, notional)
+                  for i, (size, notional) in closed.items()}
+        if sum(shares.values()) <= 0.0:
+            self.hit("a takeover charge split by notional")
+            shares = {i: notional for i, (_, notional) in closed.items()}
+
+        total = sum(shares.values())
+        for i, share in shares.items():
+            self.charge("liquidation", i, self.margin_cash * share / total)
+
         self.margin_cash = 0.0
         self.after_liquidation()
 
@@ -2392,7 +2443,7 @@ class Simulator:
         for name in ("spread", "slippage", "impact"):
             if costs[name] > 0.0:
                 self.hit(self.paid(name))
-            self.costs[name] += paid * costs[name] / computed
+            self.charge(name, i, paid * costs[name] / computed)
 
 
     def paid(self, name):
@@ -3127,7 +3178,7 @@ class Simulator:
 
         self.paid_in = credit
         self.margin_cash += credit
-        self.costs["liquidation"] -= abs(inst.profit(size, price, lifted)) + credit
+        self.charge("liquidation", i, -(abs(inst.profit(size, price, lifted)) + credit))
 
         # The fill log and the order log: the fill log keeps the lift and what was paid
         # in apart from the bar's hold
@@ -3152,7 +3203,7 @@ class Simulator:
         if abs(self.margin_cash) <= 1e-12 * self.reach:
             if self.margin_cash != 0.0:
                 self.hit("a wallet a fill left within rounding of zero set to zero")
-            self.costs["liquidation"] += self.margin_cash
+            self.charge("liquidation", i, self.margin_cash)
             self.margin_cash = 0.0
 
 
@@ -3172,10 +3223,11 @@ class Simulator:
                 value = inst.notional(q, self.mark[i])
             else:
                 value = inst.profit(q, self.entry[i], self.mark[i])
+            self.charge("dust", i, value)
 
-            self.costs["dust"] += value
             self.position[i], self.entry[i] = 0.0, 0.0
-
+            if inst.kind != "spot" and all(self.position[j] == 0.0 for j in self.perps()):
+                self.closer = i
             # Order types: a bracket goes with the position it armed on
             self.disarm(i, None)
 
@@ -3200,7 +3252,7 @@ class Simulator:
         own = inst.taker if taker or reason == "liquidation" else inst.maker
         if fee != 0.0 and rate == own:
             self.hit("a fee at its instrument's own rate")
-        self.costs["fees"] += fee
+        self.charge("fees", i, fee)
 
         signed   = size if side == "buy" else -size
         before   = self.position[i]
@@ -3218,7 +3270,7 @@ class Simulator:
             # Wallets: a hair below zero that floating point leaves is set to zero
             if -1e-8 * abs(inst.notional(size, price)) <= self.spot_cash < 0.0:
                 self.hit("a spot wallet a fill left a hair below zero set to zero")
-                self.costs["dust"] += self.spot_cash
+                self.charge("dust", i, self.spot_cash)
                 self.spot_cash = 0.0
         else:
             self.margin_cash -= fee
@@ -3290,6 +3342,9 @@ class Simulator:
                 self.entered[i] = (reference, inside)
 
         self.position[i] = after
+        if inst.kind != "spot" and all(self.position[j] == 0.0 for j in self.perps()):
+            self.closer = i
+
         self.fills.append(dict(
             time=self.times[t], bar=t, instrument=i,
             order=None if order is None else order["id"], side=side, size=size,

@@ -720,7 +720,7 @@ When the `Backtester` is given a pandas DataFrame or parquet input with a dateti
 
 ### The ledger
 
-Each column of `ledger()` holds one value per bar, the first for the opening balance, so no column is one shorter than the data, and a universe's columns from `position` to `drift` hold a row of `N` per bar ([ADR 0022](Decisions.md)):
+Each column of `ledger()` holds one value per bar, the first for the opening balance, so no column is one shorter than the data, and a universe's columns from `position` to `pnl` hold a row of `N` per bar ([ADR 0022](Decisions.md)):
 
 | Column | Meaning |
 | :--- | :--- |
@@ -736,6 +736,7 @@ Each column of `ledger()` holds one value per bar, the first for the opening bal
 | `dust` | The value of positions below half a lot, zeroed at the close where sizes are on, less the hair below zero a spot fill's rounding can leave in the spot wallet, which is set back to zero. |
 | `position`, `entry`, `mark`, `notional`, `unrealized`, `weight` | The position, its average entry, the close it is marked at, its notional, its unrealized PnL, and its signed notional over equity. |
 | `drift` | The weight the latest `target` asked of the instrument less `weight`, from the bar after that target was decided; NaN where no target has named it. |
+| `pnl` | What the instrument has made since the first row: the cash its fills, its funding and the charges given to it moved in the wallet it settles in, plus its position's value at the close, nothing while it is flat; the instruments' sum to equity less the opening equity ([Specification](Specification.md#the-ledger)). |
 
 Each cost is computed on its own, so on every bar the change in equity is the price PnL, measured from each fill's reference and then from the bar's close, less every cost.
 
@@ -792,7 +793,7 @@ print(result.stats["total_return_pct"], result.bust, result.liquidations)
 | Table | A row per | Columns |
 | :--- | :--- | :--- |
 | `ledger` | bar, from the opening balance | `bar`, `time` and the account's columns of [the ledger](#the-ledger) |
-| `holdings` | bar and instrument, a bar's in the Data's order | `bar`, `time`, `instrument`, `position`, `entry`, `mark`, `notional`, `unrealized`, `weight`, `drift` |
+| `holdings` | bar and instrument, a bar's in the Data's order | `bar`, `time`, `instrument`, `position`, `entry`, `mark`, `notional`, `unrealized`, `weight`, `drift`, `pnl` |
 | `fills` | fill, in the order they landed | the [fill log](#fills)'s fields |
 | `orders` | event in an order's life | the [order log](#the-order-log)'s fields |
 | `trades` | round trip, the closed in the order they closed, then those still open | the [round trips](#trades)' fields |

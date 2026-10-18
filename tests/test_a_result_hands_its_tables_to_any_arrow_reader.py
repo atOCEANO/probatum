@@ -637,3 +637,23 @@ assert frame["close_bar"].isna().sum() == frame["open"].sum()
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
 
     assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_what_each_instrument_made_adds_up_to_the_change_in_equity(seed):
+    # on every row, and an instrument that ends flat on a run with no forced close or
+    # dust has made what its round trips did, its funding included
+    _, engine, _ = busy(seed)
+    ledger = engine.ledger()
+    pnl, equity = ledger["pnl"], ledger["equity"]
+    scale = 1e-9 * (1.0 + np.abs(equity).max())
+
+    np.testing.assert_allclose(pnl.sum(axis=1), equity - equity[0], rtol=0.0, atol=scale)
+
+    if ledger["liquidation"].any() or ledger["dust"].any():
+        return
+
+    for k in range(pnl.shape[1]):
+        if ledger["position"][-1, k] == 0.0:
+            made = sum(trip["pnl"] for trip in engine.trades() if trip["instrument"] == k)
+            assert made == pytest.approx(pnl[-1, k], abs=scale)

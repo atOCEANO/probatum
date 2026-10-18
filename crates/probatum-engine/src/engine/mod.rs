@@ -500,18 +500,26 @@ impl Engine {
                     wanted if equity > 0.0 => wanted * mark / equity,
                     _ => 0.0,
                 };
+                let unrealized = if qty == 0.0 {
+                    0.0
+                } else {
+                    position.unrealized(Price(mark))
+                };
+                // the position's value at the close: the holding on spot, its
+                // unrealized PnL on a perpetual
+                let value = match self.account.markets[i] {
+                    Market::Spot => signed,
+                    Market::Perp => unrealized,
+                };
                 reporter.record_leg(Leg {
                     position: qty,
                     entry: position.avg_entry.get(),
                     mark,
                     notional: signed.abs(),
-                    unrealized: if qty == 0.0 {
-                        0.0
-                    } else {
-                        position.unrealized(Price(mark))
-                    },
+                    unrealized,
                     weight,
                     drift: asked - weight,
+                    pnl: reporter.flow_of(i) + value,
                 });
             }
         }
@@ -740,6 +748,11 @@ impl Engine {
             if self.account.margin_cash < 0.0 && self.account.perps_held() == 0 {
                 if let Some(reporter) = self.reporter.as_mut() {
                     reporter.costs_mut().liquidation += self.account.margin_cash;
+                    // the deficit is given to the instrument whose fill or sweep left
+                    // the wallet with no perpetual held
+                    if let Some(closer) = reporter.closer() {
+                        reporter.flow(closer, -self.account.margin_cash);
+                    }
                 }
                 self.account.margin_cash = 0.0;
             }
