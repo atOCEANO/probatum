@@ -27,7 +27,7 @@
 
 ## Specification
 
-This page is every rule the engine applies to money: when an order fills and at what price, what each fill costs, when funding is charged, how margin is measured, where an account is liquidated, and what a run records. Each rule is stated as an equation where it has one and followed by a worked example, and every worked example is a test, so a number on this page is a number the engine produces. Why each rule is the way it is lives in [Decisions](Decisions.md).
+This page is every rule the engine applies to money: when an order fills and at what price, what each fill costs, when funding is charged, how margin is measured, where an account is liquidated, what a run records and how a search scores and checks its trials. Each rule is stated as an equation where it has one and followed by a worked example, and every worked example is a test, so a number on this page is a number the engine produces. Why each rule is the way it is lives in [Decisions](Decisions.md).
 
 The contracts are spot, linear perpetuals margined in the quote currency, and inverse perpetuals margined in their coin. Products are written with `*`, and every price is in the quote currency unless a rule says otherwise.
 
@@ -70,7 +70,7 @@ Inverse perpetuals count in their own quantities ([Inverse contracts](#inverse-c
 
 ### Annualisation
 
-`periods_per_year = (T - 1) * 365 / D`, where `T` is the number of rows on the clock and `D` the days from the first row's open to the last row's. It is taken once over the whole Data, so every slice of it annualises alike, and a Data needs two rows to have one.
+`periods_per_year = (T - 1) * 365 / D`, where `T` is the number of rows on the clock and `D` the days from the first row's open to the last row's. It is taken once over the whole Data, so every slice of it annualises alike, and a Data needs two rows to have one. A search's in-sample bars are a Data of their own, which annualises over its own rows ([Search](#search)), and its held-out run over the whole Data's.
 
 **Worked example.** Hourly bars from 00:00 on 1 January of a year that is not a leap year to 00:00 on 1 January of the next are 8,761 rows over 365 days: `8,760 * 365 / 365 = 8,760`. A stock's 253 daily bars from one 2 January to the next annualise at 252.
 
@@ -199,7 +199,7 @@ inverse, V dollars  wanted = weight * equity_t * close_t / V            contract
 
 ### A strategy
 
-A Strategy's `init(data)` runs once over the whole Data before the first bar, and `next(bar, account)` runs at the close of every bar from `warmup` on, `warmup` counting the Data's rows, except the last, which no bar follows to fill on, and a row none of the instruments printed, which the account never sees. What `next` places at a close fills on a later bar, never on that one. The account it reads is the one that close left, with the events since the last close, and `bar.history(n)` holds the last `n` bars up to and including that one.
+A Strategy's `init(data)` runs once over the whole Data before the first bar, and `next(bar, account)` runs at the close of every bar from `warmup` on, `warmup` counting the Data's rows, except the last, which no bar follows to fill on, and a row none of the instruments printed, which the account never sees. What `next` places at a close fills on a later bar, never on that one. The account it reads is the one that close left, with the events since the last close, and `bar.history(n)` holds the last `n` bars up to and including that one. A run of a search's causality check calls `next` at the close of its last row too, where that row is printed and at or after the warm-up, so that the decision there can be compared, and nothing placed there fills ([The causality check](#the-causality-check)).
 
 <br>
 <br>
@@ -692,13 +692,13 @@ A Data's bars are the router's where every instrument names its venue, and they 
 
 A venue row's source is the input that decided each instrument's value, read key by key in the order a venue resolves an instrument's settings, its defaults, then its kind's table, then its own: a value equal to the preset's reads as the preset and its date, "binance_perp, taken 2026-10-16"; one the preset leaves out that equals the plain venue's reads "plain"; any other reads "set by the user". A venue built by hand is compared with the plain venue alone. Leverage and maintenance are sourced from an instrument's tiers where it has a table, and the liquidation fee from them where they keep maintenance, order limits the router gave read "the router, fetched" with its time, and a preset's slippage, impact and liquidity read as the preset, "a starting calibration", where they depart from the plain venue's. A row with one source reads it; otherwise it reads the source of the form its value leads with, then each key or instrument another source decided, "binance_perp, taken 2026-10-16; taker set by the user".
 
-A row's cost is read from the run's ledger and fill log, and nothing is run again. The fees row costs the fees column less the fees a takeover paid, and the liquidation fee row those fees. Funding, spread, slippage and impact cost their columns. The margin bound costs minus what it gave, the price it lifted times each fill's size, or on an inverse contract the coin that lift gave its contracts, plus what it paid in, and the liquidation row costs the liquidation column less the margin bound's part, which leaves it the takeovers' charges, the deficits set to zero and the rounding a fill left. The sizes row costs the dust column, and every other row has no cost. The rows with a cost sum to the costs' total within rounding, and a row's cost is its column's share as stated, which can hold another row's part: a sale on the book pays fees, spread, slippage and impact into their columns. The intrabar row is priced by running again with the other setting, which the user does.
+A row's cost is read from the run's ledger and fill log, and nothing is run again; below the full level, from its ledger and its round trips alone ([Recording levels](#recording-levels)). The fees row costs the fees column less the fees a takeover paid, and the liquidation fee row those fees. Funding, spread, slippage and impact cost their columns. The margin bound costs minus what it gave, the price it lifted times each fill's size, or on an inverse contract the coin that lift gave its contracts, plus what it paid in, and the liquidation row costs the liquidation column less the margin bound's part, which leaves it the takeovers' charges, the deficits set to zero and the rounding a fill left. The sizes row costs the dust column, and every other row has no cost. At the full level the rows with a cost sum to the costs' total within rounding, and a row's cost is its column's share as stated, which can hold another row's part: a sale on the book pays fees, spread, slippage and impact into their columns. The intrabar row is priced by running again with the other setting, which the user does.
 
 **Worked example.** A run on binance_perp has no optimistic assumption. Moved to limits that fill on touch and no spread, it has two, "limit fills on touch" and "spread not modelled", each sourced "set by the user". In the one-instrument example without maintenance ([Worked for one instrument](#worked-for-one-instrument)), the liquidation fee row costs 10.005, the fee the close paid, and in the margin bound's example the margin bound row costs -0.45 and the liquidation row nothing.
 
 ### Baselines
 
-A run is set beside three baselines on its own data and venue, each a value per row of the run.
+A run recorded at the full level is set beside three baselines on its own data and venue, each a value per row of the run.
 - **cash**: the opening equity on every row.
 - **buy and hold**: an equal share of the opening balance `E0`, `E0 / N`, in each of the Data's `N` instruments, bought as the quantity it buys at the instrument's first printed close, or on an inverse contract the contracts it is worth there, `E0 * p / (N * V)` at a close of `p`, and asked for at every close from then on as an array of quantities is, on the run's venue and paying its costs. A leg the budget, the largest order or a bar with no volume cuts short is so completed at later closes, and none is ever rebalanced. An account of two wallets splits its opening balance between them in the universe's proportion for this, so every leg is one `N`-th of it and unlevered, and an instrument with no close above zero before the Data's last row holds its share in cash.
 - **frictionless**: the same policy on the run's venue with the costs of trading removed and every rule kept. Maker and taker fees, the liquidation fee, spread, slippage, impact and funding are set to nothing, while the tiers, maintenance, the liquidation model and its backstop, the budget, the window, the limit rule, sizes and their bounds, `intrabar` and the balance stay as they were. It still pays what a forced close takes, so its gap to the run is the costs with what they changed along the way, not a split of them, and it is not the frictionless preset, which lifts the venue's limits as well.
@@ -725,9 +725,13 @@ A run hands each record over as a table of named columns: the ledger, the holdin
 | Level | Keeps |
 | :--- | :--- |
 | `"full"` | everything |
-| `"account"` | the account's columns and one row per round trip |
-| `"transitions"` | what offline reinforcement learning needs |
+| `"account"` | the ledger and the round trips, with no holdings, fill log or order log |
+| `"transitions"` | what offline reinforcement learning needs; not built yet |
 | `"none"` | the final state only; `backtest` refuses it |
+
+A run's statistics read only its equity, its closed round trips and the engine's own counts of its fills, its funding and its bars in a position, so at `account` they are the full level's to the bit, as its ledger and its round trips are. A run at `account` has no baselines and keeps no copy of its policy, and it reads its assumptions as it ends, pricing what its ledger and its round trips measure: where no round trip closed by a liquidation, the fees row costs the fees column and the liquidation fee row nothing, as at `full`, and where one did, neither has a cost; the margin bound and liquidation rows have none on any run. A strategy runs at `full`, since its account reads the order log, and keeps the account level's records when it ends. A search's trials run together in Rust keep their equity and their round trips alone.
+
+**Worked example.** The run of [Costs](#costs) at `account` keeps its three ledger rows, its round trip and the statistics it has at `full`. Its fees row costs 6.019997 and its liquidation fee row 0.0, as at `full`, and its margin bound and liquidation rows have no cost, where at `full` each costs 0.0.
 
 ### Combining books
 
@@ -750,10 +754,58 @@ The book's ledger is its own, a row per row of its clock: each account's cash an
 <br>
 
 
+## Search
+
+`search` runs a policy over a space of parameters on the bars before a holdout, scores each trial on one run there, and keeps every trial beside the winner.
+
+### The holdout
+
+- `holdout` holds out the Data's last rows: a share in `(0, 1)` of its rows, rounded half to even, a whole number of rows from 1, or a time, the rows from the first at or after it. Each side needs at least two rows an instrument printed. `holdout=0` holds nothing out, and so does `holdout=None`, which warns that every score is then in-sample.
+- The in-sample bars are a Data of their own that holds no bar of the holdout: the rows before it, with the bars before the Data's first, its instruments and their names, the funding events those rows own and a copy of the Data's provenance, under the fingerprint of `data[:cut]`. An instrument the whole Data holds funding for is funded in it, so a perpetual first funded after the cut runs as it runs in `backtest(policy, data[:cut], venue)`.
+- The winner runs on the held-out bars once, as `data[cut:]`, so its warm-up falls inside them, and the look counts from the moment it is handed them.
+
+**Worked example.** A Data of 1,000 hourly rows with `holdout=0.3` scores its trials on rows 0 to 699 and holds out rows 700 to 999, as `holdout=300` and the time of row 700 do.
+
+### Trials
+
+- A trial draws its parameters from the sampler, builds the policy with them and runs it once over the in-sample bars, with no Result. Its score is the statistic `objective` names, ranked as `direction` says.
+- A trial is `complete` where it was scored, `floored` where it closed fewer round trips than `min_trades`, and `failed` where the policy or its run raised or its score was NaN. A floored trial ran, so it keeps its statistics and its returns and has no score, and a failed one keeps its error as text. An infinite score ranks.
+- The winner is the complete trial with the best score, the lowest-numbered of equal ones. Every rule that picks one trial picks by its number, never by the order trials finished.
+- A search with no complete trial raises: where its workers broke, naming them; else where a trial was floored, naming the most round trips any closed; and otherwise naming the last failed trial's error.
+
+**Worked example.** With `min_trades=30`, trials that closed 12, 41 and 41 round trips at Sharpe ratios of 2.1, 1.4 and 1.4 are floored, complete and complete, and the winner is trial 1, the lower-numbered of the two scored 1.4.
+
+### Samplers
+
+- A space gives each parameter a range. `Int(low, high, step)` is the lattice `low + k * step` for `k` from 0 to `n = (high - low) / step`, and `Float(low, high, step)` the same lattice, its last point `high` exactly, or with no step the interval `[low, high)`. On a log scale an `Int`, of step 1, or a `Float` with no step is drawn evenly in its logarithm. `Categorical(choices)` is its choices.
+- `"random"` draws each parameter in the space's order from the stream named `search random`: an `Int` or a stepped `Float` evenly over its lattice; an `Int` on a log scale as `exp(u)`, `u` drawn evenly on `[ln(low - 1/2), ln(high + 1/2))`, rounded half to even and held to `[low, high]`; a `Float` evenly on `[low, high)`, or on a log scale as `exp(u)` with `u` drawn evenly on `[ln(low), ln(high))`, held to `[low, high)`; and a `Categorical` evenly over its choices.
+- `"grid"` runs the product of each parameter's values, an `Int`'s and a stepped `Float`'s lattice and a `Categorical`'s choices, the space's last parameter changing fastest; a `Float` with no step has none to list. Where the product holds no more points than `trials`, each point runs once in that order and the search runs that many trials; otherwise `trials` points are drawn without replacement from the stream named `search grid` and run in that order.
+- `"tpe"` is Optuna's TPE with 10 startup trials, 24 candidates, the joint model, no grouping and the constant liar, seeded with the first draw below `2^32` of the stream named `search tpe`. A trial floored or failed is told to it as failed, and a stepped `Float` it proposes is moved to the lattice point of the nearest index, `round((v - low) / step)`. It chooses each trial from those told before, so it asks them in rounds of as many as there are workers and is told them in trial order.
+- A seeded random or grid search repeats on any machine and at any number of workers. A seeded TPE search repeats at the same number of workers on the machine it ran on, since its kernels are numpy floating point.
+
+**Worked example.** `Int(1, 10, step=3)` is 1, 4, 7 and 10, and `Float(0.01, 0.1, step=0.01)` is ten points from 0.01 to 0.1, the last exactly 0.1. A grid over that `Float` and `Categorical(["a", "b"])` is 20 points, (0.01, "a"), (0.01, "b"), (0.02, "a") and so on, and with `trials=100` the search runs those 20.
+
+### The causality check
+
+A search checks its policy for decisions taken on bars that had not closed. It runs trials one at a time until one has decided something at or after its warm-up on a row before its last printed one, and checks that trial before any other runs; before it returns, it checks the winner too, where the winner's parameters differ from that trial's.
+- Each run of the check builds its own policy from the parameters, as a trial does.
+- The policy decides on the whole in-sample bars twice, and where the two runs differ under the rule below, the search is refused, since what the check compares would not repeat.
+- `w` is the first printed row the policy decides on: a strategy's first at or after its warm-up, an array's first holding a value. `P` is the printed rows from `w` to the one before the last printed row, `m` of them, and the five targets are `P[floor(k * m / 6)]` for `k` from 1 to 5, the k-th on instrument `(k - 1) mod N`. An array's decision on an instrument is its weight there, and a strategy's is the calls that name it, a target's weight for it among them, with the calls that name none. Each target moves to the first row of `P` at or after it where its instrument's decision changes to one that is not empty and differs from the one that instrument's cut before ended on; failing that, to the first where it changes to one that is not empty; and failing that, it stays. Each moved target is cut, and so is the row of `P` before it, where the decision it changes from held, so a lead that shows where a decision changes and one that shows where it holds both meet a cut's last row. A cut keeps the rows up to the next printed row after it, those a run plays at its close, coinciding cuts run once, and a cut holding fewer than two printed rows is dropped.
+- A cut's decisions on every one of its rows, its last among them ([A strategy](#a-strategy)), must equal the whole run's there: the same rows holding none, each float within a bound of the other and every other value equal. A float64 array's bound is `1e-9` of its column's largest magnitude and a narrower float's 8 times its epsilon of it; a strategy's float arguments are held to `1e-9` of the larger of the two, or float32's bound where both are float32 values; and no bound is below `1e-12`.
+- A difference is refused with a `LookaheadError` naming the cut and the first row, instrument and decision where the two differ, and so is a refusal of a cut's decisions, by the reader that takes a function's return or by a strategy's verb, chained from it; an error the policy's own code raises on a cut stays its own, with a note naming the cut, and one saying so where a strategy raised it deciding at the cut's last close. The check reads only the in-sample bars, so it is no look.
+
+**Worked example.** A policy of weights `sign(close[t + 1] - close[t])`, computed with `numpy.roll`, decides each close from the next. On a cut ending at row `c` the roll puts the cut's first close at `c`, so its decision there is `sign(close[0] - close[c])`, and where that differs from the whole run's `sign(close[c + 1] - close[c])` the search is refused, naming the cut and row `c`.
+
+**Worked example.** A policy of weight 0 on a close no lower than the four before it and the next one, and 1 elsewhere, reads the next close only to confirm a top, so a cut that ends on a top marks it as the whole run does. The cut on the row before that top ends on a rising close, the highest of five so far, which the cut marks a top and the whole run, seeing the next close higher, does not, and the search is refused there.
+
+<br>
+<br>
+
+
 ## Numbers that are the same everywhere
 
 - Basic arithmetic and `sqrt` are correctly rounded everywhere, but `ln`, `exp` and `powf` may differ by platform, so integer powers are written as products and every other transcendental function goes through the `libm` crate.
-- Random draws come from named streams, PCG64 in Python and ChaCha in Rust, each derived from the run's seed through a NumPy `SeedSequence` and recorded with it.
+- Random draws come from named streams, PCG64 in Python and ChaCha in Rust, each derived from the run's seed through a NumPy `SeedSequence` and recorded with it; a search's random and grid samplers draw from them, a log scale's `ln` and `exp` taken through `libm`.
 - Sums run in a fixed instrument order, the batch has no cross-environment reductions, and the statistics a search ranks on are summed in a fixed order.
 - Compensated sums are used only for totals reported over many bars, such as fees, funding and turnover; cash and positions stay plain arithmetic in event order.
 - A perpetual fill that leaves no perpetual held, with the margin wallet's size within `1e-12` times the money at stake, leaves the wallet at zero, as a takeover does, the remainder booked as the liquidation charge. The money at stake is what the bar's perpetual fills have put there so far, for each the margin wallet before it, what the margin bound paid in and its notional. Exact arithmetic leaves zero where the margin ran out, and floating point a hair either side of it, which above zero is equity the cap would lever.
