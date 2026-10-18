@@ -38,7 +38,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Engine` | An account at a venue on a Data for a loop the caller owns: `reset`, `step`, and the account's state and verbs, recording the Result `backtest` records. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
-| `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, its statistics and its provenance, saved as files any tool reads. [Below](#the-result). |
+| `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, the totals of its costs, each instrument's record, its statistics and its provenance, saved as files any tool reads. [Below](#the-result). |
 | `probatum.combine` | Add Results from accounts at different venues into one book. [Below](#combining-books). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
@@ -779,7 +779,7 @@ A refused placement still returns `None`, and the log holds it under the id it w
 
 ## The Result
 
-`backtest`, a Strategy and `probatum.Engine.result()` return the same `Result`, whatever decided the run ([ADR 0026](Decisions.md)). It holds what the run recorded on the rows its account saw from its first: `time`, each row's open in int64 nanoseconds since 1970, and `equity` and `returns`, each `(T,)` and read-only, a row's return its equity over the row before's, less one, and nothing once the equity is gone; five [tables](#the-tables); `stats`, the [statistics](#statistics) at `risk_free` and at the annualization of the whole Data the run's instruments are drawn from, counted on the rows they printed, so every slice of it annualizes alike, and None where the clock is too short; `policy`, an array's values on the Data's rows as the run read them, or the copy of a Strategy it ran; `bust`, whether the account's equity reached zero; `liquidations`, how many bars it was liquidated on, each account of a book counted apart; and `provenance`, what the run was given and where it ran. `to_pandas()` and `to_polars()` give the equity and the returns on the time, `to_dict()` the whole Result as plain data, a statistic infinite where it earned something against no measured risk, and a Result copies whole and pickles with its tables and an array's policy, a Strategy's copy left out.
+`backtest`, a Strategy and `probatum.Engine.result()` return the same `Result`, whatever decided the run ([ADR 0026](Decisions.md)). It holds what the run recorded on the rows its account saw from its first: `time`, each row's open in int64 nanoseconds since 1970, and `equity` and `returns`, each `(T,)` and read-only, a row's return its equity over the row before's, less one, and nothing once the equity is gone; five [tables](#the-tables); `costs`, the totals of what trading cost, and `result[name]`, one instrument's record ([Transparency](#transparency)); `stats`, the [statistics](#statistics) at `risk_free` and at the annualization of the whole Data the run's instruments are drawn from, counted on the rows they printed, so every slice of it annualizes alike, and None where the clock is too short; `policy`, an array's values on the Data's rows as the run read them, or the copy of a Strategy it ran; `bust`, whether the account's equity reached zero; `liquidations`, how many bars it was liquidated on, each account of a book counted apart; and `provenance`, what the run was given and where it ran. `to_pandas()` and `to_polars()` give the equity and the returns on the time, `to_dict()` the whole Result as plain data, its costs included, a statistic infinite where it earned something against no measured risk, and a Result copies whole and pickles with its tables and an array's policy, a Strategy's copy left out.
 
 ```python
 print(result.to_pandas().tail())                # equity and returns on a UTC index
@@ -840,6 +840,18 @@ binance = probatum.backtest(Hundred(), data,
 book = probatum.combine([result, binance])      # named frictionless and binance_perp
 print(book)
 print(book.fills.to_pandas()[["venue", "bar", "instrument", "price"]])
+```
+
+### Transparency
+
+`costs` is a dict of the run's costs, the totals of the ledger's cost columns in its order, `fees`, `funding`, `spread`, `slippage`, `impact`, `liquidation` and `dust`, each a compensated sum, positive where the account paid it, in the asset it settles in, and measured from each fill's reference, so the move from a decision's close to the next open is price PnL ([Specification](Specification.md#costs)). Each read is a dict of its own.
+
+`result[name]` is one instrument's record: its `name`; its `position`, `weight` and `pnl`, each `(T,)` and read-only, the weight over its account's own equity and the pnl what it has made since the first row; and its own `fills` and `trades`. With one instrument the Result answers `position`, `weight` and `pnl` itself, and with several it names the one to ask. In a book an instrument is `book[venue, name]`, or `book[name]` where one venue alone holds it, its series carried from each of its account's rows to the next inside the account's span, its position and weight nothing outside it, and its pnl nothing before its first row and held after its last.
+
+```python
+print(binance.costs)                            # what trading on binance_perp cost
+print(binance["BTCUSDT"].pnl[-1], binance.pnl[-1])
+print(book["binance_perp", "BTCUSDT"].weight[-5:])
 ```
 
 <br>

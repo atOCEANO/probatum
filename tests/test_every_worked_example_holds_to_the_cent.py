@@ -594,6 +594,37 @@ def test_a_holding_of_0_0004_under_a_lot_of_0_001_is_swept_at_250_as_dust_of_0_1
     assert sim.ledger[-1]["dust"] == pytest.approx(0.1, abs=1e-12)
 
 
+def test_a_buy_and_a_sale_of_a_tenth_of_a_bitcoin_cost_8_430997():
+    # a fixed spread and slippage of 1 bp, a taker fee of 0.05% and 0.01% of funding at
+    # every close, on bars at 60,000, then 60,000 to 60,500, then 60,400 to 60,450
+    frame = hourly_bars([60_000.0, 60_000.0, 60_400.0], [60_000.0, 60_500.0, 60_450.0],
+                        range(3)).assign(high=[60_000.0, 60_600.0, 60_500.0],
+                                         low=[60_000.0, 59_900.0, 60_300.0])
+    venue = probatum.Venue(
+        balance = 10_000.0,
+        fees    = {"maker": 0.0, "taker": 0.0005},
+        fills   = {"spread": {"fixed": 1.0}, "slippage": {"fixed": 1.0}},
+        funding = {"every_bars": 1, "rate": 0.0001},
+    )
+
+    result = probatum.backtest(np.array([0.1, 0.0, np.nan]),
+                               probatum.Data(frame, symbol="BTCUSDT", market="linear"),
+                               venue, sizing="quantity")
+
+    assert [fill["price"] for fill in result.fills] == pytest.approx([60_009.0,
+                                                                      60_390.94])
+
+    costs = result.costs
+    assert costs == pytest.approx(dict(fees=6.019997, funding=0.605, spread=0.602,
+                                       slippage=1.204, impact=0.0, liquidation=0.0,
+                                       dust=0.0), abs=1e-9)
+    assert math.fsum(costs.values()) == pytest.approx(8.430997, abs=1e-9)
+    assert result.equity.tolist() == pytest.approx([10_000.0, 10_045.49455,
+                                                    10_031.569003], abs=1e-9)
+    # the price PnL, 40.00, less the costs is what the instrument made
+    assert result.pnl[-1] == pytest.approx(40.0 - 8.430997, abs=1e-9)
+
+
 def test_a_bar_that_carries_half_a_bitcoin_and_buys_a_tenth_gains_266_0815():
     bars = [[flat(60_000.0, volume=1e6)], [flat(60_000.0, volume=1e6)],
             [Bar(60_300.0, 60_600.0, 60_250.0, 60_500.0, 1e6)]]
@@ -1194,6 +1225,23 @@ def test_two_accounts_listed_and_ended_apart_add_into_15_350():
 
     fills = book.fills[book.fills["venue"] == "B"]
     assert fills["bar"].tolist() == [3, 4]
+
+    # each account's instrument on the book's rows: carried inside its span, its
+    # position and weight nothing outside it, and its pnl held after its end
+    coin = book["A", "COINUSDT"]
+    assert (coin.pnl.tolist(), coin.position.tolist(), coin.weight.tolist()) == (
+        [0.0, 100.0, 50.0, 200.0, 200.0], [0.0, 100.0, 100.0, 100.0, 0.0],
+        [0.0, 1.0, 1.0, 1.0, 0.0])
+
+    coin = book["B", "COINUSDT"]
+    assert (coin.pnl.tolist(), coin.position.tolist(), coin.weight.tolist()) == (
+        [0.0, 0.0, 0.0, -100.0, 150.0], [0.0, 0.0, 0.0, 100.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0, 0.0])
+    assert coin.fills["bar"].tolist() == [3, 4]
+
+    with pytest.raises(KeyError, match="COINUSDT is held at A and B"):
+        book["COINUSDT"]
+
     assert (a.provenance["periods_per_year"], b.provenance["periods_per_year"]) == (
         8_760.0, 5_840.0)
     assert book.provenance["periods_per_year"] == 4 * 365 / (4 / 24) == 8_760.0

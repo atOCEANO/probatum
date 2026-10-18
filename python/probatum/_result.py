@@ -8,6 +8,7 @@ import functools
 import importlib
 import importlib.metadata
 import json
+import math
 import os
 import pathlib
 import platform
@@ -316,19 +317,48 @@ def _tables(held):
             for name in SCHEMAS}
 
 
+class InstrumentResult:
+    """One instrument's record of a Result, as ``result[name]`` gives it: its ``name``;
+    ``position``, ``weight`` and ``pnl``, each ``(T,)`` on the Result's rows and
+    read-only, the weight over its account's own equity and the pnl what it has made
+    since the first row (Specification, The ledger); and its own ``fills`` and
+    ``trades``, the rows of the Result's that are its."""
+
+    __slots__ = ("name", "position", "weight", "pnl", "fills", "trades")
+
+
+    def __init__(self, name, position, weight, pnl, fills, trades):
+        self.name     = name
+        self.position = _frozen(position)
+        self.weight   = _frozen(weight)
+        self.pnl      = _frozen(pnl)
+        self.fills    = fills
+        self.trades   = trades
+
+
+    def __repr__(self):
+        return (f"InstrumentResult({self.name}, {len(self.pnl):,} bars, pnl "
+                f"{self.pnl[-1]:,.2f})")
+
+
 class Result:
     """What one run recorded, on the rows its account saw from the first: ``time``,
     each row's open in int64 nanoseconds since 1970, with ``equity`` and ``returns``,
     each ``(T,)``; the tables ``ledger``, a row a bar, ``holdings``, a row a bar and
     instrument, ``fills``, the fill log, ``orders``, the order log, and ``trades``, the
-    round trips (Specification, What a run records); ``stats``, the statistics at the
-    Data's annualisation and the run's risk-free rate, None where the clock is too
-    short to annualise; ``policy``, the copy of the policy the run used; ``bust``,
-    whether the account's equity reached zero; ``liquidations``, the number of bars it
-    was liquidated on, each account of a book counted apart; and ``provenance``, what
-    the run was given and where it ran. A row's return is its equity over the row
-    before's, less one, and nothing once the equity is gone. ``save(path)`` writes it as
-    files any tool reads, and ``Result.load(path)`` reads it back."""
+    round trips (Specification, What a run records); ``costs``, the totals of the
+    ledger's costs; ``stats``, the statistics at the Data's annualisation and the run's
+    risk-free rate, None where the clock is too short to annualise; ``policy``, the copy
+    of the policy the run used; ``bust``, whether the account's equity reached zero;
+    ``liquidations``, the number of bars it was liquidated on, each account of a book
+    counted apart; and ``provenance``, what the run was given and where it ran. A row's
+    return is its equity over the row before's, less one, and nothing once the equity is
+    gone. ``result[name]`` is one instrument's record, and with one instrument the
+    Result itself answers ``position``, ``weight`` and ``pnl``. ``save(path)`` writes it
+    as files any tool reads, and ``Result.load(path)`` reads it back."""
+
+    # a Result is no sequence of its instruments, which it names rather than counts
+    __iter__ = None
 
 
     def __init__(self, time, equity, tables, stats, policy, bust, provenance):
@@ -369,6 +399,129 @@ class Result:
                  else f"{given['policy']} on {given['venue']}")
         return (f"Result({what}, {len(self.time):,} bars, equity {self.equity[0]:,.2f} "
                 f"to {self.equity[-1]:,.2f})")
+
+
+    @property
+    def costs(self):
+        """The run's costs (Specification, Costs): the totals of the ledger's cost
+        columns in its order, ``fees``, ``funding``, ``spread``, ``slippage``,
+        ``impact``, ``liquidation`` and ``dust``, each a compensated sum, positive where
+        the account paid it, in the asset it settles in, and measured from each fill's
+        reference, so the move from a decision's close to the next open is price PnL.
+        Each read is a dict of its own."""
+        totals = self.__dict__.get("_costs")
+        if totals is None:
+            totals = self._costs = {name: math.fsum(self.ledger[name]) for name in COSTS}
+        return dict(totals)
+
+
+    def _instruments(self):
+        """The instruments the holdings name, each once in the order they first appear,
+        with its venue first in a book."""
+        holdings = self.holdings
+        names    = holdings["instrument"].tolist()
+        if "venue" in holdings.columns:
+            return list(dict.fromkeys(zip(holdings["venue"].tolist(), names)))
+        return list(dict.fromkeys(names))
+
+
+    def __getitem__(self, key):
+        """One instrument's record, as an `InstrumentResult`: ``result[name]``, and in a
+        book ``result[venue, name]``, or ``result[name]`` where one venue alone holds
+        it. A book's series are carried from each row of the account's to the next
+        inside its span, the position and the weight zero outside it and the pnl zero
+        before its first row and held after its last."""
+        holdings = self.holdings
+        book     = "venue" in holdings.columns
+
+        if (book and isinstance(key, tuple) and len(key) == 2
+                and all(isinstance(part, str) for part in key)):
+            venue, name = key
+        elif isinstance(key, str):
+            venue, name = None, key
+        else:
+            fix = ('its venue and its name, as result["binance", "BTCUSDT"]' if book
+                   else 'its name, as result["BTCUSDT"]')
+            raise TypeError(f"result[{key!r}]: an instrument is named by a string; give "
+                            f"{fix}")
+
+        held   = holdings._held
+        picked = held.equal("instrument", name)
+
+        if book:
+            venues = {at for at, named in self._instruments() if named == name}
+            if venue is None and len(venues) > 1:
+                listed = sorted(venues)
+                raise KeyError(f"result[{name!r}]: {name} is held at "
+                               f"{', '.join(listed[:-1])} and {listed[-1]}; give its "
+                               f"venue, as result[\"{listed[0]}\", \"{name}\"]")
+
+            venue  = venue if venue is not None else next(iter(venues), None)
+            picked = picked & held.equal("venue", "" if venue is None else venue)
+
+        if not picked.any():
+            known = ", ".join(repr(given) for given in self._instruments())
+            raise KeyError(f"result[{key!r}]: the run holds no such instrument; use one "
+                           f"of {known}")
+
+        rows   = np.flatnonzero(picked)
+        bars   = holdings["bar"][rows]
+        at     = np.searchsorted(bars, np.arange(len(self.time)), side="right") - 1
+        inside = (at >= 0) & (np.arange(len(self.time)) <= bars[-1])
+        last   = np.maximum(at, 0)
+
+        def carried(column, outside):
+            values = holdings[column][rows][last]
+            return np.where(inside, values, outside(values))
+
+        position = carried("position", np.zeros_like)
+        weight   = carried("weight", np.zeros_like)
+        pnl      = np.where(at >= 0, holdings["pnl"][rows][last], 0.0)
+        own      = {"instrument": name} if venue is None else {
+            "venue":      venue,
+            "instrument": name,
+        }
+
+        def theirs(table):
+            mask = np.ones(len(table), dtype=bool)
+            for column, value in own.items():
+                mask &= table._held.equal(column, value)
+            return table[mask]
+
+        return InstrumentResult(name, position, weight, pnl, theirs(self.fills),
+                                theirs(self.trades))
+
+
+    def _one(self, field):
+        """``field`` of the one instrument the run holds."""
+        instruments = self._instruments()
+        if len(instruments) != 1:
+            first = instruments[0]
+            named = (f"\"{first[0]}\", \"{first[1]}\"" if isinstance(first, tuple)
+                     else f"\"{first}\"")
+            raise AttributeError(f"result.{field}: the run holds {len(instruments)} "
+                                 f"instruments; use result[{named}].{field}")
+
+        return getattr(self[instruments[0]], field)
+
+
+    @property
+    def position(self):
+        """The one instrument's position, ``(T,)``, where the run holds one."""
+        return self._one("position")
+
+
+    @property
+    def weight(self):
+        """The one instrument's weight, ``(T,)``, over the account's equity, where the
+        run holds one."""
+        return self._one("weight")
+
+
+    @property
+    def pnl(self):
+        """What the one instrument has made, ``(T,)``, where the run holds one."""
+        return self._one("pnl")
 
 
     def __copy__(self):
@@ -417,8 +570,8 @@ class Result:
     def to_dict(self):
         """This Result as plain data: ``time``, ``equity`` and ``returns`` as lists,
         each table as a dict of its columns as lists, None where a value is missing,
-        and ``stats``, a ratio infinite where it earned something against no measured
-        risk, ``policy`` where it is an array, ``bust``, ``liquidations`` and
+        ``costs``, and ``stats``, a ratio infinite where it earned something against no
+        measured risk, ``policy`` where it is an array, ``bust``, ``liquidations`` and
         ``provenance``."""
         out = dict(time=self.time.tolist(), equity=self.equity.tolist(),
                    returns=self.returns.tolist())
@@ -428,7 +581,8 @@ class Result:
             out[name] = {column: _listed(table._column(column, kept=False))
                          for column in table.columns}
 
-        out.update(stats=None if self.stats is None else dict(self.stats),
+        out.update(costs=self.costs,
+                   stats=None if self.stats is None else dict(self.stats),
                    policy=(_listed(self.policy) if isinstance(self.policy, np.ndarray)
                            else None),
                    bust=self.bust, liquidations=self.liquidations,
