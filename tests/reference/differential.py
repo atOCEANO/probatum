@@ -667,16 +667,39 @@ def closed_before(trips, end):
 NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:e[-+]?\d+)?")
 
 
+class Worded:
+    """A clamp's or a miss's reason, equal to another whose words are the same and
+    whose numbers are, pair by pair, within the tolerance: each simulator reaches a
+    clamped size by its own arithmetic, the reference bisecting the cap where the
+    engine solves it in closed form."""
+
+
+    def __init__(self, reason):
+        self.reason  = reason
+        self.words   = NUMBER.sub("#", reason)
+        self.numbers = [float(number) for number in NUMBER.findall(reason)]
+
+
+    def __eq__(self, other):
+        return (isinstance(other, Worded) and self.words == other.words
+                and all(close_enough(a, b) for a, b in zip(self.numbers, other.numbers)))
+
+
+    def __repr__(self):
+        return repr(self.reason)
+
+
 def worded(log):
-    """The order log with a clamp's reason left out, which quotes sizes each simulator
-    reaches by its own arithmetic, and every other reason's numbers read as floats to
-    twelve figures: one prints a whole number with a point where the other leaves it
-    off, and an inverse contract's sizes come back from the engine's terms a few
-    floats from the contracts the reference counts in."""
+    """The order log with a clamp's reason and a miss's read as words and numbers, and
+    every other reason's numbers read as floats to twelve figures: one prints a whole
+    number with a point where the other leaves it off, and an inverse contract's sizes
+    come back from the engine's terms a few floats from the contracts the reference
+    counts in."""
     def floats(reason):
         return NUMBER.sub(lambda number: f"{float(number.group()):.12g}", reason)
 
-    return [dict(event, reason=None) if event["kind"] == "clamped"
+    return [dict(event, reason=Worded(event["reason"]))
+            if event["kind"] in ("clamped", "not_filled")
             else dict(event, reason=floats(event["reason"])) for event in log]
 
 

@@ -8,7 +8,7 @@ use super::path::FillNote;
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
 use crate::execution::FillCosts;
-use crate::reporter::{EventKind, EventReason, FillReason, FillRecord, RoundTrip};
+use crate::reporter::{Cause, EventKind, EventReason, FillReason, FillRecord, RoundTrip};
 
 /// What a round trip's entry bar surely traded from the fill at `start` to the
 /// close: the whole bar after a fill at the open, and after a fill `inside` the bar
@@ -70,7 +70,8 @@ impl Engine {
 
     /// Clamp `fill` on instrument `i`, bound it by the margin inside `candle`, the bar it
     /// filled on, book it and log it as `order`'s, with `costs` the fill model measured
-    /// and `requested` what the order still asked for. Returns the size that landed.
+    /// and `requested` what the order still asked for. Returns the size that landed,
+    /// and what held it where that falls short of `requested`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_fill_clamped(
         &mut self,
@@ -82,10 +83,12 @@ impl Engine {
         fill: Fill,
         costs: FillCosts,
         candle: &Candle,
-    ) -> f64 {
-        let mut fill = self.clamp_fill(i, reduce_only, &fill);
+    ) -> (f64, Cause) {
+        let offered = fill.size.get();
+        let (mut fill, clamp) = self.clamp_fill(i, reduce_only, &fill);
+        let by = Self::held_by(clamp, offered, requested);
         if fill.size.get() <= 0.0 {
-            return 0.0;
+            return (0.0, by);
         }
         let priced = fill.price.get();
         let credit = self.bound_by_margin(i, &mut fill, candle);
@@ -203,7 +206,10 @@ impl Engine {
                 Some(i),
                 Some(applied),
                 None,
-                EventReason::Fits { asked: requested },
+                EventReason::Fits {
+                    asked: requested,
+                    by,
+                },
             );
         }
         let why = match reason {
@@ -227,7 +233,7 @@ impl Engine {
         if held != 0.0 && (after == 0.0 || held * after < 0.0) {
             self.disarm(i, Some(order));
         }
-        applied
+        (applied, by)
     }
 
     /// Book what a fill on instrument `i` just did to the account: count it, and with reporting on,
@@ -690,8 +696,8 @@ mod tests {
             price: Price(100.0),
             is_taker: true,
         };
-        assert_eq!(e.clamp_fill(0, false, &dust).size.get(), 0.0);
-        let applied = e.apply_fill_clamped(
+        assert_eq!(e.clamp_fill(0, false, &dust).0.size.get(), 0.0);
+        let (applied, _) = e.apply_fill_clamped(
             0,
             OrderId(1),
             FillReason::Market,

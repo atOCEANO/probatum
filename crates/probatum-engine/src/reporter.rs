@@ -3,7 +3,7 @@
 //! (the engine holds it behind an `Option`) so the RL hot path allocates nothing;
 //! the backtester turns it on. Stats are derived from these later.
 
-use probatum_core::{OrderId, Side, TimeInForce};
+use probatum_core::{OrderId, Side, TimeInForce, Wallet};
 
 use crate::execution::FillCosts;
 use crate::stats::Stats;
@@ -120,6 +120,29 @@ pub enum Refusal {
     MinAmount { amount: f64, least: f64 },
 }
 
+/// The rule that held a fill, or that a market order's bar filled nothing for: the
+/// last clamp that reduced the size before the lot rounded it, a bar that printed no
+/// volume before every clamp, and a size below what a fill can book after them
+/// (Specification, The fill log and the order log).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// The share of the trailing volume the bar's fills may take.
+    Budget,
+    ReduceOnly,
+    /// A spot sale, held to the holding.
+    SpotHolding,
+    /// A spot buy, held to what the cash pays for, fee included.
+    SpotCash,
+    /// A perpetual account at or below zero margin equity, which may only shrink.
+    Equity,
+    /// The last tier's bound, the largest position a table allows.
+    LastTier,
+    /// The summed requirement of the margin cap.
+    Cap,
+    NoVolume,
+    Lot,
+}
+
 /// Why an event happened, with the numbers its text quotes (ADR 0022).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EventReason {
@@ -138,22 +161,32 @@ pub enum EventReason {
     Refused(Refusal),
     /// A replace refused, which leaves the order as it was.
     Replacing(Refusal),
-    /// A fill clamped to the event's size, of `asked`.
+    /// A fill `by` clamped to the event's size, of `asked`.
     Fits {
         asked: f64,
+        by: Cause,
     },
-    /// A transfer clamped to the event's size, of `asked`.
+    /// A transfer into `to` clamped to the event's size, of `asked`, by what the
+    /// wallet it leaves may give.
     Transfer {
         asked: f64,
+        to: Wallet,
     },
     /// A placement held to the maximum order quantity, the event's size, of `asked`.
     HeldTo {
         asked: f64,
     },
-    /// A market order that nothing on its bar could fill.
-    NothingFilled,
-    /// A fok market order that could not fill whole.
-    Fok,
+    /// A market order that nothing on its bar could fill, for `by`.
+    NothingFilled {
+        by: Cause,
+    },
+    /// A fok market order `by` held to `size` of the `asked` it fills whole or not at
+    /// all.
+    Fok {
+        by: Cause,
+        size: f64,
+        asked: f64,
+    },
     /// A market order's remainder, gone after its one bar.
     MarketBar,
     /// An ioc or fok limit, gone after its one bar.

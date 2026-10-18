@@ -57,7 +57,7 @@ impl Engine {
                     None,
                     Some(moved),
                     None,
-                    EventReason::Transfer { asked: amount },
+                    EventReason::Transfer { asked: amount, to },
                 );
             }
             self.account.transfer(moved, to);
@@ -84,7 +84,7 @@ mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{cfg, crash_series, levered, ohlc, perp_cfg, series, universe};
     use crate::engine::{Engine, EngineConfig};
-    use crate::reporter::{EventKind, EventReason, FillReason};
+    use crate::reporter::{Cause, EventKind, EventReason, FillReason};
     use probatum_core::{Market, OrderType, Side, TimeInForce, Wallet};
 
     #[test]
@@ -141,7 +141,8 @@ mod tests {
             .expect("an event");
         assert_eq!((clamp.kind, clamp.order), (EventKind::Clamped, None));
         assert_eq!(clamp.size, Some(600.0));
-        assert_eq!(clamp.reason, EventReason::Transfer { asked: 1_000.0 });
+        let to = Wallet::Spot;
+        assert_eq!(clamp.reason, EventReason::Transfer { asked: 1_000.0, to });
     }
 
     #[test]
@@ -207,10 +208,12 @@ mod tests {
     fn with_the_cap_off_a_transfer_can_take_the_margin_wallet_to_its_trigger() {
         // long 1.5 from 100 on 999.7, marked at 95.1: only the loss stays behind, and
         // the long is closed at that close before the next bar opens. At these
-        // prices the cash less the loss, with the loss added back, is not zero
+        // prices the cash less the loss, with the loss added back, is not zero, and a
+        // buy after the close finds the margin wallet with no equity
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 95.1, 95.1, 1e6),
+            ohlc(95.1, 95.1, 95.1, 95.1, 1e6),
             ohlc(95.1, 95.1, 95.1, 95.1, 1e6),
         ]);
         let config = EngineConfig {
@@ -237,6 +240,18 @@ mod tests {
             .copied()
             .expect("a fill");
         assert_eq!((fill.reason, fill.price), (FillReason::Liquidation, 95.1));
+        let buy = e.market_buy(1.0);
+        assert_eq!(e.step().position, 0.0);
+        let missed = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .last()
+            .copied()
+            .expect("an event");
+        let by = Cause::Equity;
+        assert_eq!(missed.order, buy);
+        assert_eq!(missed.reason, EventReason::NothingFilled { by });
     }
 
     #[test]

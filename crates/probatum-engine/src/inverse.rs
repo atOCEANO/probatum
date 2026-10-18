@@ -367,7 +367,13 @@ impl Units {
             size: event.size.map(|size| self.contracts(size)),
             price: event.price.map(|price| self.dollars(price)),
             reason: match event.reason {
-                EventReason::Fits { asked } => EventReason::Fits {
+                EventReason::Fits { asked, by } => EventReason::Fits {
+                    asked: self.contracts(asked),
+                    by,
+                },
+                EventReason::Fok { by, size, asked } => EventReason::Fok {
+                    by,
+                    size: self.contracts(size),
                     asked: self.contracts(asked),
                 },
                 EventReason::HeldTo { asked } => EventReason::HeldTo {

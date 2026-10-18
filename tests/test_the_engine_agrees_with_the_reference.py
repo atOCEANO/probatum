@@ -263,6 +263,16 @@ def spent(side, size, **settings):
     return bars, times, cfg, actions
 
 
+def tiny(kind):
+    """A market order of 5e-10, no larger than a fill can book, decided after three
+    bars that traded nothing, so under a window of 3 its bar's budget is spent."""
+    bars, times, cfg, actions = built(None, None, None, (kind, "buy", 5e-10, 0.0),
+                                      shaped=(100.0, 101.0, 99.0, 100.0))
+    bars[1:4] = [Bar(100.0, 100.0, 100.0, 100.0, 0.0)] * 3
+    cfg.update(window=3)
+    return bars, times, cfg, actions
+
+
 def held(kind, size, budget=1.0):
     """A value buy of `size` at a close of 100 under a lot of 0.001 and a largest
     order of 1, filled at the next open of 100 on a bar whose budget is `budget` of
@@ -424,6 +434,12 @@ BUILT = {
     "a fok value sale that sells a lot only at its slipped price on a spent budget": (
         "a market order filling nothing", spent("sell", 0.09998, sizes=True,
                                                 rules=[dict(lot=0.1)])),
+    # an order no larger than a fill can book is held by its size, never by the
+    # budget, ioc or fok, as a clamp to nothing is
+    "a market order below what a fill can book on a spent budget": (
+        "a market order filling nothing", tiny("market")),
+    "a fok order below what a fill can book on a spent budget": (
+        "a market order filling nothing", tiny("fok")),
     # a value order's hold is logged on the bar that prices its fill, before anything
     # else of it there: 100.05 buys 1.0005, which the lot takes down to the largest
     # order of 1, so nothing holds it, and 150 buys 1.5, held to 1, which a budget of
@@ -434,6 +450,14 @@ BUILT = {
         "an order held to the maximum quantity", held("fok", 1.5, budget=6e-7)),
     "an ioc value order held to the largest order that its budget cuts": (
         "an order held to the maximum quantity", held("market", 1.5, budget=6e-7)),
+    # one quantity tier of 10 at 20x behind 100 of margin holds a buy of 15 at 100 at
+    # the bound, and at an open of 93, where equity is 30 against a requirement of
+    # 46.50, a buy of 1 more fills nothing for the bound, before the margin is read
+    "a buy held at the last tier's bound and one refused there over the cap": (
+        "a fill held at the last tier's bound",
+        changed(built(("market", "buy", 15.0, 0.0), ("market", "buy", 1.0, 0.0),
+                      shaped=(93.0, 94.0, 92.0, 93.0)),
+                tiers=[(10.0, 20.0, 0.0, 0.0)], tiers_by="quantity")),
     # on spot a post_only sale at 104 survives the open at 100, and a buy stop at 105
     # then buys the holding it could sell: the part of the bar after that fill opens
     # through the sale, so it is cancelled there

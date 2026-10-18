@@ -38,12 +38,14 @@ def test_a_budget_of_a_tenth_of_50_holds_5_for_five_orders_of_2():
     assert state.position == 5.0
 
     reasons = [event["reason"] for event in e.order_log() if event["bar"] == 1]
-    assert reasons.count("nothing could fill on its bar") == 2
+    assert "the liquidity budget allows 1 of the 2 asked" in reasons
+    assert reasons.count("nothing could fill: the liquidity budget allows none") == 2
 
 
 def test_a_bar_after_a_window_that_traded_nothing_fills_nothing():
     # three bars that traded nothing leave a window of three with no volume, so the
-    # fourth holds no budget, though it trades
+    # fourth holds no budget, though it trades, and an order on one of the three
+    # fills nothing for the volume it printed
     e = probatum._probatum.Engine(
         bars(*[(100.0, 100.0, 100.0, 100.0, 0.0)] * 3,
              (100.0, 101.0, 99.0, 100.0, 1e6)),
@@ -52,14 +54,17 @@ def test_a_bar_after_a_window_that_traded_nothing_fills_nothing():
     )
 
     e.reset()
-    for _ in range(2):
-        e.step()
-
+    e.market_buy(1.0)
+    e.step()
+    e.step()
     e.market_buy(1.0)
 
     assert e.step().position == 0.0
-    assert [event["reason"] for event in e.order_log() if event["bar"] == 3] == [
-        "nothing could fill on its bar"]
+
+    missed = [(event["bar"], event["reason"]) for event in e.order_log()
+              if event["kind"] == "not_filled"]
+    assert missed == [(1, "nothing could fill: the bar printed no volume"),
+                      (3, "nothing could fill: the liquidity budget allows none")]
 
 
 def test_the_six_bars_spread_moves_a_buy_from_100_40_up_by_0_05():

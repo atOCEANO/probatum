@@ -13,7 +13,7 @@ use probatum_core::{
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
 use crate::execution::{positive, FillCosts, Limit};
-use crate::reporter::{EventKind, EventReason, FillReason};
+use crate::reporter::{Cause, EventKind, EventReason, FillReason};
 
 /// How badly a fill on `side` at `price` ends for the position currently held: the
 /// PnL per unit it would realize, at its fill price with the slippage it pays, as a
@@ -90,18 +90,26 @@ impl Engine {
             // not just the bar's liquidity: the margin cap and the spot clamps
             // are applied to a copy first, so an order that could only fill in
             // part books nothing at all (ADR 0010).
-            if order.tif == TimeInForce::Fok
-                && self.clamp_fill(i, order.reduce_only, &fill).size.get() + CLOSE_EPS < requested
-            {
-                self.log_event(
-                    EventKind::NotFilled,
-                    Some(order.id),
-                    Some(i),
-                    None,
-                    None,
-                    EventReason::Fok,
-                );
-                continue;
+            if order.tif == TimeInForce::Fok {
+                let (clamped, clamp) = self.clamp_fill(i, order.reduce_only, &fill);
+                let size = clamped.size.get();
+                if size + CLOSE_EPS < requested {
+                    let by = Self::held_by(clamp, fill.size.get(), requested);
+                    let why = EventReason::Fok {
+                        by,
+                        size,
+                        asked: requested,
+                    };
+                    self.log_event(
+                        EventKind::NotFilled,
+                        Some(order.id),
+                        Some(i),
+                        None,
+                        None,
+                        why,
+                    );
+                    continue;
+                }
             }
             let reason = if self.targets.placed(order.id) {
                 FillReason::Rebalance
@@ -109,7 +117,7 @@ impl Engine {
                 FillReason::Market
             };
             let arming = self.book.legs() > 0 && self.account.positions[i].qty.get() == 0.0;
-            let applied = self.apply_fill_clamped(
+            let (applied, by) = self.apply_fill_clamped(
                 i,
                 order.id,
                 reason,
@@ -128,7 +136,7 @@ impl Engine {
                     Some(i),
                     None,
                     None,
-                    EventReason::NothingFilled,
+                    EventReason::NothingFilled { by },
                 );
             } else if applied + CLOSE_EPS < requested {
                 self.log_event(
@@ -189,15 +197,26 @@ impl Engine {
         (down(wanted), made)
     }
 
-    /// Log a market order its bar filled nothing of. A bar that traded, whose budget
-    /// left nothing, refuses an all-or-nothing order for its whole size, `requested`,
-    /// where it asks any: a value order whose amount buys no lot asks none.
+    /// Log a market order its bar offered nothing of: one that printed no volume, one
+    /// whose budget left nothing, which refuses an all-or-nothing order for its whole
+    /// size, `requested`, or a value order whose amount buys no lot, which asks none.
     #[cold]
     fn market_not_filled(&mut self, order: &Order, bar: &Candle, requested: f64) {
-        let why = if order.tif == TimeInForce::Fok && positive(bar.volume) && positive(requested) {
-            EventReason::Fok
+        // a spent budget holds only an order larger than a fill can book, as it holds
+        // a clamp's, and one no larger is held by its size
+        let by = if !positive(bar.volume) {
+            Cause::NoVolume
         } else {
-            EventReason::NothingFilled
+            Self::held_by(None, 0.0, requested)
+        };
+        let why = if order.tif == TimeInForce::Fok && by == Cause::Budget {
+            EventReason::Fok {
+                by,
+                size: 0.0,
+                asked: requested,
+            }
+        } else {
+            EventReason::NothingFilled { by }
         };
         let (id, i) = (order.id, order.instrument);
         self.log_event(EventKind::NotFilled, Some(id), Some(i), None, None, why);
@@ -685,7 +704,7 @@ impl Engine {
             }
             if kind == OrderType::Limit
                 && tif == TimeInForce::Fok
-                && self.clamp_fill(i, reduce_only, &fill).size.get() + CLOSE_EPS < requested
+                && self.clamp_fill(i, reduce_only, &fill).0.size.get() + CLOSE_EPS < requested
             {
                 continue;
             }
@@ -698,7 +717,7 @@ impl Engine {
             let resting = self.book.len();
             let before = self.account.positions[i].qty.get();
             let arming = self.book.legs() > 0 && before == 0.0;
-            let applied =
+            let (applied, _) =
                 self.apply_fill_clamped(i, id, reason, reduce_only, requested, fill, costs, &bar);
             self.spend_budget(i, applied);
             let mut joined = false;
@@ -821,7 +840,7 @@ mod tests {
     };
     use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
     use crate::execution::Limit;
-    use crate::reporter::{EventKind, EventReason, FillReason, Refusal};
+    use crate::reporter::{Cause, EventKind, EventReason, FillReason, Refusal};
     use crate::sizes::{PriceRule, Sizes};
     use probatum_core::{Candle, Market, OrderType, Side, TimeInForce};
 
@@ -1149,8 +1168,9 @@ mod tests {
     #[test]
     fn a_fok_market_blocked_by_the_cash_clamp_fills_nothing() {
         // the bar has the liquidity, but spot cash affords only 50 of the 1000, and
-        // FOK is all or nothing against every clamp, not just volume (ADR 0010)
-        let mut e = Engine::new(series(), cfg()); // spot, quote 10_000, bar 1 open 200
+        // FOK is all or nothing against every clamp, not just volume (ADR 0010); the
+        // order log names the clamp and what it allowed
+        let mut e = Engine::new(series(), report_cfg()); // spot, quote 10_000, bar 1 open 200
         e.reset();
         e.order(
             Side::Buy,
@@ -1165,12 +1185,19 @@ mod tests {
         let s = e.step();
         assert_eq!(s.position, 0.0);
         assert_eq!(s.quote, 10_000.0);
+        let fok = EventReason::Fok {
+            by: Cause::SpotCash,
+            size: 50.0,
+            asked: 1000.0,
+        };
+        assert_eq!(last_reason(&e), fok);
     }
 
     #[test]
     fn a_fok_market_blocked_by_the_leverage_cap_fills_nothing() {
         let mut config = perp_cfg(); // quote 100
         config.max_leverage = 2.0;
+        config.report = true;
         let mut e = Engine::new(series(), config);
         e.reset();
         // 2x on 100 equity at the bar 1 open of 200 allows 1.0, so a FOK for 10 dies
@@ -1185,6 +1212,18 @@ mod tests {
             TimeInForce::Fok,
         );
         assert_eq!(e.step().position, 0.0);
+        let fok = EventReason::Fok {
+            by: Cause::Cap,
+            size: 1.0,
+            asked: 10.0,
+        };
+        assert_eq!(last_reason(&e), fok);
+    }
+
+    /// The reason of the last event the order log holds.
+    fn last_reason(e: &Engine) -> EventReason {
+        let events = e.reporter().expect("reporting is on").events();
+        events.last().expect("an event").reason
     }
 
     #[test]

@@ -218,8 +218,8 @@ def test_the_order_log_follows_each_order_and_keeps_a_refused_one():
                    (bought, "expired")]
 
     clamp = e.order_log()[4]
-
-    assert (clamp["size"], clamp["reason"]) == (5.0, "5 of the 20 asked fits")
+    assert clamp["size"]   == 5.0
+    assert clamp["reason"] == "the spot wallet's cash allows 5 of the 20 asked"
 
 
 def test_a_tier_table_holds_a_perp_where_its_margin_stops_carrying_it():

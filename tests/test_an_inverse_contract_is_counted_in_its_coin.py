@@ -274,3 +274,22 @@ def test_a_value_order_that_is_no_amount_is_refused_for_its_amount():
 
     assert [(event["kind"], event["reason"]) for event in played["order_log"][:2]] == [
         ("refused", "amount: -50 cannot fill"), ("placed", "market")]
+
+
+def test_a_fok_order_the_cap_cuts_is_logged_in_contracts():
+    # 2x on a wallet of 1 BTC at 60,000 carries 2 BTC of notional, 1,200 contracts of
+    # 100 dollars, so a fok buy of 2,000 fills nothing, and the order log gives both
+    # in contracts, as the account counts them
+    e = engine(bars(*[(60_000.0, 60_000.0, 60_000.0, 60_000.0)] * 2),
+               tiers=[(1e9, 2.0, 0.005, 0.0)])
+    e.reset()
+    e.order("buy", 2_000.0, tif="FOK")
+
+    assert e.step().position == 0.0
+
+    reason  = e.order_log()[-1]["reason"]
+    allowed = re.fullmatch(r"fok: the margin cap allows (\S+) of the (\S+) asked", reason)
+
+    assert allowed is not None, reason
+    assert float(allowed[1]) == pytest.approx(1_200.0, rel=1e-12)
+    assert float(allowed[2]) == pytest.approx(2_000.0, rel=1e-12)

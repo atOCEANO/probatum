@@ -10,6 +10,7 @@ use probatum_core::{Fill, Market, Price, Qty, Side, TierBasis};
 use super::{Engine, CLOSE_EPS};
 use crate::candles::printed;
 use crate::execution::positive;
+use crate::reporter::Cause;
 
 impl Engine {
     /// Clamp a fill on perp `i` so it does not grow the positions past the margin
@@ -22,10 +23,11 @@ impl Engine {
     /// side is opened. Reductions are never capped, and a position already over the
     /// cap (from an equity drop) is not force-reduced, only blocked from growing.
     /// With no cap set only an insolvent account is held, to reductions. No-op on
-    /// spot.
-    fn cap_leverage(&self, i: usize, fill: &mut Fill) {
+    /// spot. Answers the cause where it holds the fill: no equity, the last tier's
+    /// bound, tested before the margin, or the margin cap.
+    fn cap_leverage(&self, i: usize, fill: &mut Fill) -> Option<Cause> {
         if self.account.markets[i] != Market::Perp {
-            return;
+            return None;
         }
         // `clamp_fill`, the one caller, has refused a price that is not positive
         let mark = fill.price.get();
@@ -57,8 +59,9 @@ impl Engine {
         // an instrument neither a tier table nor the venue caps holds a fill back only
         // where no equity backs it
         if !self.capped[i] && equity > 0.0 {
-            return;
+            return None;
         }
+        let bound = self.last_bound(i, mark);
         // No equity backs new notional, so an insolvent account may only shrink. It
         // used to be waved through here on the grounds that liquidation handles it,
         // but liquidation cannot force-close an account that is flat, so a position
@@ -66,8 +69,12 @@ impl Engine {
         // deepened the bad debt instead of being refused. That holds with the cap
         // off as well: the cap bounds how far equity is levered, and an account
         // with none has nothing to lever (ADR 0015).
-        let max_size = if equity <= 0.0 {
-            0.0
+        let (max_size, by) = if equity <= 0.0 {
+            (0.0, Cause::Equity)
+        } else if !flipping && pos.abs() >= bound {
+            // a position at or past the last tier's bound grows no further, whatever
+            // the margin carries, as the cap tests that bound before the margin
+            (bound, Cause::LastTier)
         } else {
             let others: f64 = if beside {
                 (0..self.account.positions.len())
@@ -77,7 +84,14 @@ impl Engine {
             } else {
                 0.0
             };
-            self.max_size(i, mark, (equity - others).max(0.0))
+            let size = self.max_size(i, mark, (equity - others).max(0.0));
+            // a fill the margin carries as far as the last bound is held by the bound
+            let by = if size >= bound {
+                Cause::LastTier
+            } else {
+                Cause::Cap
+            };
+            (size, by)
         };
         // A same-side grow may keep an existing over-cap position (from an equity
         // drop) but not extend it, so the allowance is the larger of the cap and
@@ -97,7 +111,9 @@ impl Engine {
                 size = size.next_down();
             }
             fill.size = Qty(size);
+            return Some(by);
         }
+        None
     }
 
     /// Where `price` lies on instrument `i`'s adverse segment of the current bar,
@@ -206,18 +222,7 @@ impl Engine {
         }
         let mut low = 0.0;
         for tier in tiers.rows() {
-            let high = match tiers.basis() {
-                TierBasis::Notional => {
-                    // the quotient can carry a notional an ulp past the bound, where
-                    // the tier after it would be read
-                    let mut high = tier.up_to / price;
-                    while high * price > tier.up_to {
-                        high = high.next_down();
-                    }
-                    high
-                }
-                TierBasis::Quantity => tier.up_to,
-            };
+            let high = bound_at(tiers.basis(), tier.up_to, price);
             if tier.leverage > 0.0 {
                 let carried = tier.leverage * room / price;
                 if carried < high {
@@ -227,6 +232,15 @@ impl Engine {
             low = high;
         }
         low
+    }
+
+    /// The largest position instrument `i`'s tier table allows at `price`, its last
+    /// bound, or infinity where it has no table or leaves that bound open.
+    fn last_bound(&self, i: usize, price: f64) -> f64 {
+        let tiers = self.candles.tiers(i);
+        tiers.rows().last().map_or(f64::INFINITY, |tier| {
+            bound_at(tiers.basis(), tier.up_to, price)
+        })
     }
 
     /// The maintenance instrument `i`'s position keeps at `mark`, as the liquidation
@@ -263,34 +277,38 @@ impl Engine {
     /// On spot, keep the position from going below zero: a sell may not exceed the
     /// current long, so it can flatten but never open or extend a short (ADR 0008).
     /// A sell from flat is clamped to nothing. No-op on perp, where a short is a
-    /// normal signed position, and on a buy.
-    fn cap_spot_short(&self, i: usize, fill: &mut Fill) {
+    /// normal signed position, and on a buy. Answers the cause where it holds the
+    /// fill.
+    fn cap_spot_short(&self, i: usize, fill: &mut Fill) -> Option<Cause> {
         if self.account.markets[i] != Market::Spot || fill.side != Side::Sell {
-            return;
+            return None;
         }
         let pos = self.account.positions[i].qty.get();
         let sellable = pos.max(0.0);
         if fill.size.get() > sellable {
             fill.size = Qty(sellable);
+            return Some(Cause::SpotHolding);
         }
+        None
     }
 
     /// On spot, keep a buy within the cash on hand: its cost, notional plus fee,
     /// may not exceed the spot wallet's cash, so the wallet never goes negative. This
     /// is the buy-side mirror of `cap_spot_short`; spot has no borrow and no margin,
     /// so credit is refused rather than pretended (ADR 0008). No-op on perp, where
-    /// the margin cap governs, and on a sell.
-    fn cap_spot_buy(&self, i: usize, fill: &mut Fill) {
+    /// the margin cap governs, and on a sell. Answers the cause where it holds the
+    /// fill.
+    fn cap_spot_buy(&self, i: usize, fill: &mut Fill) -> Option<Cause> {
         if self.account.markets[i] != Market::Spot || fill.side != Side::Buy {
-            return;
+            return None;
         }
         let price = fill.price.get();
         if !positive(price) {
-            return;
+            return None;
         }
         if self.account.spot_cash <= 0.0 {
             fill.size = Qty(0.0);
-            return;
+            return Some(Cause::SpotCash);
         }
         let fee_rate = if fill.is_taker {
             self.costs[i].fee_taker
@@ -300,7 +318,9 @@ impl Engine {
         let affordable = self.account.spot_cash / (price * (1.0 + fee_rate));
         if fill.size.get() > affordable {
             fill.size = Qty(affordable);
+            return Some(Cause::SpotCash);
         }
+        None
     }
 
     /// `size` rounded down to instrument `i`'s lot, as sizes hold a fill after its
@@ -310,13 +330,18 @@ impl Engine {
     }
 
     /// Every risk clamp applied to a copy of `fill` on instrument `i` without
-    /// booking anything: the perp margin cap, the spot short and cash clamps, then
-    /// reduce_only. Returns the fill that would actually be booked, so an
+    /// booking anything: reduce_only, then the perp margin cap or the spot short and
+    /// cash clamps. Returns the fill that would actually be booked, so an
     /// all-or-nothing order can be judged against the real fillable size rather than
-    /// the raw liquidity the fill model offered (ADR 0010). A refused fill comes
-    /// back sized zero.
+    /// the raw liquidity the fill model offered (ADR 0010), and the last clamp that
+    /// reduced it before the lot. A refused fill comes back sized zero.
     #[inline(always)]
-    pub(super) fn clamp_fill(&self, i: usize, reduce_only: bool, fill: &Fill) -> Fill {
+    pub(super) fn clamp_fill(
+        &self,
+        i: usize,
+        reduce_only: bool,
+        fill: &Fill,
+    ) -> (Fill, Option<Cause>) {
         let mut fill = *fill;
         // size is a positive magnitude; a non-positive or non-finite fill is not a
         // real trade, so it moves nothing and pays no fee. Neither is a price at or
@@ -330,21 +355,25 @@ impl Engine {
         let price = fill.price.get();
         if !positive(size) || !positive(price) {
             fill.size = Qty(0.0);
-            return fill;
+            return (fill, None);
         }
-        self.cap_leverage(i, &mut fill);
-        self.cap_spot_short(i, &mut fill);
-        self.cap_spot_buy(i, &mut fill);
+        let mut by = None;
         if reduce_only {
             let pos = self.account.positions[i].qty.get();
             let reduces =
                 (pos > 0.0 && fill.side == Side::Sell) || (pos < 0.0 && fill.side == Side::Buy);
             if !reduces {
                 fill.size = Qty(0.0);
-                return fill;
+                return (fill, Some(Cause::ReduceOnly));
             }
-            fill.size = Qty(fill.size.get().min(pos.abs()));
+            if size > pos.abs() {
+                fill.size = Qty(pos.abs());
+                by = Some(Cause::ReduceOnly);
+            }
         }
+        by = self.cap_leverage(i, &mut fill).or(by);
+        by = self.cap_spot_short(i, &mut fill).or(by);
+        by = self.cap_spot_buy(i, &mut fill).or(by);
         // with sizes on, what the clamps leave is rounded down to the lot
         if self.config.sizes {
             fill.size = self.lot_down(i, fill.size);
@@ -359,7 +388,35 @@ impl Engine {
         if clamped.is_nan() || clamped <= CLOSE_EPS {
             fill.size = Qty(0.0);
         }
-        fill
+        (fill, by)
+    }
+
+    /// What held a fill the bar offered `offered` of, where its order asked
+    /// `requested`: the last clamp that reduced it, else the liquidity budget where
+    /// the bar offered less than was asked, else the lot (Specification, The fill
+    /// log and the order log).
+    pub(super) fn held_by(clamp: Option<Cause>, offered: f64, requested: f64) -> Cause {
+        clamp.unwrap_or(if offered + CLOSE_EPS < requested {
+            Cause::Budget
+        } else {
+            Cause::Lot
+        })
+    }
+}
+
+/// A tier's bound `up_to` as a size at `price`.
+fn bound_at(basis: TierBasis, up_to: f64, price: f64) -> f64 {
+    match basis {
+        TierBasis::Notional => {
+            // the quotient can carry a notional an ulp past the bound, where the tier
+            // after it would be read
+            let mut high = up_to / price;
+            while high * price > up_to {
+                high = high.next_down();
+            }
+            high
+        }
+        TierBasis::Quantity => up_to,
     }
 }
 
@@ -370,9 +427,10 @@ mod tests {
         cfg, crash_series, flat_series, ohlc, perp_cfg, report_cfg, series, universe,
     };
     use crate::engine::{Engine, EngineConfig, Intrabar, CLOSE_EPS};
-    use crate::reporter::{EventKind, FillReason};
+    use crate::reporter::{Cause, EventKind, EventReason, FillReason};
     use probatum_core::{
-        Candle, Fill, Market, OrderType, Price, Qty, Side, Tier, TierBasis, Tiers, TimeInForce,
+        Candle, Fill, Market, OrderId, OrderType, Price, Qty, Side, Tier, TierBasis, Tiers,
+        TimeInForce,
     };
 
     #[test]
@@ -858,7 +916,7 @@ mod tests {
                 is_taker: true,
             };
             assert_eq!(
-                e.clamp_fill(0, false, &fill).size.get(),
+                e.clamp_fill(0, false, &fill).0.size.get(),
                 0.0,
                 "{size} at {price}"
             );
@@ -1130,7 +1188,9 @@ mod tests {
         // 990 of margin at 10x behind a long of 100 from 100, fees of 0.1%. A sell
         // stop for 200 fills at 90.18, where equity is 8 before the fee, but closing
         // the long costs 9.018 of it: the close leaves nothing, so nothing is opened,
-        // and the sale is lifted to where the wallet runs out, 9,010 / 99.9
+        // and the sale is lifted to where the wallet runs out, 9,010 / 99.9. The clamp
+        // names the margin wallet's equity, and on a reduce-only stop, which
+        // reduce_only holds to the long before the cap is read, reduce_only
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let bars = Candles::new(vec![
             flat(100.0),
@@ -1145,25 +1205,235 @@ mod tests {
             report: true,
             ..perp_cfg()
         };
+        for (reduce_only, by) in [(false, Cause::Equity), (true, Cause::ReduceOnly)] {
+            let mut e = Engine::new(bars.clone(), config);
+            e.reset();
+            e.market_buy(100.0);
+            e.step();
+            let id = e.stop(Side::Sell, 200.0, 90.18, reduce_only);
+            let last = e.step();
+            let reporter = e.reporter().expect("reporting is on");
+            let stop = reporter.fills().last().expect("the stop filled");
+            assert_eq!(stop.size, 100.0);
+            assert!(
+                (stop.price - 9_010.0 / 99.9).abs() < 1e-9,
+                "sold at {}",
+                stop.price
+            );
+            assert_eq!(reporter.legs()[2].position, 0.0);
+            assert!(
+                last.margin_cash.abs() < 1e-9,
+                "the wallet holds {}",
+                last.margin_cash
+            );
+            let asked = EventReason::Fits { asked: 200.0, by };
+            assert_eq!(held(&e, id), (Some(100.0), asked), "{reduce_only}");
+        }
+    }
+
+    /// The size and the reason of the last clamp or miss the order log holds of `id`.
+    fn held(e: &Engine, id: Option<OrderId>) -> (Option<f64>, EventReason) {
+        let event = e
+            .reporter()
+            .expect("reporting is on")
+            .events()
+            .iter()
+            .rev()
+            .find(|event| {
+                event.order == id && matches!(event.kind, EventKind::Clamped | EventKind::NotFilled)
+            })
+            .expect("a clamp or a miss is logged");
+        (event.size, event.reason)
+    }
+
+    #[test]
+    fn a_spot_clamp_names_the_wallet_that_held_it() {
+        // the Specification's example: 1,000 pays for 9.99001 of a buy of 20 at 100
+        // with a taker fee of 0.1%, and a sale of 20 is then held to the holding
+        let bars = Candles::new(vec![ohlc(100.0, 100.0, 100.0, 100.0, 1e6); 3]);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            fee_taker: 0.001,
+            ..report_cfg()
+        };
         let mut e = Engine::new(bars, config);
+        e.reset();
+        let buy = e.market_buy(20.0);
+        let bought = e.step().position;
+        let by = Cause::SpotCash;
+        let cash = EventReason::Fits { asked: 20.0, by };
+        assert_eq!(held(&e, buy), (Some(bought), cash));
+        let sale = e.market_sell(20.0);
+        e.step();
+        let by = Cause::SpotHolding;
+        let holding = EventReason::Fits { asked: 20.0, by };
+        assert_eq!(held(&e, sale), (Some(bought), holding));
+    }
+
+    #[test]
+    fn the_cap_and_reduce_only_name_themselves_where_they_hold_a_fill() {
+        // the Specification's examples: 10,000 at 20x carries 3.33333 of a buy of 5 at
+        // 60,000, a reduce-only sale of 5 on that long is held to it, and a second,
+        // with nothing left to reduce, fills nothing
+        let bars = Candles::new(vec![ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6); 4]);
+        let config = EngineConfig {
+            quote: 10_000.0,
+            max_leverage: 20.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let buy = e.market_buy(5.0);
+        let long = e.step().position;
+        assert!((long - 10.0 / 3.0).abs() < 1e-9, "bought {long}");
+        let cap = EventReason::Fits {
+            asked: 5.0,
+            by: Cause::Cap,
+        };
+        assert_eq!(held(&e, buy), (Some(long), cap));
+        let by = Cause::ReduceOnly;
+        let reduce = |e: &mut Engine| e.place_market(0, Side::Sell, 5.0, true, TimeInForce::Ioc);
+        let sale = reduce(&mut e);
+        e.step();
+        let asked = EventReason::Fits { asked: 5.0, by };
+        assert_eq!(held(&e, sale), (Some(long), asked));
+        let none = reduce(&mut e);
+        e.step();
+        assert_eq!(held(&e, none), (None, EventReason::NothingFilled { by }));
+    }
+
+    #[test]
+    fn the_last_tier_names_itself_before_the_margin_is_read() {
+        // one quantity tier of 1 BTC at 20x with no maintenance behind 10,000: a buy
+        // of 5 at 60,000 is held at the bound, and at 52,000, where equity is 2,000
+        // against a requirement of 2,600, a buy of 1 more fills nothing for the bound,
+        // though the account is over its cap as well
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let tiers = Tiers::new(TierBasis::Quantity, vec![tier(1.0, 20.0)]).expect("a table");
+        let bars = Candles::new(vec![
+            flat(60_000.0),
+            flat(60_000.0),
+            flat(52_000.0),
+            flat(52_000.0),
+        ])
+        .with_tiers(tiers);
+        let config = EngineConfig {
+            quote: 10_000.0,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let buy = e.market_buy(5.0);
+        assert_eq!(e.step().position, 1.0);
+        let by = Cause::LastTier;
+        assert_eq!(
+            held(&e, buy),
+            (Some(1.0), EventReason::Fits { asked: 5.0, by })
+        );
+        e.step();
+        let more = e.market_buy(1.0);
+        assert_eq!(e.step().position, 1.0);
+        assert_eq!(held(&e, more), (None, EventReason::NothingFilled { by }));
+    }
+
+    #[test]
+    fn with_the_cap_off_a_flip_is_held_to_its_close_where_its_fee_leaves_no_equity() {
+        // 990 of margin behind a long of 100 from 100 has 8 of equity at 90.18, and the
+        // close pays 9.018 of it, so nothing backs the short: a sale of 200 is held to
+        // the 100 it closes, the margin wallet's equity named (Specification, The cap)
+        let config = EngineConfig {
+            quote: 1_000.0,
+            fee_taker: 0.001,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(flat_series(), config);
         e.reset();
         e.market_buy(100.0);
         e.step();
-        e.stop(Side::Sell, 200.0, 90.18, false);
-        let last = e.step();
-        let reporter = e.reporter().expect("reporting is on");
-        let stop = reporter.fills().last().expect("the stop filled");
-        assert_eq!(stop.size, 100.0);
-        assert!(
-            (stop.price - 9_010.0 / 99.9).abs() < 1e-9,
-            "sold at {}",
-            stop.price
+        let sale = Fill {
+            side: Side::Sell,
+            size: Qty(200.0),
+            price: Price(90.18),
+            is_taker: true,
+        };
+        let (kept, by) = e.clamp_fill(0, false, &sale);
+        assert_eq!((kept.size.get(), by), (100.0, Some(Cause::Equity)));
+    }
+
+    #[test]
+    fn a_reduce_only_sale_the_budget_holds_to_its_position_names_the_budget() {
+        // the budget allows 5 of a reduce-only sale of 10 on a holding of 5, and
+        // reduce_only takes nothing more off it, so the clamp names the budget, the
+        // last rule that reduced the size
+        let bars = Candles::new(vec![ohlc(100.0, 100.0, 100.0, 100.0, 10.0); 3]);
+        let config = EngineConfig {
+            budget: 0.5,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(5.0);
+        assert_eq!(e.step().position, 5.0);
+        let sale = e.place_market(0, Side::Sell, 10.0, true, TimeInForce::Ioc);
+        assert_eq!(e.step().position, 0.0);
+        let by = Cause::Budget;
+        assert_eq!(
+            held(&e, sale),
+            (Some(5.0), EventReason::Fits { asked: 10.0, by })
         );
-        assert_eq!(reporter.legs()[2].position, 0.0);
-        assert!(
-            last.margin_cash.abs() < 1e-9,
-            "the wallet holds {}",
-            last.margin_cash
-        );
+    }
+
+    #[test]
+    fn an_order_no_fill_can_book_is_held_by_its_size_on_a_spent_budget() {
+        // a fill of 1e-9 or less books nothing, so an order of that size is held by its
+        // size, all or nothing or not, and never by the budget the dead row before it
+        // left at nothing (Specification, Sizes and dust)
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 0.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+        ]);
+        for tif in [TimeInForce::Ioc, TimeInForce::Fok] {
+            let mut e = Engine::new(bars.clone(), report_cfg());
+            e.reset();
+            let market = OrderType::Market;
+            let id = e.order(Side::Buy, CLOSE_EPS, market, None, None, false, false, tif);
+            e.step();
+            let by = Cause::Lot;
+            assert_eq!(
+                held(&e, id),
+                (None, EventReason::NothingFilled { by }),
+                "{tif:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_market_order_a_spent_budget_holds_back_names_the_budget_as_its_tif_reads() {
+        // the dead row leaves the budget at nothing, so an ioc buy of 2 fills nothing and
+        // a fok one is refused whole, each naming the budget in its own form
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 0.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+        ]);
+        let by = Cause::Budget;
+        let fok = EventReason::Fok {
+            by,
+            size: 0.0,
+            asked: 2.0,
+        };
+        let cases = [
+            (TimeInForce::Ioc, EventReason::NothingFilled { by }),
+            (TimeInForce::Fok, fok),
+        ];
+        for (tif, reason) in cases {
+            let mut e = Engine::new(bars.clone(), report_cfg());
+            e.reset();
+            let market = OrderType::Market;
+            let id = e.order(Side::Buy, 2.0, market, None, None, false, false, tif);
+            e.step();
+            assert_eq!(held(&e, id).1, reason, "{tif:?}");
+        }
     }
 }

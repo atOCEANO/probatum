@@ -71,6 +71,13 @@ def first_zero(f, lo=0.0, hi=1.0):
     return hi
 
 
+def allows(size, asked):
+    """The order log's account of a clamp: `size` of the `asked`, or none of it."""
+    if size > 0.0:
+        return f"allows {size} of the {asked} asked"
+    return f"allows none of the {asked} asked"
+
+
 def booked(q, signed, size, held):
     """`size`, less the ulps by which booking it on a position of `q` would round
     the position past `held`, into a tier that asks more than the cap allowed;
@@ -1010,8 +1017,8 @@ class Simulator:
         placement stands, and a refused one never does."""
         asked = order.pop("asked", None)
         if asked is not None:
-            self.log("clamped", order, f"size: {asked} held to {order['size']}",
-                     size=order["size"])
+            self.log("clamped", order, "the maximum order quantity "
+                     + allows(order["size"], asked), size=order["size"])
 
 
     def crossing(self, order, others):
@@ -2242,7 +2249,9 @@ class Simulator:
             self.hit("a transfer")
             if moved < amount:
                 self.hit("a transfer clamped")
-                self.log("clamped", None, f"transfer: {moved} of the {amount} asked",
+                wallet = ("the spot wallet's cash" if transfer["to"] == "margin"
+                          else "the margin wallet's free cash")
+                self.log("clamped", None, f"transfer: {wallet} {allows(moved, amount)}",
                          size=moved)
 
             if transfer["to"] == "margin":
@@ -2386,7 +2395,8 @@ class Simulator:
                 # nothing is weighed against it
                 self.hit("a market order filling nothing")
                 order["status"] = "expired"
-                self.log("not_filled", order, "nothing could fill on its bar")
+                self.log("not_filled", order,
+                         "nothing could fill: the bar printed no volume")
                 continue
 
             side   = order["side"]
@@ -2410,16 +2420,29 @@ class Simulator:
                 # where the lots the amount buys are more than the largest order
                 rounded, most = self.lot_down(i, bought), self.largest(i)
                 if self.venue.sizes and rounded > most:
-                    self.log("clamped", order, f"size: {rounded} held to {most}",
-                             size=most)
+                    self.log("clamped", order, "the maximum order quantity "
+                             + allows(most, rounded), size=most)
 
             if budget < wanted:
                 self.hit("the liquidity budget")
-            size = self.lot_down(i, self.clamp(i, side, allowed, price,
-                                               order["reduce_only"], self.taker(i)))
+            if order["value"] is not None:
+                # Orders, Units: the size a value order fills is rounded down to the
+                # lot before the wallet's clamps
+                allowed = self.lot_down(i, allowed)
+
+            # the order log: no clamp acts on a fill the bar offers nothing of
+            size, by = (self.clamp(i, side, allowed, price, order["reduce_only"],
+                                   self.taker(i)) if allowed > 0.0 else (0.0, None))
+            size = self.lot_down(i, size)
+            # Sizes and dust: a size at or below the dust moves nothing, so it allows
+            # none of what was asked
+            if size <= self.dust(i):
+                size = 0.0
 
             # a value order asks the lots its amount buys
-            asked         = self.lot_down(i, wanted)
+            asked = self.lot_down(i, wanted)
+            if by is None and allowed < asked - self.dust(i):
+                by = "the liquidity budget"
             whole         = size >= asked - self.dust(i)
             refused_whole = order["tif"] == "fok" and not whole
 
@@ -2433,14 +2456,20 @@ class Simulator:
                 self.hit("a fok order filling nothing" if refused_whole
                          else "a market order filling nothing")
                 order["status"] = "expired"
-                self.log("not_filled", order, "fok: the whole size could not"
-                         if refused_whole else "nothing could fill on its bar")
+                if refused_whole:
+                    why = f"fok: {by or 'the lot'} {allows(size, asked)}"
+                elif by is None:
+                    why = "nothing could fill: the size is below what a fill can book"
+                else:
+                    why = f"nothing could fill: {by} allows none"
+                self.log("not_filled", order, why)
                 continue
 
             self.hit("a value order" if order["value"] is not None
                      else "a market order")
             if not whole:
-                self.log("clamped", order, f"{size} of the {asked} asked fits", size=size)
+                self.log("clamped", order, f"{by or 'the lot'} {allows(size, asked)}",
+                         size=size)
 
             # what is left can round to a hair below zero, and a bar never owes volume
             self.budget_left[i] = max(budget - size, 0.0)
@@ -2626,7 +2655,8 @@ class Simulator:
                 if (side == "buy" and bar.open <= order["price"]) or \
                         (side == "sell" and bar.open >= order["price"]):
                     self.hit("a post_only limit its first bar opened through")
-                    self.cancel(order["id"], "post_only: the first bar opened through")
+                    self.cancel(order["id"],
+                                "post_only, and the first bar opened through the limit")
                     continue
             if bar.volume <= 0.0:
                 continue                     # a bar with no volume fills nothing
@@ -2690,8 +2720,8 @@ class Simulator:
                 # fill opens at or through is cancelled there, as at the open
                 self.hit("a post_only limit the part of its first bar after a fill "
                          "opened through")
-                self.cancel(order["id"], "post_only: the part of the first bar after a "
-                                         "fill opened through")
+                self.cancel(order["id"], "post_only, and the part of its first bar after "
+                                         "a fill opened through the limit")
                 continue
 
             remaining = (abs(self.position[i]) if order["size"] is None
@@ -2707,8 +2737,8 @@ class Simulator:
                                                adjustment=0.0, reference=reference)
 
             rate = self.taker(i) if taker else self.maker(i)
-            size = self.lot_down(i, self.clamp(i, side, allowed, price,
-                                               order["reduce_only"], rate))
+            size, by = self.clamp(i, side, allowed, price, order["reduce_only"], rate)
+            size  = self.lot_down(i, size)
             whole = size >= self.lot_down(i, remaining) - self.dust(i)
             if size <= self.dust(i) or (order["tif"] == "fok" and not whole):
                 continue
@@ -2717,7 +2747,9 @@ class Simulator:
             if full is not None and full != (reference, taker):
                 self.hit("an exit priced from its position's fill")
             if not whole:
-                self.log("clamped", order, f"{size} of the {remaining} asked fits",
+                if by is None and allowed < remaining - self.dust(i):
+                    by = "the liquidity budget"
+                self.log("clamped", order, f"{by or 'the lot'} {allows(size, remaining)}",
                          size=size)
 
             self.budget_left[i] = max(budget - size, 0.0)
@@ -2864,32 +2896,37 @@ class Simulator:
 
 
     def clamp(self, i, side, size, price, reduce_only, rate):
-        """Wallets, Orders and Margin: each clamp a fill passes, in the page's order."""
-        q = self.position[i]
+        """Wallets, Orders and Margin: each clamp a fill passes, in the page's order,
+        and the last that reduced it, as the order log names it, or None."""
+        q  = self.position[i]
+        by = None
 
         if reduce_only:
             reduces = (q > 0.0 and side == "sell") or (q < 0.0 and side == "buy")
             if not reduces:
                 self.hit("a reduce_only order with nothing to reduce")
-                return 0.0
+                return 0.0, "reduce_only"
             if size > abs(q):
                 self.hit("a reduce_only order held to the position")
+                by = "reduce_only"
             size = min(size, abs(q))
 
         if self.instruments[i].kind == "spot":
             if side == "sell":
                 if size > max(q, 0.0):
                     self.hit("a spot sale held to the holding")
+                    by = "the spot wallet's holding"
                 size = min(size, max(q, 0.0))
             else:
                 affordable = self.spot_cash / (price * (1.0 + rate))
                 if size > affordable:
                     self.hit("a spot buy held to its cash")
+                    by = "the spot wallet's cash"
                 size = min(size, max(affordable, 0.0))
+            return max(size, 0.0), by
 
-            return max(size, 0.0)
-
-        return self.cap(i, side, max(size, 0.0), price, rate)
+        size, held = self.cap(i, side, max(size, 0.0), price, rate)
+        return size, held or by
 
 
     def cap(self, i, side, size, price, rate):
@@ -2897,13 +2934,15 @@ class Simulator:
         measured before the fill's own fee but, for a flip, after the fee at `rate` on
         the side it closes; a growing fill is clamped to what it allows, an account
         over the cap may not grow, and one at or below zero equity may only shrink. A
-        flip's new side fits the cap from zero."""
+        flip's new side fits the cap from zero. Returns the size, and the rule that
+        held it or None: no equity, the last tier's bound or the margin cap, tested
+        in that order."""
         q        = self.position[i]
         signed   = size if side == "buy" else -size
         reducing = min(size, abs(q)) if q * signed < 0.0 else 0.0
         growing  = size - reducing
         if growing <= self.dust(i):
-            return size
+            return size, None
 
         # the other legs sit where the fill sits on the path of the position it
         # flips or adds to, or from flat of the side it opens
@@ -2925,7 +2964,7 @@ class Simulator:
         if equity <= 0.0:
             self.hit("a growing fill refused at no equity")
             held_back()
-            return reducing
+            return reducing, "the margin wallet's equity"
 
         base  = 0.0 if q * signed <= 0.0 else abs(q)
         sizes = {j: abs(self.position[j]) for j in self.perps()}
@@ -2950,20 +2989,23 @@ class Simulator:
             # never does, up to the last tier's bound
             if need(limit) <= need(0.0):
                 if limit == growing:
-                    return size
+                    return size, None
                 self.hit("a fill held at the last tier's bound")
-                return booked(q, signed, reducing + limit, base + limit)
+                return booked(q, signed, reducing + limit, base + limit), \
+                    "the largest position"
             self.hit("an account over the cap kept from growing")
             held_back()
             extra = last_within(lambda x: need(0.0) - need(x), 0.0, limit)
-            return booked(q, signed, reducing + extra, base + extra)
+            return booked(q, signed, reducing + extra, base + extra), "the margin cap"
 
         if limit < growing:
             self.hit("a fill held at the last tier's bound")
 
         if need(limit) <= equity:
-            return size if limit == growing else booked(q, signed, reducing + limit,
-                                                        base + limit)
+            if limit == growing:
+                return size, None
+            return booked(q, signed, reducing + limit, base + limit), \
+                "the largest position"
 
         self.hit("a fill held to the margin cap")
         held_back()
@@ -2975,7 +3017,7 @@ class Simulator:
                for tier in inst.tiers[:-1]):
             self.hit("a fill held at a tier's bound")
 
-        return booked(q, signed, reducing + extra, base + extra)
+        return booked(q, signed, reducing + extra, base + extra), "the margin cap"
 
 
     def bound(self, i, side, size, price, bar, rate, costs):

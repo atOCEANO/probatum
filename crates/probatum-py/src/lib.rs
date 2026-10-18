@@ -28,7 +28,9 @@ use probatum_core::{
     Candle, Market, Order, OrderId, OrderType, Side, State, Tier, TierBasis, TierError, Tiers,
     TimeInForce, Wallet,
 };
-use probatum_engine::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal};
+use probatum_engine::reporter::{
+    Cause, EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal,
+};
 use probatum_engine::schedule::every;
 use probatum_engine::{
     run_from, Action, Array, Barrier, BatchSnapshot, Candles, Clock, Engine as BarEngine,
@@ -1493,6 +1495,30 @@ fn refusal_text(why: Refusal) -> String {
     }
 }
 
+/// The rule `by` names, as the order log writes it.
+fn cause_text(by: Cause) -> &'static str {
+    match by {
+        Cause::Budget => "the liquidity budget",
+        Cause::ReduceOnly => "reduce_only",
+        Cause::SpotHolding => "the spot wallet's holding",
+        Cause::SpotCash => "the spot wallet's cash",
+        Cause::Equity => "the margin wallet's equity",
+        Cause::LastTier => "the largest position",
+        Cause::Cap => "the margin cap",
+        Cause::NoVolume => "the bar's volume",
+        Cause::Lot => "the lot",
+    }
+}
+
+/// What a rule allows of `asked`: `size` of it, or none.
+fn allows(size: f64, asked: f64) -> String {
+    if size > 0.0 {
+        format!("allows {size} of the {asked} asked")
+    } else {
+        format!("allows none of the {asked} asked")
+    }
+}
+
 /// The reason an event happened, as the order log writes it.
 fn reason_text(event: &OrderEvent) -> String {
     let size = event.size.unwrap_or(0.0);
@@ -1506,20 +1532,39 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::Replace => "replace".to_string(),
         EventReason::Refused(why) => refusal_text(why),
         EventReason::Replacing(why) => format!("replace: {}", refusal_text(why)),
-        EventReason::Fits { asked } => format!("{size} of the {asked} asked fits"),
-        EventReason::Transfer { asked } => format!("transfer: {size} of the {asked} asked"),
-        EventReason::HeldTo { asked } => format!("size: {asked} held to {size}"),
-        EventReason::NothingFilled => "nothing could fill on its bar".to_string(),
-        EventReason::Fok => "fok: the whole size could not".to_string(),
+        EventReason::Fits { asked, by } => format!("{} {}", cause_text(by), allows(size, asked)),
+        EventReason::Transfer { asked, to } => {
+            let wallet = match to {
+                Wallet::Margin => "the spot wallet's cash",
+                Wallet::Spot => "the margin wallet's free cash",
+            };
+            format!("transfer: {wallet} {}", allows(size, asked))
+        }
+        EventReason::HeldTo { asked } => {
+            format!("the maximum order quantity {}", allows(size, asked))
+        }
+        EventReason::NothingFilled {
+            by: Cause::NoVolume,
+        } => "nothing could fill: the bar printed no volume".to_string(),
+        EventReason::NothingFilled { by: Cause::Lot } => {
+            "nothing could fill: the size is below what a fill can book".to_string()
+        }
+        EventReason::NothingFilled { by } => {
+            format!("nothing could fill: {} allows none", cause_text(by))
+        }
+        EventReason::Fok { by, size, asked } => {
+            format!("fok: {} {}", cause_text(by), allows(size, asked))
+        }
         EventReason::MarketBar => "a market order takes one bar".to_string(),
         EventReason::OneBar(TimeInForce::Fok) => "fok: one bar".to_string(),
         EventReason::OneBar(_) => "ioc: one bar".to_string(),
         EventReason::CancelledByAccount => "cancelled by the account".to_string(),
         EventReason::OpenedThrough { inside: false } => {
-            "post_only: the first bar opened through".to_string()
+            "post_only, and the first bar opened through the limit".to_string()
         }
         EventReason::OpenedThrough { inside: true } => {
-            "post_only: the part of the first bar after a fill opened through".to_string()
+            "post_only, and the part of its first bar after a fill opened through the limit"
+                .to_string()
         }
         EventReason::PositionClosed => "its position closed".to_string(),
         EventReason::PartnerFilled => "its OCO partner filled".to_string(),

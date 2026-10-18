@@ -767,9 +767,9 @@ Each entry in `order_log()` is one event in an order's life ([ADR 0022](Decision
 | `order`, `instrument` | The order and its instrument, both `None` for a clamped transfer. |
 | `size` | What a fill or a clamp came to, else `None`. |
 | `price` | What a fill was booked at, else `None`. |
-| `reason` | Why, in words: `max_open_orders: 8 already resting`, `5 of the 20 asked fits`, `ioc: one bar`, `liquidation`. |
+| `reason` | Why, in words: `max_open_orders: 8 already resting`, `the spot wallet's cash allows 5 of the 20 asked`, `nothing could fill: the liquidity budget allows none`, `ioc: one bar`, `liquidation`. |
 
-A refused placement still returns `None`, and the log holds it under the id it would have had, with its reason.
+A refused placement still returns `None`, and the log holds it under the id it would have had, with its reason. A clamp, a market order's miss and a `fok` market order that could not fill whole each name the rule that held them ([Specification](Specification.md#the-fill-log-and-the-order-log)): `the liquidity budget`, `reduce_only`, `the spot wallet's holding`, `the spot wallet's cash`, `the margin wallet's equity`, `the largest position`, which is the last tier's bound, or `the margin cap`, as in `fok: the margin cap allows 3.3333333333333335 of the 5 asked`; a market order that nothing could fill reads `nothing could fill: the bar printed no volume` or `nothing could fill: the size is below what a fill can book` where no rule held it. An `ioc` limit a rule empties, or a `fok` limit one holds short of its size, logs nothing on its bar and expires as `ioc: one bar` or `fok: one bar`. A hold to the largest order reads `the maximum order quantity allows 1 of the 5 asked`, and a clamped transfer names the wallet it leaves, as in `transfer: the spot wallet's cash allows 600 of the 1000 asked` or `transfer: the margin wallet's free cash allows 600 of the 1000 asked`. The numbers are printed as the engine holds them, with no unit.
 
 <br>
 

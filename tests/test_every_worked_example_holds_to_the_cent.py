@@ -199,6 +199,10 @@ def test_a_spot_buy_is_clamped_to_what_its_cash_pays_for():
     assert sim.position[0] == pytest.approx(9.99001, abs=5e-6)
     assert [e["kind"] for e in sim.events] == ["placed", "clamped", "filled", "expired"]
 
+    clamp = sim.events[1]
+    assert clamp["reason"] == (f"the spot wallet's cash allows {clamp['size']} of the "
+                               f"20.0 asked")
+
 
 def test_a_transfer_out_of_margin_moves_its_cash_but_never_its_unrealized_profit():
     venue = Venue(
@@ -222,20 +226,28 @@ def test_a_transfer_out_of_margin_moves_its_cash_but_never_its_unrealized_profit
 
 
 def test_with_the_cap_off_a_transfer_takes_a_losing_margin_wallet_to_its_trigger():
-    sim = run(hourly(4), [[flat(100.0)], [flat(100.0)], [flat(95.0)], [flat(95.0)]],
+    # and a perpetual buy after the takeover finds the margin wallet with no equity
+    sim = run(hourly(5), [[flat(100.0)], [flat(100.0)], [flat(95.0)], [flat(95.0)],
+                          [flat(95.0)]],
               [Instrument("BTCUSDT")], Venue(balance=1_000.0, maker=0.0, taker=0.0,
                                              leverage=0.0),
               script={0: [("buy", dict(instrument=0, size=10.0))],
-                      2: [("transfer", dict(amount=2_000.0, to="spot"))]})
-
+                      2: [("transfer", dict(amount=2_000.0, to="spot"))],
+                      3: [("buy", dict(instrument=0, size=1.0))]})
     [clamp] = [e for e in sim.events if e["kind"] == "clamped"]
 
-    assert clamp["size"]   == 950.0
+    assert clamp["size"] == 950.0
+    assert clamp["reason"] == ("transfer: the margin wallet's free cash allows 950.0 of "
+                               "the 2000.0 asked")
     assert sim.position[0] == 0.0
     assert (sim.spot_cash, sim.margin_cash) == (950.0, 0.0)
 
     [close] = [f for f in sim.fills if f["order"] is None]
     assert (close["bar"], close["price"]) == (3, 95.0)
+
+    [missed] = [e for e in sim.events if e["kind"] == "not_filled"]
+    assert (missed["order"], missed["reason"]) == (
+        2, "nothing could fill: the margin wallet's equity allows none")
 
 
 def test_a_fill_pays_its_size_times_its_price_times_the_fee():
@@ -360,6 +372,10 @@ def test_an_ioc_limit_expires_after_its_first_bar_and_a_partial_fok_fills_nothin
 
     assert sim.fills == []
     assert [sim.orders[k]["status"] for k in (1, 2)] == ["expired", "expired"]
+
+    [fok] = [e["reason"] for e in sim.events if e["kind"] == "not_filled"]
+    assert fok.startswith("fok: the spot wallet's cash allows ")
+    assert fok.endswith(" of the 5.0 asked")
 
 
 def test_a_bracket_placed_with_its_entry_arms_when_the_entry_fills():
@@ -487,6 +503,10 @@ def test_a_budget_of_a_tenth_of_50_lets_five_orders_of_2_fill_2_2_and_1():
     assert [f["size"] for f in sim.fills] == pytest.approx([2.0, 2.0, 1.0])
     assert [e["kind"] for e in sim.events if e["order"] in (4, 5)] == [
         "placed", "placed", "not_filled", "not_filled"]
+
+    held = [e["reason"] for e in sim.events if e["kind"] in ("clamped", "not_filled")]
+    assert held == ["the liquidity budget allows 1.0 of the 2.0 asked"] + [
+        "nothing could fill: the liquidity budget allows none"] * 2
 
 
 def test_six_bars_estimate_a_spread_of_0_1027_percent():
@@ -731,6 +751,30 @@ def test_twenty_times_ten_thousand_lets_a_buy_of_5_bitcoin_fill_3_33333():
 
     assert sim.fills[0]["size"] == pytest.approx(3.33333, abs=5e-6)
     assert [e["kind"] for e in sim.events] == ["placed", "clamped", "filled", "expired"]
+
+    size = sim.fills[0]["size"]
+    assert sim.events[1]["reason"] == f"the margin cap allows {size} of the 5.0 asked"
+
+
+def test_a_reduce_only_sale_of_3_on_a_long_of_1_fills_1_and_on_nothing_fills_none():
+    bars  = [[flat(60_000.0)] for _ in range(4)]
+    venue = Venue(balance=10_000.0, maker=0.0, taker=0.0, leverage=20.0)
+    sim   = run(hourly(4), bars, [Instrument("BTCUSDT")], venue,
+                script={0: [("buy", dict(instrument=0, size=1.0))],
+                        1: [("sell", dict(instrument=0, size=3.0, reduce_only=True))],
+                        2: [("sell", dict(instrument=0, size=3.0, reduce_only=True))]})
+
+    held = [(e["order"], e["reason"]) for e in sim.events
+            if e["kind"] in ("clamped", "not_filled")]
+    assert held == [(2, "reduce_only allows 1.0 of the 3.0 asked"),
+                    (3, "nothing could fill: reduce_only allows none")]
+
+    # without reduce_only the sale flips the account short by 2, which the cap allows
+    flip = run(hourly(3), bars[:3], [Instrument("BTCUSDT")], venue,
+               script={0: [("buy", dict(instrument=0, size=1.0))],
+                       1: [("sell", dict(instrument=0, size=3.0))]})
+
+    assert flip.position[0] == -2.0
 
 
 def bitcoin_and_ether(row_two, decisions, ether=None, **venue):

@@ -701,7 +701,7 @@ mod tests {
         ABSENT,
     };
     use crate::engine::{Engine, EngineConfig};
-    use crate::reporter::{EventKind, EventReason, OrderEvent, Refusal};
+    use crate::reporter::{Cause, EventKind, EventReason, OrderEvent, Refusal};
     use crate::sizes::{PriceRule, Sizes};
     use probatum_core::{Market, OrderId, OrderType, Side, TimeInForce};
 
@@ -1691,8 +1691,14 @@ mod tests {
         assert_eq!(of(&e, whole), [placed, filled]);
         let hold = EventReason::HeldTo { asked: 1.5 };
         let held = (EventKind::Clamped, Some(1.0), hold);
-        let missed = vec![(EventKind::NotFilled, None, EventReason::Fok)];
-        let fits = EventReason::Fits { asked: 1.0 };
+        let by = Cause::Budget;
+        let fok = EventReason::Fok {
+            by,
+            size: 0.6,
+            asked: 1.0,
+        };
+        let missed = vec![(EventKind::NotFilled, None, fok)];
+        let fits = EventReason::Fits { asked: 1.0, by };
         let cut = vec![
             (EventKind::Clamped, Some(0.6), fits),
             (EventKind::Filled, Some(0.6), EventReason::Market),
@@ -1750,6 +1756,6 @@ mod tests {
             .expect("queued");
         e.step();
         let last = log(&e).last().expect("the miss is logged").reason;
-        assert_eq!(last, EventReason::NothingFilled);
+        assert_eq!(last, EventReason::NothingFilled { by: Cause::Lot });
     }
 }
