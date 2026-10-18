@@ -13,7 +13,7 @@ import numbers
 import numpy as np
 
 from . import venues
-from ._data import Data
+from ._data import Data, _funded
 from ._errors import DataError, ProbatumAttributeError, ProbatumTypeError, VenueError
 
 # the plain option in each row, which a venue's setting left out or given as None takes
@@ -367,7 +367,7 @@ def _run(venue, data, seed=None):
 
     perps = [k for k, market in enumerate(markets) if market != "spot"]
     if venue._preset["defaults"]["funding"] == "data" and perps:
-        owned = set(data._root.funding["instrument"].tolist())
+        owned = _funded(data._root)
         bare  = [names[k] for k in perps if data._cols[k] not in owned]
         if bare:
             raise DataError(f"funding: {origin} charges the funding the data holds, "

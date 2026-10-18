@@ -13,5 +13,6 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { workspace = true, features = ["abi3-py313", "extension-module"] }
 numpy = { workspace = true }
+libm = { workspace = true }
 probatum-core = { path = "../probatum-core" }
 probatum-engine = { path = "../probatum-engine" }

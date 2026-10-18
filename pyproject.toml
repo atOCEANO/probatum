@@ -25,6 +25,7 @@ classifiers = [
 [project.optional-dependencies]
 data = ["pandas", "pyarrow"]
 tune = ["optuna>=3.0", "cloudpickle>=2.0"]
+search = ["optuna>=5.0"]
 sb3 = ["stable-baselines3>=2.0"]
 
 [project.urls]

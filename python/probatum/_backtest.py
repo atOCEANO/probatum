@@ -55,10 +55,8 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     if not len(data) or not data.available.any():
         raise DataError("data: no bars to run; give a Data that has some")
 
-    if _table_like(policy):
-        rows = _table("policy", policy, data)
-    elif _array_like(policy):
-        rows = _shaped("policy", _floats("policy", _host(policy, "policy")), data)
+    if _table_like(policy) or _array_like(policy):
+        rows = _rows(policy, data)
     elif isinstance(policy, type):
         raise PolicyError(f"policy: got the class {policy.__name__}, not an instance; "
                           f"pass {policy.__name__}()")
@@ -76,12 +74,7 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
         raise PolicyError(f"policy: {_kind(policy)}; pass a (T, N) array of weights or "
                           f"quantities, or a table of them")
 
-    _finite("policy", rows, data)
-    if sizing not in SIZINGS:
-        raise ProbatumValueError(f"sizing: {sizing!r}; use \"weight\" or \"quantity\"")
-    if not (_number(tolerance) and tolerance >= 0.0):
-        raise ProbatumValueError(f"tolerance: {tolerance!r}; give a fraction of equity "
-                                 f"from 0, such as 0.01")
+    _sized(sizing, tolerance)
     if not _number(risk_free):
         raise ProbatumValueError(f"risk_free: {risk_free!r}; give the annual rate as a "
                                  f"finite number, such as 0.04")
@@ -89,27 +82,12 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     barriers = {name: _barrier(name, given, data)
                 for name, given in (("stop", stop), ("take_profit", take_profit))}
 
-    held  = _repeatable(venue)
-    run   = _run(held, data)
-    names = data.names
-
-    for k, market in enumerate(_markets(run)):
-        if market == "spot" and (rows[:, k] < 0.0).any():
-            t = int(np.flatnonzero(rows[:, k] < 0.0)[0])
-            raise ProbatumValueError(f"policy: {rows[t, k]} at row {t:,} "
-                                     f"({_when(data.time[t])}) for {names[k]}, which "
-                                     f"is spot and cannot be short; trade a perpetual "
-                                     f"instead")
-
-    values, chosen = _seen(rows, data.available.any(axis=1))
-    engine = Engine(run.candles, report=True, record=record, **run.settings)
+    held = _repeatable(venue)
+    run  = _run(held, data)
 
     # what the run is played with, which its Result keeps to play again without costs
-    played = (values, sizing, float(tolerance),
-              *[None if barrier is None else
-                barrier if isinstance(barrier, float) else
-                np.ascontiguousarray(np.take_along_axis(barrier, chosen, axis=0))
-                for barrier in barriers.values()])
+    played = _played(rows, barriers, sizing, tolerance, data, run)
+    engine = Engine(run.candles, report=True, record=record, **run.settings)
     run_array(engine, *played, start=run.start)
 
     rate       = _annualised(data)
@@ -121,7 +99,7 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
 
     rows.flags.writeable = False
     full = record == "full"
-    return Result._of(engine.tables(run.start, list(names)), stats,
+    return Result._of(engine.tables(run.start, list(data.names)), stats,
                       rows if full else None, engine.is_bust(), provenance,
                       _Record(held, data, run, policy=played if full else None))
 
@@ -176,14 +154,59 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
                       provenance, _Record(held, data, run, played.token, policy=kept))
 
 
-def _repeatable(venue):
-    """``venue`` as a Venue, refused where it decides at random, so that a backtest
-    repeats without a seed."""
+def _rows(policy, data):
+    """``policy``, a table or an array, as the ``(T, N)`` float64 rows an array run
+    reads, every value finite or NaN."""
+    if _table_like(policy):
+        rows = _table("policy", policy, data)
+    else:
+        rows = _shaped("policy", _floats("policy", _host(policy, "policy")), data)
+
+    _finite("policy", rows, data)
+    return rows
+
+
+def _sized(sizing, tolerance):
+    """Refuse a sizing or a tolerance an array run cannot take."""
+    if sizing not in SIZINGS:
+        raise ProbatumValueError(f"sizing: {sizing!r}; use \"weight\" or \"quantity\"")
+
+    if not (_number(tolerance) and tolerance >= 0.0):
+        raise ProbatumValueError(f"tolerance: {tolerance!r}; give a fraction of equity "
+                                 f"from 0, such as 0.01")
+
+
+def _played(rows, barriers, sizing, tolerance, data, run):
+    """What ``rows`` play as on ``run``, `_run`'s run of ``data``, as ``run_array``
+    takes it: refused where a spot instrument would go short, then the rows the account
+    sees, the sizing, the tolerance and each barrier on the rows its values came
+    from."""
+    names = data.names
+
+    for k, market in enumerate(_markets(run)):
+        if market == "spot" and (rows[:, k] < 0.0).any():
+            t = int(np.flatnonzero(rows[:, k] < 0.0)[0])
+            raise ProbatumValueError(f"policy: {rows[t, k]} at row {t:,} "
+                                     f"({_when(data.time[t])}) for {names[k]}, which "
+                                     f"is spot and cannot be short; trade a perpetual "
+                                     f"instead")
+
+    values, chosen = _seen(rows, data.available.any(axis=1))
+    return (values, sizing, float(tolerance),
+            *[None if barrier is None else
+              barrier if isinstance(barrier, float) else
+              np.ascontiguousarray(np.take_along_axis(barrier, chosen, axis=0))
+              for barrier in barriers.values()])
+
+
+def _repeatable(venue, called="backtest"):
+    """``venue`` as a Venue, refused where it decides at random, so that a run of
+    ``called`` repeats without a seed."""
     held = _venue_of(venue)
     if held._intrabar == "random":
-        raise VenueError("venue: intrabar is \"random\", which backtest refuses so "
-                         "that a backtest repeats without a seed; replace(intrabar="
-                         "\"pessimistic\") or \"optimistic\"")
+        raise VenueError(f"venue: intrabar is \"random\", which {called} refuses so "
+                         f"that a {called} repeats without a seed; replace(intrabar="
+                         f"\"pessimistic\") or \"optimistic\"")
     return held
 
 

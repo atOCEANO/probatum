@@ -356,9 +356,14 @@ class _Root:
         self.provenance  = {}
         self.rates       = None
 
+        # the instruments the Data a search's in-sample bars were cut from funds, where
+        # its own events, which end at the cut, can miss one; None on any other root
+        self.funded = None
+
 
     def __setstate__(self, state):
         # an array comes back from a pickle writable, and the bars must not be
+        state.setdefault("funded", None)
         self.__dict__.update(state)
 
         for name in ("time", "bars", "available", "funding", "rates"):
@@ -1249,6 +1254,34 @@ class Data:
 def _frozen(array):
     array.flags.writeable = False
     return array
+
+
+def _funded(root):
+    """The columns of ``root`` its Data funds."""
+    if root.funded is not None:
+        return root.funded
+    return frozenset(root.funding["instrument"].tolist())
+
+
+def _before(data, rows):
+    """The first ``rows`` rows of ``data`` as a Data on a root of its own that holds no
+    later bar: the rows before ``data``'s first with them, its instruments under their
+    names, the funding events those rows own and a copy of its root's provenance, under
+    the fingerprint of the same rows of ``data``. It keeps which of its instruments
+    ``data``'s root funds, so a perpetual first funded after them runs as it does there
+    (Specification, Search)."""
+    root = data._root
+    start, _ = data._rows
+
+    seen           = Data._of(root, (0, start + rows), data._cols)
+    out            = _Root(seen.time.copy(), seen.bars.copy(), seen.instruments, root.interval)
+    out.names      = seen.names
+    out.funding    = seen.funding
+    out.provenance = copy.deepcopy(root.provenance)
+    funded         = _funded(root)
+    out.funded     = frozenset(k for k, column in enumerate(data._cols) if column in funded)
+
+    return Data._of(out, (start, start + rows), range(len(data._cols)))
 
 
 def _digest(data):

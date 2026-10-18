@@ -4426,6 +4426,19 @@ fn run_array(
     Ok(())
 }
 
+/// The natural logarithm of `x` through `libm`, the same bits on every machine, which a
+/// search's log draws take (Specification, Numbers that are the same everywhere).
+#[pyfunction]
+fn ln(x: f64) -> f64 {
+    libm::log(x)
+}
+
+/// `e` to the power `x` through `libm`, the same bits on every machine.
+#[pyfunction]
+fn exp(x: f64) -> f64 {
+    libm::exp(x)
+}
+
 /// Bars a year on the clock `times`, each bar's open in UTC nanoseconds: the rows
 /// less one per 365 days of their span, or `None` with fewer than two rows
 /// (ADR 0004).
@@ -4522,6 +4535,8 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyState>()?;
     m.add_class::<table::PyTable>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
+    m.add_function(wrap_pyfunction!(ln, m)?)?;
+    m.add_function(wrap_pyfunction!(exp, m)?)?;
     m.add_function(wrap_pyfunction!(funding_inside, m)?)?;
     m.add_function(wrap_pyfunction!(stats_of, m)?)?;
     m.add_function(wrap_pyfunction!(run_script, m)?)?;

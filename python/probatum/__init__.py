@@ -10,7 +10,9 @@ self-contained HTML document for a notebook cell or a file, computing nothing it
 ``Venue`` holds a venue's rules, and ``venues`` the presets, each one a Venue.
 ``backtest`` runs a policy on a Data at a venue and returns the ``Result`` it
 recorded, ``Strategy`` is a policy that decides at each close, and ``combine`` adds
-Results from accounts at different venues into one book. Every error probatum raises
+Results from accounts at different venues into one book. ``search`` searches a
+policy's parameters over ``Int``, ``Float`` and ``Categorical`` ranges on the bars
+before a holdout, and returns the ``Study`` of every trial. Every error probatum raises
 is a ``ProbatumError`` and the built-in it means, and every warning a
 ``ProbatumWarning``, outside the modules carried from emsl, which raise the built-ins
 and warn with ``UserWarning`` or ``RuntimeWarning``.
@@ -31,6 +33,7 @@ from ._strategy import Strategy
 from ._engine import Engine
 from ._result import Result, combine
 from ._backtest import backtest
+from ._search import Study, search
 from .market import Market
 from ._tune import tune
 from ._walk import walk_forward
@@ -38,9 +41,9 @@ from ._chart import chart, chart_defaults
 
 __all__ = [
     "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
-    "Instrument", "Int", "Market", "Result", "Strategy", "Venue", "backtest", "chart",
-    "chart_defaults", "combine", "to_ohlcv", "tune", "walk_forward", "metrics", "plot",
-    "rl", "ta", "venues",
+    "Instrument", "Int", "Market", "Result", "Strategy", "Study", "Venue", "backtest",
+    "chart", "chart_defaults", "combine", "search", "to_ohlcv", "tune", "walk_forward",
+    "metrics", "plot", "rl", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
     "ProbatumNotImplementedError", "DataError", "VenueError", "SpecError",

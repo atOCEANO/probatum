@@ -43,8 +43,9 @@ class ProbatumRuntimeError(ProbatumError, RuntimeError):
 
 class ProbatumNotImplementedError(ProbatumRuntimeError, NotImplementedError):
     """What is not done yet: a Strategy that writes no ``next``, an agent, which
-    ``backtest`` does not run yet, and the transitions level, which it does not record
-    yet. It is a ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
+    ``backtest`` does not run yet, the transitions level, which it does not record yet,
+    and a search's ``storage``, which it does not save to yet. It is a
+    ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
 
 
 class DataError(ProbatumValueError):
@@ -66,9 +67,11 @@ class LookaheadError(ProbatumValueError):
 
 
 class PolicyError(ProbatumTypeError):
-    """A policy ``backtest`` cannot run as given: a class for an instance, a model that
-    fits, an object of no kind it reads, or an array of values it cannot read as
-    decisions."""
+    """A policy ``backtest`` or ``search`` cannot run as given: a class for an instance,
+    and for a search an instance for its class, a class that is no Strategy or a
+    function that takes no data, a model that fits, an object of no kind it reads, an
+    array of values it cannot read as decisions, and a trial that decides in another
+    kind than the trials before it."""
 
 
 class MissingDependency(ProbatumError, ImportError):

@@ -118,6 +118,14 @@ def _outside(said, given, rows):
             f"{rows - 1:,}")
 
 
+def _returns(equity):
+    """Each row's return on ``equity``: its equity over the row before's, less one, and
+    nothing once the equity is gone, the first row's nothing."""
+    before = equity[:-1]
+    grown  = np.divide(equity[1:], before, out=np.ones_like(before), where=before > 0.0)
+    return np.concatenate([[0.0], grown - 1.0])
+
+
 def _recorded(provenance):
     """The level the run ``provenance`` describes was recorded at, full where it names
     none, as a book's, a loop's and a run's saved before the levels do."""
@@ -487,12 +495,9 @@ class Result:
 
     def __init__(self, time, equity, tables, stats, policy, bust, provenance,
                  record=None):
-        self.time   = _frozen(np.array(time, dtype=np.int64))
-        self.equity = _frozen(np.array(equity, dtype=np.float64))
-        before      = self.equity[:-1]
-        grown       = np.divide(self.equity[1:], before, out=np.ones_like(before),
-                                where=before > 0.0)
-        self.returns = _frozen(np.concatenate([[0.0], grown - 1.0]))
+        self.time    = _frozen(np.array(time, dtype=np.int64))
+        self.equity  = _frozen(np.array(equity, dtype=np.float64))
+        self.returns = _frozen(_returns(self.equity))
         self.ledger  = tables["ledger"]
         self._logged = {name: tables.get(name) for name in LOGGED}
         self.trades  = tables["trades"]

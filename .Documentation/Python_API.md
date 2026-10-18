@@ -40,6 +40,8 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
 | `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, the totals of its costs, each modelling choice it made, graded, three baselines beside it, each instrument's record, its statistics and its provenance, saved as files any tool reads. [Below](#the-result). |
 | `probatum.combine` | Add Results from accounts at different venues into one book. [Below](#combining-books). |
+| `probatum.search` | Search a policy's parameters on the bars before a holdout, each trial one run there, every trial kept. [Below](#search). |
+| `probatum.Study` | What a search found: every trial as a row with its returns, and the winner's Result, run once on the held-out bars when asked. [Below](#the-study). |
 | `probatum.Int` | A whole number a search draws, on a lattice. [Below](#the-space). |
 | `probatum.Float` | A number a search draws, from an interval or a lattice. [Below](#the-space). |
 | `probatum.Categorical` | One of the choices a search draws among. [Below](#the-space). |
@@ -888,7 +890,36 @@ print(book.baselines.to_pandas().tail())        # cash, buying and holding, no c
 
 ## Search
 
-`probatum.Int`, `probatum.Float` and `probatum.Categorical` name the range of each parameter a search draws, each checked as it is built and never changed after ([Specification](Specification.md#samplers)).
+`probatum.search(policy, space, data, venue, objective="sharpe", direction="maximize", trials=100, sampler="tpe", min_trades=0, holdout=None, keep="all", n_jobs=1, seed=None, storage=None, risk_free=0.0)` searches a policy's parameters on the bars before a holdout and returns a `probatum.Study` of every trial ([ADR 0032](Decisions.md), [Specification](Specification.md#search)).
+
+- **The policy** is a Strategy subclass, each trial built as `Cross(**params)`, or a function `policy(data, **params)` of the bars a trial runs on that returns weights, an array or a table of them, a dict of `backtest`'s arguments, `{"policy": weights, "stop": 0.02}`, so a barrier, the `tolerance` or the `sizing` is searched as any other parameter, or a Strategy, copied before it runs. Every trial returns one kind, weights or a Strategy, and the space's names are checked against the policy's signature before any trial runs.
+- **The holdout** is the tail: `holdout=0.3` holds out that share of the rows, `holdout=300` that many and a time the rows from it on. `holdout=0` searches every bar, and so does leaving it out, with a warning, since every score is then in-sample. The trials run on a Data of the rows before it alone, which holds no later bar.
+- **A trial** is one run over those bars, with no Result, scored by `objective`, a statistic's name, which `direction` maximizes or minimizes. It is `complete`; `floored`, where it closed fewer round trips than `min_trades`, which keeps its statistics and its returns and has no score; or `failed`, where the policy or its run raised, its error kept as text. The winner is the complete trial with the best score, the lowest-numbered of equal ones, and a search with none raises.
+- **The samplers.** `"random"` and `"grid"` are probatum's own, drawn from streams named from `seed`, and `"tpe"` is Optuna's TPE, which needs optuna 5.0 or later and is told a floored or failed trial as failed. `seed=None` draws a seed from the operating system and records it. A seeded random or grid search repeats on every machine, and a seeded TPE search on the machine it ran on.
+- `keep="all"` keeps every trial's returns, and `keep="none"` none. `n_jobs` above 1 and `storage` are not built yet.
+
+```python
+def crossing(data, fast, slow, stop):
+    up = probatum.ta.ema(data.close, fast)
+    down = probatum.ta.ema(data.close, slow)
+    weights = numpy.full(len(data), numpy.nan)
+    weights[probatum.ta.crossover(up, down)] = 1.0
+    weights[probatum.ta.crossunder(up, down)] = 0.0
+    return {"policy": weights, "stop": stop}
+
+
+space = {"fast": probatum.Int(5, 40), "slow": probatum.Int(50, 200, step=10),
+         "stop": probatum.Float(0.01, 0.05, step=0.01)}
+study = probatum.search(crossing, space, data, "frictionless", sampler="random",
+                        trials=40, holdout=0.3, seed=7)
+print(study)                                    # the best score, what is held out
+print(study.trials.to_pandas()[["number", "state", "score", "fast", "slow"]].head())
+held = study.evaluate_holdout()                 # the one look at the tail, counted
+```
+
+### The Study
+
+`trials` is a table of a row a trial: `number`, `state`, `score`, each parameter, an int, a float, a bool or text by the values its range holds, the fifteen [statistics](#statistics) and `error`, a value a trial lacks missing. `returns` is the `(R, T)` float64 matrix of every trial's returns on the in-sample bars, read-only, counted as a Result's returns are, a failed trial's row NaN, or None under `keep="none"`. `best_params` and `best_score` are the winner's, and `best` is its Result on the in-sample bars, run again at the full level when first read, whose statistics are its trial's to the bit; a winner that runs otherwise now, the policy's code or the globals it reads having changed since the search, is refused as a `ProbatumRuntimeError`. `evaluate_holdout()` runs the winner once on the held-out bars, its warm-up inside them, and keeps the Result as `holdout`, which a second call returns. It reads `best` first, and counts a look in `looks` once the winner is handed the held-out bars, so a run that raises there has spent one. `provenance` records what the search was given: the sampler with its arguments and Optuna's version, the seed, the trials asked and run, the holdout and the in-sample bars' annualisation and fingerprint, beside the venue, the Data's provenance and the packages. A search logs its start and its end at INFO and each trial at DEBUG to the `probatum` logger.
 
 ### The space
 
@@ -989,7 +1020,7 @@ Leaving `oos` out warns, because the default cannot be silent without being a tr
 | `seed` | `None` | Seeds the sampler. |
 | `direction` | `"maximize"` | `"maximize"` or `"minimize"`. |
 | `verbose` | `False` | `True` restores optuna's per-trial logging. |
-| `min_trades` | 0 | Fails a trial that closed fewer round trips ([ADR 0032](Decisions.md)). |
+| `min_trades` | 0 | Fails a trial that closed fewer round trips, where `search` floors it. |
 
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
@@ -1273,12 +1304,12 @@ Every error probatum raises is one of its own classes and the built-in it means,
 | `probatum.SpecError` | `ValueError` | An agent whose spec does not match the run it is given; nothing raises it yet. |
 | `probatum.LookaheadError` | `ValueError` | A policy or a feature the causality check finds reading a bar that has not closed; nothing raises it yet. |
 | `probatum.ProbatumTypeError` | `TypeError` | A wrong type a check tests for, `PolicyError` among them. |
-| `probatum.PolicyError` | `TypeError` | A policy `backtest` cannot run as given: a class for an instance, a model that fits, an object of no kind it reads, or an array it cannot read as decisions. |
+| `probatum.PolicyError` | `TypeError` | A policy `backtest` or `search` cannot run as given: a class for an instance, and for a search an instance for its class, a class that is no Strategy or a function that takes no data, a model that fits, an object of no kind it reads, an array it cannot read as decisions, and a trial that decides in another kind than the trials before it. |
 | `probatum.ProbatumKeyError` | `KeyError` | A name none of a set's holds, such as an instrument a Data does not have. |
 | `probatum.ProbatumIndexError` | `IndexError` | A position past the end of a table. |
 | `probatum.ProbatumAttributeError` | `AttributeError` | An attribute an object does not have, such as one instrument's `close` on a universe, which `hasattr` reads as missing. |
 | `probatum.ProbatumRuntimeError` | `RuntimeError` | A search that cannot go on: its workers lost, every trial of it failed, or its winner run again not matching its trial, and `ProbatumNotImplementedError`, as `NotImplementedError` is a `RuntimeError`. |
-| `probatum.ProbatumNotImplementedError` | `NotImplementedError` | A Strategy that writes no `next`, an agent, which `backtest` does not run yet, and the transitions level, which it does not record yet. |
+| `probatum.ProbatumNotImplementedError` | `NotImplementedError` | A Strategy that writes no `next`, an agent, which `backtest` does not run yet, the transitions level, which it does not record yet, and a search's `storage`, which it does not save to yet. |
 | `probatum.MissingDependency` | `ImportError` | A package a call needs that is not installed, named with the line that installs it. |
 
 A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which is the one its check raises: a check that tests a type raises a `TypeError`, and one that refuses whatever value it cannot take, such as a venue's setting given as text or `backtest`'s `tolerance`, a `ValueError`. So a Data's wrong value is a `DataError` and a type its checks test for a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
