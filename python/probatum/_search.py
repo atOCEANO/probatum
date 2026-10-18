@@ -13,9 +13,9 @@ import warnings
 
 import numpy as np
 
-from ._backtest import (_agent, _annualised, _array_like, _barrier, _kind, _markets,
-                        _number, _played, _repeatable, _rows, _sized, _table_like,
-                        backtest)
+from ._backtest import (_agent, _annualised, _kind, _markets, _number, _played,
+                        _repeatable, backtest)
+from ._causality import _check, _read
 from ._data import Data, _before, _row, _when
 from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
                       ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
@@ -32,8 +32,7 @@ SAMPLERS   = ("tpe", "random", "grid")
 DIRECTIONS = ("maximize", "minimize")
 KEEPS      = ("all", "none")
 # the columns the trials table has of its own, which no parameter is named
-OWN   = ("number", "state", "score", "error") + STATS
-GIVEN = ("policy", "stop", "take_profit", "tolerance", "sizing")
+OWN = ("number", "state", "score", "error") + STATS
 # the package's files, which a warning skips to name the caller's line
 PACKAGE = (os.path.dirname(__file__),)
 
@@ -124,7 +123,7 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     LOGGER.info("search: %s trials of %s by %s on %s rows, %s held out", draws.count,
                 named, sampler, f"{cut:,}", f"{len(data) - cut:,}")
 
-    made = []
+    made, checked = [], None
     for number in range(draws.count):
         trial = runner.trial(number, draws.ask(number))
         draws.tell(number, trial)
@@ -134,7 +133,18 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
         LOGGER.debug("search: trial %s %s%s", number, trial.state,
                      "" if trial.score is None else f", {objective} {trial.score:.6g}")
 
+        # the first trial that ran and decided something is checked before any other
+        # runs (Specification, The causality check)
+        if checked is None and trial.state != "failed" and _check(
+                policy, kind, trial.params, inside, held, run):
+            checked = trial.params
+            LOGGER.info("search: trial %s's decisions are causal", number)
+
     winner = _winner(made, direction, min_trades)
+    if checked is not None and winner.params != checked:
+        _check(policy, kind, winner.params, inside, held, run)
+        LOGGER.info("search: the winner's decisions are causal")
+
     LOGGER.info("search: %s complete of %s; the best, trial %s, %s %.6g",
                 sum(trial.state == "complete" for trial in made), len(made),
                 winner.number, objective, winner.score)
@@ -454,31 +464,8 @@ class _Runner:
 
 def _given(given, data, run):
     """What a function returned, weights, as the arguments of an array run on ``run``,
-    read as backtest reads them: an array or a table of them, or a dict of backtest's
-    arguments whose policy is one."""
-    sizing, tolerance, barriers = "weight", 0.0, {"stop": None, "take_profit": None}
-
-    if isinstance(given, dict):
-        unknown = [key for key in given if key not in GIVEN]
-        if unknown:
-            raise PolicyError(f"policy: returned a dict holding {unknown[0]!r}; hold "
-                              f"{', '.join(GIVEN)} alone")
-        if "policy" not in given:
-            raise PolicyError("policy: returned a dict with no policy; give it the "
-                              "weights as \"policy\"")
-
-        sizing, tolerance = given.get("sizing", sizing), given.get("tolerance", tolerance)
-        barriers = {name: given.get(name) for name in barriers}
-        given    = given["policy"]
-
-    if not (_table_like(given) or _array_like(given)):
-        raise PolicyError(f"policy: returned {_kind(given)}; return weights as an array "
-                          f"or a table, a dict of backtest's arguments, or a Strategy")
-
-    rows = _rows(given, data)
-    _sized(sizing, tolerance)
-    barriers = {name: _barrier(name, value, data) for name, value in barriers.items()}
-    return _played(rows, barriers, sizing, tolerance, data, run)
+    read as backtest reads them."""
+    return _played(*_read(given, data), data, run)
 
 
 def _winner(made, direction, min_trades):

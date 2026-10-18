@@ -78,7 +78,8 @@ def test_a_holdout_of_0_3_of_1000_rows_scores_rows_0_to_699(holdout):
     study = probatum.search(kept, {"fast": Int(1, 2)}, data, VENUE, sampler="grid",
                             holdout=given)
 
-    assert [len(part) for part in seen] == [700, 700]
+    # the trials, and the check's runs, which cut it shorter, see no row after 699
+    assert len(seen[0]) == 700 and max(map(len, seen)) == 700
     np.testing.assert_array_equal(study.best.time, data.time[:700])
     assert study.provenance["holdout"]["rows"]  == 300
     assert study.provenance["holdout"]["first"] == "2024-01-30 04:00"
@@ -556,8 +557,10 @@ def test_a_search_logs_its_start_and_end_and_each_trial(caplog):
 
     assert said[0] == ("INFO", "search: 6 trials of Cross by random on 30 rows, 10 held "
                                "out")
-    assert [level for level, _ in said[1:7]] == ["DEBUG"] * 6
-    assert said[1][1].startswith("search: trial 0 complete, sharpe ")
+
+    trials = [message for level, message in said if level == "DEBUG"]
+    assert len(trials) == 6 and trials[0].startswith("search: trial 0 complete, sharpe ")
+    assert ("INFO", "search: trial 0's decisions are causal") in said
     assert said[-1][0] == "INFO" and said[-1][1].startswith("search: 6 complete of 6; "
                                                             "the best, trial ")
 

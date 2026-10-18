@@ -106,9 +106,11 @@ def _called(strategy):
     return f"{kind.__name__}({given})"
 
 
-def _play(strategy, run):
+def _play(strategy, run, last=False):
     """Drive ``strategy`` over ``run`` from its first bar: ``init`` on the Data, then
-    ``next`` at each close from the warm-up on but the last."""
+    ``next`` at each close from the warm-up on but the last, and with ``last`` at the
+    last too, as a run of a search's causality check decides there to compare what it
+    decides, though no bar follows to fill it (Specification, A strategy)."""
     strategy.init(run.data)
     warmup  = _warmup(strategy)
     account = Account(run)
@@ -123,6 +125,14 @@ def _play(strategy, run):
 
     # the account at its last bar, where a handle the copy keeps reads its order
     run.begin(len(rows) - 1)
+    if last and rows[-1] >= warmup:
+        try:
+            decide(Bar(run, rows[-1]), account)
+        except Exception as error:
+            error.add_note("raised by next at the last close, where the check has a "
+                           "strategy decide though no bar follows")
+            raise
+
     run.end()
 
 
@@ -579,6 +589,18 @@ class _Run:
         given  = {k: self.weight(k, weight) for k, weight in given.items()}
         before = self.engine.num_events()
         return self.legs(self.engine.target(given, tolerance, transfer), before)
+
+
+    def transfer(self, amount, to):
+        """``amount`` of cash moved into the ``to`` wallet at the start of the next
+        bar."""
+        if not _number(amount):
+            raise ProbatumTypeError(f"amount: {amount!r}; give the cash to move")
+
+        if not isinstance(to, str):
+            raise ProbatumTypeError(f"to: {to!r}; use \"spot\" or \"margin\"")
+
+        self.engine.transfer(amount, to)
 
 
     def weight(self, k, weight):
@@ -1048,13 +1070,7 @@ class Account(_Verbs):
     def transfer(self, amount, to="margin"):
         """Move ``amount`` of cash into the ``to`` wallet, "spot" or "margin", at the
         start of the next bar, held to what the wallet it leaves may give (ADR 0008)."""
-        if not _number(amount):
-            raise ProbatumTypeError(f"amount: {amount!r}; give the cash to move")
-
-        if not isinstance(to, str):
-            raise ProbatumTypeError(f"to: {to!r}; use \"spot\" or \"margin\"")
-
-        self._run.engine.transfer(amount, to)
+        self._run.transfer(amount, to)
 
 
     def cancel_all(self):
