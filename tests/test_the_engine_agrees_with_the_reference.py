@@ -281,6 +281,18 @@ def held(kind, size, budget=1.0):
                    sizes=True, rules=[dict(lot=0.001, max_qty=1.0)], budget=budget)
 
 
+def lifted_in_its_coin():
+    """An inverse account of 1.385 coins on contracts of 100 dollars, with no cap or
+    maintenance and a taker fee of 0.1%, buying 10 at an open of 100 beside a bracket
+    whose stop at 85.89 the bar's fall to 80 reaches past where the wallet runs out,
+    at 88, so the margin bound lifts the sale there, inside the bar."""
+    bars, times, cfg, actions = built(("bracket", "buy", 10.0, 0.31),
+                                      shaped=(100.0, 101.0, 80.0, 85.0))
+    cfg.update(market="inverse", contract=100.0, quote=1.385, leverage=0.0,
+               fee_taker=0.001)
+    return bars, times, cfg, actions
+
+
 def changed(case, **settings):
     """`case` with `settings` in place of its own."""
     bars, times, cfg, actions = case
@@ -450,6 +462,10 @@ BUILT = {
         "an order held to the maximum quantity", held("fok", 1.5, budget=6e-7)),
     "an ioc value order held to the largest order that its budget cuts": (
         "an order held to the maximum quantity", held("market", 1.5, budget=6e-7)),
+    # the fill log keeps the margin bound's lift apart from the bar's hold, in dollars
+    # on an inverse contract
+    "an inverse sale the margin bound lifts inside its bar": (
+        "the margin bound lifting a fill inside its bar", lifted_in_its_coin()),
     # one quantity tier of 10 at 20x behind 100 of margin holds a buy of 15 at 100 at
     # the bound, and at an open of 93, where equity is 30 against a requirement of
     # 46.50, a buy of 1 more fills nothing for the bound, before the margin is read

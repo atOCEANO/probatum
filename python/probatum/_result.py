@@ -40,7 +40,7 @@ SCHEMAS = {
               ("side", "text", False)]
     + [(name, "float", True) for name in (
         "size", "price", "reference", "spread", "slippage", "impact", "fee",
-        "adjustment")]
+        "adjustment", "lifted", "paid_in")]
     + [("taker", "bool", False), ("reason", "text", False)],
     "orders": [("bar", "int", False), ("time", "time", False), ("kind", "text", False),
                ("order", "int", True), ("instrument", "text", True),

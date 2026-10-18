@@ -346,6 +346,9 @@ impl Units {
                 impact: share(costs.impact),
                 adjustment: price - raw,
             },
+            // the bound's part read the same way, so the rest of the adjustment stays the
+            // bar's hold, and exactly zero where the bar held nothing
+            lifted: price - self.dollars(fill.price - fill.lifted),
             ..fill
         }
     }
@@ -446,7 +449,10 @@ impl Units {
 #[cfg(test)]
 mod tests {
     use super::Units;
-    use crate::reporter::{Cause, EventKind, EventReason, OrderEvent, RoundTrip};
+    use crate::execution::FillCosts;
+    use crate::reporter::{
+        Cause, EventKind, EventReason, FillReason, FillRecord, OrderEvent, RoundTrip,
+    };
     use probatum_core::{Candle, OrderId, Side, Tier, TierBasis, Tiers};
 
     const INVERSE: Units = Units::Inverse(100.0);
@@ -533,6 +539,48 @@ mod tests {
         );
         assert_eq!((out.high, out.low), (60_000.0, 40_000.0));
         assert!((out.best - 0.25).abs() < 1e-12 && (out.worst + 1.0 / 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_fill_the_bound_lifted_in_the_reciprocal_reads_its_lift_in_dollars() {
+        // the bound lifts a sale from 85.89 to 88 dollars, which the engine holds as a
+        // buy moved from 1/85.89 to 1/88: the lift reads 2.11, the bar held none of
+        // the adjustment, and a fill the bound left alone reads a lift of exactly zero
+        let lift = 1.0 / 88.0 - 1.0 / 85.89;
+        let fill = FillRecord {
+            tick: 2,
+            instrument: 0,
+            order: Some(OrderId(2)),
+            side: Side::Buy,
+            size: 1_000.0,
+            price: 1.0 / 88.0,
+            costs: FillCosts {
+                reference: 1.0 / 85.89,
+                adjustment: lift,
+                ..FillCosts::default()
+            },
+            lifted: lift,
+            paid_in: 0.0,
+            fee: 0.0,
+            taker: true,
+            reason: FillReason::Stop,
+        };
+        let shown = INVERSE.fill(fill);
+        assert!(
+            (shown.lifted - 2.11).abs() < 1e-9,
+            "lifted {}",
+            shown.lifted
+        );
+        assert_eq!(shown.costs.adjustment - shown.lifted, 0.0);
+        let held = FillRecord {
+            lifted: 0.0,
+            costs: FillCosts {
+                reference: 1.0 / 88.0,
+                ..FillCosts::default()
+            },
+            ..fill
+        };
+        assert_eq!(INVERSE.fill(held).lifted, 0.0);
     }
 
     #[test]

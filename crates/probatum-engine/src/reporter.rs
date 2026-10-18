@@ -53,6 +53,12 @@ pub struct FillRecord {
     pub price: f64,
     /// The reference and the spread, slippage, impact and adjustment, per unit.
     pub costs: FillCosts,
+    /// The part of the adjustment the margin bound applied, per unit, so that the rest
+    /// is the bar's hold; zero for a forced close.
+    pub lifted: f64,
+    /// What the margin bound paid into the margin wallet for the part of its lift the
+    /// bar could not hold, never below zero; zero for a forced close.
+    pub paid_in: f64,
     /// The fee, in quote.
     pub fee: f64,
     /// True when the fill took liquidity. A forced close is the venue's and takes

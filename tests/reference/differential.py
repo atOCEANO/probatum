@@ -725,7 +725,8 @@ def first_difference(rows, cfg):
 
 
 FILL_FIELDS = ("bar", "order", "side", "size", "price", "reference", "spread",
-               "slippage", "impact", "fee", "adjustment", "taker", "reason")
+               "slippage", "impact", "fee", "adjustment", "lifted", "paid_in", "taker",
+               "reason")
 EVENT_FIELDS = ("bar", "kind", "order", "side", "size", "price", "reason")
 TRIP_FIELDS  = ("side", "size", "entry", "exit", "open_bar", "close_bar", "fees",
                 "funding", "pnl", "ret", "best", "worst", "reason", "open")

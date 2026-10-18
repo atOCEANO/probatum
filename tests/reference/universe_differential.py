@@ -900,7 +900,8 @@ def run(case, reached):
 
 
 FILL_FIELDS = ("bar", "instrument", "order", "side", "size", "price", "reference",
-               "spread", "slippage", "impact", "fee", "adjustment", "taker", "reason")
+               "spread", "slippage", "impact", "fee", "adjustment", "lifted", "paid_in",
+               "taker", "reason")
 EVENT_FIELDS = ("bar", "kind", "order", "instrument", "side", "size", "price",
                 "reason")
 TRIP_FIELDS = ("instrument", "side", "size", "entry", "exit", "open_bar",

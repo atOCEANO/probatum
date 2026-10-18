@@ -1461,6 +1461,8 @@ fn fill_to_dict<'py>(
     d.set_item("impact", fill.costs.impact)?;
     d.set_item("fee", fill.fee)?;
     d.set_item("adjustment", fill.costs.adjustment)?;
+    d.set_item("lifted", fill.lifted)?;
+    d.set_item("paid_in", fill.paid_in)?;
     d.set_item("taker", fill.taker)?;
     d.set_item("reason", fill.reason.name())?;
     Ok(d)
@@ -2468,8 +2470,8 @@ impl Engine {
     /// None when reporting is off. Each carries its bar and open time, the order
     /// that made it (None for a forced close), its side, size and price, the
     /// reference it is measured from, the spread, slippage, impact and adjustment
-    /// beyond that per unit, its fee, whether it took liquidity, and its reason
-    /// (ADR 0022).
+    /// beyond that per unit, what of the adjustment the margin bound lifted and what
+    /// it paid in, its fee, whether it took liquidity, and its reason (ADR 0022).
     fn fills<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
         fills_of(py, &self.inner, self.units)
     }

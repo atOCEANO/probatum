@@ -3128,7 +3128,11 @@ class Simulator:
         self.paid_in = credit
         self.margin_cash += credit
         self.costs["liquidation"] -= abs(inst.profit(size, price, lifted)) + credit
-        return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price)
+
+        # The fill log and the order log: the fill log keeps the lift and what was paid
+        # in apart from the bar's hold
+        return lifted, dict(costs, adjustment=costs["adjustment"] + lifted - price,
+                            lifted=lifted - price, paid_in=credit)
 
 
     def zero_rounding(self, i, cash, credit, size, price):
@@ -3291,7 +3295,8 @@ class Simulator:
             order=None if order is None else order["id"], side=side, size=size,
             price=price, reference=reference, spread=costs["spread"],
             slippage=costs["slippage"], impact=costs["impact"], fee=fee,
-            adjustment=costs["adjustment"], taker=taker, reason=reason,
+            adjustment=costs["adjustment"], lifted=costs.get("lifted", 0.0),
+            paid_in=costs.get("paid_in", 0.0), taker=taker, reason=reason,
         ))
         if order is not None:
             self.log("filled", order, reason, size=size, price=price)

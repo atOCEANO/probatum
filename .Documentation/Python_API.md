@@ -753,6 +753,8 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `spread`, `slippage`, `impact` | What it paid beyond the reference, in price, each its share of how far the price moved before the bar held it. |
 | `fee` | The fee, in quote. |
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
+| `lifted` | The part of the adjustment the margin bound applied, per unit, so `adjustment - lifted` is the bar's hold; in dollars on an inverse account, and zero for a forced close. |
+| `paid_in` | What the margin bound paid into the margin wallet for the part of its lift the bar could not hold, in the account's asset, never below zero. |
 | `taker` | True when the fill took liquidity. A takeover is the venue's and is not; a sale on the book is. |
 | `reason` | `market`, `limit`, `stop`, `take_profit` for a bracket's take-profit, `rebalance` for a leg of a `target`, or `liquidation`. |
 

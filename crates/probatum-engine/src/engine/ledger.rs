@@ -194,6 +194,8 @@ impl Engine {
                     adjustment: costs.adjustment + fill.price.get() - priced,
                     ..costs
                 },
+                lifted: fill.price.get() - priced,
+                paid_in: credit,
                 fee,
                 taker: fill.is_taker,
                 reason,
@@ -1087,6 +1089,8 @@ mod tests {
         assert_eq!(stop.costs.reference, 90.0);
         assert!((stop.price - 901.0 / 9.99).abs() < 1e-9);
         assert!((stop.costs.adjustment - (stop.price - 90.0)).abs() < 1e-12);
+        // all of it the bound's, which the bar held, so nothing is paid in
+        assert_eq!((stop.lifted, stop.paid_in), (stop.costs.adjustment, 0.0));
     }
 
     #[test]

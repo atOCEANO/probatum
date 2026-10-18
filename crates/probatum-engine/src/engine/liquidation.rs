@@ -458,6 +458,8 @@ impl Engine {
                     size,
                     price: sold,
                     costs,
+                    lifted: 0.0,
+                    paid_in: 0.0,
                     fee,
                     taker: true,
                     reason: FillReason::Liquidation,
@@ -524,6 +526,8 @@ impl Engine {
                         reference: price,
                         ..FillCosts::default()
                     },
+                    lifted: 0.0,
+                    paid_in: 0.0,
                     fee,
                     taker: false,
                     reason: FillReason::Liquidation,

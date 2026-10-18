@@ -572,6 +572,8 @@ pub(crate) fn tables(
         fill_floats("impact", |fill| fill.costs.impact),
         fill_floats("fee", |fill| fill.fee),
         fill_floats("adjustment", |fill| fill.costs.adjustment),
+        fill_floats("lifted", |fill| fill.lifted),
+        fill_floats("paid_in", |fill| fill.paid_in),
         Column::boolean("taker", fills.iter().map(|fill| fill.taker)),
         Column::text("reason", fills.iter().map(|fill| fill.reason.name())),
     ]);
