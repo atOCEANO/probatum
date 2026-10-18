@@ -132,7 +132,7 @@ A fill inside the bar is a resting order's fill at a price the open had not reac
 
 `buy(size)` and `sell(size)` take base units, or contracts on an inverse instrument. `buy_value(amount)` and `sell_value(amount)` take the quote currency, and the size such an order fills is its amount over its fill price, or over the contract's value on an inverse instrument, so it spends or raises that amount before its fee. `target(weights)` takes signed weights of account equity: `1.0` is fully long unlevered, `-0.5` half short.
 
-A value order is a market order. Its amount over the open sizes the taker's fill that prices it, and the amount over that price is the size it fills, up to the bar's budget; where the venue's sizes are on, each size is held to the largest order and rounded down to the lot, and an amount below the minimum notional is refused as it is placed, a reduce-only one spared where the venue spares it. On a bar whose budget is spent, no fill prices a value order, and it asks its amount over the open, held to the largest order and rounded down to the lot. On an inverse contract the amount, in dollars, buys the contracts it is worth, a size the order has as it is placed.
+A value order is a market order. Its amount over the open sizes the taker's fill that prices it, and the amount over that price is the size it fills, up to the bar's budget; where the venue's sizes are on, each size is held to the largest order and rounded down to the lot, and an amount below the minimum notional is refused as it is placed, a reduce-only one spared where the venue spares it. On a bar whose budget is spent, no fill prices a value order, and it asks its amount over the open, held to the largest order and rounded down to the lot. On an inverse contract the amount, in dollars, buys the contracts it is worth, a size the order has as it is placed, so it is a market order of that size from its placement on.
 
 **Worked example.** `buy_value(1,000)` on BTCUSDT, with 1% slippage and a next open of 20,000, fills `1,000 / 20,200 = 0.049505` BTC at 20,200, and with a lot of 0.001, 0.049. On a contract worth 100 dollars, `buy_value(1,000)` buys 10 contracts at any price.
 
@@ -305,7 +305,7 @@ figures   p = round_half_even(p * 10^d) / 10^d,  d = min(max(figures - 1 - e, 0)
 
 The `1e-9` keeps a size that floating point left a hair under a whole number of lots at that number, and a target's leg is rounded the same way toward zero. It can so carry a fill a billionth of a lot past what its clamps allowed: on spot the wallet takes that back ([Wallets](#wallets)), and on a perpetual it can leave the position that far past a cap or a tier's bound. `10^k` is exact for `k >= 0` and is `1 / 10^-k` below zero. The step of a price rule at a price is its tick, or `10^-d` under significant figures, taken at the limit's own price even where the grid below it is finer. The significant-figure rule is Hyperliquid's, whose perpetuals are linear: its cap is 6 decimals less the asset's size decimals on a perpetual and 8 less on spot, and its lot is `10^-szDecimals`. An inverse contract takes a tick, in dollars, its lot and maximum order quantity are in contracts and its minimum notional in the coin, and a limit or a trigger rounded to zero, which has no reciprocal, is refused.
 
-**Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0756 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0006 is refused when it is placed, since it rounds to nothing. With a minimum notional of 10 at a close of 150, a buy of 0.05 is refused, and a reduce-only sale of 0.05 is placed where the venue spares those; with a maximum of 1.0005, a buy of 5 is held to 1.000. Under five significant figures with a cap of one decimal, a limit at 99.987 rests at 100.0, where the cap leaves a step of 0.1, so under `through` a buy there fills on a low of 99.9 but not of 99.98; one at 123,456.7 rests at 123,457, a whole number. A holding of 0.0004 that floating point leaves under a lot of 0.001 is zeroed at a close of 250, and its 0.1 is recorded as dust.
+**Worked example.** With a lot of 0.001, a buy limit for 0.2 on a bar whose budget allows 0.0756 fills 0.075, rounded down to the lot, and rests on for the remaining 0.125, and a buy for 0.0006 is refused when it is placed, since it rounds to nothing. A buy limit of 0.2004 at 99.404, under a tick of 0.01, rests as 0.200 at 99.40, the size and price its placed event records. With a minimum notional of 10 at a close of 150, a buy of 0.05 is refused, and a reduce-only sale of 0.05 is placed where the venue spares those; with a maximum of 1.0005, a buy of 5 is held to 1.000. Under five significant figures with a cap of one decimal, a limit at 99.987 rests at 100.0, where the cap leaves a step of 0.1, so under `through` a buy there fills on a low of 99.9 but not of 99.98; one at 123,456.7 rests at 123,457, a whole number. A holding of 0.0004 that floating point leaves under a lot of 0.001 is zeroed at a close of 250, and its 0.1 is recorded as dust.
 
 <br>
 <br>
@@ -404,7 +404,7 @@ Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the 
 ### The cap
 
 - Summed over the perpetuals, each position's notional over the maximum leverage of the tier its size falls in may not exceed margin equity: `sum_i N_i / L_k(i) <= E`, with equity measured before the fill's own fee, but for a flip after the fee on the side it closes, so a flip opens no more than its close leaves room for. A leverage of 0.0 removes the cap for that instrument, and a fill past the last tier's bound is clamped there, unless the table leaves that bound open, at `inf`, as a venue that sets no largest position does.
-- A growing fill is clamped to what the cap allows, and the clamp is an order-log event with the size allowed and the size asked.
+- A growing fill is clamped to what the cap allows, which the order log records ([The fill log and the order log](#the-fill-log-and-the-order-log)).
 - When one fill is checked, every other leg is marked at the same fraction of its own bar's move as the fill sits at on its own bar ([The path](#the-path)), or at its favourable extreme under `intrabar="optimistic"`. The fill is placed on its bar from the open to the adverse extreme of the side its instrument holds, so a flip sits where its old side leaves, and from flat of the side it opens.
 - While the account is over the cap because equity fell, no fill may raise the summed requirement, and a flip must fit the cap outright. A position over the cap is never force-reduced. With margin equity at or below zero, only reducing fills pass.
 
@@ -570,7 +570,11 @@ An inverse perpetual is quoted in dollars and settled in its coin. A contract is
 
 One row per bar from the first, where row 0 is the opening balance, so no curve is one shorter than the data, and beside it the holdings, one row per bar and instrument, a bar's instruments in the Data's order.
 - The ledger, per account: equity, each wallet's cash, gross and net exposure, leverage, margin used, the maintenance requirement, and that bar's fees, funding, spread, slippage, impact, liquidation charge and dust adjustment.
-- The holdings, per instrument: position, average entry, mark, notional, unrealized PnL, weight and drift.
+- The holdings, per instrument: position, average entry, mark, notional, unrealized PnL, weight, drift and pnl.
+
+An instrument's pnl is what it has made since the run's first row: the cash its fills, its funding and the charges given to it have moved in the wallet it settles in, plus its position's value at the row's close, the holding's on spot and its unrealized PnL on a perpetual, nothing while it is flat. The instruments' pnl sum to equity less the opening equity on every row, within rounding. A takeover's liquidation charge is given to the instruments it closed, in proportion to each one's maintenance at the prices its legs were closed at, or to their notional there where none of them keeps maintenance; a margin wallet set to zero under rule 6 of [The rule](#the-rule) gives its deficit to the instrument whose fill or dust sweep last left no perpetual held.
+
+**Worked example.** A margin wallet of 10,000 USDT holds a long of 1 BTC from 60,000 and a long of 20 ETH from 3,000, both at 20x, BTC keeping 0.5% maintenance and ETH 1%, and both bars fall 10% from their opens. At fraction `s` equity is `10,000 - 12,000s` and the requirement `900 - 90s`, which meet at `s = 9,100 / 11,910 = 0.764064`, with BTC at 55,415.62 and ETH at 2,770.78. Each leg's close there loses 4,584.38, and the 831.234 the wallet still holds, the liquidation charge, is split as each leg's maintenance there, 277.078 to BTC and 554.156 to ETH, so BTC's pnl is -4,861.461 and ETH's -5,138.539, which sum to the account's -10,000.000. Had both bars fallen 7% and closed at their lows, the path would not reach the trigger, and a funding debit of 1% at the closes, 558 on each leg, would take equity from 1,600 to 484 against a requirement of 837, closing both there; the 484 the wallet holds is below the requirement, and each instrument bears its share of it, 161.333 to BTC and 322.667 to ETH.
 
 ### The ledger identity
 
@@ -581,14 +585,135 @@ Each bar, the change in equity equals the price PnL less spread, slippage, impac
 - Costs: spread `0.1 * 3.00 = 0.30`, slippage `0.1 * 6.03 = 0.603`, fee `0.0005 * 0.1 * 60,309.03 = 3.0155`.
 - Change in equity: `270.00 - 0.30 - 0.603 - 3.0155 = 266.0815`. From the fill directly, `250 + 0.1 * (60,500 - 60,309.03) - 3.0155` gives the same 266.0815.
 
+### Costs
+
+A run's costs are the totals of the ledger's cost columns over its rows: fees, funding, spread, slippage, impact, the liquidation charge and the dust adjustment, each a compensated sum, positive where the account paid it, in the asset the account settles in. They are measured from each fill's reference, as the identity is, so the move from a decision's close to the next open is price PnL, never a cost, and the price PnL less the costs is the change in equity.
+
+**Worked example.** A margin wallet of 10,000 USDT on a linear perpetual, with a taker fee of 0.05%, a fixed spread of 1 bp, slippage of 1 bp, funding of 0.01% at every bar's close and volume far above every order. Row 0 trades at 60,000 throughout, row 1 opens at 60,000 and closes at 60,500, and row 2 opens at 60,400 and closes at 60,450. An array of quantities 0.1, 0 and NaN buys 0.1 at row 1's open and sells it at row 2's.
+- The buy's reference is 60,000. Half the spread, 3.00, and the slippage, 6.00, put it at 60,009.00, for a fee of 3.00045, and row 1's close charges funding of `0.1 * 60,500 * 0.0001 = 0.605`, which leaves equity at 10,045.49455.
+- The sale's reference is 60,400. Half the spread, 3.02, and the slippage, 6.04, put it at 60,390.94, for a fee of 3.019547, and the account is flat at row 2's close, where it pays no funding.
+- The costs are fees 6.019997, funding 0.605, spread 0.602 and slippage 1.204, 8.430997 in all. The price PnL is `0.1 * (60,500 - 60,000) + 0.1 * (60,400 - 60,500) = 40.00`, so equity ends at `10,000 + 40.00 - 8.430997 = 10,031.569003`, as the round trip's net PnL says: 38.194 realized, less its fees and its funding.
+
 ### The fill log and the order log
 
-- The fill log has a row per fill: time, instrument, order id, side, size and price; the reference price; spread, slippage, impact and fee; any adjustment that held the price inside the bar or applied the margin bound; maker or taker; and the reason, one of `market`, `limit`, `stop`, `take_profit`, `rebalance`, `seam`, `liquidation` and `delist`.
+- The fill log has a row per fill: time, instrument, order id, side, size and price; the reference price; spread, slippage, impact and fee; any adjustment that held the price inside the bar or applied the margin bound, and of it, per unit, what the margin bound lifted, so that the rest is the bar's hold; what the bound paid into the margin wallet for the part the bar could not hold; maker or taker; and the reason, one of `market`, `limit`, `stop`, `take_profit`, `rebalance`, `seam`, `liquidation` and `delist`. A forced close lifts nothing and pays nothing in.
 - The order log has every order's events, each with its reason: `placed`, `armed`, `clamped`, `refused`, `not_filled`, `expired`, `cancelled` and `filled`.
+
+A placed or armed event records the order as it is queued or rests: its side, its whole size, what it filled and what remains together, after the lot and the largest order, and a limit's price or a stop's trigger on the price rule. A bracket's leg that closes the position it finds has no size and, placed while flat, no side until it arms, and a value order on spot or a linear contract has no size, its reason giving its amount. A refused event records the side and the size the call gave and no price; a refused replace records the order's side and, where the call gave a size, what the order had filled with it; and a target's leg on an instrument yet to print is refused with the side of its weight and no size.
+
+A clamp names the rule that held the fill. A fill's clamps apply in one order: the liquidity budget, then reduce_only, then on spot the wallet's holding for a sale or its cash for a buy, and on a perpetual the cap, which tests in turn for margin equity at or below zero, the last tier's bound and the summed requirement. The rule named is the last that reduced the size before the lot rounded it. A bar that printed no volume is named before every clamp, and a size below what a fill can book, such as a value order's amount that buys less than a lot, is named after them. A clamp that leaves part of a fill is a `clamped` event with the size it allows and the size asked. One that leaves nothing of a market order is that order's `not_filled` event, naming the rule; of a transfer, a `clamped` event of size zero; and of a resting order, no event, since the order rests on and would otherwise log every bar the rule holds it, so an ioc limit a clamp empties, or a fok limit one holds short of its size, expires after its bar for its time in force.
+
+**Worked example.** A margin wallet of 10,000 USDT at 20x holds a long of 1 BTC at 60,000. A reduce-only market sell of 3 BTC fills 1, and its clamp names reduce_only, allowing 1 of the 3 asked; without reduce_only the sale would flip the account short by 2, which the cap allows. A reduce-only sell of 3 BTC with the account flat fills nothing, and its `not_filled` event names reduce_only, which allows none.
+
+### Assumptions
+
+A run lists each modelling choice it made as a row: its name, its value, its source, its grade, the direction of its error where it is simplified, and what it cost in the run where the run's records measure it. A choice switched off is listed as off, never left out.
+- `venue`: the run does what a venue does, as far as bars show it.
+- `simplified`: an approximation of what a venue does. Its direction names the way the rule leans on the events it decides, `pessimistic` where it refuses more, liquidates sooner or charges more, `optimistic` the other way, and `either` where it leans both ways; it promises no sign for a run's numbers.
+- `optimistic`: an option that leaves out a charge, a cost or a limit every venue imposes, or decides what a bar cannot show in the trader's favour. A run with one is not a venue's, whichever way it moved that run's numbers, and only a row graded optimistic is an optimistic assumption.
+
+A fixed rule of the engine is graded venue or simplified, never optimistic, since no setting moves it, and a dated table is graded venue on any bars, its source's date showing its age. Each row describes the rule each instrument ran: a tier table comes before a flat leverage, the price rule decides whether `through` applies, maintenance decides whether the liquidation fee is used, and leverage, maintenance and the liquidation fee are read over the perpetuals alone. Where instruments differ, the value names those that depart and the row takes the least favourable grade among them. A row reads values, not the option's word, so a fixed spread of 0 bp, a slippage of 0 and an impact of `k = 0` are not modelled and a funding rate of 0 is not charged, and its value reads after its name, as in "limit fills on touch".
+
+| Row | Value | Grade | Direction |
+| :--- | :--- | :--- | :--- |
+| balance | each wallet's, "10,000 USDT" | venue | |
+| fees | "maker 0.02%, taker 0.05%", each kind's on a venue of several | venue | |
+| fees | "not charged", where a taker rate is at or below zero | optimistic | |
+| leverage | "each instrument's tier table" | venue | |
+| leverage | "capped at 10x", where a perpetual has no table | simplified | either |
+| leverage | "not capped", where a perpetual has no table and a leverage of 0, or a tier of leverage 0 | optimistic | |
+| maintenance | "each instrument's tier table" | venue | |
+| maintenance | "not kept", where a perpetual keeps none | optimistic | |
+| liquidation | "by takeover", "on the book, then by backstop at 2/3" | venue | |
+| liquidation fee | "unused, as maintenance is kept" | venue | |
+| liquidation fee | "the taker rate", "0.5%", where no perpetual keeps maintenance | simplified | either |
+| liquidation fee | "not charged", where no perpetual keeps maintenance and the fee is zero | optimistic | |
+| max open orders | "8 an instrument", or fewer | simplified | pessimistic |
+| max open orders | more than 8 | simplified | either |
+| limit fills | "on touch", under `touch`, or `through` with no price rule | optimistic | |
+| limit fills | "through, half a step past the limit" | simplified | either |
+| window | "24 bars" | simplified | either |
+| liquidity | "10% of the trailing volume a bar" | simplified | either |
+| spread | "not modelled" | optimistic | |
+| spread | "fixed at 1 bp" | simplified | either |
+| spread | "estimated, which errs high on the most liquid perpetuals" | simplified | either |
+| slippage | "not modelled" | optimistic | |
+| slippage | "1 bp" | simplified | either |
+| impact | "not modelled" | optimistic | |
+| impact | "sqrt, k = 0.1", "linear, k = 0.1" | simplified | either |
+| sizes | "on the lot and the price rule" | venue | |
+| sizes | "not rounded or bounded" | optimistic | |
+| order limits | "a minimum notional and a maximum size" | venue | |
+| order limits | what is missing, "a maximum size, no minimum notional", "none given" | simplified | optimistic |
+| intrabar | "pessimistic" | simplified | pessimistic |
+| intrabar | "optimistic" | optimistic | |
+| intrabar | "random" | simplified | either |
+| funding | "from the data" | venue | |
+| funding | "not charged", with a perpetual in the run | optimistic | |
+| funding | "every 8 hours at 0.01%", "every 3 bars at 0.01%" | simplified | either |
+
+The rows only a perpetual has, leverage, maintenance, liquidation, the liquidation fee and funding, read "no perpetual", graded venue, where the run holds none, and order limits reads "sizes are off", graded venue, where sizes are off, since the sizes row then carries the grade. The engine's own rules follow, their source "the engine".
+
+| Row | Value | Grade | Direction |
+| :--- | :--- | :--- | :--- |
+| margin | "cross, every perpetual on one wallet" | venue | |
+| spot borrowing | "not modelled, a spot buy held to the cash" | venue | |
+| liquidation trigger | "the bar's trade prices, not a mark" | simplified | pessimistic |
+| funding price | "the close, not the mark" | simplified | either |
+| fills in the bar | "a taker's price held inside the bar's range" | simplified | optimistic |
+| margin bound | "a reducing fill held where the margin runs out, what the bar cannot hold paid in" | venue | |
+| an instrument with no bar | "held at its last mark" | simplified | optimistic |
+| liquidation in slices | "not modelled, which errs against large positions" | simplified | pessimistic |
+| auto-deleveraging | "not modelled, which flatters winners" | simplified | optimistic |
+| a flip held back | "held whole, the side it opens with it" | simplified | optimistic |
+| funding paid inside a bar | "paid on what the bar's fills left" | simplified | either |
+| funding counted inside a bar | "counted on the size the path holds" | simplified | against the setting |
+| a leg opened on the favourable side | "runs to its adverse extreme, under the optimistic setting" | simplified | pessimistic |
+
+An engine rule that cannot act on the run reads its off form, graded venue with no direction and no cost, the first that applies in this order. On a run with no perpetual, margin, the liquidation trigger, the funding price, the margin bound, liquidation in slices, auto-deleveraging, a flip held back, a leg opened on the favourable side and both funding rows inside a bar read "no perpetual", and an instrument with no bar keeps its value, graded venue, since what it hides is a liquidation; spot borrowing reads "no spot instrument" where the run holds none. With funding not charged, the funding price and both funding rows inside a bar read "no funding charged". A flip held back reads "none, under the optimistic setting" under that setting, and a leg opened on the favourable side "no exception under the pessimistic setting" under that one, while under `random` both keep their values. The two funding rows inside a bar read "no event fell inside a bar" where none did, and otherwise give the count after their value, "counted on the size the path holds, 730 events inside a bar". An event is inside a bar where it is stamped after a row's open and before its end on the run's own rows, a stamp within a second of either taken as that boundary, so neither an event between rows nor an `every_bars` event, charged at a close, is ever inside. Funding counted inside a bar errs against its setting: optimistic under the pessimistic setting, pessimistic under the optimistic one, and either under `random`.
+
+The Data's rows follow, their source the Data's own: "the router, fetched" with its time, "a frame", "an array" or "joined Datas", with "resampled from 1h" after it where it was resampled.
+
+| Row | Value | Grade | Direction |
+| :--- | :--- | :--- | :--- |
+| bars | "1h, 2023-01-01 00:00 to 2026-08-31 23:00, from binance", the router's bars of the run's venue | venue | |
+| bars | the same, from a frame, an array or another venue's router bars | simplified | either |
+| gaps | "none", "3, the longest 2 days" | venue | |
+| funding events | "4,383", "none" | venue | |
+| history | "from each instrument's first bar", or where the router's begins | venue | |
+| delisting | "no delisting time; the router serves none", where every instrument's router bars run to the last row | venue | |
+| delisting | "no delisting time; every instrument's bars run to the last", where bars that are not the router's do | venue | |
+| delisting | "no delisting time; ETHUSDT's bars end 2025-03-01 12:00", where an instrument's bars end before the last row | simplified | either |
+| universe | "the user's list of 3 instruments" | simplified | optimistic |
+| prices | "as the venue printed them", the router's bars | venue | |
+| prices | "as given; splits, dividends and borrow costs only as the user adjusted them" | simplified | either |
+
+A Data's bars are the router's where every instrument names its venue, and they read as another venue's where the run's venue is a preset of a different exchange.
+
+A venue row's source is the input that decided each instrument's value, read key by key in the order a venue resolves an instrument's settings, its defaults, then its kind's table, then its own: a value equal to the preset's reads as the preset and its date, "binance_perp, taken 2026-10-16"; one the preset leaves out that equals the plain venue's reads "plain"; any other reads "set by the user". A venue built by hand is compared with the plain venue alone. Leverage and maintenance are sourced from an instrument's tiers where it has a table, and the liquidation fee from them where they keep maintenance, order limits the router gave read "the router, fetched" with its time, and a preset's slippage, impact and liquidity read as the preset, "a starting calibration", where they depart from the plain venue's. A row with one source reads it; otherwise it reads the source of the form its value leads with, then each key or instrument another source decided, "binance_perp, taken 2026-10-16; taker set by the user".
+
+A row's cost is read from the run's ledger and fill log, and nothing is run again. The fees row costs the fees column less the fees a takeover paid, and the liquidation fee row those fees. Funding, spread, slippage and impact cost their columns. The margin bound costs minus what it gave, the price it lifted times each fill's size, or on an inverse contract the coin that lift gave its contracts, plus what it paid in, and the liquidation row costs the liquidation column less the margin bound's part, which leaves it the takeovers' charges, the deficits set to zero and the rounding a fill left. The sizes row costs the dust column, and every other row has no cost. The rows with a cost sum to the costs' total within rounding, and a row's cost is its column's share as stated, which can hold another row's part: a sale on the book pays fees, spread, slippage and impact into their columns. The intrabar row is priced by running again with the other setting, which the user does.
+
+**Worked example.** A run on binance_perp has no optimistic assumption. Moved to limits that fill on touch and no spread, it has two, "limit fills on touch" and "spread not modelled", each sourced "set by the user". In the one-instrument example without maintenance ([Worked for one instrument](#worked-for-one-instrument)), the liquidation fee row costs 10.005, the fee the close paid, and in the margin bound's example the margin bound row costs -0.45 and the liquidation row nothing.
+
+### Baselines
+
+A run is set beside three baselines on its own data and venue, each a value per row of the run.
+- **cash**: the opening equity on every row.
+- **buy and hold**: an equal share of the opening balance `E0`, `E0 / N`, in each of the Data's `N` instruments, bought as the quantity it buys at the instrument's first printed close, or on an inverse contract the contracts it is worth there, `E0 * p / (N * V)` at a close of `p`, and asked for at every close from then on as an array of quantities is, on the run's venue and paying its costs. A leg the budget, the largest order or a bar with no volume cuts short is so completed at later closes, and none is ever rebalanced. An account of two wallets splits its opening balance between them in the universe's proportion for this, so every leg is one `N`-th of it and unlevered, and an instrument with no close above zero before the Data's last row holds its share in cash.
+- **frictionless**: the same policy on the run's venue with the costs of trading removed and every rule kept. Maker and taker fees, the liquidation fee, spread, slippage, impact and funding are set to nothing, while the tiers, maintenance, the liquidation model and its backstop, the budget, the window, the limit rule, sizes and their bounds, `intrabar` and the balance stay as they were. It still pays what a forced close takes, so its gap to the run is the costs with what they changed along the way, not a split of them, and it is not the frictionless preset, which lifts the venue's limits as well.
+
+An array runs again with its rows, sizing, tolerance and barriers. A strategy runs again on a copy taken when the run was called, played once, which shares with the run whatever the strategy does not hold itself, its class, its module's state and the global random state, as they stand when the baselines are computed, and they are computed when first read. A run the caller stepped has no policy to run again, and its frictionless baseline is missing. Buying and holding on spot asks again for the remainder a fee or an open above the decision's close left, which fills nothing; a position a forced close took is bought back where its wallet allows; and an instrument that lists late is sized on the opening balance's share. On an inverse account the long holds twice the coin's move in dollars, and a fall of about `(1 - m) / 2` liquidates it, `m` its maintenance rate, sooner as its funding draws the wallet down.
+
+**Worked example.** In the costs example ([Costs](#costs)), cash reads 10,000.00 on every row. Buying and holding buys `10,000 / 60,000 = 1/6` BTC at 60,009.00 for a fee of 5.00075 and pays funding of 1.008333 and 1.0075, so it reads 10,000.00, 10,075.82 and 10,066.48. The frictionless baseline buys at 60,000 and sells at 60,400, reading 10,000.00, 10,050.00 and 10,040.00, and its last row's gap to the run's, 8.430997, is the run's costs. The rest charge no spread, slippage or impact, on volume far above each order.
+- On a linear perpetual whose closes are 100, 104 and 99 and whose opens are 100, 101 and 103, with a taker fee of 0.1%, buying and holding with 10,000 USDT buys 100 at 101 for a fee of 10.10 and reads 10,000.00, 10,289.90 and 9,789.90. On spot the cash clamp buys `10,000 / (101 * 1.001) = 98.910990`, reading 10,000.00, 10,286.74 and 9,792.19, and the rest of the 100 it asks is asked again at the next close and fills nothing.
+- On a linear perpetual with no charges, A opens at 100, 101, 103 and 98 and closes at 100, 104, 99 and 102, and B prints from row 2 at a close of 50, then opens at 51 and closes at 52. Buying and holding with 10,000 USDT buys 50 of A at 101 and, on the opening balance's share, 100 of B at 51, and reads 10,000, 10,150, 9,900 and 10,150.
+- In the one-instrument example with maintenance ([Worked for one instrument](#worked-for-one-instrument)), a long the run and its frictionless baseline both carry into the bar is closed at 40,201.01 in each. Under takeover both lose the 100.50 the wallet holds there, and under book then backstop the baseline keeps all of it, where the run keeps 90.45 less the sale's spread, slippage and impact.
+- On an inverse contract of 100 dollars at 0.4% maintenance with no charges, buying and holding with 1 BTC from a close and an open of 60,000 holds 600 contracts, which a takeover closes at `60,000 * 1.004 / 2 = 30,120`, and the baseline reads zero from then on.
 
 ### Tables
 
-A run hands each record over as a table of named columns: the ledger, the holdings, the fill log, the order log and the round trips. Every bar counts from the run's first row, so a row's time is the run's time at its bar, and every instrument is its name. A value a record does not have is missing, never a number that stands for none: a float the run leaves NaN, such as a drift no target has named, a fill's order on a forced close, an event's order, instrument, size and price where it has none, a round trip's close and its reason while it is open, and its exit until a fill has closed some of it. A missing float holds NaN under it and a missing integer or time the least int64, numpy's NaT, so neither reads as a value.
+A run hands each record over as a table of named columns: the ledger, the holdings, the fill log, the order log, the round trips, the assumptions and the baselines. Every bar counts from the run's first row, so a row's time is the run's time at its bar, and every instrument is its name. A value a record does not have is missing, never a number that stands for none: a float the run leaves NaN, such as a drift no target has named, a fill's order on a forced close, an event's order, instrument, side, size and price where it has none, a round trip's close and its reason while it is open, its exit until a fill has closed some of it, an assumption's direction and cost where it has none, and a baseline the run cannot give. A missing float holds NaN under it and a missing integer or time the least int64, numpy's NaT, so neither reads as a value.
 
 **Worked example.** An account trades BTCUSDT and ETHUSDT over three hourly rows, targeting a long of BTCUSDT at the first close and holding it to the end.
 - Its ledger has three rows, at bars 0, 1 and 2, and its holdings six, bar 0's BTCUSDT and ETHUSDT, then bar 1's and bar 2's.
@@ -612,7 +737,7 @@ A strategy with legs at several venues is an account at each, each margined on i
 
 added in the order the accounts are given. The book's returns and statistics are those of `E`, annualised as its accounts are where every one with an annualisation agrees, and otherwise at its rows less one per 365 days of the time some account covers, so a gap between two accounts' spans counts for neither. A row is in the market where an account holds a position inside its own span, and the book is bust where `E` reaches zero.
 
-The book's ledger is its own, a row per row of its clock: each account's cash and its equity in the quote held as its equity is, an inverse account's equity in the quote before its first row valued at that row's close, its exposure, margin used and maintenance inside its own span alone, each cost on the row it was paid on, and the leverage gross exposure over `E`. Its holdings, fills, orders and round trips are the accounts' own, each row naming its venue and every bar counted on the book's clock, so a venue and an order identify one, and a bar two of its accounts were liquidated on counts once for each among its liquidations. Accounts kept in different assets are not added, but the dollar assets USD, USDT, USDC, USDD, TUSD, FDUSD, BUSD, DAI, PYUSD, USDE, USDP, USD1 and RLUSD are counted at par where the book names one of them its asset, and an inverse contract's account is added only to others of its coin, its equity in the quote being dollars where any other account's is its own asset; neither are accounts on different intervals, off one interval's steps, or at different risk-free rates.
+The book's ledger is its own, a row per row of its clock: each account's cash and its equity in the quote held as its equity is, an inverse account's equity in the quote before its first row valued at that row's close, its exposure, margin used and maintenance inside its own span alone, each cost on the row it was paid on, and the leverage gross exposure over `E`. Its holdings, fills, orders and round trips are the accounts' own, each row naming its venue and every bar counted on the book's clock, so a venue and an order identify one, and a bar two of its accounts were liquidated on counts once for each among its liquidations. Its assumptions are the accounts', in the order the accounts are given, each row naming its venue, and its costs are its ledger's. Each of its baselines is the accounts' summed as its equity is, each held at its opening balance before its first row and at its last value after its end, and one an account cannot give is missing from the book on every row. Accounts kept in different assets are not added, but the dollar assets USD, USDT, USDC, USDD, TUSD, FDUSD, BUSD, DAI, PYUSD, USDE, USDP, USD1 and RLUSD are counted at par where the book names one of them its asset, and an inverse contract's account is added only to others of its coin, its equity in the quote being dollars where any other account's is its own asset; neither are accounts on different intervals, off one interval's steps, or at different risk-free rates.
 
 **Worked example.** Two accounts at two venues, with no fees.
 - A holds 10,000 USDT on hourly bars from 00:00 to 03:00 and buys 100 of a coin at the 01:00 open of 100. The coin closes at 101, 100.50 and 102, so A's equity is 10,000, 10,100, 10,050 and 10,200, and its round trip is open at its end.
