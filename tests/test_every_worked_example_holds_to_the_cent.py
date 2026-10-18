@@ -72,6 +72,25 @@ def test_253_daily_bars_from_one_2_january_to_the_next_annualise_at_252():
     assert periods_per_year([d * DAY for d in days]) == pytest.approx(252.0, abs=1e-9)
 
 
+def test_a_3_bar_average_on_monday_averages_thursday_friday_and_monday():
+    # 1 January 1970 was a Thursday, and a stock prints no bar over the weekend
+    closes = np.array([100.0, 101.0, 98.5])
+    bars   = np.column_stack([closes, closes + 1.0, closes - 1.0, closes,
+                              np.full(3, 1e3)])
+    data = probatum.Data(
+        bars,
+        symbol   = "SPY",
+        market   = "spot",
+        time     = [0, DAY, 4 * DAY],
+        interval = "1d",
+    )
+
+    assert data.time.tolist() == [0, DAY, 4 * DAY]
+
+    average = probatum.ta.sma(data.close, 3)
+    assert np.isnan(average[1]) and average[2] == pytest.approx(299.5 / 3.0)
+
+
 def test_orders_decided_at_fridays_close_fill_at_mondays_open():
     # 1 January 1970 was a Thursday, so these rows are Thursday, Friday and Monday
     times = [0, DAY, 4 * DAY]
