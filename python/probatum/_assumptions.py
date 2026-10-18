@@ -31,7 +31,8 @@ SOURCES = {
 def ran(record, result):
     """The rows of a run's assumptions: the venue's, read for the instruments the run
     held as its ``record`` keeps them, and the engine's, each priced from ``result``'s
-    ledger and fill log where they measure it, then the Data's."""
+    ledger and fill log where they measure it, or below the full level its ledger and
+    round trips, then the Data's."""
     reading = _Reading(record.venue, record)
     priced  = _priced(result, record.settings)
     asset   = _settlement(record.data.instruments,
@@ -512,8 +513,27 @@ def _priced(result, settings):
     in, read from its costs and its fill log, nothing run again: the fees less those a
     takeover paid, which are the liquidation fee's, the margin bound minus what it gave,
     the price it lifted times each fill's size and what it paid in, and the liquidation
-    charge less that."""
-    costs, fills = result.costs, result.fills
+    charge less that. A run below the full level keeps no fill log: its fees are the fees
+    column and its liquidation fee nothing where no round trip closed by a liquidation,
+    which every forced close ends its round trips with, neither known where one did, and
+    the margin bound and the liquidation never known."""
+    costs = result.costs
+
+    if result.provenance.get("record", "full") != "full":
+        liquidated = result.trades._held.equal("reason", "liquidation").any()
+        return {
+            "fees":            None if liquidated else costs["fees"],
+            "liquidation fee": None if liquidated else 0.0,
+            "funding":         costs["funding"],
+            "spread":          costs["spread"],
+            "slippage":        costs["slippage"],
+            "impact":          costs["impact"],
+            "margin bound":    None,
+            "liquidation":     None,
+            "sizes":           costs["dust"],
+        }
+
+    fills    = result.fills
     taken    = (fills["reason"] == "liquidation") & ~fills["taker"]
     takeover = math.fsum(fills["fee"][taken])
     size, lifted, price = fills["size"], fills["lifted"], fills["price"]

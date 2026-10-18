@@ -18,10 +18,11 @@ from ._strategy import Strategy, _Run, _called, _play
 from ._venue import _run, _venue_of
 
 SIZINGS = ("weight", "quantity")
+RECORDS = ("full", "account")
 
 
 def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
-             tolerance=0.0, risk_free=0.0):
+             tolerance=0.0, record="full", risk_free=0.0):
     """Run ``policy`` on ``data``, a Data or anything one is built from, at ``venue``,
     a Venue or a preset's name, and return its `Result`.
 
@@ -42,7 +43,14 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     read on the row whose decision opened it, NaN for none; ``tolerance`` skips each
     leg below that fraction of equity; and ``risk_free`` is the annual rate the
     statistics are computed against (Specification, An array; Barriers on an array).
+
+    ``record`` is what the Result keeps: ``"full"`` every record, and ``"account"`` the
+    ledger, the round trips, the costs and the statistics, the full level's, and the
+    assumptions priced where the ledger and the round trips measure them, with no
+    holdings, fill log, order log, baselines or policy (Specification, Recording
+    levels).
     """
+    _level(record)
     data = data if isinstance(data, Data) else Data(data)
     if not len(data) or not data.available.any():
         raise DataError("data: no bars to run; give a Data that has some")
@@ -56,7 +64,7 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
                           f"pass {policy.__name__}()")
     elif isinstance(policy, Strategy):
         return _decided(policy, data, venue, sizing, stop, take_profit, tolerance,
-                        risk_free)
+                        risk_free, record)
     elif hasattr(policy, "fit") and not callable(policy):
         raise PolicyError(f"policy: {_kind(policy)}, a model that fits, which backtest "
                           f"does not fit; pass its predictions as an array")
@@ -94,7 +102,7 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
                                      f"instead")
 
     values, chosen = _seen(rows, data.available.any(axis=1))
-    engine = Engine(run.candles, report=True, **run.settings)
+    engine = Engine(run.candles, report=True, record=record, **run.settings)
 
     # what the run is played with, which its Result keeps to play again without costs
     played = (values, sizing, float(tolerance),
@@ -109,17 +117,21 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     provenance = _provenance(
         data, held, _markets(run), _described(rows, sizing), risk_free, rate,
         sizing=sizing, tolerance=float(tolerance),
-        **{name: _shown(barrier) for name, barrier in barriers.items()})
+        **{name: _shown(barrier) for name, barrier in barriers.items()}, record=record)
 
     rows.flags.writeable = False
-    return Result._of(engine.tables(run.start, list(names)), stats, rows,
-                      engine.is_bust(), provenance,
-                      _Record(held, data, run, policy=played))
+    full = record == "full"
+    return Result._of(engine.tables(run.start, list(names)), stats,
+                      rows if full else None, engine.is_bust(), provenance,
+                      _Record(held, data, run, policy=played if full else None))
 
 
-def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_free):
+def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_free,
+             record):
     """``strategy`` run on ``data`` at ``venue`` through a deep copy of it, which places
-    its own orders, so the settings of an array run are refused beside it."""
+    its own orders, so the settings of an array run are refused beside it; it runs at
+    the full level, since its account reads the order log, and a Result below it keeps
+    that level's records when it ends."""
     for name, given in (("stop", stop), ("take_profit", take_profit)):
         if given is not None:
             raise ProbatumValueError(f"{name}: {given!r} beside a Strategy, which "
@@ -141,10 +153,11 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
     held   = _repeatable(venue)
     run    = _run(held, data)
     engine = Engine(run.candles, report=True, **run.settings)
+    full   = record == "full"
 
     # the second copy, taken at the call as the first is, is the one the Result plays
-    # again without costs (ADR 0024)
-    kept   = copy.deepcopy(strategy)
+    # again without costs, and a run below the full level keeps neither (ADR 0024)
+    kept   = copy.deepcopy(strategy) if full else None
     copied = copy.deepcopy(strategy)
 
     played = _Run(engine, data, run.start, _markets(run))
@@ -153,11 +166,14 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
     rate       = _annualised(data)
     stats      = None if rate is None else engine.stats(rate, float(risk_free))
     provenance = _provenance(data, held, _markets(run), _called(strategy), risk_free,
-                             rate)
+                             rate, record=record)
 
-    return Result._of(engine.tables(run.start, list(data.names)), stats, copied,
-                      engine.is_bust(), provenance,
-                      _Record(held, data, run, played.token, policy=kept))
+    tables = engine.tables(run.start, list(data.names))
+    if not full:
+        tables = {name: tables[name] for name in ("ledger", "trades")}
+
+    return Result._of(tables, stats, copied if full else None, engine.is_bust(),
+                      provenance, _Record(held, data, run, played.token, policy=kept))
 
 
 def _repeatable(venue):
@@ -169,6 +185,24 @@ def _repeatable(venue):
                          "that a backtest repeats without a seed; replace(intrabar="
                          "\"pessimistic\") or \"optimistic\"")
     return held
+
+
+def _level(record):
+    """Refuse ``record`` where it names no level backtest keeps: ``"transitions"``, not
+    recorded yet, ``"none"``, which keeps nothing a Result holds, and anything else."""
+    named = isinstance(record, str)
+    if named and record in RECORDS:
+        return
+
+    if named and record == "transitions":
+        raise ProbatumNotImplementedError("record: 'transitions', which backtest does "
+                                          "not record yet; use \"full\" or \"account\"")
+
+    if named and record == "none":
+        raise ProbatumValueError("record: 'none', which keeps nothing a Result holds; "
+                                 "use \"full\" or \"account\"")
+
+    raise ProbatumValueError(f"record: {record!r}; use \"full\" or \"account\"")
 
 
 def _markets(run):

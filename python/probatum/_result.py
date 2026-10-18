@@ -65,6 +65,9 @@ SCHEMAS = {
 }
 # the tables a book holds of its own, which name no venue
 OWN = ("ledger", "baselines")
+# the engine's records only a run at the full level keeps, which one below it refuses
+# by name, as it does its baselines (Specification, Recording levels)
+LOGGED = ("holdings", "fills", "orders")
 # the statistics a run reports, in the order the binding gives them, the counts among
 # them integers
 STATS = ("total_return_pct", "net_profit_pct", "cagr_pct", "sharpe", "sortino", "calmar",
@@ -113,6 +116,19 @@ def _outside(said, given, rows):
         return f"{said} {given} of a table with no rows; check len(table) first"
     return (f"{said} {given} of a table of {rows:,} rows; give one from {-rows:,} to "
             f"{rows - 1:,}")
+
+
+def _recorded(provenance):
+    """The level the run ``provenance`` describes was recorded at, full where it names
+    none, as a book's, a loop's and a run's saved before the levels do."""
+    return provenance.get("record", "full")
+
+
+def _unkept(result, said, what):
+    """The refusal of ``said``, which reads ``what`` a run below the full level does not
+    keep, of ``result``."""
+    return (f"{said}: a run recorded at {_recorded(result.provenance)!r} keeps {what}; "
+            f"run it with record=\"full\"")
 
 
 class Table:
@@ -324,7 +340,8 @@ class Assumptions(Table):
     modelling choice: its ``name``, its ``value``, its ``source``, its ``grade``,
     ``venue``, ``simplified`` or ``optimistic``, the ``direction`` its error leans where
     it is simplified, and its ``cost`` where the run's ledger and fill log measure it,
-    in the asset the account settles in. Its repr shows every row, and
+    or below the full level its ledger and round trips, in the asset the account
+    settles in. Its repr shows every row, and
     ``table[table.grade == "optimistic"]`` keeps the optimistic ones."""
 
     __slots__ = ()
@@ -455,9 +472,14 @@ class Result:
     ``provenance``, what the run was given and where it ran. A row's return is its
     equity over the row before's, less one, and nothing once the equity is gone.
     ``result[name]`` is one instrument's record, and with one instrument the Result
-    itself answers ``position``, ``weight`` and ``pnl``. Its repr names every assumption
-    graded optimistic. ``save(path)`` writes it as files any tool reads, and
-    ``Result.load(path)`` reads it back."""
+    itself answers ``position``, ``weight`` and ``pnl``. A run recorded at the account
+    level keeps its ledger, its round trips, its costs and its statistics, the full
+    level's, its assumptions priced where those measure them, and no policy, and refuses
+    by name its holdings, its fills, its orders, its baselines, an instrument's record
+    and ``explain``. Its repr
+    names every assumption graded optimistic, and a level below the full one.
+    ``save(path)`` writes it as files any tool reads, and ``Result.load(path)`` reads it
+    back."""
 
     # a Result is no sequence of its instruments, which it names rather than counts
     __iter__ = None
@@ -470,12 +492,10 @@ class Result:
         before      = self.equity[:-1]
         grown       = np.divide(self.equity[1:], before, out=np.ones_like(before),
                                 where=before > 0.0)
-        self.returns  = _frozen(np.concatenate([[0.0], grown - 1.0]))
-        self.ledger   = tables["ledger"]
-        self.holdings = tables["holdings"]
-        self.fills    = tables["fills"]
-        self.orders   = tables["orders"]
-        self.trades   = tables["trades"]
+        self.returns = _frozen(np.concatenate([[0.0], grown - 1.0]))
+        self.ledger  = tables["ledger"]
+        self._logged = {name: tables.get(name) for name in LOGGED}
+        self.trades  = tables["trades"]
 
         # a run's assumptions and baselines are read from its record when first asked
         # for and a book's baselines from its accounts'; tables holds them otherwise, an
@@ -488,21 +508,66 @@ class Result:
         self.policy       = _frozen(policy) if isinstance(policy, np.ndarray) else policy
         self.bust         = bool(bust)
         self.provenance   = provenance
-        held              = self.fills._held
-        forced            = held.take(np.flatnonzero(held.equal("reason", "liquidation")))
-        venue             = (forced.column("venue") if "venue" in self.fills.columns
-                             else np.zeros(len(forced)))
-        self.liquidations = len(set(zip(venue.tolist(), forced.column("bar").tolist())))
+
+        # with no fill log, the bars it was liquidated on are the close bars of the round
+        # trips forced closes ended, each on the bar it closed out
+        source, bar = ((self.fills, "bar") if self._logged["fills"] is not None
+                       else (self.trades, "close_bar"))
+        held   = source._held
+        forced = held.take(np.flatnonzero(held.equal("reason", "liquidation")))
+        venue  = (forced.column("venue") if "venue" in source.columns
+                  else np.zeros(len(forced)))
+        self.liquidations = len(set(zip(venue.tolist(), forced.column(bar).tolist())))
 
 
     @classmethod
     def _of(cls, held, stats, policy, bust, provenance, record):
         """The Result of a run whose tables the binding built, ``held``, which keeps
-        ``record`` of the run."""
+        ``record`` of the run; a run below the full level reads its assumptions now and
+        keeps nothing to read them, or baselines, from (ADR 0027)."""
         tables = _tables(held)
         ledger = tables["ledger"]
-        return cls(ledger["time"], ledger["equity"], tables, stats, policy, bust,
-                   provenance, record)
+        result = cls(ledger["time"], ledger["equity"], tables, stats, policy, bust,
+                     provenance, record)
+        if _recorded(provenance) != "full":
+            result.assumptions
+            result._record = None
+
+        return result
+
+
+    @property
+    def holdings(self):
+        """The holdings, a row a bar and instrument, which a run below the full level
+        does not keep."""
+        return self._logged_table("holdings", "no holdings")
+
+
+    @property
+    def fills(self):
+        """The fill log, which a run below the full level does not keep."""
+        return self._logged_table("fills", "no fill log")
+
+
+    @property
+    def orders(self):
+        """The order log, which a run below the full level does not keep."""
+        return self._logged_table("orders", "no order log")
+
+
+    def _logged_table(self, name, what):
+        table = self._logged[name]
+        if table is None:
+            raise ProbatumAttributeError(_unkept(self, f"result.{name}", what))
+        return table
+
+
+    def _table(self, name):
+        """Table ``name`` as the run keeps it, None where its level keeps no part of it,
+        and the baselines only where they are computed, so no policy is played."""
+        if name in self._logged:
+            return self._logged[name]
+        return self._ready() if name == "baselines" else getattr(self, name)
 
 
     def __repr__(self):
@@ -511,6 +576,8 @@ class Result:
                  else f"{given['policy']} on {given['venue']}")
         said = (f"Result({what}, {len(self.time):,} bars, equity {self.equity[0]:,.2f} "
                 f"to {self.equity[-1]:,.2f}")
+        if _recorded(given) != "full":
+            said += f", recorded at {_recorded(given)!r}"
 
         table = self.assumptions
         named = [f"{row['name']} {row['value']}"
@@ -528,8 +595,9 @@ class Result:
         """What the run assumed (Specification, Assumptions), as an `Assumptions` table:
         the venue's settings each instrument ran, the engine's own rules and the Data's,
         each with its value, its source and its grade, and its cost where the run's
-        ledger and fill log measure it, read when first asked for. A book's are its
-        accounts', in the order they were given, each row naming its venue."""
+        ledger and fill log measure it, read when first asked for, or below the full
+        level where its ledger and round trips do, read as the run ends. A book's are
+        its accounts', in the order they were given, each row naming its venue."""
         table = self._assumptions
         if table is None:
             table = self._assumptions = Assumptions._of(_assumptions.ran(self._record,
@@ -546,7 +614,12 @@ class Result:
         ``frictionless``, the same policy with the costs of trading removed and every
         rule kept, missing for a loop the caller stepped. They are computed when first
         read, the policy played again then, so a Result pickled before they were read
-        refuses them, and a book's are its accounts' summed as its equity is."""
+        refuses them, as a run below the full level does, and a book's are its accounts'
+        summed as its equity is."""
+        if _recorded(self.provenance) != "full":
+            raise ProbatumAttributeError(_unkept(self, "result.baselines",
+                                                 "no copy of its policy to play them"))
+
         table = self._ready()
         if table is None:
             from . import _baselines
@@ -575,8 +648,11 @@ class Result:
         row of the fill log, a row of the order log, which tells that row's order, or an
         `Order` this run's account handed out, which a Result loaded, unpickled or
         combined refuses, a book's rows naming their venue (Python_API,
-        Transparency)."""
+        Transparency); a run below the full level has none of them to tell."""
         from . import _explain
+        if self._logged["fills"] is None:
+            raise ProbatumValueError(_unkept(self, "explain",
+                                             "no fill log or order log to tell"))
         return _explain.told(self, item)
 
 
@@ -610,6 +686,10 @@ class Result:
         it. A book's series are carried from each row of the account's to the next
         inside its span, the position and the weight zero outside it and the pnl zero
         before its first row and held after its last."""
+        if self._logged["holdings"] is None:
+            raise ProbatumValueError(_unkept(self, f"result[{key!r}]", "no holdings, "
+                                             "which an instrument's record reads"))
+
         holdings = self.holdings
         book     = "venue" in holdings.columns
 
@@ -674,6 +754,9 @@ class Result:
 
     def _one(self, field):
         """``field`` of the one instrument the run holds."""
+        if self._logged["holdings"] is None:
+            raise ProbatumAttributeError(_unkept(self, f"result.{field}", "no holdings"))
+
         instruments = self._instruments()
         if len(instruments) != 1:
             first = instruments[0]
@@ -728,10 +811,7 @@ class Result:
         # nor the record its assumptions are read from, which are read first; pickling
         # plays no policy, so it carries the baselines only once they are computed
         policy = self.policy if isinstance(self.policy, np.ndarray) else None
-        tables = {name: getattr(self, name) for name in SCHEMAS if name != "baselines"}
-        if self._ready() is not None:
-            tables["baselines"] = self._baselines
-
+        tables = {name: self._table(name) for name in SCHEMAS}
         return Result, (self.time, self.equity, tables, self.stats, policy, self.bust,
                         self.provenance)
 
@@ -764,7 +844,7 @@ class Result:
                    returns=self.returns.tolist())
 
         for name in SCHEMAS:
-            table = self._ready() if name == "baselines" else getattr(self, name)
+            table = self._table(name)
             out[name] = None if table is None else {
                 column: _listed(table._column(column, kept=False))
                 for column in table.columns}
@@ -789,20 +869,24 @@ class Result:
         ``fills.arrow``, ``orders.arrow``, ``trades.arrow``, ``assumptions.arrow`` and
         ``baselines.arrow``, the last two read first where the run has not read them
         yet; and ``stats.arrow``, the statistics as one row, none where the clock was
-        too short to annualise. A Result pickled before its baselines were read, or a
-        book of one, is refused before anything is written. Every file is written under
-        another name first, all of them removed again where one cannot be written, then
-        the manifest already there and any policy.npy go, the files are put in place,
-        and the manifest last, so a save that an error or a killed process stops leaves
-        either the Result that was there or a directory with no manifest, which load
-        refuses."""
-        try:
-            self.baselines
-        except AttributeError as error:
-            raise ProbatumValueError(f"{error}, and save writes them, so it wrote "
-                                     f"nothing") from None
+        too short to annualise. A run below the full level writes the tables it keeps
+        alone. A Result pickled before its baselines were read, or a book of one, is
+        refused before anything is written. Every file is written under another name
+        first, all of them removed again where one cannot be written, then the manifest
+        already there, any policy.npy and the tables this Result does not write go, the
+        files are put in place, and the manifest last, so a save that an error or a
+        killed process stops leaves either the Result that was there or a directory
+        with no manifest, which load refuses."""
+        full = _recorded(self.provenance) == "full"
+        if full:
+            try:
+                self.baselines
+            except AttributeError as error:
+                raise ProbatumValueError(f"{error}, and save writes them, so it wrote "
+                                         f"nothing") from None
 
-        folder = pathlib.Path(path)
+        written = [name for name in SCHEMAS if full or self._table(name) is not None]
+        folder  = pathlib.Path(path)
         if folder.exists() and not folder.is_dir():
             raise ProbatumValueError(f"path: {str(path)!r} is a file; name a directory")
         folder.mkdir(parents=True, exist_ok=True)
@@ -811,8 +895,10 @@ class Result:
         arrays = dict(time=self.time, equity=self.equity, returns=self.returns)
         if array is not None:
             arrays["policy"] = array
-        files = ([f"{name}.npy" for name in arrays] + [f"{name}.arrow" for name in SCHEMAS]
+
+        files = ([f"{name}.npy" for name in arrays] + [f"{name}.arrow" for name in written]
                  + ["stats.arrow", "result.json"])
+
         stats    = self.stats or {}
         manifest = dict(format=FORMAT, version=_version(),
                         policy=None if array is None else "array", bust=self.bust,
@@ -822,8 +908,8 @@ class Result:
             for name, values in arrays.items():
                 with open(folder / f"{name}.npy.partial", "wb") as file:
                     np.save(file, np.ascontiguousarray(values), allow_pickle=False)
-            for name in SCHEMAS:
-                _ipc.write(folder / f"{name}.arrow.partial", _stored(getattr(self, name)),
+            for name in written:
+                _ipc.write(folder / f"{name}.arrow.partial", _stored(self._table(name)),
                            {})
             _ipc.write(folder / "stats.arrow.partial",
                        [(key, "int64" if key in COUNTS else "float",
@@ -838,7 +924,11 @@ class Result:
             raise
 
         (folder / "result.json").unlink(missing_ok=True)
-        (folder / "policy.npy").unlink(missing_ok=True)
+        stale = ["policy.npy"] + [f"{name}.arrow" for name in SCHEMAS
+                                  if name not in written]
+        for name in stale:
+            (folder / name).unlink(missing_ok=True)
+
         for name in files:
             os.replace(folder / f"{name}.partial", folder / name)
 
@@ -849,8 +939,8 @@ class Result:
         never by the class that wrote it, so a Result one version saves opens in the
         next. Refused are a directory with no manifest, a format this version does not
         read, and files that are not the ones save writes or do not agree with one
-        another. The policy comes back for an array run, read-only, and as None for any
-        other, which its provenance still describes."""
+        another. The policy comes back for an array run recorded at the full level,
+        read-only, and as None for any other, which its provenance still describes."""
         folder = pathlib.Path(path)
         fix    = "give a directory a Result was saved into"
         if not (folder / "result.json").is_file():
@@ -873,7 +963,8 @@ class Result:
         if (type(given) is not int or not isinstance(manifest.get("provenance"), dict)
                 or not isinstance(manifest.get("bust"), bool)
                 or manifest.get("policy", "") not in (None, "array")
-                or not _described(manifest["provenance"])):
+                or not _described(manifest["provenance"])
+                or _recorded(manifest["provenance"]) not in ("full", "account")):
             raise ProbatumValueError(f"path: {str(path)!r}'s result.json is not a "
                                      f"manifest save writes; {fix}")
 
@@ -892,23 +983,28 @@ class Result:
             raise ProbatumValueError(f"path: the arrays of {str(path)!r} are not a row "
                                      f"each of one clock as save writes them; {fix}")
 
-        rows   = len(time)
-        book   = "results" in provenance
-        tables = {name: _loaded(path, folder, name, book, fix) for name in SCHEMAS}
-        ledger, holdings = tables["ledger"], tables["holdings"]
-        bars = [table[column] for table in tables.values() for column in BARS
-                if column in table.columns]
+        rows = len(time)
+        book = "results" in provenance
+
+        # a run below the full level is saved with the tables it keeps alone
+        full   = _recorded(provenance) == "full"
+        tables = {name: _loaded(path, folder, name, book, fix) for name in SCHEMAS
+                  if full or name not in LOGGED + ("baselines",)}
+        ledger = tables["ledger"]
+        bars   = [table[column] for table in tables.values() for column in BARS
+                  if column in table.columns]
         if (len(ledger) != rows or not np.array_equal(ledger["time"], time)
                 or not np.array_equal(ledger["equity"], equity)
                 or any(np.ma.any((column < 0) | (column >= rows)) for column in bars)
                 or any(not np.array_equal(table["time"], time[table["bar"]])
-                       for table in (holdings, tables["fills"], tables["orders"]))
-                or not (book or _laid_out(holdings, rows))):
+                       for name, table in tables.items() if name in LOGGED)
+                or not (book or not full or _laid_out(tables["holdings"], rows))):
             raise ProbatumValueError(f"path: the tables of {str(path)!r} do not hold "
                                      f"the rows of its time.npy and equity.npy; {fix}")
 
-        baselines = tables["baselines"]
-        if (len(baselines) != rows or not np.array_equal(baselines["time"], time)
+        baselines = tables.get("baselines")
+        if baselines is not None and (
+                len(baselines) != rows or not np.array_equal(baselines["time"], time)
                 or not (baselines["cash"] == equity[0]).all()
                 or not all(np.isnan(value) or value == equity[0] for value in (
                     baselines["buy_and_hold"][0], baselines["frictionless"][0]))):
@@ -918,7 +1014,7 @@ class Result:
 
         stats = _stats(path, folder, fix)
         if stats is not None and (
-                stats["num_fills"] != len(tables["fills"])
+                (full and stats["num_fills"] != len(tables["fills"]))
                 or stats["num_trades"] != np.count_nonzero(~tables["trades"]["open"])):
             raise ProbatumValueError(f"path: {str(path)!r}'s stats.arrow does not "
                                      f"count the fills and the round trips its tables "
@@ -1188,6 +1284,8 @@ def combine(results, settlement=None):
     dollar assets without it; an inverse contract's account beside an account of
     another kind, whose equity in the quote is not in dollars; Results on bars of
     different intervals or off one interval's steps, or at different risk-free rates;
+    a run recorded below the full level, which keeps no holdings, fill log or order
+    log to join;
     and a book already combined. A column a later version added to a table is left out
     of the book's, since this version cannot tell what it counts."""
     if isinstance(results, Result):
@@ -1218,6 +1316,10 @@ def combine(results, settlement=None):
         if "results" in part.provenance:
             raise ProbatumValueError("results: a book already combined; combine the "
                                      "Results it was made of")
+        if _recorded(part.provenance) != "full":
+            raise ProbatumValueError(_unkept(part, "results", "no holdings, fill log or "
+                                             "order log to join"))
+
         if name is None:
             name = part.provenance["venue_name"]
             if name is None:

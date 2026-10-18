@@ -614,12 +614,14 @@ def test_a_holding_of_0_0004_under_a_lot_of_0_001_is_swept_at_250_as_dust_of_0_1
     assert sim.ledger[-1]["dust"] == pytest.approx(0.1, abs=1e-12)
 
 
-def test_a_buy_and_a_sale_of_a_tenth_of_a_bitcoin_cost_8_430997():
-    # a fixed spread and slippage of 1 bp, a taker fee of 0.05% and 0.01% of funding at
-    # every close, on bars at 60,000, then 60,000 to 60,500, then 60,400 to 60,450
+def tenth(record="full"):
+    """The costs example recorded at ``record``: a tenth of a bitcoin bought and sold
+    with a fixed spread and slippage of 1 bp, a taker fee of 0.05% and 0.01% of funding
+    at every close, on bars at 60,000, then 60,000 to 60,500, then 60,400 to 60,450."""
     frame = hourly_bars([60_000.0, 60_000.0, 60_400.0], [60_000.0, 60_500.0, 60_450.0],
                         range(3)).assign(high=[60_000.0, 60_600.0, 60_500.0],
                                          low=[60_000.0, 59_900.0, 60_300.0])
+
     venue = probatum.Venue(
         balance = 10_000.0,
         fees    = {"maker": 0.0, "taker": 0.0005},
@@ -627,9 +629,13 @@ def test_a_buy_and_a_sale_of_a_tenth_of_a_bitcoin_cost_8_430997():
         funding = {"every_bars": 1, "rate": 0.0001},
     )
 
-    result = probatum.backtest(np.array([0.1, 0.0, np.nan]),
-                               probatum.Data(frame, symbol="BTCUSDT", market="linear"),
-                               venue, sizing="quantity")
+    return probatum.backtest(np.array([0.1, 0.0, np.nan]),
+                             probatum.Data(frame, symbol="BTCUSDT", market="linear"),
+                             venue, sizing="quantity", record=record)
+
+
+def test_a_buy_and_a_sale_of_a_tenth_of_a_bitcoin_cost_8_430997():
+    result = tenth()
 
     assert [fill["price"] for fill in result.fills] == pytest.approx([60_009.0,
                                                                       60_390.94])
@@ -643,6 +649,21 @@ def test_a_buy_and_a_sale_of_a_tenth_of_a_bitcoin_cost_8_430997():
                                                     10_031.569003], abs=1e-9)
     # the price PnL, 40.00, less the costs is what the instrument made
     assert result.pnl[-1] == pytest.approx(40.0 - 8.430997, abs=1e-9)
+
+
+def test_the_costs_example_at_the_account_level_prices_its_fees_and_not_its_bound():
+    full, account = tenth(), tenth("account")
+
+    assert (len(account.ledger), len(account.trades)) == (3, 1)
+    assert account.stats == full.stats
+
+    costs = [{row["name"]: row["cost"] for row in result.assumptions}
+             for result in (full, account)]
+    for cost in costs:
+        assert cost["fees"] == pytest.approx(6.019997, abs=1e-9)
+        assert cost["liquidation fee"] == 0.0
+    assert [costs[0]["margin bound"], costs[0]["liquidation"]] == [0.0, 0.0]
+    assert [costs[1]["margin bound"], costs[1]["liquidation"]] == [None, None]
 
 
 def test_a_bar_that_carries_half_a_bitcoin_and_buys_a_tenth_gains_266_0815():
