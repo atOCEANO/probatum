@@ -205,10 +205,10 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
 
 @pytest.mark.parametrize("settings, says", [
     (dict(fees={"maker": -2.0}),
-     "fees.maker must be greater than -1.0 (a rebate cannot exceed the notional), got "
-     "-2"),
+     "fees.maker: -2; give a rate above -1, since a rebate cannot exceed the "
+     "notional"),
     (dict(fees={"taker": "low"}), "fees.taker: 'low' is not a number; give a number"),
-    (dict(leverage=-1.0), "leverage must be at least 0, got -1"),
+    (dict(leverage=-1.0), "leverage: -1; give 0 or more"),
     (dict(liquidation_fee=1.0),
      "liquidation_fee: 1; give the rate on its notional a close at the close point "
      "pays"),
@@ -221,7 +221,7 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
     (dict(funding="hourly"),
      "funding: 'hourly'; use 'none', 'data', {\"every\": hours, \"rate\": r} or "
      "{\"every_bars\": n, \"rate\": r}"),
-    (dict(max_open_orders=0), "max_open_orders must be between 1 and 4096, got 0"),
+    (dict(max_open_orders=0), "max_open_orders: 0; give a whole number from 1 to 4096"),
     (dict(reduce_only_exempt=0), "reduce_only_exempt: 0; give True or False"),
     (dict(tiers=[(5_000.0, 50.0, 0.015, 0.0)]),
      "tiers[0]: [5000.0, 50.0, 0.015, 0.0] is not a dict; give a dict of up_to, "

@@ -5,7 +5,8 @@ engine and bundle stats, the equity curve, and the trade log.
 import numpy as np
 import pytest
 
-from probatum import Backtester, BacktestResult, ProbatumNotImplementedError, Strategy
+from probatum import (Backtester, BacktestResult, ProbatumNotImplementedError,
+                      ProbatumValueError, Strategy)
 
 
 def series():
@@ -163,10 +164,10 @@ def test_a_warmup_that_is_not_a_count_of_bars_is_refused():
     strategy        = Late()
     strategy.warmup = "soon"
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ProbatumValueError) as excinfo:
         Backtester(series(), periods_per_year=365.0).run(strategy)
 
-    assert "non-negative whole number of bars" in str(excinfo.value)
+    assert "warmup: 'soon'; give a whole number of bars from 0" in str(excinfo.value)
 
 
 def test_a_run_that_ended_at_zero_says_so_on_the_result():

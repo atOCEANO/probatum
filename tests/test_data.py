@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from probatum import to_ohlcv
+from probatum import DataError, to_ohlcv
 from probatum._data import annualization, bars_per_year
 
 
@@ -157,7 +157,7 @@ def test_a_row_whose_prices_are_not_a_bar_is_refused():
         [100.0, 99.0, 101.0, 100.0, 1000.0],   # high and low transposed
     ])
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(DataError) as excinfo:
         probatum._probatum.Engine(data)
 
     said = str(excinfo.value)
@@ -179,7 +179,7 @@ def test_a_column_order_that_keeps_the_high_above_the_low_is_refused_too():
 
     assert (shuffled[:, 1] >= shuffled[:, 2]).all()      # the naive check passes
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(DataError) as excinfo:
         probatum._probatum.Engine(shuffled)
 
     assert "not a bar" in str(excinfo.value)
@@ -196,7 +196,7 @@ def test_a_price_at_or_below_zero_or_a_negative_volume_is_refused(row, says):
     import probatum
     data = np.array([[100.0, 101.0, 99.0, 100.0, 1000.0], row])
 
-    with pytest.raises(ValueError, match=says):
+    with pytest.raises(DataError, match=says):
         probatum._probatum.Engine(data)
 
 

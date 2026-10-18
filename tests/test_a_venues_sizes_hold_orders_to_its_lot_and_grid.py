@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import probatum
+from probatum import VenueError
 
 
 def bars(*rows):
@@ -241,16 +242,17 @@ def test_an_inverse_lot_is_in_contracts_and_its_minimum_notional_in_the_coin():
 def test_a_rule_no_venue_could_hold_is_refused(settings, says):
     candles = bars((100.0, 100.0, 100.0, 100.0, 1.0))
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         probatum._probatum.Engine(candles, **settings)
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         probatum.Batch(candles, 2, **settings)
 
 
 def test_the_significant_figure_rule_is_refused_on_an_inverse_contract():
-    with pytest.raises(ValueError, match=re.escape(
-            "sigfigs: 5 for an inverse contract, whose prices take a tick; give its tick")):
+    with pytest.raises(VenueError, match=re.escape(
+            "sigfigs: 5 for an inverse contract, whose prices take a tick; give its "
+            "tick")):
         probatum._probatum.Engine(
             bars((100.0, 100.0, 100.0, 100.0, 1.0)),
             market   = "inverse",
@@ -273,11 +275,11 @@ def test_a_universe_takes_each_instruments_rules_in_its_own_dict():
     assert [(event["order"], event["kind"]) for event in log if event["bar"] == 0] == [
         (1, "refused"), (2, "placed")]
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(VenueError, match=re.escape(
             "lot: given beside instruments; give each instrument its own there")):
         probatum._probatum.Engine(universe, market="perp", lot=1.0, instruments=instruments)
 
-    with pytest.raises(ValueError, match=re.escape(
+    with pytest.raises(VenueError, match=re.escape(
             "instruments[1]: lot: 'half'; give a number")):
         probatum._probatum.Engine(
             universe,

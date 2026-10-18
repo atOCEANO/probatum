@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import probatum
+from probatum import DataError, ProbatumValueError, VenueError
 
 HOUR = 3_600_000_000_000
 
@@ -207,22 +208,23 @@ def test_a_batch_of_inverse_accounts_trades_contracts():
     (dict(quote={"margin": 1.0}), "quote: a dict of wallets for an inverse contract"),
 ])
 def test_an_inverse_contract_the_engine_cannot_hold_is_refused(settings, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)), **settings)
 
 
 def test_a_price_with_no_reciprocal_a_universe_and_a_transfer_are_refused():
-    with pytest.raises(ValueError, match="candles: a low of 0.0+1 at row 1, whose "):
+    with pytest.raises(DataError, match="candles: a low of 0.0+1 at row 1, whose "):
         engine(bars((1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 1e-310, 1.0)))
 
-    with pytest.raises(ValueError, match="market: an inverse contract for a universe"):
+    with pytest.raises(VenueError, match="market: an inverse contract for a universe"):
         probatum._probatum.Engine(np.ones((2, 1, 5)), market="inverse", contract=100.0)
 
     e = engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)))
-    with pytest.raises(ValueError, match="transfer: an inverse contract's account"):
+    with pytest.raises(ProbatumValueError, match="transfer: an inverse contract's "
+                                                 "account"):
         e.transfer(0.5, "spot")
 
-    with pytest.raises(ValueError, match="tiers\\[0\\]: up_to 17976931348623157"):
+    with pytest.raises(VenueError, match="tiers\\[0\\]: up_to 17976931348623157"):
         engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)),
                tiers=[(1.7976931348623157e308, 20.0, 0.0, 0.0)], tiers_by="quantity")
 
@@ -239,13 +241,14 @@ def test_a_price_with_no_reciprocal_is_refused(place, says):
     e = engine(bars((60_000.0, 60_000.0, 60_000.0, 60_000.0)))
     e.reset()
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(ProbatumValueError, match=re.escape(says)):
         place(e)
 
     script = {0: [("buy", {"size": 1.0, "limit": 0.0})]}
     venue  = dict(market="inverse", contract=100.0, quote=1.0)
 
-    with pytest.raises(ValueError, match=re.escape("script[0][0]: limit 0, which")):
+    with pytest.raises(ProbatumValueError, match=re.escape("script[0][0]: limit 0, "
+                                                           "which")):
         probatum._probatum.run(bars((60_000.0,) * 4, (60_000.0,) * 4), venue, script)
 
 

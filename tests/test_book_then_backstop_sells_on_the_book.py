@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import probatum
+from probatum import VenueError
 
 HOUR = 3_600_000_000_000
 
@@ -106,7 +107,7 @@ def test_a_liquidation_the_venue_cannot_hold_is_refused(settings, says):
     venue = dict(market="perp", tiers=MAINTAINED)
     venue.update(settings)
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         probatum._probatum.Engine(bars((100.0,) * 4), **venue)
 
 
@@ -117,8 +118,8 @@ def test_a_universe_a_batch_and_a_spot_table_with_no_perp_maintenance_are_refuse
                              dict(market="perp")])
 
     for universe in (flat, spot):
-        with pytest.raises(ValueError, match="liquidation: book_then_backstop with no"):
+        with pytest.raises(VenueError, match="liquidation: book_then_backstop with no"):
             probatum._probatum.Engine(np.full((2, 2, 5), 100.0), **universe, **BOOKED)
 
-    with pytest.raises(ValueError, match="liquidation: book_then_backstop with no"):
+    with pytest.raises(VenueError, match="liquidation: book_then_backstop with no"):
         probatum.Batch(bars((100.0,) * 4), 2, market="perp", **BOOKED)

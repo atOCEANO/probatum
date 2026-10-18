@@ -10,11 +10,12 @@ use std::ffi::{c_char, c_void, CStr};
 use std::ptr::null;
 
 use numpy::PyArray1;
-use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyCapsule, PyList};
 
 use probatum_core::arrow::{empty_array, empty_schema, ArrowArray, ArrowArrayStream, ArrowSchema};
+
+use crate::{DataError, ProbatumTypeError};
 
 /// A schema a stream handed over, released when it goes out of scope.
 struct OwnedSchema(ArrowSchema);
@@ -397,7 +398,7 @@ fn pointer_in(capsule: &Bound<'_, PyAny>, name: &CStr, method: &str) -> PyResult
         .and_then(|capsule| capsule.pointer_checked(Some(name)).ok());
     match held {
         Some(pointer) => Ok(pointer.as_ptr()),
-        None => Err(PyTypeError::new_err(format!(
+        None => Err(ProbatumTypeError::new_err(format!(
             "data: {method} gave a {}, not a capsule named {}; pass a frame that exports \
              one",
             capsule.get_type().name()?,
@@ -427,7 +428,7 @@ pub fn arrow_columns<'py>(
     } else if data.hasattr("__arrow_c_array__")? {
         let pair = data.call_method0("__arrow_c_array__")?;
         let Ok((schema, array)) = pair.extract::<(Bound<'py, PyAny>, Bound<'py, PyAny>)>() else {
-            return Err(PyTypeError::new_err(format!(
+            return Err(ProbatumTypeError::new_err(format!(
                 "data: __arrow_c_array__ gave a {}, not a pair of capsules; pass a frame \
                  that exports one",
                 pair.get_type().name()?
@@ -443,13 +444,13 @@ pub fn arrow_columns<'py>(
             })
         }
     } else {
-        return Err(PyTypeError::new_err(format!(
+        return Err(ProbatumTypeError::new_err(format!(
             "data: a {} has neither the Arrow C stream nor the array interface; pass a \
              frame that exports one",
             data.get_type().name()?
         )));
     };
-    let columns = read.map_err(|said| PyValueError::new_err(format!("data: {said}")))?;
+    let columns = read.map_err(|said| DataError::new_err(format!("data: {said}")))?;
     let out = PyList::empty(py);
     for column in columns {
         let missing = column.present.iter().any(|present| !present);

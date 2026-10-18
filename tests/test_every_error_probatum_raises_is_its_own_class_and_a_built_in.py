@@ -6,6 +6,7 @@ ProbatumValueError and a policy of the wrong kind a ProbatumTypeError.
 """
 
 import pickle
+import re
 import sys
 
 import numpy as np
@@ -14,6 +15,7 @@ import pytest
 import probatum
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (VENUE, one,
                                                                         pair, weights)
+from test_smoke import series
 
 
 def universe_close():
@@ -80,6 +82,51 @@ def test_a_refusal_is_its_class_probatum_s_and_its_built_in(cls, builtin, call, 
     again = pickle.loads(pickle.dumps(error))
 
     assert type(again) is cls and again.args == error.args
+
+
+def binding_engine(**settings):
+    return probatum._probatum.Engine(series(), **settings)
+
+
+def a_call_with_no_size():
+    probatum._probatum.run(series()[:, None, :], {}, {0: [("buy", {})]})
+
+
+def a_bar_whose_high_is_below_its_open():
+    bars = series()
+    bars[1, 1] = bars[1, 0] - 1.0
+    probatum._probatum.Engine(bars)
+
+
+def statistics_of_no_year():
+    probatum._probatum.stats_of(1.0, np.ones(3), np.ones(1), 0.0, 0.0, 0, 0, 0.0)
+
+
+# the binding sorts a wrong value by the area it is about: a call's, the run's seed and
+# statistics and a batch's are the root's class, a setting's a VenueError and a bar's
+# a DataError, and since a kind is also its root each is asserted exactly
+BINDING = [
+    (probatum.ProbatumValueError,
+     lambda: binding_engine(intrabar="random", seed=-1), "seed: -1"),
+    (probatum.ProbatumValueError,
+     lambda: binding_engine().bracket(take_profit=float("nan")), "take_profit: NaN"),
+    (probatum.ProbatumValueError, a_call_with_no_size, "buy has no size"),
+    (probatum.ProbatumValueError, statistics_of_no_year, "periods_per_year: 0"),
+    (probatum.ProbatumValueError,
+     lambda: probatum.Batch(series(), 2).target(np.zeros((3, 1))), "weights: shape"),
+    (probatum.VenueError, lambda: binding_engine(funding_rate=float("nan")),
+     "funding_rate: NaN"),
+    (probatum.DataError, a_bar_whose_high_is_below_its_open, "is not a bar"),
+]
+
+
+@pytest.mark.parametrize("cls, call, says", BINDING, ids=[
+    "seed", "verb", "script", "statistics", "batch", "setting", "bar"])
+def test_the_binding_sorts_a_wrong_value_by_what_it_is_about(cls, call, says):
+    with pytest.raises(cls, match=re.escape(says)) as caught:
+        call()
+
+    assert caught.type is cls
 
 
 def test_each_kind_sits_under_the_root_s_class_for_its_built_in():

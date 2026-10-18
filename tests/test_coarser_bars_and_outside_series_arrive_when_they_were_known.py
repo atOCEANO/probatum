@@ -285,9 +285,9 @@ def monthly():
     (monthly(), None, DataError,
      "values: candles of '1M', an interval no Data runs on"),
     (pa.table({"time": pa.array([2**62], pa.timestamp("s")), "oi": [1.0]}), None,
-     ValueError, "values: column \"time\" holds 4611686018427387904 ticks"),
+     DataError, "values: column \"time\" holds 4611686018427387904 ticks"),
     ([1.0], pa.table({"time": pa.array([2**62], pa.timestamp("s")), "oi": [1.0]}),
-     ValueError, "when: column \"time\" holds 4611686018427387904 ticks"),
+     DataError, "when: column \"time\" holds 4611686018427387904 ticks"),
     (frame(n=3, freq="4h").assign(high=50.0), None, DataError,
      "values: instrument 0's bar at 2024-01-01 00:00 is not a bar"),
 ])

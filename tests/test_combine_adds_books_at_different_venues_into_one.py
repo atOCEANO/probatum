@@ -378,8 +378,8 @@ def test_accounts_kept_in_an_asset_other_than_a_dollar_add_only_to_their_own():
 
 
 def test_the_binding_s_statistics_refuse_a_year_of_no_bars():
-    with pytest.raises(ValueError, match="^periods_per_year: 0; give the bars a year "
-                                         "as a finite number above 0$"):
+    with pytest.raises(ProbatumValueError, match="^periods_per_year: 0; give the bars "
+                                                 "a year as a finite number above 0$"):
         probatum._probatum.stats_of(1.0, np.ones(2), np.zeros(0), 0.0, 0.0, 0, 0, 0.0)
 
 

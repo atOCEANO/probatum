@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import probatum
+from probatum import VenueError
 
 
 def bars(*rows):
@@ -123,8 +124,8 @@ def test_a_limit_placed_through_the_market_fills_where_it_traded():
     (dict(impact_model="Cubic"), 'impact_model: "Cubic" is not a model; use linear or'),
 ])
 def test_a_fill_model_the_engine_cannot_hold_is_refused(settings, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         probatum._probatum.Engine(bars((100.0, 100.0, 100.0, 100.0, 1.0)), **settings)
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         probatum.Batch(bars((100.0, 100.0, 100.0, 100.0, 1.0)), 2, **settings)

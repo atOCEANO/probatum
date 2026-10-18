@@ -19,9 +19,9 @@ use numpy::{
     PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
     PyUntypedArray, PyUntypedArrayMethods,
 };
-use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple, PyType};
+use pyo3::PyTypeInfo;
 
 use probatum_core::candle::floats;
 use probatum_core::{
@@ -38,6 +38,35 @@ use probatum_engine::{
     RoundTrip, Schedule, Script, Sizes, Sizing, Spread, Stats, TargetError, Units,
 };
 
+/// The classes the binding raises, defined in `probatum._errors` beside the rest of the
+/// tree (ADR 0029), and the init's check of them. pyo3 looks an imported class up only
+/// as its error is raised, past the guard that turns a panic into an exception, so a
+/// class missing there would abort the interpreter at its first refusal; the init looks
+/// each one up first, so a mismatch fails the import instead.
+macro_rules! errors {
+    ($($name:ident),+) => {
+        $(pyo3::import_exception!(probatum._errors, $name);)+
+
+        fn check_errors(py: Python<'_>) -> PyResult<()> {
+            let module = py.import("probatum._errors")?;
+            $(
+                module.getattr(stringify!($name))?.cast_into::<PyType>()?;
+                py.get_type::<$name>();
+            )+
+            Ok(())
+        }
+    };
+}
+
+errors!(
+    DataError,
+    VenueError,
+    ProbatumValueError,
+    ProbatumTypeError,
+    ProbatumKeyError,
+    ProbatumIndexError
+);
+
 /// How a venue decides the events a bar's prices cannot order, `"random"` from a
 /// stream named from the run's `seed`, case-insensitively.
 fn parse_intrabar(intrabar: &str, seed: Option<u128>) -> PyResult<Intrabar> {
@@ -45,11 +74,11 @@ fn parse_intrabar(intrabar: &str, seed: Option<u128>) -> PyResult<Intrabar> {
         ("pessimistic", _) => Ok(Intrabar::Pessimistic),
         ("optimistic", _) => Ok(Intrabar::Optimistic),
         ("random", Some(seed)) => Ok(Intrabar::Random(seed)),
-        ("random", None) => Err(PyValueError::new_err(
+        ("random", None) => Err(ProbatumValueError::new_err(
             "seed: none, and intrabar=\"random\" draws from a stream named from it; \
              pass seed=",
         )),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "intrabar: {intrabar:?} is not a setting; use pessimistic, optimistic or random"
         ))),
     }
@@ -60,21 +89,21 @@ fn parse_intrabar(intrabar: &str, seed: Option<u128>) -> PyResult<Intrabar> {
 fn parse_liquidation(liquidation: &str, backstop: Option<f64>) -> PyResult<Liquidation> {
     match (liquidation.to_ascii_lowercase().as_str(), backstop) {
         ("takeover", None) => Ok(Liquidation::Takeover),
-        ("takeover", Some(share)) => Err(PyValueError::new_err(format!(
+        ("takeover", Some(share)) => Err(VenueError::new_err(format!(
             "backstop: {share} for takeover; give it with liquidation=\"book_then_backstop\""
         ))),
         ("book_then_backstop", Some(share)) if share > 0.0 && share < 1.0 => {
             Ok(Liquidation::BookThenBackstop(share))
         }
-        ("book_then_backstop", Some(share)) => Err(PyValueError::new_err(format!(
+        ("book_then_backstop", Some(share)) => Err(VenueError::new_err(format!(
             "backstop: {share}; give the share of the requirement its level sits at, \
              above 0 and below 1"
         ))),
-        ("book_then_backstop", None) => Err(PyValueError::new_err(
+        ("book_then_backstop", None) => Err(VenueError::new_err(
             "backstop: none, and book_then_backstop takes over where equity falls to a \
              share of the requirement; pass backstop=",
         )),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "liquidation: {liquidation:?} is not a model; use takeover or book_then_backstop"
         ))),
     }
@@ -85,7 +114,7 @@ fn parse_impact(model: &str) -> PyResult<Impact> {
     match model.to_ascii_lowercase().as_str() {
         "linear" => Ok(Impact::Linear),
         "sqrt" => Ok(Impact::Sqrt),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "impact_model: {model:?} is not a model; use linear or sqrt"
         ))),
     }
@@ -100,14 +129,14 @@ fn parse_spread(spread: Option<&Bound<'_, PyAny>>) -> PyResult<Spread> {
     if let Ok(name) = spread.extract::<String>() {
         return match name.to_ascii_lowercase().as_str() {
             "estimated" => Ok(Spread::Estimated),
-            _ => Err(PyValueError::new_err(format!(
+            _ => Err(VenueError::new_err(format!(
                 "spread: {name:?} is not a spread; give basis points, or \"estimated\""
             ))),
         };
     }
     match spread.extract::<f64>() {
         Ok(bps) if bps.is_finite() && bps >= 0.0 => Ok(Spread::Fixed(bps)),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "spread: {}; give basis points from 0, or \"estimated\"",
             shown(spread)
         ))),
@@ -119,7 +148,7 @@ fn parse_spread(spread: Option<&Bound<'_, PyAny>>) -> PyResult<Spread> {
 fn seed_of(seed: Option<Bound<'_, PyAny>>) -> PyResult<Option<u128>> {
     seed.map(|seed| {
         seed.extract().map_err(|_| {
-            PyValueError::new_err(format!(
+            ProbatumValueError::new_err(format!(
                 "seed: {}; give a whole number from 0",
                 shown(&seed)
             ))
@@ -133,7 +162,7 @@ fn parse_market(market: &str) -> PyResult<Market> {
     match market.to_ascii_lowercase().as_str() {
         "spot" => Ok(Market::Spot),
         "perp" => Ok(Market::Perp),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "market: {market:?} is not a market; use spot or perp"
         ))),
     }
@@ -144,8 +173,8 @@ fn parse_side(side: &str) -> PyResult<Side> {
     match side.to_ascii_lowercase().as_str() {
         "buy" => Ok(Side::Buy),
         "sell" => Ok(Side::Sell),
-        other => Err(PyValueError::new_err(format!(
-            "side must be 'buy' or 'sell', got '{other}'"
+        _ => Err(ProbatumValueError::new_err(format!(
+            "side: {side:?} is not a side; use buy or sell"
         ))),
     }
 }
@@ -156,8 +185,8 @@ fn parse_order_type(kind: &str) -> PyResult<OrderType> {
         "market" => Ok(OrderType::Market),
         "limit" => Ok(OrderType::Limit),
         "stop" => Ok(OrderType::Stop),
-        other => Err(PyValueError::new_err(format!(
-            "type must be 'market', 'limit', or 'stop', got '{other}'"
+        _ => Err(ProbatumValueError::new_err(format!(
+            "type: {kind:?} is not an order type; use market, limit or stop"
         ))),
     }
 }
@@ -168,8 +197,8 @@ fn parse_tif(tif: &str) -> PyResult<TimeInForce> {
         "GTC" => Ok(TimeInForce::Gtc),
         "IOC" => Ok(TimeInForce::Ioc),
         "FOK" => Ok(TimeInForce::Fok),
-        other => Err(PyValueError::new_err(format!(
-            "tif must be 'GTC', 'IOC', or 'FOK', got '{other}'"
+        _ => Err(ProbatumValueError::new_err(format!(
+            "tif: {tif:?} is not a time in force; use gtc, ioc or fok"
         ))),
     }
 }
@@ -199,7 +228,7 @@ fn candles_from_array(
     let view = array.as_array();
     let cols = view.ncols();
     if cols != 5 {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: {cols} columns; give 5, open, high, low, close and volume"
         )));
     }
@@ -214,7 +243,7 @@ fn candles_from_array(
         })
         .collect();
     if bars.is_empty() {
-        return Err(PyValueError::new_err(
+        return Err(DataError::new_err(
             "candles: no rows; give at least one bar",
         ));
     }
@@ -238,7 +267,7 @@ fn check_bar(bar: &Candle, at: impl Fn() -> String) -> PyResult<()> {
     // and equity downstream, and a series of one instrument has no row without a bar.
     let values = [bar.open, bar.high, bar.low, bar.close, bar.volume];
     if let Some(value) = values.into_iter().find(|value| !value.is_finite()) {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: {value} at {}; clean NaN and inf rows first",
             at()
         )));
@@ -256,8 +285,8 @@ fn check_bar(bar: &Candle, at: impl Fn() -> String) -> PyResult<()> {
         && bar.low <= bar.close
         && bar.close <= bar.high)
     {
-        return Err(PyValueError::new_err(format!(
-            "candles are not a bar at {}: open {}, high {}, low {}, close {}; need low \
+        return Err(DataError::new_err(format!(
+            "candles: {} is not a bar: open {}, high {}, low {}, close {}; need low \
              <= open <= high and low <= close <= high, so check the column order, which \
              is open, high, low, close, volume",
             at(),
@@ -272,14 +301,14 @@ fn check_bar(bar: &Candle, at: impl Fn() -> String) -> PyResult<()> {
     // the budget and the impact (ADR 0007); once the four are in order the low is
     // the least of them
     if bar.low <= 0.0 {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: a low of {} at {}; give prices above 0",
             bar.low,
             at()
         )));
     }
     if bar.volume < 0.0 {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: a volume of {} at {}; give a volume of 0 or more",
             bar.volume,
             at()
@@ -299,12 +328,12 @@ fn candles_from_universe(
     let view = array.as_array();
     let (rows, width, cols) = view.dim();
     if cols != 5 {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: {cols} values to a bar; give 5, open, high, low, close and volume"
         )));
     }
     if rows == 0 || width == 0 {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: {rows} rows of {width} instruments; give at least one of each"
         )));
     }
@@ -326,13 +355,13 @@ fn candles_from_universe(
                 continue;
             }
             if values.iter().any(|value| value.is_nan()) {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "candles: row {t} gives instrument {i} NaN in some of its five values; \
                      give NaN in all five where it printed no bar"
                 )));
             }
             if let Some(value) = values.iter().find(|value| value.is_infinite()) {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "candles: row {t} gives instrument {i} a value of {value}; give finite \
                      values, or NaN in all five where it printed no bar"
                 )));
@@ -341,7 +370,7 @@ fn candles_from_universe(
             printed = true;
         }
         if !printed {
-            return Err(PyValueError::new_err(format!(
+            return Err(DataError::new_err(format!(
                 "candles: row {t} holds no instrument's bar; keep only the rows some \
                  instrument printed"
             )));
@@ -368,7 +397,7 @@ fn funding_instruments_of(
             Some(Ok(i)) if i < width => out.push(Some(i)),
             None => out.push(None),
             _ => {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "funding_instruments: row {row} names instrument {}, of {width}; name one \
                      counted from 0, or None for every perp held",
                     instrument.unwrap_or(0)
@@ -397,12 +426,12 @@ fn place_funding(
     units: Units,
 ) -> PyResult<Candles> {
     if !(funding_hours.is_finite() && funding_hours >= 0.0) {
-        return Err(PyValueError::new_err(format!(
+        return Err(VenueError::new_err(format!(
             "funding_hours: {funding_hours}; pass the hours between events, or 0.0 for none"
         )));
     }
     if funding_instruments.is_some() && funding_times.is_none() {
-        return Err(PyValueError::new_err(
+        return Err(DataError::new_err(
             "funding_instruments: given without funding_times; pass the times and rates \
              they go with",
         ));
@@ -412,21 +441,21 @@ fn place_funding(
         (Some(times), Some(rates)) => {
             let (times, rates) = (times.as_array(), rates.as_array());
             if times.len() != rates.len() {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "funding_rates: {} for {} funding_times; pass one rate per time",
                     rates.len(),
                     times.len()
                 )));
             }
             if let Some(row) = rates.iter().position(|rate| !rate.is_finite()) {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "funding_rates: row {row} is {}; pass finite rates",
                     rates[row]
                 )));
             }
             let named = funding_instruments.unwrap_or_else(|| vec![None; times.len()]);
             if named.len() != times.len() {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "funding_instruments: {} for {} funding_times; pass one per time, None \
                      for every perp held",
                     named.len(),
@@ -435,7 +464,7 @@ fn place_funding(
             }
             let width = series.width();
             if let Some(row) = named.iter().position(|i| i.is_some_and(|i| i >= width)) {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "funding_instruments: row {row} names instrument {}, of {width}; name one \
                      counted from 0, or None for every perp held",
                     named[row].unwrap_or(0)
@@ -451,7 +480,7 @@ fn place_funding(
             )
         }
         (Some(_), None) | (None, Some(_)) => {
-            return Err(PyValueError::new_err(
+            return Err(DataError::new_err(
                 "funding_times: given without funding_rates, or the other way round; pass \
                  both or neither",
             ))
@@ -459,7 +488,7 @@ fn place_funding(
     };
     let sources = [funding_interval > 0, funding_hours > 0.0, stamped.is_some()];
     if sources.iter().filter(|&&given| given).count() > 1 {
-        return Err(PyValueError::new_err(
+        return Err(VenueError::new_err(
             "funding: more than one source; pass funding_interval, funding_hours or \
              funding_times, one of them",
         ));
@@ -469,7 +498,7 @@ fn place_funding(
     }
     let events = match series.clock() {
         None => {
-            return Err(PyValueError::new_err(
+            return Err(DataError::new_err(
                 "times: none, and funding_hours and funding_times place events on the \
                  clock; pass times=",
             ))
@@ -491,14 +520,14 @@ fn clock_from(times: PyReadonlyArray1<'_, i64>, rows: Option<usize>) -> PyResult
     let times = times.as_array();
     if let Some(rows) = rows {
         if times.len() != rows {
-            return Err(PyValueError::new_err(format!(
+            return Err(DataError::new_err(format!(
                 "times: {} for {rows} bars; pass one open time per bar",
                 times.len()
             )));
         }
     }
     if let Some(row) = (1..times.len()).find(|&row| times[row] <= times[row - 1]) {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "times: row {row} opens at {}, not after row {} at {}; pass the bars in \
              time order, one per time",
             times[row],
@@ -524,18 +553,21 @@ const MAX_BOOK_SLOTS: usize = 1 << 20;
 /// an ordinary `except` (ADR 0007).
 fn check_window(window: usize) -> PyResult<()> {
     if window == 0 {
-        return Err(PyValueError::new_err("window must be at least 1, got 0"));
+        return Err(ProbatumValueError::new_err(
+            "window: 0; give a window of 1 bar or more",
+        ));
     }
     Ok(())
 }
 
-/// Reject a configuration scalar that is not finite. The candle array is already
-/// checked for exactly this, and a NaN knob is no less poisonous: a NaN quote makes
-/// every state field NaN (ADR 0007).
-fn finite(name: &str, value: f64) -> PyResult<f64> {
+/// Reject a scalar that is not finite, as a refusal of class `E`: a venue's setting's
+/// or a call's, whichever area asked. The candle array is already checked for exactly
+/// this, and a NaN knob is no less poisonous: a NaN quote makes every state field NaN
+/// (ADR 0007).
+fn finite<E: PyTypeInfo>(name: &str, value: f64) -> PyResult<f64> {
     if !value.is_finite() {
-        return Err(PyValueError::new_err(format!(
-            "{name} must be a finite number, got {value}"
+        return Err(PyErr::new::<E, _>(format!(
+            "{name}: {value}; give a finite number"
         )));
     }
     Ok(value)
@@ -543,10 +575,10 @@ fn finite(name: &str, value: f64) -> PyResult<f64> {
 
 /// Reject a configuration scalar that is not finite, or that is below `low`.
 fn at_least(name: &str, value: f64, low: f64) -> PyResult<f64> {
-    finite(name, value)?;
+    finite::<VenueError>(name, value)?;
     if value < low {
-        return Err(PyValueError::new_err(format!(
-            "{name} must be at least {low}, got {value}"
+        return Err(VenueError::new_err(format!(
+            "{name}: {value}; give {low} or more"
         )));
     }
     Ok(value)
@@ -577,7 +609,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Opening> {
         let Ok(wallets) = obj.cast::<PyDict>() else {
             return obj.extract().map(Opening::Cash).map_err(|_| {
-                PyValueError::new_err(format!(
+                VenueError::new_err(format!(
                     "quote: {}; give the opening cash, or a dict of spot and margin",
                     shown(&obj)
                 ))
@@ -586,14 +618,14 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
         let (mut spot, mut margin) = (0.0, 0.0);
         for (name, cash) in wallets.iter() {
             let name: String = name.extract().map_err(|_| {
-                PyValueError::new_err(format!(
+                VenueError::new_err(format!(
                     "quote: a wallet named {}; name spot and margin",
                     shown(&name)
                 ))
             })?;
             let amount = |cash: &Bound<'_, PyAny>| {
                 cash.extract::<f64>().map_err(|_| {
-                    PyValueError::new_err(format!(
+                    VenueError::new_err(format!(
                         "quote: {} for the {name} wallet; give its cash as a number",
                         shown(cash)
                     ))
@@ -603,7 +635,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Opening {
                 "spot" => spot = amount(&cash)?,
                 "margin" => margin = amount(&cash)?,
                 _ => {
-                    return Err(PyValueError::new_err(format!(
+                    return Err(VenueError::new_err(format!(
                         "quote: a wallet named {name:?}; name spot and margin"
                     )))
                 }
@@ -624,7 +656,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Window {
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Window> {
         match obj.extract() {
             Ok(bars) if bars > 0 => Ok(Window(bars)),
-            _ => Err(PyValueError::new_err(format!(
+            _ => Err(VenueError::new_err(format!(
                 "window: {}; give the number of bars before a fill its window reads, \
                  from 1",
                 shown(&obj)
@@ -643,8 +675,8 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Slots {
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Slots> {
         obj.extract().map(Slots).map_err(|_| {
-            PyValueError::new_err(format!(
-                "max_open_orders must be between 1 and {MAX_OPEN_ORDERS_LIMIT}, got {}",
+            VenueError::new_err(format!(
+                "max_open_orders: {}; give a whole number from 1 to {MAX_OPEN_ORDERS_LIMIT}",
                 shown(&obj)
             ))
         })
@@ -661,7 +693,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Interval {
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Interval> {
         obj.extract().map(Interval).map_err(|_| {
-            PyValueError::new_err(format!(
+            VenueError::new_err(format!(
                 "funding_interval: {}; pass the bars between events, or 0 for none",
                 shown(&obj)
             ))
@@ -674,7 +706,7 @@ fn parse_limit(limit: &str) -> PyResult<Limit> {
     match limit.to_ascii_lowercase().as_str() {
         "touch" => Ok(Limit::Touch),
         "through" => Ok(Limit::Through),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "limit: {limit:?} is not a fill rule; use touch or through"
         ))),
     }
@@ -686,7 +718,7 @@ fn parse_limit(limit: &str) -> PyResult<Limit> {
 fn whole(at: &str, name: &str, value: &Bound<'_, PyAny>, least: u32, most: u32) -> PyResult<u32> {
     match value.extract::<i64>() {
         Ok(n) if n >= i64::from(least) && n <= i64::from(most) => Ok(n as u32),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "{at}{name}: {}; give a whole number from {least} to {most}",
             shown(value)
         ))),
@@ -721,7 +753,7 @@ fn rules_of(
         if value.is_finite() && value >= 0.0 {
             Ok(value)
         } else {
-            Err(PyValueError::new_err(format!(
+            Err(VenueError::new_err(format!(
                 "{at}{name}: {value}; give {what}, from 0"
             )))
         }
@@ -737,13 +769,13 @@ fn rules_of(
         None => f64::INFINITY,
         Some(most) if most > 0.0 => most,
         Some(most) => {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "{at}max_qty: {most}; give the largest size an order may have, above 0"
             )))
         }
     };
     if lot > 0.0 && max_qty < lot {
-        return Err(PyValueError::new_err(format!(
+        return Err(VenueError::new_err(format!(
             "{at}max_qty: {max_qty}; give a maximum of at least the lot of {lot}"
         )));
     }
@@ -758,17 +790,17 @@ fn rules_of(
         (None, None) => PriceRule::Free,
         (Some(figures), Some(cap)) if tick == 0.0 => PriceRule::Figures { figures, cap },
         (Some(figures), Some(_)) => {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "{at}sigfigs: {figures} beside a tick of {tick}; give one price rule"
             )))
         }
         (Some(figures), None) => {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "{at}sigfigs: {figures} without decimals; give the decimal cap with it"
             )))
         }
         (None, Some(cap)) => {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "{at}decimals: {cap} without sigfigs; give the significant figures with it"
             )))
         }
@@ -799,7 +831,7 @@ fn rules_of(
 /// where an inverse contract has no reciprocal to trade at.
 fn engine_price(name: &str, units: Units, price: f64) -> PyResult<f64> {
     if !units.takes(price) {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "{name}: {price}, which an inverse contract cannot trade at; give a price \
              above 0"
         )));
@@ -813,7 +845,7 @@ fn one_wallet(at: &str, units: Units) -> PyResult<()> {
     if units == Units::Linear {
         return Ok(());
     }
-    Err(PyValueError::new_err(format!(
+    Err(ProbatumValueError::new_err(format!(
         "{at}transfer: an inverse contract's account holds its coin in one wallet, with \
          no other to move it to; leave the transfer out"
     )))
@@ -823,12 +855,12 @@ fn one_wallet(at: &str, units: Units) -> PyResult<()> {
 /// that can move. `at` leads each error, to say where in a script it came from.
 fn transfer_to(at: &str, amount: f64, to: &str) -> PyResult<Wallet> {
     if !amount.is_finite() {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "{at}amount: {amount} is not a finite number; pass the cash to move"
         )));
     }
     if amount < 0.0 {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "{at}amount: {amount} is negative; pass the cash to move and name the wallet \
              it goes into with to"
         )));
@@ -836,7 +868,7 @@ fn transfer_to(at: &str, amount: f64, to: &str) -> PyResult<Wallet> {
     match to.to_ascii_lowercase().as_str() {
         "spot" => Ok(Wallet::Spot),
         "margin" => Ok(Wallet::Margin),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(ProbatumValueError::new_err(format!(
             "{at}to: {to:?} is not a wallet; use spot or margin"
         ))),
     }
@@ -847,7 +879,7 @@ fn tier_basis(by: &str) -> PyResult<TierBasis> {
     match by.to_ascii_lowercase().as_str() {
         "notional" => Ok(TierBasis::Notional),
         "quantity" => Ok(TierBasis::Quantity),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(VenueError::new_err(format!(
             "tiers_by: {by:?} is not a basis; use notional or quantity"
         ))),
     }
@@ -861,7 +893,7 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
     let mut table = Vec::with_capacity(rows.len());
     for (row, numbers) in rows.into_iter().enumerate() {
         let [up_to, leverage, rate, amount] = numbers[..] else {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "tiers[{row}]: {} numbers; give (up_to, leverage, rate, amount)",
                 numbers.len()
             )));
@@ -874,7 +906,7 @@ fn tiers_from(rows: Vec<Vec<f64>>, by: &str) -> PyResult<Tiers> {
         });
     }
     Tiers::new(basis, table).map_err(|why| {
-        PyValueError::new_err(match why {
+        VenueError::new_err(match why {
             TierError::Rate { row, rate } => format!(
                 "tiers[{row}]: a maintenance rate of {rate} is not below one; give a rate \
                  under 1"
@@ -938,7 +970,7 @@ fn in_units(units: Units, tiers: Tiers) -> PyResult<Tiers> {
             TierError::Bound { row, .. } | TierError::NotFinite { row, .. } => row,
             _ => 0,
         };
-        PyValueError::new_err(format!(
+        VenueError::new_err(format!(
             "tiers[{row}]: up_to {} contracts, counted in dollars of contracts, is past \
              every float or meets the bound before it; give smaller bounds further apart",
             given[row]
@@ -956,7 +988,7 @@ fn instruments_from(
     tiers_by: &str,
 ) -> PyResult<Vec<Instrument>> {
     if given.len() != width {
-        return Err(PyValueError::new_err(format!(
+        return Err(VenueError::new_err(format!(
             "instruments: {} for the {width} in candles; give one per instrument",
             given.len()
         )));
@@ -965,14 +997,14 @@ fn instruments_from(
     for (i, spec) in given.iter().enumerate() {
         for key in spec.keys() {
             let Ok(name) = key.extract::<String>() else {
-                return Err(PyValueError::new_err(format!(
+                return Err(VenueError::new_err(format!(
                     "instruments[{i}]: {} is not a setting's name; name each setting with a \
                      string",
                     shown(&key)
                 )));
             };
             if !SETTINGS.contains(&name.as_str()) {
-                return Err(PyValueError::new_err(format!(
+                return Err(VenueError::new_err(format!(
                     "instruments[{i}]: {name:?} is not a setting; give {}",
                     SETTINGS.join(", ")
                 )));
@@ -981,7 +1013,7 @@ fn instruments_from(
         let text = |name: &str, choices: &str| -> PyResult<Option<String>> {
             match spec.get_item(name)?.filter(|value| !value.is_none()) {
                 Some(value) => value.extract().map(Some).map_err(|_| {
-                    PyValueError::new_err(format!(
+                    VenueError::new_err(format!(
                         "instruments[{i}]: {name} {} is not a string; use {choices}",
                         shown(&value)
                     ))
@@ -991,7 +1023,7 @@ fn instruments_from(
         };
         let market = match text("market", "spot or perp")? {
             Some(name) => parse_market(&name).map_err(|_| {
-                PyValueError::new_err(format!(
+                VenueError::new_err(format!(
                     "instruments[{i}]: market {name:?} is not a market; use spot or perp"
                 ))
             })?,
@@ -1000,7 +1032,7 @@ fn instruments_from(
         let by = text("tiers_by", "notional or quantity")?;
         if let Some(by) = &by {
             tier_basis(by).map_err(|_| {
-                PyValueError::new_err(format!(
+                VenueError::new_err(format!(
                     "instruments[{i}]: tiers_by {by:?} is not a basis; use notional or \
                      quantity"
                 ))
@@ -1009,14 +1041,14 @@ fn instruments_from(
         let tiers = match spec.get_item("tiers")?.filter(|rows| !rows.is_none()) {
             Some(rows) => {
                 let rows = rows.extract().map_err(|_| {
-                    PyValueError::new_err(format!(
+                    VenueError::new_err(format!(
                         "instruments[{i}]: tiers {} is not a list of rows; give rows of \
                          (up_to, leverage, rate, amount)",
                         shown(&rows)
                     ))
                 })?;
                 tiers_from(rows, by.as_deref().unwrap_or(tiers_by)).map_err(|err| {
-                    PyValueError::new_err(format!("instruments[{i}]: {}", err.value(spec.py())))
+                    VenueError::new_err(format!("instruments[{i}]: {}", err.value(spec.py())))
                 })?
             }
             None => Tiers::default(),
@@ -1027,7 +1059,7 @@ fn instruments_from(
         let number = |name: &str, default: f64| -> PyResult<f64> {
             match given(name)? {
                 Some(value) => value.extract().map_err(|_| {
-                    PyValueError::new_err(format!(
+                    VenueError::new_err(format!(
                         "instruments[{i}]: {name}: {}; give a number",
                         shown(&value)
                     ))
@@ -1037,7 +1069,7 @@ fn instruments_from(
         };
         let exempt = match given("reduce_only_exempt")? {
             Some(value) => value.extract().map_err(|_| {
-                PyValueError::new_err(format!(
+                VenueError::new_err(format!(
                     "instruments[{i}]: reduce_only_exempt: {}; give True or False",
                     shown(&value)
                 ))
@@ -1102,9 +1134,9 @@ const SETTINGS: [&str; 12] = [
 /// identical rule, and a rule written twice is a rule two paths will disagree
 /// about, which is exactly what happened.
 fn a_rebate(name: &str, rate: f64) -> PyResult<f64> {
-    if finite(name, rate)? <= -1.0 {
-        return Err(PyValueError::new_err(format!(
-            "{name} must be greater than -1.0 (a rebate cannot exceed the notional), got {rate}"
+    if finite::<VenueError>(name, rate)? <= -1.0 {
+        return Err(VenueError::new_err(format!(
+            "{name}: {rate}; give a rate above -1, since a rebate cannot exceed the notional"
         )));
     }
     Ok(rate)
@@ -1138,8 +1170,9 @@ fn build_config(
     liquidation_fee: Option<f64>,
 ) -> PyResult<EngineConfig> {
     if max_open_orders == 0 || max_open_orders > MAX_OPEN_ORDERS_LIMIT {
-        return Err(PyValueError::new_err(format!(
-            "max_open_orders must be between 1 and {MAX_OPEN_ORDERS_LIMIT}, got {max_open_orders}"
+        return Err(VenueError::new_err(format!(
+            "max_open_orders: {max_open_orders}; give a whole number from 1 to \
+             {MAX_OPEN_ORDERS_LIMIT}"
         )));
     }
     for (name, rate) in [("fee_taker", fee_taker), ("fee_maker", fee_maker)] {
@@ -1169,7 +1202,7 @@ fn build_config(
         budget: if budget.is_finite() && budget > 0.0 {
             budget
         } else {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "budget: {budget}; give the share of the trailing volume a bar's fills may \
                  take, above 0"
             )));
@@ -1183,7 +1216,7 @@ fn build_config(
         spread: parse_spread(spread)?,
         limit: parse_limit(limit)?,
         sizes,
-        funding_rate: finite("funding_rate", funding_rate)?,
+        funding_rate: finite::<VenueError>("funding_rate", funding_rate)?,
         funding_interval,
         intrabar: parse_intrabar(intrabar, seed)?,
         liquidation: parse_liquidation(liquidation, backstop)?,
@@ -1191,7 +1224,7 @@ fn build_config(
             // a fee of minus zero is no fee, and the fill log keeps no sign for it
             Some(fee) if (0.0..1.0).contains(&fee) => Some(fee + 0.0),
             Some(fee) => {
-                return Err(PyValueError::new_err(format!(
+                return Err(VenueError::new_err(format!(
                     "liquidation_fee: {fee}; give the rate on its notional a close at the \
                      close point pays, from 0 and below 1"
                 )))
@@ -1212,11 +1245,13 @@ fn per_env_vec(
     match array {
         Some(a) => {
             let slice = a.as_slice().map_err(|_| {
-                PyValueError::new_err(format!("{name} must be a contiguous 1-D float64 array"))
+                VenueError::new_err(format!(
+                    "{name}: a strided array; give a contiguous 1-D float64 array"
+                ))
             })?;
             if slice.len() != num_envs {
-                return Err(PyValueError::new_err(format!(
-                    "{name} length {} must equal num_envs {num_envs}",
+                return Err(VenueError::new_err(format!(
+                    "{name}: {} values for {num_envs} envs; give one for each",
                     slice.len()
                 )));
             }
@@ -1359,7 +1394,14 @@ impl PyState {
             "realized_pnl" => self.realized_pnl,
             "unrealized_pnl" => self.unrealized_pnl,
             "funding_paid" => self.funding_paid,
-            _ => return Err(PyKeyError::new_err(key.to_string())),
+            _ => {
+                return Err(ProbatumKeyError::new_err(format!(
+                    "state: no field {key:?}; use one of tick_index, open_orders, base, \
+                     quote, spot_cash, margin_cash, position, avg_entry, equity, \
+                     mark_price, bar_open, bar_high, bar_low, bar_close, bar_volume, \
+                     realized_pnl, unrealized_pnl or funding_paid"
+                )))
+            }
         };
         Ok(value.into_pyobject(py)?.into_any())
     }
@@ -1982,7 +2024,7 @@ impl Engine {
     fn reset_at<'py>(&mut self, py: Python<'py>, start: usize) -> PyResult<Bound<'py, PyState>> {
         let last = self.inner.num_bars() - 1;
         if start > last {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "start: {start} is past the last bar, {last}; open the account on a bar \
                  the engine holds"
             )));
@@ -2112,7 +2154,7 @@ impl Engine {
     /// not a positive finite number, or the account rests a sell at or below `price`;
     /// a non-finite price raises instead.
     fn limit_buy(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
-        finite("price", price)?;
+        finite::<ProbatumValueError>("price", price)?;
         self.limit(Side::Buy, size, price)
     }
 
@@ -2120,7 +2162,7 @@ impl Engine {
     /// not a positive finite number, or the account rests a buy at or above `price`;
     /// a non-finite price raises instead.
     fn limit_sell(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
-        finite("price", price)?;
+        finite::<ProbatumValueError>("price", price)?;
         self.limit(Side::Sell, size, price)
     }
 
@@ -2138,7 +2180,7 @@ impl Engine {
         reduce_only: bool,
     ) -> PyResult<Option<u64>> {
         let side = parse_side(side)?;
-        finite("trigger", trigger)?;
+        finite::<ProbatumValueError>("trigger", trigger)?;
         let units = self.units;
         let trigger = engine_price("trigger", units, trigger)?;
         Ok(self
@@ -2162,15 +2204,15 @@ impl Engine {
     ) -> PyResult<(Option<u64>, Option<u64>)> {
         let instrument = self.instrument(instrument)?;
         if stop.is_none() && take_profit.is_none() {
-            return Err(PyValueError::new_err(
-                "bracket has no stop and no take_profit; give either or both",
+            return Err(ProbatumValueError::new_err(
+                "bracket: no stop and no take_profit; give either or both",
             ));
         }
         if let Some(price) = stop {
-            finite("stop", price)?;
+            finite::<ProbatumValueError>("stop", price)?;
         }
         if let Some(price) = take_profit {
-            finite("take_profit", price)?;
+            finite::<ProbatumValueError>("take_profit", price)?;
         }
         let price = |name: &str, price: Option<f64>| {
             price
@@ -2211,10 +2253,10 @@ impl Engine {
         trigger: Option<f64>,
     ) -> PyResult<Option<u64>> {
         if let Some(p) = price {
-            finite("price", p)?;
+            finite::<ProbatumValueError>("price", p)?;
         }
         if let Some(t) = trigger {
-            finite("trigger", t)?;
+            finite::<ProbatumValueError>("trigger", t)?;
         }
         let units = self.units;
         let price = price.map(|p| engine_price("price", units, p)).transpose()?;
@@ -2335,20 +2377,20 @@ impl Engine {
         let kind = parse_order_type(r#type)?;
         let tif = parse_tif(tif)?;
         if kind == OrderType::Limit && price.is_none() {
-            return Err(PyValueError::new_err(
-                "price is required when type is 'limit'",
+            return Err(ProbatumValueError::new_err(
+                "price: none for a limit order; give its limit price",
             ));
         }
         if kind == OrderType::Stop && trigger.is_none() {
-            return Err(PyValueError::new_err(
-                "trigger is required when type is 'stop'",
+            return Err(ProbatumValueError::new_err(
+                "trigger: none for a stop order; give its trigger price",
             ));
         }
         if let Some(p) = price {
-            finite("price", p)?;
+            finite::<ProbatumValueError>("price", p)?;
         }
         if let Some(t) = trigger {
-            finite("trigger", t)?;
+            finite::<ProbatumValueError>("trigger", t)?;
         }
         let units = self.units;
         let price = price.map(|p| engine_price("price", units, p)).transpose()?;
@@ -2390,7 +2432,7 @@ impl Engine {
         let side = parse_side(side)?;
         let tif = match parse_tif(tif) {
             Ok(TimeInForce::Gtc) | Err(_) => {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "tif: {tif:?} is not a market order's; use \"ioc\" or \"fok\""
                 )))
             }
@@ -2443,11 +2485,12 @@ impl Engine {
         // A non-positive annualization has no square root and no per-period rate,
         // and the stats set must never come back NaN (ADRs 0007, 0030).
         if !(periods_per_year.is_finite() && periods_per_year > 0.0) {
-            return Err(PyValueError::new_err(format!(
-                "periods_per_year must be a finite positive number, got {periods_per_year}"
+            return Err(ProbatumValueError::new_err(format!(
+                "periods_per_year: {periods_per_year}; give the bars a year as a finite \
+                 number above 0"
             )));
         }
-        finite("risk_free", risk_free)?;
+        finite::<ProbatumValueError>("risk_free", risk_free)?;
         match self.inner.stats(periods_per_year, risk_free) {
             Some(stats) => Ok(Some(stats_to_dict(py, &stats)?)),
             None => Ok(None),
@@ -2699,8 +2742,8 @@ impl Engine {
         // what makes the guard everybody writes by hand unnecessary (ADR 0025).
         let warmup: usize = match strategy.getattr("warmup") {
             Ok(value) if !value.is_none() => value.extract().map_err(|_| {
-                PyValueError::new_err(format!(
-                    "warmup must be a non-negative whole number of bars, got {}",
+                ProbatumValueError::new_err(format!(
+                    "warmup: {}; give a whole number of bars from 0",
                     value.repr().map(|r| r.to_string()).unwrap_or_default()
                 ))
             })?,
@@ -2731,7 +2774,7 @@ impl Engine {
         if instrument < width {
             return Ok(instrument);
         }
-        Err(PyValueError::new_err(format!(
+        Err(ProbatumValueError::new_err(format!(
             "instrument: {instrument} is not one the engine holds; name one counted from \
              0, of the {width}"
         )))
@@ -3095,11 +3138,12 @@ impl Batch {
         mask: PyReadonlyArray1<'_, bool>,
         offsets: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<()> {
-        let mask = booleans(&mask)
-            .map_err(|_| PyValueError::new_err("mask must be a contiguous 1-D bool array"))?;
+        let mask = booleans(&mask).map_err(|_| {
+            ProbatumValueError::new_err("mask: a strided array; give a contiguous 1-D bool array")
+        })?;
         if mask.len() != self.inner.len() {
-            return Err(PyValueError::new_err(format!(
-                "mask length {} must equal num_envs {}",
+            return Err(ProbatumValueError::new_err(format!(
+                "mask: {} values for {} envs; give one for each",
                 mask.len(),
                 self.inner.len()
             )));
@@ -3145,13 +3189,13 @@ impl Batch {
         let (n, width) = (self.inner.len(), self.inner.width());
         let flat = py.detach(|| self.inner.observe_all(window));
         let array = numpy::ndarray::Array::from_shape_vec((n, window, width, 5), flat)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| ProbatumValueError::new_err(e.to_string()))?;
         if self.universe {
             return Ok(numpy::PyArray::from_owned_array(py, array).into_any());
         }
         let array = array
             .into_shape_with_order((n, window, 5))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| ProbatumValueError::new_err(e.to_string()))?;
         Ok(PyArray3::from_owned_array(py, array).into_any())
     }
 
@@ -3171,13 +3215,13 @@ impl Batch {
     ) -> PyResult<()> {
         let (n, width) = (self.inner.len(), self.inner.width());
         let Ok(array) = weights.cast::<PyUntypedArray>() else {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "weights: a {}; give a ({n}, {width}) float64 array, one row per env",
                 weights.get_type().name()?
             )));
         };
         if array.ndim() != 2 {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "weights: an array of {} dimensions for {n} envs of {width} instruments; give \
                  ({n}, {width}), one row per env",
                 array.ndim()
@@ -3186,20 +3230,20 @@ impl Batch {
         let weights = weights
             .extract::<PyReadonlyArray2<'_, f64>>()
             .map_err(|_| {
-                PyValueError::new_err(format!(
+                ProbatumValueError::new_err(format!(
                     "weights: an array of {}; give float64 values",
                     array.dtype()
                 ))
             })?;
         let view = weights.as_array();
         if view.dim() != (n, width) {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "weights: shape {:?} for {n} envs of {width} instruments; give ({n}, {width})",
                 view.dim()
             )));
         }
         if let Some(((env, i), weight)) = view.indexed_iter().find(|(_, w)| !w.is_finite()) {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "weights: {weight} for instrument {i} of env {env}; give finite weights"
             )));
         }
@@ -3207,7 +3251,7 @@ impl Batch {
         let rows: Vec<f64> = view.iter().map(|&w| self.units.signed(w)).collect();
         py.detach(|| self.inner.target_all(&rows, tolerance, transfer))
             .map_err(|(env, TargetError::Short { instrument, weight })| {
-                PyValueError::new_err(format!(
+                ProbatumValueError::new_err(format!(
                     "weights: {weight} for instrument {instrument} of env {env}, which trades \
                      spot and cannot be short; trade a perpetual instead"
                 ))
@@ -3222,7 +3266,7 @@ impl Batch {
             .ok()
             .and_then(|env| self.inner.engines().get(env));
         let Some(engine) = found else {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "env: {env} of {n}; name one counted from 0"
             )));
         };
@@ -3258,8 +3302,8 @@ impl Batch {
         let n_rows = features.as_array().nrows();
         let num_bars = self.inner.num_bars();
         if n_rows != num_bars {
-            return Err(PyValueError::new_err(format!(
-                "features must have one row per candle: got {n_rows} rows for {num_bars} bars"
+            return Err(DataError::new_err(format!(
+                "features: {n_rows} rows for {num_bars} bars; give one row for each bar"
             )));
         }
         // copied in the rows' order whatever order numpy holds them in, since the
@@ -3280,8 +3324,8 @@ impl Batch {
     ) -> PyResult<Bound<'py, PyArray3<f64>>> {
         check_window(window)?;
         if self.n_features == 0 {
-            return Err(PyValueError::new_err(
-                "no features set; call set_features before observe_features",
+            return Err(ProbatumValueError::new_err(
+                "features: none set; call set_features before observe_features",
             ));
         }
         let n = self.inner.len();
@@ -3291,7 +3335,7 @@ impl Batch {
                 .observe_features_all(window, &self.features, n_features)
         });
         let array = Array3::from_shape_vec((n, window, n_features), out)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| ProbatumValueError::new_err(e.to_string()))?;
         Ok(PyArray3::from_owned_array(py, array))
     }
 
@@ -3321,7 +3365,7 @@ impl Batch {
         let grid = |values: Vec<f64>| {
             Array2::from_shape_vec((n, width), values)
                 .map(|array| PyArray2::from_owned_array(py, array))
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+                .map_err(|e| ProbatumValueError::new_err(e.to_string()))
         };
         let d = PyDict::new(py);
         d.set_item("positions", grid(snap.positions)?)?;
@@ -3351,17 +3395,19 @@ impl Batch {
     /// Validate and convert a per-env `i64` offset array into `usize`.
     fn offsets_vec(&self, offsets: PyReadonlyArray1<'_, i64>) -> PyResult<Vec<usize>> {
         let slice = offsets.as_slice().map_err(|_| {
-            PyValueError::new_err("offsets: a strided array; give a contiguous 1-D int64 array")
+            ProbatumValueError::new_err(
+                "offsets: a strided array; give a contiguous 1-D int64 array",
+            )
         })?;
         if slice.len() != self.inner.len() {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "offsets: {} for {} envs; give one row per env",
                 slice.len(),
                 self.inner.len()
             )));
         }
         if let Some((env, offset)) = slice.iter().enumerate().find(|(_, &x)| x < 0) {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "offsets: {offset} for env {env}; give a row from 0"
             )));
         }
@@ -3376,11 +3422,13 @@ impl Batch {
         match actions {
             Some(array) => {
                 let slice = array.as_slice().map_err(|_| {
-                    PyValueError::new_err("actions must be a contiguous 1-D float64 array")
+                    ProbatumValueError::new_err(
+                        "actions: a strided array; give a contiguous 1-D float64 array",
+                    )
                 })?;
                 if slice.len() != self.inner.len() {
-                    return Err(PyValueError::new_err(format!(
-                        "actions length {} must equal num_envs {}",
+                    return Err(ProbatumValueError::new_err(format!(
+                        "actions: {} values for {} envs; give one for each",
                         slice.len(),
                         self.inner.len()
                     )));
@@ -3419,7 +3467,7 @@ fn read_weights(
             let i = match key.extract::<usize>() {
                 Ok(i) if i < width => i,
                 _ => {
-                    return Err(PyValueError::new_err(format!(
+                    return Err(ProbatumValueError::new_err(format!(
                         "{at}weights: {} is not an instrument the engine holds; key each \
                          weight by one counted from 0, of the {width}",
                         shown(&key)
@@ -3427,7 +3475,7 @@ fn read_weights(
                 }
             };
             let Ok(weight) = weight.extract::<f64>() else {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "{at}weights: {} for instrument {i} is not a number; give a float",
                     shown(&weight)
                 )));
@@ -3436,7 +3484,7 @@ fn read_weights(
         }
     } else if let Ok(each) = value.extract::<Vec<f64>>() {
         if each.len() != width {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{at}weights: {} for the {width} the engine holds; give one per \
                  instrument, or a dict from instrument to weight",
                 each.len()
@@ -3445,14 +3493,14 @@ fn read_weights(
         weights.extend(each.into_iter().enumerate());
     } else if let Ok(weight) = value.extract::<f64>() {
         if width != 1 {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{at}weights: {weight}, one number, for {width} instruments; give one \
                  per instrument, or a dict from instrument to weight"
             )));
         }
         weights.push((0, weight));
     } else {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "{at}weights: {} is not a weight; give a number, one per instrument, or a \
              dict from instrument to weight",
             shown(value)
@@ -3460,7 +3508,7 @@ fn read_weights(
     }
     for &(i, weight) in &weights {
         if !weight.is_finite() {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{at}weights: {weight} for instrument {i} is not a weight; give a finite \
                  number"
             )));
@@ -3474,7 +3522,7 @@ fn read_weights(
 
 /// The refusal of a negative weight on a spot instrument, which cannot be short.
 fn short_spot(at: &str, instrument: usize, weight: f64) -> PyErr {
-    PyValueError::new_err(format!(
+    ProbatumValueError::new_err(format!(
         "{at}weights: {weight} for instrument {instrument}, which trades spot and cannot \
          be short; trade a perpetual instead"
     ))
@@ -3483,7 +3531,7 @@ fn short_spot(at: &str, instrument: usize, weight: f64) -> PyErr {
 /// A target's tolerance: a fraction of equity, from 0.
 fn read_tolerance(at: &str, tolerance: f64) -> PyResult<f64> {
     if !tolerance.is_finite() || tolerance < 0.0 {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "{at}tolerance: {tolerance} is not a fraction of equity; give one from 0"
         )));
     }
@@ -3517,7 +3565,7 @@ impl<'py> Arguments<'_, 'py> {
             return Ok(None);
         };
         value.extract::<f64>().map(Some).map_err(|_| {
-            PyValueError::new_err(format!(
+            ProbatumValueError::new_err(format!(
                 "{}: {name} {} is not a number; give a float",
                 self.at,
                 shown(&value)
@@ -3530,11 +3578,11 @@ impl<'py> Arguments<'_, 'py> {
     fn price(&self, name: &str) -> PyResult<Option<f64>> {
         let price = self.number(name)?;
         match price {
-            Some(p) if !p.is_finite() => Err(PyValueError::new_err(format!(
+            Some(p) if !p.is_finite() => Err(ProbatumValueError::new_err(format!(
                 "{}: {name} {p} is not a price; give a finite number",
                 self.at
             ))),
-            Some(p) if !self.units.takes(p) => Err(PyValueError::new_err(format!(
+            Some(p) if !self.units.takes(p) => Err(ProbatumValueError::new_err(format!(
                 "{}: {name} {p}, which an inverse contract cannot trade at; give a price \
                  above 0",
                 self.at
@@ -3548,7 +3596,7 @@ impl<'py> Arguments<'_, 'py> {
             return Ok(false);
         };
         value.extract::<bool>().map_err(|_| {
-            PyValueError::new_err(format!(
+            ProbatumValueError::new_err(format!(
                 "{}: {name} {} is not True or False; give a bool",
                 self.at,
                 shown(&value)
@@ -3561,7 +3609,7 @@ impl<'py> Arguments<'_, 'py> {
             return Ok(default.to_string());
         };
         value.extract::<String>().map_err(|_| {
-            PyValueError::new_err(format!(
+            ProbatumValueError::new_err(format!(
                 "{}: {name} {} is not a string; use {choices}",
                 self.at,
                 shown(&value)
@@ -3573,7 +3621,7 @@ impl<'py> Arguments<'_, 'py> {
     /// made before it.
     fn order(&self, placements: usize) -> PyResult<OrderRef> {
         let Some(value) = self.value("order")? else {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{}: {} has no order; name an earlier placement, counted from 0, or \
                  \"oldest\"",
                 self.at, self.verb
@@ -3584,7 +3632,7 @@ impl<'py> Arguments<'_, 'py> {
         }
         match value.extract::<usize>() {
             Ok(n) if n < placements => Ok(OrderRef::Placed(n)),
-            _ => Err(PyValueError::new_err(format!(
+            _ => Err(ProbatumValueError::new_err(format!(
                 "{}: order {} is not one of the {placements} placements before it; \
                  name one counted from 0, or \"oldest\"",
                 self.at,
@@ -3601,13 +3649,13 @@ impl<'py> Arguments<'_, 'py> {
         };
         match value.extract::<usize>() {
             Ok(i) if i < width => Ok(Some(i)),
-            _ if width == 1 => Err(PyValueError::new_err(format!(
+            _ if width == 1 => Err(ProbatumValueError::new_err(format!(
                 "{}: instrument {} is not one the engine holds; name 0, the one it holds, \
                  or leave it out",
                 self.at,
                 shown(&value)
             ))),
-            _ => Err(PyValueError::new_err(format!(
+            _ => Err(ProbatumValueError::new_err(format!(
                 "{}: instrument {} is not one the engine holds; name one counted from 0, of \
                  the {width}",
                 self.at,
@@ -3622,7 +3670,7 @@ impl<'py> Arguments<'_, 'py> {
         match self.instrument(width)? {
             Some(i) => Ok(i),
             None if width == 1 => Ok(0),
-            None => Err(PyValueError::new_err(format!(
+            None => Err(ProbatumValueError::new_err(format!(
                 "{}: {} names no instrument; name one counted from 0, of the {width}",
                 self.at, self.verb
             ))),
@@ -3659,20 +3707,20 @@ fn read_action(
         "transfer" => &["amount", "to"],
         "target" => &["weights", "tolerance", "transfer"],
         _ => {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{at}: {verb:?} is not a verb; use {VERBS}"
             )))
         }
     };
     for key in given.keys() {
         let Ok(name) = key.extract::<String>() else {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{at}: {} is not an argument's name; name each argument with a string",
                 shown(&key)
             )));
         };
         if !takes.contains(&name.as_str()) {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{at}: {verb} takes no {name}; it takes {}",
                 takes.join(", ")
             )));
@@ -3688,7 +3736,7 @@ fn read_action(
         "buy" | "sell" => {
             let instrument = args.traded(width)?;
             let Some(size) = args.number("size")? else {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "{at}: {verb} has no size; give it one, in base units"
                 )));
             };
@@ -3698,7 +3746,7 @@ fn read_action(
                 (Some(_), None) => OrderType::Limit,
                 (None, Some(_)) => OrderType::Stop,
                 (Some(limit), Some(stop)) => {
-                    return Err(PyValueError::new_err(format!(
+                    return Err(ProbatumValueError::new_err(format!(
                         "{at}: {verb} has a limit {limit} and a stop {stop}; give one or \
                          the other"
                     )))
@@ -3715,7 +3763,7 @@ fn read_action(
                 reduce_only: args.flag("reduce_only")?,
                 post_only: args.flag("post_only")?,
                 tif: parse_tif(&tif).map_err(|_| {
-                    PyValueError::new_err(format!(
+                    ProbatumValueError::new_err(format!(
                         "{at}: tif {tif:?} is not a time in force; use gtc, ioc or fok"
                     ))
                 })?,
@@ -3723,7 +3771,7 @@ fn read_action(
         }
         "buy_value" | "sell_value" => {
             let Some(amount) = args.number("amount")? else {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "{at}: {verb} has no amount; give it one, in the quote currency"
                 )));
             };
@@ -3741,7 +3789,7 @@ fn read_action(
                     "ioc" => TimeInForce::Ioc,
                     "fok" => TimeInForce::Fok,
                     _ => {
-                        return Err(PyValueError::new_err(format!(
+                        return Err(ProbatumValueError::new_err(format!(
                             "{at}: tif {tif:?} is not a market order's; use ioc or fok"
                         )))
                     }
@@ -3751,7 +3799,7 @@ fn read_action(
         "bracket" => {
             let (stop, take_profit) = (args.price("stop")?, args.price("take_profit")?);
             if stop.is_none() && take_profit.is_none() {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "{at}: bracket has no stop and no take_profit; give either or both"
                 )));
             }
@@ -3772,7 +3820,7 @@ fn read_action(
         },
         "target" => {
             let Some(weights) = args.value("weights")? else {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "{at}: target has no weights; give a number, one per instrument, or a \
                      dict from instrument to weight"
                 )));
@@ -3786,7 +3834,7 @@ fn read_action(
         }
         _ => {
             let Some(amount) = args.number("amount")? else {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "{at}: transfer has no amount; give it the cash to move"
                 )));
             };
@@ -3813,7 +3861,7 @@ fn read_script<'py>(
     let mut entries = Vec::with_capacity(script.len());
     for (bar, actions) in script.iter() {
         let Ok(t) = bar.extract::<usize>() else {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "script: {} is not a bar; key each bar's actions by its index from 0",
                 shown(&bar)
             )));
@@ -3823,7 +3871,7 @@ fn read_script<'py>(
                 0 | 1 => "a script needs two bars or more".to_string(),
                 _ => format!("key decisions by the bars from 0 to {}", bars - 2),
             };
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "script: bar {t} has no bar after it to fill on; {fix}"
             )));
         }
@@ -3835,7 +3883,7 @@ fn read_script<'py>(
     let mut placements = 0;
     for (t, actions) in entries {
         let Ok(actions_iter) = actions.try_iter() else {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "script: bar {t} holds {}; give it a list of actions",
                 shown(&actions)
             )));
@@ -3844,7 +3892,7 @@ fn read_script<'py>(
             let action = action?;
             let at = format!("script[{t}][{k}]");
             let Ok((verb, given)) = action.extract::<(String, Bound<'py, PyDict>)>() else {
-                return Err(PyValueError::new_err(format!(
+                return Err(ProbatumValueError::new_err(format!(
                     "{at}: {} is not a verb and its arguments; write \
                      (\"buy\", {{\"size\": 1.0}})",
                     shown(&action)
@@ -3912,7 +3960,7 @@ fn build_series(
 ) -> PyResult<(Candles, EngineConfig, bool, Units)> {
     let seed = seed_of(seed)?;
     let Ok(array) = candles.cast::<PyUntypedArray>() else {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: a {}; pass a float64 array, (T, 5) for one instrument, or (T, N, 5) \
              for a universe of N",
             candles.get_type().name()?
@@ -3920,13 +3968,13 @@ fn build_series(
     };
     let ndim = array.ndim();
     if ndim != 2 && ndim != 3 {
-        return Err(PyValueError::new_err(format!(
+        return Err(DataError::new_err(format!(
             "candles: an array of {ndim} dimensions; pass (T, 5) for one instrument, or \
              (T, N, 5) for a universe of N"
         )));
     }
     let dtype = || {
-        PyValueError::new_err(format!(
+        DataError::new_err(format!(
             "candles: an array of {}; pass float64 values, (T, 5) for one instrument, or \
              (T, N, 5) for a universe of N",
             array.dtype()
@@ -3934,14 +3982,14 @@ fn build_series(
     };
     if ndim == 2 {
         if instruments.is_some() {
-            return Err(PyValueError::new_err(
+            return Err(VenueError::new_err(
                 "instruments: given with one instrument's (T, 5) candles; pass (T, N, 5) \
                  for a universe, or market and tiers for one instrument",
             ));
         }
         let units = units_of(market, contract)?;
         if let (Units::Inverse(_), Opening::Wallets { .. }) = (units, &quote) {
-            return Err(PyValueError::new_err(
+            return Err(VenueError::new_err(
                 "quote: a dict of wallets for an inverse contract, whose account holds its \
                  coin in one; give the coin as a number",
             ));
@@ -3988,7 +4036,7 @@ fn build_series(
                 .iter()
                 .position(|bar| !units.takes(bar.low));
             if let Some(row) = low {
-                return Err(PyValueError::new_err(format!(
+                return Err(DataError::new_err(format!(
                     "candles: a low of {} at row {row}, whose reciprocal an inverse \
                      contract cannot count; give prices above 1e-308",
                     series.as_slice()[row].low
@@ -4013,7 +4061,7 @@ fn build_series(
         };
         if let (Units::Inverse(_), PriceRule::Figures { figures, .. }) = (units, rules.sizes.prices)
         {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "sigfigs: {figures} for an inverse contract, whose prices take a tick; give \
                  its tick"
             )));
@@ -4023,7 +4071,7 @@ fn build_series(
         return Ok((series, config, false, units));
     }
     if market.eq_ignore_ascii_case("inverse") || contract.is_some() {
-        return Err(PyValueError::new_err(
+        return Err(VenueError::new_err(
             "market: an inverse contract for a universe; its account holds that one \
              perpetual alone, so pass its (T, 5) candles",
         ));
@@ -4036,7 +4084,7 @@ fn build_series(
     let named = parse_market(market)?;
     tier_basis(tiers_by)?;
     if width.saturating_mul(max_open_orders) > MAX_BOOK_SLOTS {
-        return Err(PyValueError::new_err(format!(
+        return Err(VenueError::new_err(format!(
             "max_open_orders: {max_open_orders} for each of {width} instruments is {} slots, \
              past {MAX_BOOK_SLOTS}; lower it",
             width.saturating_mul(max_open_orders)
@@ -4045,12 +4093,12 @@ fn build_series(
     let funding_instruments = funding_instruments_of(funding_instruments, width)?;
     let specs = match instruments {
         Some(_) if tiers.is_some() => {
-            return Err(PyValueError::new_err(
+            return Err(VenueError::new_err(
                 "tiers: given beside instruments; give each instrument its own there",
             ))
         }
         Some(_) if rules.given.is_some() => {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "{}: given beside instruments; give each instrument its own there",
                 rules.given.unwrap_or_default()
             )))
@@ -4076,7 +4124,7 @@ fn build_series(
     let perp = specs.iter().any(|spec| spec.market == Some(Market::Perp));
     let market = match (spot, perp, &quote) {
         (true, true, Opening::Cash(cash)) => {
-            return Err(PyValueError::new_err(format!(
+            return Err(VenueError::new_err(format!(
                 "quote: {cash} funds one wallet and this universe uses both; pass \
                  {{\"spot\": s, \"margin\": m}}"
             )))
@@ -4131,7 +4179,7 @@ fn backstopped(series: &Candles, config: &EngineConfig) -> PyResult<()> {
             && series.tiers(i).rows().iter().any(|tier| tier.rate > 0.0)
     });
     if matches!(config.liquidation, Liquidation::BookThenBackstop(_)) && !maintained {
-        return Err(PyValueError::new_err(
+        return Err(VenueError::new_err(
             "liquidation: book_then_backstop with no maintenance in any perp's tier \
              table, where its backstop level is the trigger itself; give tiers a \
              maintenance rate",
@@ -4146,14 +4194,14 @@ fn backstopped(series: &Candles, config: &EngineConfig) -> PyResult<()> {
 fn units_of(market: &str, contract: Option<f64>) -> PyResult<Units> {
     match (market.eq_ignore_ascii_case("inverse"), contract) {
         (true, Some(value)) if value.is_finite() && value > 0.0 => Ok(Units::Inverse(value)),
-        (true, Some(value)) => Err(PyValueError::new_err(format!(
+        (true, Some(value)) => Err(VenueError::new_err(format!(
             "contract: {value}; give the dollars one contract is worth, above 0"
         ))),
-        (true, None) => Err(PyValueError::new_err(
+        (true, None) => Err(VenueError::new_err(
             "contract: none, and an inverse contract is worth a fixed number of dollars; \
              pass contract=",
         )),
-        (false, Some(value)) => Err(PyValueError::new_err(format!(
+        (false, Some(value)) => Err(VenueError::new_err(format!(
             "contract: {value} for a {market} market; give it with market=\"inverse\" \
              alone"
         ))),
@@ -4235,7 +4283,7 @@ fn barrier_of(
     let above = |value: f64| value.is_finite() && value > 0.0;
     if let Ok(value) = given.extract::<f64>() {
         if !above(value) {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "{name}: {value}; give a return from the entry above 0"
             )));
         }
@@ -4244,7 +4292,7 @@ fn barrier_of(
     let values: PyReadonlyArray2<'_, f64> = given.extract()?;
     let values = values.as_array();
     if values.dim() != (rows, width) {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "{name}: an array of shape {:?} for {rows} rows of {width} instruments; give \
              one return for each row and instrument",
             values.dim()
@@ -4254,7 +4302,7 @@ fn barrier_of(
         .indexed_iter()
         .find(|(_, &value)| !value.is_nan() && !above(value))
     {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "{name}: {value} at row {k} for instrument {i}; give a return above 0, or NaN \
              for none"
         )));
@@ -4289,7 +4337,7 @@ fn run_array(
     let (bars, width, units) = (engine.inner.num_bars(), engine.inner.width(), engine.units);
     let values = rows.as_array();
     if start >= bars || values.dim() != (bars - start, width) {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "rows: an array of shape {:?} from bar {start} of {bars} over {width} \
              instruments; give one row for each bar from the first",
             values.dim()
@@ -4299,7 +4347,7 @@ fn run_array(
         "weight" => Sizing::Weight,
         "quantity" => Sizing::Quantity,
         _ => {
-            return Err(PyValueError::new_err(format!(
+            return Err(ProbatumValueError::new_err(format!(
                 "sizing: {sizing:?}; use \"weight\" or \"quantity\""
             )))
         }
@@ -4309,7 +4357,7 @@ fn run_array(
         .indexed_iter()
         .find(|(_, &value)| value.is_infinite())
     {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "rows: {value} at row {k} for instrument {i}; give a finite value, or NaN to hold"
         )));
     }
@@ -4318,7 +4366,7 @@ fn run_array(
         .indexed_iter()
         .find(|&((_, i), &value)| value < 0.0 && spot(i))
     {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "rows: {value} at row {k} for instrument {i}, which is spot and cannot be \
              short; give it a value from 0"
         )));
@@ -4361,7 +4409,7 @@ fn funding_inside<'py>(
     funding_times: Option<PyReadonlyArray1<'_, i64>>,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     if !(funding_hours.is_finite() && funding_hours >= 0.0) {
-        return Err(PyValueError::new_err(format!(
+        return Err(VenueError::new_err(format!(
             "funding_hours: {funding_hours}; pass the hours between events, or 0.0 for none"
         )));
     }
@@ -4408,12 +4456,12 @@ fn stats_of<'py>(
     funding_paid: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
     if !(periods_per_year.is_finite() && periods_per_year > 0.0) {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "periods_per_year: {periods_per_year}; give the bars a year as a finite number \
              above 0"
         )));
     }
-    finite("risk_free", risk_free)?;
+    finite::<ProbatumValueError>("risk_free", risk_free)?;
     let stats = Stats::compute(
         initial,
         curve.as_slice()?,
@@ -4430,6 +4478,7 @@ fn stats_of<'py>(
 /// The `_probatum` extension module, imported by Python as `probatum._probatum`.
 #[pymodule]
 fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    check_errors(m.py())?;
     m.add_class::<Engine>()?;
     m.add_class::<Batch>()?;
     m.add_class::<PyState>()?;

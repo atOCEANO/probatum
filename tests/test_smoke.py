@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import probatum
+from probatum import DataError, ProbatumKeyError, ProbatumValueError, VenueError
 
 
 def test_version_is_single_sourced_from_the_build():
@@ -64,7 +65,8 @@ def test_the_state_is_one_record_read_by_attribute_or_by_key():
     assert s.open_orders[0]["price"] == 50.0
     assert first == engine().reset() and first != s
 
-    with pytest.raises(KeyError):
+    with pytest.raises(ProbatumKeyError, match=re.escape(
+            "state: no field \"entry\"; use one of tick_index, open_orders, base, quote")):
         s["entry"]
 
     with pytest.raises(AttributeError):
@@ -282,33 +284,38 @@ def test_an_open_last_tier_holds_a_perp_by_its_leverage_alone():
     (None, "contracts", 'tiers_by: "contracts" is not a basis; use notional'),
 ])
 def test_a_tier_table_the_loader_cannot_trust_is_refused(tiers, tiers_by, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(VenueError, match=re.escape(says)):
         probatum._probatum.Engine(series(), market="perp", tiers=tiers, tiers_by=tiers_by)
 
 
 def test_an_intrabar_setting_it_does_not_know_is_refused():
     says = 'intrabar: "neutral" is not a setting; use pessimistic, optimistic or random'
     for build in (probatum._probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
-        with pytest.raises(ValueError, match=re.escape(says)):
+        with pytest.raises(VenueError, match=re.escape(says)):
             build(series(), intrabar="neutral")
 
 
 def test_a_random_setting_without_a_seed_is_refused():
     says = 'seed: none, and intrabar="random" draws from a stream named from it; pass seed='
 
+    # the run's seed, not a venue's setting, so the root's class and not a VenueError,
+    # as seed=-1 is, which a VenueError would also satisfy
     for build in (probatum._probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
-        with pytest.raises(ValueError, match=re.escape(says)):
+        with pytest.raises(ProbatumValueError, match=re.escape(says)) as caught:
             build(series(), intrabar="random")
+        assert caught.type is ProbatumValueError
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(ProbatumValueError, match=re.escape(says)) as caught:
         probatum._probatum.run(series()[:, None, :], {"intrabar": "random"}, {})
+
+    assert caught.type is ProbatumValueError
 
 
 def test_a_seed_that_is_not_a_whole_number_from_0_is_refused():
     for build in (probatum._probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
         for seed, shown in ((-1, "-1"), (1.5, "1.5"), ("7", "'7'")):
             says = f"seed: {shown}; give a whole number from 0"
-            with pytest.raises(ValueError, match=re.escape(says)):
+            with pytest.raises(ProbatumValueError, match=re.escape(says)):
                 build(series(), intrabar="random", seed=seed)
 
 
@@ -360,7 +367,7 @@ def test_a_target_takes_one_number_one_weight_each_or_a_dict(weights):
     (0.5, -0.1, "tolerance: -0.1 is not a fraction of equity; give one from 0"),
 ])
 def test_a_target_the_engine_cannot_take_is_refused(weights, tolerance, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(ProbatumValueError, match=re.escape(says)):
         engine().target(weights, tolerance=tolerance)
 
 
@@ -393,7 +400,8 @@ def test_a_target_in_a_script_books_rebalances_and_the_drift_they_leave():
     assert np.isnan(drift[0])
     assert drift[1:] == pytest.approx(0.5 - weight[1:])
 
-    with pytest.raises(ValueError, match=re.escape("script[0][0]: target has no weights")):
+    with pytest.raises(ProbatumValueError, match=re.escape("script[0][0]: target has "
+                                                           "no weights")):
         probatum._probatum.run(series(), None, {0: [("target", {})]})
 
 
@@ -475,10 +483,12 @@ def test_a_bracket_leg_has_no_side_until_it_arms_and_no_size_of_its_own():
 
     assert (leg["side"], leg["size"], leg["remaining"]) == (None, None, None)
 
-    with pytest.raises(ValueError, match="bracket has no stop and no take_profit; give"):
+    with pytest.raises(ProbatumValueError, match="bracket: no stop and no take_profit; "
+                                                 "give"):
         e.bracket()
 
-    with pytest.raises(ValueError, match="take_profit must be a finite number, got NaN"):
+    with pytest.raises(ProbatumValueError, match="take_profit: NaN; give a finite "
+                                                 "number"):
         e.bracket(take_profit=float("nan"))
 
 
@@ -579,41 +589,49 @@ def test_a_universe_of_one_keeps_an_instrument_column_per_instrument():
     assert played["ledger"]["equity"].shape   == (3,)
 
 
-@pytest.mark.parametrize("change, venue, script, says", [
-    (lambda c: c.__setitem__((1, 0, 2), np.nan), {}, {},
+@pytest.mark.parametrize("change, venue, script, error, says", [
+    (lambda c: c.__setitem__((1, 0, 2), np.nan), {}, {}, DataError,
      "row 1 gives instrument 0 NaN in some of its five values"),
-    (lambda c: c.__setitem__((1, 0, 1), np.inf), {}, {},
+    (lambda c: c.__setitem__((1, 0, 1), np.inf), {}, {}, DataError,
      "row 1 gives instrument 0 a value of inf"),
-    (lambda c: c.__setitem__((1, slice(None)), np.nan), {}, {},
+    (lambda c: c.__setitem__((1, slice(None)), np.nan), {}, {}, DataError,
      "row 1 holds no instrument's bar"),
-    (None, {}, {0: [("buy", {"size": 1.0})]}, "buy names no instrument"),
-    (None, {}, {0: [("buy", {"size": 1.0, "instrument": 2})]},
+    (None, {}, {0: [("buy", {"size": 1.0})]}, ProbatumValueError,
+     "buy names no instrument"),
+    (None, {}, {0: [("buy", {"size": 1.0, "instrument": 2})]}, ProbatumValueError,
      "instrument 2 is not one the engine holds"),
-    (None, {"instruments": [{"market": "perp"}]}, {}, "instruments: 1 for the 2"),
-    (None, {"instruments": [{"market": "spot"}, {"market": "perp"}]}, {},
+    (None, {"instruments": [{"market": "perp"}]}, {}, VenueError,
+     "instruments: 1 for the 2"),
+    (None, {"instruments": [{"market": "spot"}, {"market": "perp"}]}, {}, VenueError,
      "quote: 10000 funds one wallet and this universe uses both"),
-    (None, {"instruments": [{"kind": "spot"}, {}]}, {}, '"kind" is not a setting'),
-    (None, {"instruments": [{1: "spot"}, {}]}, {}, "1 is not a setting's name"),
-    (None, {"instruments": [{"market": 1}, {}]}, {},
+    (None, {"instruments": [{"kind": "spot"}, {}]}, {}, VenueError,
+     '"kind" is not a setting'),
+    (None, {"instruments": [{1: "spot"}, {}]}, {}, VenueError,
+     "1 is not a setting's name"),
+    (None, {"instruments": [{"market": 1}, {}]}, {}, VenueError,
      "instruments[0]: market 1 is not a string"),
-    (None, {"instruments": [{}, {"tiers": 3.0}]}, {},
+    (None, {"instruments": [{}, {"tiers": 3.0}]}, {}, VenueError,
      "instruments[1]: tiers 3.0 is not a list of rows"),
-    (None, {"instruments": [{"tiers_by": "contracts"}, {}]}, {},
+    (None, {"instruments": [{"tiers_by": "contracts"}, {}]}, {}, VenueError,
      'instruments[0]: tiers_by "contracts" is not a basis; use notional or quantity'),
-    (None, {"instruments": [{"fee_taker": -1.5}, {}]}, {},
-     "instruments[0]: fee_taker must be greater than -1.0"),
-    (None, {"instruments": [{}, {"fee_maker": "low"}]}, {},
+    (None, {"instruments": [{"fee_taker": -1.5}, {}]}, {}, VenueError,
+     "instruments[0]: fee_taker: -1.5; give a rate above -1"),
+    (None, {"instruments": [{}, {"fee_maker": "low"}]}, {}, VenueError,
      "instruments[1]: fee_maker: 'low'; give a number"),
-    (None, {"funding_instruments": [None]}, {}, "given without funding_times"),
-    (None, {"funding_instruments": [-1]}, {}, "row 0 names instrument -1, of 2"),
-    (None, {"fee": 0.001}, {}, "Engine.__new__() got an unexpected keyword argument 'fee'"),
+    (None, {"funding_instruments": [None]}, {}, DataError,
+     "given without funding_times"),
+    (None, {"funding_instruments": [-1]}, {}, DataError,
+     "row 0 names instrument -1, of 2"),
+    # pyo3's own refusal of a keyword the binding does not take, outside the tree
+    (None, {"fee": 0.001}, {}, TypeError,
+     "Engine.__new__() got an unexpected keyword argument 'fee'"),
 ])
-def test_a_universe_the_engine_cannot_play_is_refused(change, venue, script, says):
+def test_a_universe_the_engine_cannot_play_is_refused(change, venue, script, error,
+                                                     says):
     pair = np.stack([series(), series() / 10.0], axis=1)
     if change is not None:
         change(pair)
 
-    error = TypeError if "keyword" in says else ValueError
     with pytest.raises(error, match=re.escape(says)):
         probatum._probatum.run(pair, venue, script)
 
@@ -621,7 +639,7 @@ def test_a_universe_the_engine_cannot_play_is_refused(change, venue, script, say
 def test_a_universe_s_book_is_bounded_in_all():
     # each instrument may ask 4,096 slots, and 257 of them would allocate past the
     # bound up front
-    with pytest.raises(ValueError, match="is 1052672 slots, past 1048576; lower it"):
+    with pytest.raises(VenueError, match="is 1052672 slots, past 1048576; lower it"):
         probatum._probatum.run(np.ones((3, 257, 5)), {"max_open_orders": 4096}, {})
 
 
@@ -680,7 +698,8 @@ def test_a_universe_batch_records_for_each_env_what_its_own_run_does():
                                       played["ledger"]["position"][-1])
 
     for env in (2, -1):
-        with pytest.raises(ValueError, match=f"env: {env} of 2; name one counted"):
+        with pytest.raises(ProbatumValueError, match=f"env: {env} of 2; name one "
+                                                     f"counted"):
             batch.records(env)
 
 
@@ -703,7 +722,7 @@ def test_a_batch_refuses_weights_it_cannot_place_before_any_env_trades(market, w
     batch = probatum.Batch(universe_pair(), 2, market=market)
     batch.reset_all()
 
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(ProbatumValueError, match=re.escape(says)):
         batch.target(weights)
 
     batch.advance()
@@ -711,23 +730,23 @@ def test_a_batch_refuses_weights_it_cannot_place_before_any_env_trades(market, w
     assert not batch.snapshot()["positions"].any()
 
 
-@pytest.mark.parametrize("candles, settings, says", [
-    (series(), {"instruments": [{}]},
+@pytest.mark.parametrize("candles, settings, error, says", [
+    (series(), {"instruments": [{}]}, VenueError,
      "instruments: given with one instrument's (T, 5)"),
-    (np.zeros(5), {},
+    (np.zeros(5), {}, DataError,
      "candles: an array of 1 dimensions; pass (T, 5) for one instrument"),
-    (series().tolist(), {},
+    (series().tolist(), {}, DataError,
      "candles: a list; pass a float64 array, (T, 5) for one instrument"),
-    (series().astype(np.int64), {},
+    (series().astype(np.int64), {}, DataError,
      "candles: an array of int64; pass float64 values"),
-    (np.zeros((0, 5)), {}, "candles: no rows; give at least one bar"),
-    (np.zeros((3, 2, 4)), {},
+    (np.zeros((0, 5)), {}, DataError, "candles: no rows; give at least one bar"),
+    (np.zeros((3, 2, 4)), {}, DataError,
      "candles: 4 values to a bar; give 5, open, high, low, close and volume"),
-    (np.zeros((0, 2, 5)), {},
+    (np.zeros((0, 2, 5)), {}, DataError,
      "candles: 0 rows of 2 instruments; give at least one of each"),
 ])
-def test_candles_the_engine_cannot_read_are_refused(candles, settings, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+def test_candles_the_engine_cannot_read_are_refused(candles, settings, error, says):
+    with pytest.raises(error, match=re.escape(says)):
         probatum._probatum.Engine(candles, **settings)
 
 
@@ -756,7 +775,7 @@ def test_an_empty_batch_over_a_universe_keeps_its_instrument_axis():
     ({2**64 - 1: [("close", {})]}, "has no bar after it to fill on"),
 ])
 def test_a_script_the_engine_cannot_play_is_refused(script, says):
-    with pytest.raises(ValueError, match=re.escape(says)):
+    with pytest.raises(ProbatumValueError, match=re.escape(says)):
         probatum._probatum.run(series(), None, script)
 
 
@@ -850,20 +869,23 @@ def test_batch_rejects_mismatched_action_length():
     b = probatum.Batch(series(), num_envs=3)
     b.reset_all()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         b.step_all(np.array([1.0, 2.0], dtype=np.float64))  # length 2 != 3 envs
 
 
 def test_batch_refuses_offsets_it_cannot_start_from():
     b = probatum.Batch(series(), num_envs=2)
 
-    with pytest.raises(ValueError, match="offsets: -1 for env 1; give a row from 0"):
+    with pytest.raises(ProbatumValueError, match="offsets: -1 for env 1; give a row "
+                                                 "from 0"):
         b.reset_at_each(np.array([0, -1]))
 
-    with pytest.raises(ValueError, match="offsets: 3 for 2 envs; give one row per env"):
+    with pytest.raises(ProbatumValueError, match="offsets: 3 for 2 envs; give one row "
+                                                 "per env"):
         b.reset_at_each(np.array([0, 1, 2]))
 
-    with pytest.raises(ValueError, match="offsets: a strided array; give a contiguous"):
+    with pytest.raises(ProbatumValueError, match="offsets: a strided array; give a "
+                                                 "contiguous"):
         b.reset_at_each(np.array([0, 9, 1, 9])[::2])
 
 
@@ -874,7 +896,7 @@ def test_batch_set_features_rejects_a_short_matrix():
     b = probatum.Batch(series(), num_envs=2)  # series() has 3 bars
     b.reset_all()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(DataError):
         b.set_features(np.zeros((2, 4), dtype=np.float64))  # 2 rows != 3 bars
 
 
@@ -1100,7 +1122,7 @@ def test_a_per_env_fee_sets_the_venues_rate_and_not_an_instruments_own(own, quot
 
 
 def test_per_env_cost_override_length_must_match_num_envs():
-    with pytest.raises(ValueError):
+    with pytest.raises(VenueError):
         probatum.Batch(
             series(),
             num_envs=3,
@@ -1155,13 +1177,13 @@ def test_order_validates_required_fields_and_tif():
     e = engine()
     e.reset()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         e.order("buy", 1.0, type="limit")  # a limit needs a price
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         e.order("sell", 1.0, type="stop")  # a stop needs a trigger
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         e.order("buy", 1.0, tif="AON")  # unknown time-in-force
 
 
@@ -1232,12 +1254,12 @@ def test_bad_market_raises():
     says = 'market: "Options" is not a market; use spot or perp'
 
     for candles in (series(), universe_pair()):
-        with pytest.raises(ValueError, match=re.escape(says)):
+        with pytest.raises(VenueError, match=re.escape(says)):
             probatum._probatum.Engine(candles, market="Options")
 
 
 def test_candles_must_have_five_columns():
-    with pytest.raises(ValueError, match="candles: 4 columns; give 5, open, high, low"):
+    with pytest.raises(DataError, match="candles: 4 columns; give 5, open, high, low"):
         probatum._probatum.Engine(np.zeros((3, 4), dtype=np.float64))
 
 
@@ -1245,7 +1267,7 @@ def test_non_finite_candles_are_rejected():
     bad = series()
     bad[1, 2] = np.nan  # a NaN low on bar 1
 
-    with pytest.raises(ValueError, match="candles: NaN at row 1; clean NaN"):
+    with pytest.raises(DataError, match="candles: NaN at row 1; clean NaN"):
         probatum._probatum.Engine(bad)
 
 
@@ -1262,9 +1284,9 @@ def test_non_finite_config_scalars_are_rejected():
         {"impact": float("nan")},
         {"funding_rate": float("nan")},
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(VenueError):
             probatum._probatum.Engine(series(), **kwargs)
-        with pytest.raises(ValueError):
+        with pytest.raises(VenueError):
             probatum.Batch(series(), num_envs=2, **kwargs)
 
 
@@ -1279,7 +1301,7 @@ def test_out_of_range_per_env_costs_are_rejected_like_the_scalars():
         ("slippage_bps_per_env", -5.0),
         ("impact_per_env", -5.0),
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(VenueError):
             probatum.Batch(series(), num_envs=2,
                        **{name: np.array([0.0, bad], dtype=np.float64)})
 
@@ -1308,7 +1330,7 @@ def test_out_of_range_config_scalars_are_rejected():
         {"max_open_orders": -1},  # pyo3's own refusal would be an OverflowError
         {"funding_interval": -3},
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(VenueError):
             probatum._probatum.Engine(series(), **kwargs)
 
 
@@ -1356,28 +1378,33 @@ def test_a_zero_window_raises_instead_of_panicking():
     b = probatum.Batch(series(), num_envs=2)
     b.reset_all()
 
-    with pytest.raises(ValueError):
+    # a read's window, not the venue's, so the root's class and not a VenueError
+    with pytest.raises(ProbatumValueError, match="window: 0") as caught:
         b.observe(0)
 
+    assert caught.type is ProbatumValueError
+
     b.set_features(np.zeros((3, 2), dtype=np.float64))
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError, match="window: 0") as caught:
         b.observe_features(0)
+
+    assert caught.type is ProbatumValueError
 
 
 def test_non_finite_prices_and_triggers_are_rejected():
     e = engine()
     e.reset()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         e.limit_buy(1.0, float("nan"))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         e.limit_sell(1.0, float("inf"))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         e.stop("sell", 1.0, float("nan"))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         e.order("buy", 1.0, type="limit", price=float("nan"))
 
 
@@ -1387,7 +1414,7 @@ def test_stats_reject_a_non_positive_annualization():
     e.step()
 
     for ppy in (0.0, -1.0, float("nan")):
-        with pytest.raises(ValueError):
+        with pytest.raises(ProbatumValueError):
             e.stats(periods_per_year=ppy)
 
 
@@ -1467,7 +1494,7 @@ def test_funding_named_on_the_one_instrument_is_charged_as_funding_named_on_none
 
     assert paid[0] == paid[1] == paid[2]
 
-    with pytest.raises(ValueError, match=re.escape("row 0 names instrument 1, of 1")):
+    with pytest.raises(DataError, match=re.escape("row 0 names instrument 1, of 1")):
         probatum._probatum.Engine(
             candles,
             market              = "perp",
@@ -1480,10 +1507,10 @@ def test_funding_named_on_the_one_instrument_is_charged_as_funding_named_on_none
 def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
     candles, times = hourly(4)
 
-    with pytest.raises(ValueError, match="times: none"):
+    with pytest.raises(DataError, match="times: none"):
         probatum._probatum.Engine(candles, market="perp", funding_hours=8.0)
 
-    with pytest.raises(ValueError, match="funding: more than one source"):
+    with pytest.raises(VenueError, match="funding: more than one source"):
         probatum._probatum.Engine(
             candles,
             market           = "perp",
@@ -1492,7 +1519,7 @@ def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
             funding_interval = 3,
         )
 
-    with pytest.raises(ValueError, match="funding_times: given without funding_rates"):
+    with pytest.raises(DataError, match="funding_times: given without funding_rates"):
         probatum.Batch(
             candles,
             num_envs      = 1,
@@ -1500,7 +1527,7 @@ def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
             funding_times = np.array([HOUR], dtype=np.int64),
         )
 
-    with pytest.raises(ValueError, match="funding_rates: 2 for 1 funding_times"):
+    with pytest.raises(DataError, match="funding_rates: 2 for 1 funding_times"):
         probatum._probatum.Engine(
             candles,
             market        = "perp",
@@ -1511,17 +1538,17 @@ def test_a_funding_source_is_refused_without_its_clock_or_beside_another():
 
 
 def test_a_clock_out_of_order_or_short_of_a_bar_is_refused():
-    with pytest.raises(ValueError, match="times: row 2 opens at 3600000000000"):
+    with pytest.raises(DataError, match="times: row 2 opens at 3600000000000"):
         engine(times=np.array([0, 2 * HOUR, HOUR], dtype=np.int64))
 
-    with pytest.raises(ValueError, match="times: row 1 opens at 0"):
+    with pytest.raises(DataError, match="times: row 1 opens at 0"):
         probatum.Batch(
             series(),
             num_envs = 1,
             times    = np.array([0, 0, HOUR], dtype=np.int64),
         )
 
-    with pytest.raises(ValueError, match="times: 2 for 3 bars"):
+    with pytest.raises(DataError, match="times: 2 for 3 bars"):
         engine(times=np.array([0, HOUR], dtype=np.int64))
 
 
@@ -1541,30 +1568,30 @@ def test_quote_opens_both_wallets_by_name_and_a_transfer_lands_on_the_next_bar()
 
 
 def test_a_wallet_or_a_transfer_the_engine_cannot_use_is_refused():
-    with pytest.raises(ValueError, match='quote: a wallet named "savings"'):
+    with pytest.raises(VenueError, match='quote: a wallet named "savings"'):
         engine(quote={"spot": 1.0, "savings": 1.0})
 
-    with pytest.raises(ValueError, match=r'quote\["margin"\] must be at least 0'):
+    with pytest.raises(VenueError, match=r'quote\["margin"\]: -1; give 0 or more'):
         engine(market="perp", quote={"margin": -1.0})
 
-    with pytest.raises(ValueError, match="quote: 'all'; give the opening cash"):
+    with pytest.raises(VenueError, match="quote: 'all'; give the opening cash"):
         engine(quote="all")
 
-    with pytest.raises(ValueError, match="quote: a wallet named 1; name spot"):
+    with pytest.raises(VenueError, match="quote: a wallet named 1; name spot"):
         engine(quote={1: 5.0})
 
-    with pytest.raises(ValueError, match="quote: '5' for the spot wallet; give"):
+    with pytest.raises(VenueError, match="quote: '5' for the spot wallet; give"):
         engine(quote={"spot": "5"})
 
     e = engine()
 
-    with pytest.raises(ValueError, match="amount: -5 is negative"):
+    with pytest.raises(ProbatumValueError, match="amount: -5 is negative"):
         e.transfer(-5.0, "margin")
 
-    with pytest.raises(ValueError, match="amount: NaN is not a finite number"):
+    with pytest.raises(ProbatumValueError, match="amount: NaN is not a finite number"):
         e.transfer(float("nan"), "margin")
 
-    with pytest.raises(ValueError, match='to: "savings" is not a wallet'):
+    with pytest.raises(ProbatumValueError, match='to: "savings" is not a wallet'):
         e.transfer(5.0, "savings")
 
 

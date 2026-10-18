@@ -15,6 +15,7 @@ import polars
 import pyarrow as pa
 import pytest
 
+from probatum import DataError, ProbatumTypeError
 from probatum._probatum import arrow_columns
 
 NAT = np.iinfo(np.int64).min
@@ -119,14 +120,14 @@ class Wrong:
 
 
 @pytest.mark.parametrize("data, error, says", [
-    (pa.table({"time": pa.array([2**62], pa.timestamp("s"))}), ValueError,
+    (pa.table({"time": pa.array([2**62], pa.timestamp("s"))}), DataError,
      'data: column "time" holds 4611686018427387904 ticks of 1000000000 nanoseconds, '
      'past what nanoseconds since 1970 can count'),
-    (Spent(pa.table({"close": [1.0]})), ValueError,
+    (Spent(pa.table({"close": [1.0]})), DataError,
      "data: an Arrow stream already released; pass the frame again"),
-    (Wrong(), TypeError,
+    (Wrong(), ProbatumTypeError,
      "data: __arrow_c_stream__ gave a dict, not a capsule named arrow_array_stream"),
-    ([1.0, 2.0], TypeError,
+    ([1.0, 2.0], ProbatumTypeError,
      "data: a list has neither the Arrow C stream nor the array interface"),
 ])
 def test_what_cannot_be_read_as_a_table_is_refused(data, error, says):

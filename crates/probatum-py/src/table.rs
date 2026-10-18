@@ -12,7 +12,6 @@ use std::sync::Arc;
 use numpy::ndarray::ArrayView1;
 use numpy::npyffi::flags::NPY_ARRAY_WRITEABLE;
 use numpy::{PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyCapsule, PyDict, PyList};
 
@@ -24,7 +23,10 @@ use probatum_engine::reporter::{FillRecord, LedgerRow};
 use probatum_engine::{Engine as BarEngine, RoundTrip, Units};
 
 use crate::arrow::text;
-use crate::{booleans, reason_text, side_str};
+use crate::{
+    booleans, reason_text, side_str, ProbatumIndexError, ProbatumKeyError, ProbatumTypeError,
+    ProbatumValueError,
+};
 
 /// The capsule's destructor, which frees the stream it holds, read under whatever name
 /// the capsule carries now.
@@ -70,7 +72,7 @@ fn check_requested(table: &Table, requested: &Bound<'_, PyAny>) -> PyResult<()> 
         .ok()
         .and_then(|capsule| capsule.pointer_checked(Some(c"arrow_schema")).ok());
     let Some(pointer) = pointer else {
-        return Err(PyTypeError::new_err(format!(
+        return Err(ProbatumTypeError::new_err(format!(
             "requested_schema: a {}, not a capsule named arrow_schema; pass one, or None",
             requested.get_type().name()?
         )));
@@ -78,7 +80,7 @@ fn check_requested(table: &Table, requested: &Bound<'_, PyAny>) -> PyResult<()> 
     // SAFETY: a capsule named arrow_schema holds a schema of the C data interface
     let schema = unsafe { &*(pointer.as_ptr() as *const ArrowSchema) };
     if schema.release.is_none() {
-        return Err(PyValueError::new_err(
+        return Err(ProbatumValueError::new_err(
             "requested_schema: a schema already released; pass a live one, or None",
         ));
     }
@@ -95,7 +97,7 @@ fn check_requested(table: &Table, requested: &Bound<'_, PyAny>) -> PyResult<()> 
     };
     let names = names_of(table);
     if asked != names {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "requested_schema: the columns {}, and this table holds {}; request its own \
              columns, or None",
             if asked.is_empty() {
@@ -174,7 +176,7 @@ impl PartialEq for PyTable {
 impl PyTable {
     fn named(&self, name: &str) -> PyResult<&Column> {
         self.table.column(name).ok_or_else(|| {
-            PyKeyError::new_err(format!(
+            ProbatumKeyError::new_err(format!(
                 "name: no column {name:?}; use one of {}",
                 names_of(&self.table).join(", ")
             ))
@@ -230,14 +232,14 @@ impl PyTable {
                 "bool" => Given::Bool(booleans(&values.extract()?)?),
                 "text" => {
                     let Some(data) = &data else {
-                        return Err(PyValueError::new_err(format!(
+                        return Err(ProbatumValueError::new_err(format!(
                             "parts: text column {name:?} has no bytes; give them last"
                         )));
                     };
                     Given::Text(integers(&values)?, data.as_slice()?.to_vec())
                 }
                 _ => {
-                    return Err(PyValueError::new_err(format!(
+                    return Err(ProbatumValueError::new_err(format!(
                         "parts: column {name:?} of kind {kind:?}; use float, int, time, bool \
                          or text"
                     )))
@@ -246,12 +248,12 @@ impl PyTable {
             let present = valid.map(|valid| booleans(&valid)).transpose()?;
             columns.push(
                 Column::checked(&name, given, nullable, present)
-                    .map_err(|said| PyValueError::new_err(format!("parts: {said}")))?,
+                    .map_err(|said| ProbatumValueError::new_err(format!("parts: {said}")))?,
             );
         }
         Table::new(columns)
             .map(PyTable::from)
-            .map_err(|said| PyValueError::new_err(format!("parts: {said}")))
+            .map_err(|said| ProbatumValueError::new_err(format!("parts: {said}")))
     }
 
     fn __len__(&self) -> usize {
@@ -321,7 +323,7 @@ impl PyTable {
     fn equal<'py>(&self, py: Python<'py>, name: &str, value: &str) -> PyResult<Bound<'py, PyAny>> {
         let column = self.named(name)?;
         if !matches!(column.values(), Values::Text(..)) {
-            return Err(PyTypeError::new_err(format!(
+            return Err(ProbatumTypeError::new_err(format!(
                 "name: {name:?} holds {}, not text; compare a text column",
                 column.values().kind()
             )));
@@ -344,7 +346,7 @@ impl PyTable {
     fn row<'py>(&self, py: Python<'py>, row: usize) -> PyResult<Bound<'py, PyDict>> {
         let rows = self.table.rows();
         if row >= rows {
-            return Err(PyIndexError::new_err(if rows == 0 {
+            return Err(ProbatumIndexError::new_err(if rows == 0 {
                 format!("row: {row} of a table with no rows; read one that has some")
             } else {
                 format!("row: {row} of a table of {rows} rows; give one below {rows}")
@@ -405,7 +407,7 @@ impl PyTable {
                     .ok()
                     .filter(|&i| i < rows)
                     .ok_or_else(|| {
-                        PyIndexError::new_err(if rows == 0 {
+                        ProbatumIndexError::new_err(if rows == 0 {
                             format!("indices: {i} of a table with no rows; give none")
                         } else {
                             format!(
@@ -455,14 +457,14 @@ pub(crate) fn tables(
         return Ok(None);
     };
     if names.len() != engine.width() {
-        return Err(PyValueError::new_err(format!(
+        return Err(ProbatumValueError::new_err(format!(
             "names: {} names for {} instruments; give one each",
             names.len(),
             engine.width()
         )));
     }
     if engine.num_bars() > 0 && engine.open_time(0).is_none() {
-        return Err(PyValueError::new_err(
+        return Err(ProbatumValueError::new_err(
             "times: none, so no row of a table has a time; build the engine with times=",
         ));
     }

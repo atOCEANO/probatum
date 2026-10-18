@@ -303,17 +303,22 @@ def test_a_requested_schema_is_met_or_refused(results):
         pyarrow.table(trades))
 
     renamed = own.set(0, own.field(0).with_name("symbol"))
-    with pytest.raises(ValueError, match="requested_schema: the columns symbol, side"):
+
+    with pytest.raises(ProbatumValueError, match="requested_schema: the columns "
+                                                 "symbol, side") as caught:
         trades.__arrow_c_stream__(renamed.__arrow_c_schema__())
+
+    # a table's refusal of the call's schema is the root's, not a fault in bars
+    assert caught.type is ProbatumValueError
 
     spent = own.__arrow_c_schema__()
     pyarrow.Schema._import_from_c_capsule(spent)
 
-    with pytest.raises(ValueError, match="requested_schema: a schema already released; "
-                                         "pass a live one, or None"):
+    with pytest.raises(ProbatumValueError, match="requested_schema: a schema already "
+                                                 "released; pass a live one, or None"):
         trades.__arrow_c_stream__(spent)
-    with pytest.raises(TypeError, match="requested_schema: a int, not a capsule named "
-                                        "arrow_schema"):
+    with pytest.raises(ProbatumTypeError, match="requested_schema: a int, not a "
+                                                "capsule named arrow_schema"):
         trades.__arrow_c_stream__(42)
 
 
@@ -465,21 +470,23 @@ def test_the_binding_s_table_names_what_it_refuses_and_the_fix(results):
     held = results["pair"].trades._held
     rows = len(held)
 
-    with pytest.raises(KeyError, match="name: no column \"symbol\"; use one of "
-                                       "instrument"):
+    with pytest.raises(ProbatumKeyError, match="name: no column \"symbol\"; use one of "
+                                               "instrument"):
         held.column("symbol")
-    with pytest.raises(IndexError, match=f"row: {rows} of a table of {rows} rows; give "
-                                         f"one below {rows}"):
+    with pytest.raises(ProbatumIndexError, match=f"row: {rows} of a table of {rows} "
+                                                 f"rows; give one below {rows}"):
         held.row(rows)
-    with pytest.raises(IndexError, match=f"indices: {rows} of a table of {rows} rows; "
-                                         f"give positions from 0 to {rows - 1}"):
+    with pytest.raises(ProbatumIndexError, match=f"indices: {rows} of a table of "
+                                                 f"{rows} rows; give positions from 0 "
+                                                 f"to {rows - 1}"):
         held.take(np.array([rows]))
 
     engine = probatum._probatum.Engine(np.ones((3, 5)), report=True)
     engine.reset()
 
-    with pytest.raises(ValueError, match="times: none, so no row of a table has a "
-                                         "time; build the engine with times="):
+    with pytest.raises(ProbatumValueError, match="times: none, so no row of a table "
+                                                 "has a time; build the engine with "
+                                                 "times="):
         engine.tables(0, ["BTCUSDT"])
 
     # numpy lets a view put any byte in a bool array, and any byte but 0 reads as true
