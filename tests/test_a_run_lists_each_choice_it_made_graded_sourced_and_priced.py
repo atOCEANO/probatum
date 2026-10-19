@@ -829,6 +829,39 @@ def test_the_data_rows_read_its_gaps_its_funding_events_and_where_its_bars_end()
                                         "venue")
 
 
+def test_the_delisting_row_names_each_delisting_time_the_venue_gives():
+    # ETH's bars end at 05:00 on the second day, where the venue delists it at 06:00,
+    # and SOL's end at 19:00 on the first with no delisting time
+    frame = bars(n=40)
+    data  = probatum.Data({
+        "BTCUSDT": frame,
+        "ETHUSDT": frame.iloc[:30],
+        "SOLUSDT": frame.iloc[:20],
+    }, market="linear")
+    venue = probatum.Venue(
+        kind        = "linear",
+        instruments = {"ETHUSDT": {"delist": "2024-01-02 06:00"}},
+    )
+    rows = read(probatum.backtest(np.full((40, 3), 0.2), data, venue).assumptions)
+
+    assert rows["delisting"][:4] == (
+        "ETHUSDT delisted 2024-01-02 06:00; no delisting time otherwise; SOLUSDT's "
+        "bars end 2024-01-01 19:00", "set by the user; a frame", "simplified", "either")
+
+    pair = data.select(["BTCUSDT", "ETHUSDT"])
+    rows = read(probatum.backtest(np.full((40, 2), 0.25), pair, venue).assumptions)
+
+    assert rows["delisting"][:4] == ("ETHUSDT delisted 2024-01-02 06:00",
+                                     "set by the user", "venue", None)
+
+    # alone, no row of ETH's own reaches the time
+    eth   = data.select(["ETHUSDT"])
+    alone = read(probatum.backtest(np.full(len(eth), 0.5), eth, venue).assumptions)
+
+    assert alone["delisting"][0] == ("ETHUSDT delisted 2024-01-02 06:00, after the "
+                                     "last row")
+
+
 def test_a_venue_describes_its_rows_from_the_venue_alone():
     rows = read(PERP.describe())
 

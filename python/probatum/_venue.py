@@ -13,7 +13,7 @@ import numbers
 import numpy as np
 
 from . import venues
-from ._data import Data, _funded
+from ._data import Data, _funded, _when
 from ._errors import DataError, ProbatumAttributeError, ProbatumTypeError, VenueError
 
 # the plain option in each row, which a venue's setting left out or given as None takes
@@ -48,9 +48,10 @@ class Venue:
     ``funding``. The size and price rules and the tier table, given beside these, are
     every instrument's, unless its kind's table in ``kinds`` or its own in
     ``instruments`` gives another, keyed by its symbol, or as kind:SYMBOL where
-    ``kind``, the kind of every instrument the venue lists, is None. Each setting left
-    out, or given as None, takes the plain option, and None inside a table leaves that
-    key out.
+    ``kind``, the kind of every instrument the venue lists, is None, and its own table
+    alone gives its ``delist``, the time the venue delisted it. Each setting left out,
+    or given as None, takes the plain option, and None inside a table leaves that key
+    out.
 
     A Venue does not change, and every setting passes the checks a preset's pass as it
     is built, so a variant made with `replace` is checked as well. The presets are
@@ -316,8 +317,9 @@ def _run(venue, data, seed=None):
     an account that uses both wallets, and the two of them for an inverse contract's,
     which has one; funding from the data where it holds none for a perpetual; an
     instrument without the lot and price rule the venue's sizes hold every order to,
-    or with significant figures and no decimals; and a perpetual with no maintenance
-    where the venue books then backstops."""
+    or with significant figures and no decimals; a perpetual with no maintenance
+    where the venue books then backstops; and a delisting time at or before its
+    instrument's last bar."""
     venue  = _venue_of(venue)
     data   = data if isinstance(data, Data) else Data(data)
     origin = venue.name or "venue"
@@ -403,6 +405,26 @@ def _run(venue, data, seed=None):
     # a row none of these instruments printed is a row their account never sees, as
     # a selection of a wider universe has, and the Engine takes none
     printed = whole.available.any(axis=1)
+    # a delisting time at or before an instrument's last bar would trade it after the
+    # venue delisted it, and a lone instrument's no row reaches, its clock ending with
+    # its bars
+    last = len(whole) - 1 - np.argmax(whole.available[::-1], axis=0)
+
+    for k, key in enumerate(keys):
+        at = venues._delisting(venue._preset, key)
+        if at is None:
+            continue
+
+        if whole.available[:, k].any() and whole.time[last[k]] >= at:
+            given = venues._origin(venue._preset)
+            said  = venues._said(given, f"{venues._where(given, key)}.delist")
+            held  = venue._preset["instruments"][key]["delist"]
+            raise VenueError(f"{said}: {held!r}, and {names[k]}'s last bar opens "
+                             f"{_when(whole.time[last[k]])}; give a time after it")
+
+        if "instruments" in settings:
+            settings["instruments"][k]["delist"] = at
+
     settings["times"] = np.ascontiguousarray(whole.time[printed])
     candles = np.ascontiguousarray(whole.bars[printed])
     if inverse:

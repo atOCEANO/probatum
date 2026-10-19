@@ -38,9 +38,12 @@ def ran(record, result):
     asset   = _settlement(record.data.instruments,
                           [kind for _, kind, _, _ in reading.held])
 
+    delisted = [(venues._delisting(record.venue._preset, entry[2]),
+                 reading.source(("delist",), entry)) for entry in reading.held]
+
     return (_venue_rows(reading, priced, asset)
             + _engine_rows(reading, priced, _inside(record, len(result.time)))
-            + _data_rows(record.data, record.venue))
+            + _data_rows(record.data, record.venue, delisted))
 
 
 def described(venue):
@@ -427,9 +430,11 @@ def _engine_rows(reading, priced=None, inside=None):
     return rows
 
 
-def _data_rows(data, venue=None):
+def _data_rows(data, venue=None, delisted=None):
     """``data``'s rows, its bars graded as another venue's where they are the router's
-    and ``venue``, the run's, is a preset of a different exchange."""
+    and ``venue``, the run's, is a preset of a different exchange, and each
+    instrument's delisting time as ``delisted`` gives it, in nanoseconds with its
+    source, or None."""
     root       = data._root
     provenance = root.provenance
     instruments, names = data.instruments, data.names
@@ -477,18 +482,30 @@ def _data_rows(data, venue=None):
     rows.append(("history", value, said, "venue", None, None))
 
     available, ended = data.available, []
+    delisted = delisted or [(None, None)] * len(names)
     if len(data):
         last  = len(data) - 1 - np.argmax(available[::-1], axis=0)
         ended = [f"{name}'s bars end {_when(data.time[at])}"
-                 for name, at, printed in zip(names, last, available.any(axis=0))
-                 if printed and at < len(data) - 1]
+                 for name, at, printed, (when, _) in zip(names, last,
+                                                         available.any(axis=0), delisted)
+                 if printed and at < len(data) - 1 and when is None]
 
-    # bars that stop before the last row, the router's among them, leave a position
-    # held at its last mark, which is no delisting
+    # a delisting time the rows the run saw never reached delisted nothing
+    seen = data.time[available.any(axis=1)]
+    told = [f"{name} delisted {_when(when)}"
+            + ("" if len(seen) and seen[-1] >= when else ", after the last row")
+            for name, (when, _) in zip(names, delisted) if when is not None]
+    sources = "; ".join(dict.fromkeys([source for when, source in delisted
+                                       if when is not None] + ([said] if ended else [])))
+
+    # bars that stop before the last row with no delisting time, the router's among
+    # them, leave a position held at its last mark
     if ended:
-        more = f" and {len(ended) - 3:,} more" if len(ended) > 3 else ""
-        rows.append(("delisting", f"no delisting time; {', '.join(ended[:3])}{more}",
-                     said, "simplified", "either", None))
+        value = (f"{_some(told)}; no delisting time otherwise; {_some(ended)}" if told
+                 else f"no delisting time; {_some(ended)}")
+        rows.append(("delisting", value, sources, "simplified", "either", None))
+    elif told:
+        rows.append(("delisting", _some(told), sources, "venue", None, None))
     elif router:
         rows.append(("delisting", "no delisting time; the router serves none", said,
                      "venue", None, None))
@@ -698,6 +715,12 @@ def _named(names, counted):
 def _listing(words):
     """``words`` as a sentence lists them: A, A and B, A, B and C."""
     return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+
+
+def _some(parts):
+    """The first three of ``parts``, and how many more there are."""
+    more = f" and {len(parts) - 3:,} more" if len(parts) > 3 else ""
+    return f"{', '.join(parts[:3])}{more}"
 
 
 def _counted(n, noun):

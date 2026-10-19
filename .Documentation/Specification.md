@@ -687,12 +687,14 @@ The Data's rows follow, their source the Data's own: "the router, fetched" with 
 | history | "from each instrument's first bar", or where the router's begins | venue | |
 | delisting | "no delisting time; the router serves none", where every instrument's router bars run to the last row | venue | |
 | delisting | "no delisting time; every instrument's bars run to the last", where bars that are not the router's do | venue | |
-| delisting | "no delisting time; ETHUSDT's bars end 2025-03-01 12:00", where an instrument's bars end before the last row | simplified | either |
+| delisting | "no delisting time; ETHUSDT's bars end 2025-03-01 12:00", where an instrument's bars end before the last row with no delisting time | simplified | either |
+| delisting | "ETHUSDT delisted 2025-03-01 13:00", each delisting time the venue gives, and "ETHUSDT delisted 2025-03-01 13:00, after the last row" where no row the run saw reaches it | venue | |
+| delisting | "ETHUSDT delisted 2025-03-01 13:00; no delisting time otherwise; SOLUSDT's bars end 2025-02-01 08:00", where another instrument's bars end before the last row with none | simplified | either |
 | universe | "the user's list of 3 instruments" | simplified | optimistic |
 | prices | "as the venue printed them", the router's bars | venue | |
 | prices | "as given; splits, dividends and borrow costs only as the user adjusted them" | simplified | either |
 
-A Data's bars are the router's where every instrument names its venue, and they read as another venue's where the run's venue is a preset of a different exchange.
+A Data's bars are the router's where every instrument names its venue, and they read as another venue's where the run's venue is a preset of a different exchange. The delisting row's source is the venue's for the delisting times it gives, read as a venue row's is, and the Data's for bars that end with none.
 
 A venue row's source is the input that decided each instrument's value, read key by key in the order a venue resolves an instrument's settings, its defaults, then its kind's table, then its own: a value equal to the preset's reads as the preset and its date, "binance_perp, taken 2026-10-16"; one the preset leaves out that equals the plain venue's reads "plain"; any other reads "set by the user". A venue built by hand is compared with the plain venue alone. Leverage and maintenance are sourced from an instrument's tiers where it has a table, and the liquidation fee from them where they keep maintenance, order limits the router gave read "the router, fetched" with its time, and a preset's slippage, impact and liquidity read as the preset, "a starting calibration", where they depart from the plain venue's. A row with one source reads it; otherwise it reads the source of the form its value leads with, then each key or instrument another source decided, "binance_perp, taken 2026-10-16; taker set by the user".
 

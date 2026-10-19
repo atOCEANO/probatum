@@ -192,7 +192,40 @@ def two(*frames):
     return data
 
 
+def test_an_instrument_the_venue_delisted_closes_there_at_its_last_close():
+    # ETH's bars end at 05:00 on the second day and the venue delists it at 06:00, the
+    # time the universe's engine takes for it, where a lone instrument's clock ends
+    # with its bars and no row reaches it
+    data = probatum.Data({"BTCUSDT": frame(), "ETHUSDT": frame(30, close=10.0)},
+                         market="linear")
+    venue = Venue(kind="linear", instruments={"ETHUSDT": {"delist": "2024-01-02 06:00"}})
+
+    btc, eth = _run(venue, data).settings["instruments"]
+
+    assert "delist" not in btc and eth["delist"] == data.time[30]
+    assert "delist" not in _run(venue, data.select(["ETHUSDT"])).settings
+
+    result = probatum.backtest(np.full((48, 2), 0.25), data, venue)
+    [closing] = [fill for fill in result.fills if fill["reason"] == "delist"]
+
+    assert (closing["instrument"], closing["time"], closing["price"],
+            closing["fee"]) == ("ETHUSDT", data.time[30], 39.0, 0.0)
+
+    refused = [event for event in result.orders if event["kind"] == "refused"]
+
+    assert refused and all(event["reason"] == "the instrument is delisted"
+                           and event["instrument"] == "ETHUSDT" for event in refused)
+
+
 @pytest.mark.parametrize("venue, data, error, says", [
+    (Venue(kind="linear", instruments={"ETHUSDT": {"delist": "2024-01-01 12:00"}}),
+     probatum.Data({"BTCUSDT": frame(), "ETHUSDT": frame(30)}, market="linear"),
+     VenueError, "instruments.ETHUSDT.delist: '2024-01-01 12:00', and ETHUSDT's last "
+                 "bar opens 2024-01-02 05:00; give a time after it"),
+    (Venue(kind="linear", instruments={"ETHUSDT": {"delist": "2024-01-02 05:00"}}),
+     probatum.Data({"BTCUSDT": frame(), "ETHUSDT": frame(30)}, market="linear"),
+     VenueError, "instruments.ETHUSDT.delist: '2024-01-02 05:00', and ETHUSDT's last "
+                 "bar opens 2024-01-02 05:00; give a time after it"),
     (Venue(kind="linear"), two(routed("BTCUSDT"), routed("ETHUSDT", exchange="bybit")),
      DataError, "data: instruments at binance and bybit, and an account is at one "
                 "venue"),

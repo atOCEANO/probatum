@@ -101,11 +101,10 @@ def _fill(result, n, fill):
 
     rows = _assumed(result, venue)
     taker, reason = fill["taker"], fill["reason"]
-
-    # a taker pays its parts, a sale on the book among them, and a maker and a
-    # takeover pay none
+    # a taker pays its parts, a sale on the book among them, and a maker, a takeover
+    # and a delisting's close pay none
     paying = (None if taker else "none in a takeover" if reason == "liquidation"
-              else "none for a maker")
+              else "none at a delisting" if reason == "delist" else "none for a maker")
 
     def bps(part):
         return part / base * 10_000.0
@@ -128,7 +127,8 @@ def _fill(result, n, fill):
                    ("spread", spread_said, _signed(sign * fill["spread"], places)),
                    ("slippage", slippage_said, _signed(sign * fill["slippage"], places)),
                    ("impact", impact_said, _signed(sign * fill["impact"], places)),
-                   ("held in the bar", f"held to the bar's {edge}" if held != 0.0
+                   ("held in the bar", "closed before the bar opened" if reason == "delist"
+                    else f"held to the bar's {edge}" if held != 0.0
                     else f"the bar's {edge} was not reached", _signed(held, places))]
 
     if lifted != 0.0 or paid != 0.0:
@@ -157,7 +157,7 @@ def _fill(result, n, fill):
 
 def _reference(result, n, fill):
     """What fill ``n``'s reference is, by its reason: the open, its order's own price,
-    or what traded to it."""
+    what traded to it, or a delisted instrument's last close."""
     reason = fill["reason"]
     if reason in ("market", "rebalance"):
         return "open of the bar"
@@ -165,6 +165,9 @@ def _reference(result, n, fill):
     if reason == "liquidation":
         return ("where the sale began" if fill["taker"]
                 else "where the account was closed out")
+
+    if reason == "delist":
+        return "its instrument's last close"
 
     if reason not in ("limit", "take_profit", "stop"):
         raise ProbatumValueError(f"item: a fill of reason {reason}, which explain does "

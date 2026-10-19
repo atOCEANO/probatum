@@ -12,6 +12,7 @@ import tomllib
 
 import numpy as np
 
+from .._data import _period, _when
 from .._errors import DataError, ProbatumAttributeError, ProbatumTypeError, VenueError
 from .._probatum import Engine
 
@@ -21,6 +22,9 @@ VENUE = ("fees", "liquidation", "backstop", "liquidation_fee", "funding", "lever
          "max_open_orders", "fills")
 INSTRUMENT = ("fees", "tiers", "tiers_by", "tick", "lot", "sigfigs", "decimals",
               "min_notional", "max_qty", "reduce_only_exempt")
+# what only an instrument's own table sets: a time on the Data's clock, which the run
+# reads beside the bars
+OWN   = ("delist",)
 FILLS = ("limit", "window", "liquidity", "spread", "slippage", "impact", "sizes")
 TIER  = ("up_to", "leverage", "rate", "amount")
 # each setting's type in a file, the values themselves the Engine's to check
@@ -173,7 +177,8 @@ def _read(text, origin):
     what is refused: its name, the day its tables were taken, the kind of every
     instrument where it holds one kind, or the presets it combines, its defaults, each
     kind's settings and each instrument's, each of its type. The values are checked
-    by `_check`, where the Engine checks them."""
+    by `_check`, where the Engine checks them, but a delisting time, which is read here
+    and checked by a run against the bars it falls among."""
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
@@ -253,11 +258,14 @@ def _tables(origin, data, kind):
 
         _kind_of(origin, key, kind)
         where = _where(origin, key)
-        tables[where] = _known(origin, where, _table(origin, where, table), INSTRUMENT)
+        tables[where] = _known(origin, where, _table(origin, where, table),
+                               INSTRUMENT + OWN)
 
     for where, table in tables.items():
         for setting, value in table.items():
             _typed(origin, where, setting, value)
+        if "delist" in table:
+            table["delist"] = _instant(origin, f"{where}.delist", table["delist"])
         if "fees" in table:
             _rates(origin, f"{where}.fees", table["fees"])
         if "tiers" in table:
@@ -274,6 +282,28 @@ def _where(origin, key):
     """Where instrument ``key``'s own table sits: under its key in a file, which a
     preset's refusals name it by, and in a Venue's ``instruments``."""
     return f"instruments.{key}" if origin is None else key
+
+
+def _instant(origin, where, value):
+    """The delisting time at ``where`` as a venue holds it, the text of its moment in
+    UTC: a time, or the text of one, which names its period's first moment."""
+    try:
+        ns, _ = _period(value, _said(origin, where))
+    except DataError as error:
+        raise VenueError(str(error)) from None
+    except ProbatumTypeError as error:
+        raise _mistyped(origin)(str(error)) from None
+
+    if ns % 1_000_000_000:
+        return str(np.datetime64(ns, "ns")).replace("T", " ")
+    return _when(ns)
+
+
+def _delisting(preset, key):
+    """Instrument ``key``'s delisting time in ``preset``, in nanoseconds since 1970,
+    or None."""
+    held = preset["instruments"].get(key, {}).get("delist")
+    return None if held is None else _period(held, "delist")[0]
 
 
 def _combine(preset, parts):
@@ -466,6 +496,8 @@ def _instrument_settings(preset, key):
         fees.update(table.get("fees", {}))
 
     given.pop("fees", None)
+    # a delisting time is read beside the bars it falls among, by the run
+    given.pop("delist", None)
 
     out   = {"market": {"spot": "spot", "linear": "perp", "inverse": "inverse"}[kind]}
     where = _where(origin, key)
@@ -509,12 +541,13 @@ def _settings(preset, keys, contract=None):
 
 
 def _check(preset):
-    """Run every setting of ``preset`` through the checks the Engine runs, on one row of
-    placeholder bars, so a preset passes exactly what a venue built by hand does: its
-    spot and linear instruments as one universe, and each inverse contract alone, as
-    its account holds it. A kind it holds but lists no instrument of is checked on a
-    placeholder of that kind, and a preset of no kind that lists none on one of each;
-    a refusal of a placeholder names its kind's table where the preset gives one. The
+    """Run every setting of ``preset`` but a delisting time, which a run checks against
+    its bars, through the checks the Engine runs, on one row of placeholder bars, so a
+    preset passes exactly what a venue built by hand does: its spot and linear
+    instruments as one universe, and each inverse contract alone, as its account holds
+    it. A kind it holds but lists no instrument of is checked on a placeholder of that
+    kind, and a preset of no kind that lists none on one of each; a refusal of a
+    placeholder names its kind's table where the preset gives one. The
     universe holds each instrument with one order slot, and the venue's own count is
     checked on one of them, so a preset's size never bounds it, and a venue of spot
     markets alone has its liquidation settings checked on a perpetual of their own,

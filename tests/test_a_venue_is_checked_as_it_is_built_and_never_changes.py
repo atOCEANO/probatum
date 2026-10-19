@@ -227,6 +227,10 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
     (dict(kind="linear", instruments={"BTCUSDT": {"tick": -0.1}}),
      "instruments.BTCUSDT: tick"),
     (dict(kinds={"linear": {"tick": -0.1}}), "kinds.linear: tick"),
+    (dict(kind="linear", instruments={"ETHUSDT": {"delist": "soon"}}),
+     "instruments.ETHUSDT.delist: 'soon' is not a time; give one such as"),
+    (dict(kinds={"linear": {"delist": "2024-01-02"}}),
+     "kinds.linear: 'delist' is not a setting; give fees, tiers"),
     (dict(kind="spot", liquidation_fee=7.0), "liquidation_fee: 7; give the rate"),
     (dict(kind="perp"), "kind: 'perp'; use spot, linear, inverse, or None"),
     (dict(intrabar="worst"), "intrabar: 'worst' is not a setting; use pessimistic"),
@@ -254,6 +258,8 @@ def test_a_setting_the_checks_refuse_is_refused_in_the_terms_it_was_given_in(set
      "leverage, rate, amount"),
     (dict(kind="linear", instruments={1: {}}),
      "instruments: a key of 1; key each instrument by its symbol as text"),
+    (dict(kind="linear", instruments={"ETHUSDT": {"delist": 1_704_175_200}}),
+     "instruments.ETHUSDT.delist: 1704175200; give a time or the text of one"),
     (dict(kind=1), "kind: 1; use spot, linear, inverse, or None"),
     (dict(intrabar=0), "intrabar: 0 is not a setting; use pessimistic"),
     (dict(balance="1000"), "balance: '1000'; give the opening cash as a number from 0"),
@@ -292,3 +298,39 @@ def test_a_preset_s_liquidation_fee_reaches_the_engine():
     spot = probatum.venues._settings(dict(preset, kind="spot"), ["BTCUSDT"])
 
     assert "liquidation_fee" not in spot
+
+
+def test_an_instrument_s_delisting_time_is_held_as_its_moment_in_utc():
+    # a day names its first moment, a time with an offset is read in UTC, and a time
+    # with seconds, or a part of one, keeps them
+    def held(when):
+        venue = Venue(kind="linear", instruments={"ETHUSDT": {"delist": when}})
+        return venue.to_dict()["instruments"]["ETHUSDT"]["delist"]
+
+    plus_one = datetime.timezone(datetime.timedelta(hours=1))
+    given    = ("2024-01-02", "2024-01-02 06:00",
+                datetime.datetime(2024, 1, 2, 7, tzinfo=plus_one),
+                np.datetime64("2024-01-02T06:00:30"),
+                np.datetime64("2024-01-02T06:00:30.5"))
+
+    assert [held(when) for when in given] == [
+        "2024-01-02 00:00", "2024-01-02 06:00", "2024-01-02 06:00", "2024-01-02 06:00:30",
+        "2024-01-02 06:00:30.500000000"]
+
+    venue = Venue(kind="linear", instruments={"ETHUSDT": {"delist": "2024-01-02 06:00"}})
+
+    assert venue == Venue(
+        kind        = "linear",
+        instruments = {
+            "ETHUSDT": {"delist": datetime.datetime(2024, 1, 2, 6)}},
+    )
+    assert Venue(**venue.to_dict()) == venue
+    # the engine's settings for the instrument leave it to the run, which reads it
+    # beside the bars
+    assert "delist" not in probatum.venues._instrument_settings(venue._preset, "ETHUSDT")
+
+    preset = probatum.venues._read(
+        '[venue]\nname = "made"\ntaken = 2026-10-16\nkind = "linear"\n\n'
+        '[instruments.ETHUSDT]\ndelist = 2024-01-02T06:00:00Z\n', "made")
+
+    assert preset["instruments"]["ETHUSDT"]["delist"] == "2024-01-02 06:00"

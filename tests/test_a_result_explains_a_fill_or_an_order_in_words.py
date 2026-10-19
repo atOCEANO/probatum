@@ -356,6 +356,28 @@ def test_a_forced_close_reads_where_the_account_was_closed_out_or_the_sale_began
     assert lines[-1][1].startswith("taker 0.05% on ")
 
 
+def test_a_delisting_s_close_reads_its_instrument_s_last_close():
+    # ETH's bars end at 05:00 on the second day at a close of 10, and the venue delists
+    # it at 06:00, so the long the weights hold there closes at 10 and pays nothing
+    data = probatum.Data({
+        "BTCUSDT": frame([(100.0,) * 4] * 40),
+        "ETHUSDT": frame([(10.0,) * 4] * 30),
+    }, market="linear")
+    venue = probatum.Venue(
+        kind        = "linear",
+        instruments = {"ETHUSDT": {"delist": "2024-01-02 06:00"}},
+    )
+
+    result = probatum.backtest(np.full((40, 2), 0.25), data, venue)
+    k      = next(k for k, fill in enumerate(result.fills) if fill["reason"] == "delist")
+    lines  = lines_of(result, k)
+
+    assert lines[1][1:] == ["its instrument's last close", "10.00"]
+    assert [line[1] for line in lines[2:5]] == ["none at a delisting"] * 3
+    assert lines[5][1]   == "closed before the bar opened"
+    assert lines[-1][1:] == ["none", "0.00"]
+
+
 def test_an_inverse_contract_prints_the_venue_s_rates():
     result = inverse_charged()
 
