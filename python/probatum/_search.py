@@ -376,8 +376,8 @@ def _cut(holdout, data, called="search"):
 
     if holdout is None or _number(holdout) and holdout == 0:
         if printed.sum() < 2:
-            raise ProbatumValueError(f"data: one printed row to {called}; give a Data "
-                                     f"of at least 2")
+            raise DataError(f"data: one printed row to {called}; give a Data of at "
+                            f"least 2")
         if holdout is None:
             warnings.warn(UNHELD[called], ProbatumWarning, skip_file_prefixes=PACKAGE)
         return rows

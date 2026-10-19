@@ -658,6 +658,8 @@ REFUSED = [
      "holdout: -inf; give a share of the rows above 0 and below 1, a number of them, or "
      "the time the holdout starts at"),
     (dict(holdout=-3), ProbatumValueError, "holdout: -3; give a number of rows from 1"),
+    (dict(data=one()[:1], holdout=0), DataError,
+     "data: one printed row to search; give a Data of at least 2"),
     (dict(holdout=39), ProbatumValueError,
      "holdout: 39 leaves 1 of the printed rows to search and 39 to hold out; leave at "
      "least 2 on each side"),

@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 import probatum
-from probatum import (Categorical, Int, LookaheadError, PolicyError,
+from probatum import (Categorical, DataError, Int, LookaheadError, PolicyError,
                       ProbatumAttributeError, ProbatumNotImplementedError,
                       ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
                       ProbatumWarning, VenueError)
@@ -873,6 +873,8 @@ REFUSED = [
      "seam: 'close'; use \"cancel\" or \"flatten\""),
     (dict(seam=True), ProbatumTypeError, "seam: True; use \"cancel\" or \"flatten\""),
     (dict(seed=-1), ProbatumValueError, "seed: -1; give a whole number from 0"),
+    (dict(data=swinging()[:1], holdout=0), DataError,
+     "data: one printed row to validate; give a Data of at least 2"),
     (dict(risk_free=math.inf), ProbatumValueError,
      "risk_free: inf; give the annual rate as a finite number, such as 0.04"),
     (dict(venue=VENUE.replace(intrabar="random")), VenueError,
