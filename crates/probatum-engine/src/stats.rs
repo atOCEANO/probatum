@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn the_risk_free_rate_is_per_period_and_subtracted_from_both_ratios() {
-        // `risk_free` is a public knob on Backtester, tune and walk_forward, it is
+        // `risk_free` is a public knob on every driver of the engine, it is
         // threaded through the whole engine, and NOTHING here ever passed a nonzero
         // one: the only test that names it hands in a degenerate annualization,
         // which falls back to a rate of zero before the rate is ever used. So four

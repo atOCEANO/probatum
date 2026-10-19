@@ -51,7 +51,6 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
 | `probatum.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
-| `probatum.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
 | `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
 | `probatum.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
 | `probatum.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
@@ -254,7 +253,6 @@ Each method takes only the arguments that are **not** the venue, so a knob canno
 | `engine(candles, report=False)` | [the engine](#the-engine-it-drives) the strategy runner drives. |
 | `backtest(candles, periods_per_year=None, risk_free=0.0)` | a `Backtester`. |
 | `tune(strategy, space, data, **search)` | a `TuneResult`; `search` is the search controls only. |
-| `walk_forward(strategy, space, data, **rest)` | a `WalkForward`; `rest` is the layout and the search controls only. |
 | `env(data, **rest)` | a `VectorEnv`; `rest` is the RL arguments only. |
 | `replace(**changes)` | a copy with some knobs changed. |
 | `as_dict()` | the knobs as the keyword arguments the engine takes. |
@@ -497,7 +495,7 @@ The stop rests only once a position is held (orders fill on the next bar, so the
 
 ### The engine it drives
 
-The Backtester, `tune` and `walk_forward` drive emsl's engine, `probatum._probatum.Engine`, which `probatum.Market` hands out as well: built over a candle array with the engine's settings as keywords, it is reset, given orders, stepped and read a bar at a time, and the `Batch` and the RL environment take the same settings.
+The Backtester and `tune` drive emsl's engine, `probatum._probatum.Engine`, which `probatum.Market` hands out as well: built over a candle array with the engine's settings as keywords, it is reset, given orders, stepped and read a bar at a time, and the `Batch` and the RL environment take the same settings.
 
 ```python
 import probatum
@@ -1106,41 +1104,6 @@ With `n_jobs=1` a seeded search is reproducible, since the sampler is told resul
 
 <br>
 
-## Walking forward
-
-A holdout asks whether one winner survives one tail. This asks the larger question: what the whole **procedure** would have earned. Fit on what you had, trade the next stretch, refit, repeat, which is what running a strategy actually looks like.
-
-```python
-forward = probatum.walk_forward(SmaCross, space, candles, windows=5, train=0.5)
-
-forward.stats["sharpe"]          # out of sample by construction
-forward.decay                    # how much each fit flattered itself
-forward.consistency              # the share of stretches that cleared zero
-probatum.chart(frame=candles, run=forward.result).show()
-```
-
-`train` is the share of the series the first fit gets; the rest is divided into `windows` stretches, each traded with parameters chosen on the bars **before** it and never on itself. `anchored=True` fits on everything before each window instead of on a moving block. Everything else is `tune`'s, and each window is an ordinary search.
-
-**`result` is an ordinary `BacktestResult`**, so every metric and the chart take it directly with no special case. That is not a convenience, it is the construction: rather than stitching per-window curves together, a composite strategy carries the schedule and delegates each bar to the window that owns it, and the whole thing is **one real engine pass**. So the fills are real, funding is real, the account is continuous across the seams, and every warm-up has the history before its own window to use rather than restarting at the boundary ([ADR 0034](Decisions.md)). The curve is flat until the first window, because before that there was nothing fitted to trade.
-
-| Field | Meaning |
-| :--- | :--- |
-| `result` | The run, as any other `BacktestResult`. |
-| `stats` | Its stats, which are out of sample by construction. |
-| `windows` | One record per refit: `fitted_on`, `traded_on`, `params`, `fitted`, `traded`, `bars_traded`. |
-| `decay` | Mean fitted score less traded score. How much the fit flattered itself, in the objective's own units. Positive means degraded under either direction. |
-| `consistency` | The share of stretches whose traded score cleared zero. Not a number when the search minimized, where zero is a floor rather than a break-even. |
-| `direction` | Which way the search was pointed, which is what orients the two above. |
-| `span` | The first and last bar any window traded. |
-
-`decay` is the interpretable part. A large positive number says the search keeps finding things that do not survive the next stretch, which is the failure a single holdout can see once and this one sees repeatedly. Positive carries that meaning in both directions: under `direction="minimize"` a smaller traded score is the better one, so the gap is turned over before it is averaged rather than reading backwards. `consistency` is not turned over, it is withheld, because it counts stretches that cleared zero and a minimized objective is a magnitude that never goes under zero, so the share would be a constant rather than a reading.
-
-**`traded` is read off the run that happened**, through [`segment`](#over-time-rather-than-in-total), seeded from the balance the account carried into that stretch. It used to come from a fresh isolated backtest over the window's bars, which is the stitching ADR 0034 refuses one level down: that run restarts every warm-up inside the window, so a winner needing 150 bars of history never had `next` called on a 60-bar stretch and the window reported a tidy `0.0`, indistinguishable from a stretch that genuinely broke even ([ADR 0034](Decisions.md)). `bars_traded` is beside it for the same reason: it counts the bars of the window its own winner could decide on, so a window nobody traded reads as one. `traded` is `None` when the objective is a callable, since a callable takes a whole result and a window is a slice of one.
-
-**Window length and step are hyperparameters too.** Trying five layouts and reporting the best is the same mistake one level up, and nothing here can catch you at it.
-
-<br>
-
 ## Metrics
 
 The fifteen [statistics](#statistics) come back from the engine. `probatum.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
@@ -1388,7 +1351,7 @@ Every error probatum raises is one of its own classes and the built-in it means,
 
 A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which follows what arrived: a value of a type the argument does not take raises a `TypeError`, and one of its type that the call cannot take a `ValueError`, so `tolerance="0.01"` is a `ProbatumTypeError` and `tolerance=-0.01` a `ProbatumValueError`. So a Data's wrong value is a `DataError` and its wrong type a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a Venue built in Python splits the same way between `VenueError` and `ProbatumTypeError`, while every wrong setting in a preset's file is a `VenueError`. A policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
 
-What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `tune`, `walk_forward`, `metrics`, `chart`, `plot`, `rl`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
+What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `tune`, `metrics`, `chart`, `plot`, `rl`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
 
 Every warning probatum gives is a `probatum.ProbatumWarning`, a `UserWarning`, named at the line of your code that caused it, so a test can make probatum's warnings errors without touching anyone else's. Outside those modules probatum prints nothing: long work is logged to the `probatum` logger, `Data.from_router` logging each instrument it built at INFO and each call to the router at DEBUG, which Python's `logging` turns on.
 

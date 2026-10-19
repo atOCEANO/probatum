@@ -10,7 +10,6 @@ import pytest
 
 import probatum
 from probatum import metrics
-from probatum._walk import WalkForward
 from probatum import Backtester, BacktestResult, Strategy
 
 
@@ -1393,33 +1392,6 @@ def test_the_return_per_exposure_is_the_return_over_the_time_at_risk():
 
     assert metrics.report(lazy)["return_per_exposure"] == pytest.approx(80.0)
     assert metrics.report(busy)["return_per_exposure"] == pytest.approx(25.0)
-
-
-def test_the_decay_is_the_mean_gap_and_a_flat_window_never_counts_as_a_win():
-    # the two numbers a walk-forward is read on are computed from the per-window
-    # scores metrics.segment produces, and both were pinned as "a float" and
-    # "between 0 and 1", which the gap the other way round, the median of the gaps
-    # and a >= 0.0 comparison all satisfy. A window scoring exactly 0.0 is the one
-    # ADR 0034 exists for, a stretch nobody could trade, and it must not be
-    # counted as a window that cleared zero; a window with no score at all, which
-    # is what a callable objective leaves behind, is skipped by both rather than
-    # counted as a failure
-    windows = [
-        {"fitted": 2.0, "traded": 1.5},
-        {"fitted": 1.0, "traded": -0.5},
-        {"fitted": 3.0, "traded": 0.0},
-        {"fitted": 0.5, "traded": 1.0},
-        {"fitted": 9.0, "traded": None},
-    ]
-
-    forward = WalkForward(run(), windows, (0, 120))
-
-    # the four gaps are 0.5, 1.5, 3.0 and -0.5: a mean of 1.125, a median of 1.0,
-    # and -1.125 with the subtraction the other way round
-    assert forward.decay == pytest.approx(1.125)
-    # two of the four scored windows are above zero. Counting the flat one as a
-    # win gives 0.75, dropping it from the denominator gives 0.667
-    assert forward.consistency == pytest.approx(0.5)
 
 
 class Tunable(Strategy):

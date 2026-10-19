@@ -128,16 +128,6 @@ class Market:
         return tune(strategy, space, data, **search, **self.as_dict())
 
 
-    def walk_forward(self, strategy, space, data, **rest):
-        """Run ``probatum.walk_forward`` at this venue. ``rest`` takes the layout and
-        the search controls (``windows``, ``train``, ``anchored``, ``n_trials``,
-        ...) and not the venue, which this object already is.
-        """
-        from ._walk import walk_forward
-        self._only_the_search(rest, "walk_forward")
-        return walk_forward(strategy, space, data, **rest, **self.as_dict())
-
-
     def env(self, data, **rest):
         """A ``VectorEnv`` at this venue. ``rest`` takes the RL arguments
         (``features``, ``num_envs``, ``window``, ``reward_fn``, ...).

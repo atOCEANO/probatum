@@ -61,7 +61,6 @@ _API = {
     "at_bar": plot.at_bar,
     "at_next": plot.at_next,
     "tune": probatum.tune,
-    "walk_forward": probatum.walk_forward,
     "Market": probatum.Market,
     "Data": probatum.Data,
     "from_router": probatum.Data.from_router,

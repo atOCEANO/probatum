@@ -740,24 +740,7 @@ probatum.chart(
 ).save(path="reports/walk-2025.html")
 ```
 
-A DataFrame goes in the same place, which is usually what you already have. A `WalkForward` carries one record per refit on `windows`, so the table under the chart is the schedule the chart is asserting:
-
-```python
-walk = probatum.walk_forward(
-    strategy=SmaCross,
-    space={"fast": (10, 30)},
-    data=frame,
-    windows=2,
-    train=0.5,
-    seed=0,
-)
-
-probatum.chart(
-    frame=frame,
-    run=walk.result,
-    notes=pandas.DataFrame(walk.windows),   # fitted_on, traded_on, params, and the scores
-).save(path="reports/walk-2025.html")
-```
+A DataFrame goes in the same place, which is usually what you already have, such as a validation's `study.windows.to_pandas()`, a row each stretch one fit traded.
 
 <div align="center">
   <img src="imgs/charts/ex-notes.png" alt="the settings behind the chart, carried in the document" width="100%" />

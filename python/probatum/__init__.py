@@ -39,14 +39,12 @@ from ._search import Study, search
 from ._validate import validate
 from .market import Market
 from ._tune import tune
-from ._walk import walk_forward
 from ._chart import chart, chart_defaults
 
 __all__ = [
     "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
     "Instrument", "Int", "Market", "Result", "Strategy", "Study", "Venue", "backtest",
     "chart", "chart_defaults", "combine", "search", "to_ohlcv", "tune", "validate",
-    "walk_forward",
     "cv", "metrics", "plot", "rl", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
