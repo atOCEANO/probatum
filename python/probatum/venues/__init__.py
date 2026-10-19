@@ -12,7 +12,7 @@ import tomllib
 
 import numpy as np
 
-from .._errors import DataError, ProbatumAttributeError, VenueError
+from .._errors import DataError, ProbatumAttributeError, ProbatumTypeError, VenueError
 from .._probatum import Engine
 
 KINDS = ("spot", "linear", "inverse")
@@ -55,6 +55,13 @@ def _names():
     files = importlib.resources.files(__name__).iterdir()
     return tuple(sorted(path.name[:-5] for path in files
                         if path.name.endswith(".toml")))
+
+
+def _mistyped(origin):
+    """The class a setting of the wrong type raises: a ProbatumTypeError for a Venue
+    built in Python, which ``origin`` None marks, and a VenueError for a preset, whose
+    file is at fault rather than the caller who named it."""
+    return ProbatumTypeError if origin is None else VenueError
 
 
 def _said(origin, where):
@@ -109,8 +116,8 @@ def _table(origin, where, value):
     """``value`` where a table belongs, at ``where`` in ``origin``."""
     if not isinstance(value, dict):
         noun = _noun(origin)
-        raise VenueError(f"{_said(origin, where)}: {value!r} is not a {noun}; give a "
-                         f"{noun}")
+        raise _mistyped(origin)(f"{_said(origin, where)}: {value!r} is not a {noun}; "
+                                f"give a {noun}")
 
     return value
 
@@ -130,8 +137,8 @@ def _number(origin, where, value, whole=False):
     kinds = (int,) if whole else (int, float)
     if isinstance(value, bool) or not isinstance(value, kinds):
         need = "a whole number" if whole else "a number"
-        raise VenueError(f"{_said(origin, where)}: {value!r} is not {need}; give "
-                         f"{need}")
+        raise _mistyped(origin)(f"{_said(origin, where)}: {value!r} is not {need}; "
+                                f"give {need}")
 
     return value
 
@@ -145,8 +152,8 @@ def _typed(origin, where, name, value):
         return _number(origin, f"{where}.{name}", value, whole=True)
 
     if name in WORDS and not isinstance(value, str):
-        raise VenueError(f"{_said(origin, f'{where}.{name}')}: {value!r} is not a "
-                         f"word; give its name")
+        raise _mistyped(origin)(f"{_said(origin, f'{where}.{name}')}: {value!r} is not "
+                                f"a word; give its name")
 
     if name in WORDS and value != value.lower():
         # the loader and the Venue compare the words as written
@@ -155,7 +162,8 @@ def _typed(origin, where, name, value):
 
     if name == "reduce_only_exempt" and not isinstance(value, bool):
         said = "True or False" if origin is None else "true or false"
-        raise VenueError(f"{_said(origin, f'{where}.{name}')}: {value!r}; give {said}")
+        raise _mistyped(origin)(f"{_said(origin, f'{where}.{name}')}: {value!r}; give "
+                                f"{said}")
 
     return value
 
@@ -239,8 +247,9 @@ def _tables(origin, data, kind):
     instruments = _table(origin, "instruments", data.get("instruments", {}))
     for key, table in instruments.items():
         if not isinstance(key, str):
-            raise VenueError(f"{_said(origin, 'instruments')}: a key of {key!r}; key "
-                             f"each instrument by its symbol as text")
+            raise _mistyped(origin)(f"{_said(origin, 'instruments')}: a key of "
+                                    f"{key!r}; key each instrument by its symbol as "
+                                    f"text")
 
         _kind_of(origin, key, kind)
         where = _where(origin, key)
@@ -332,15 +341,15 @@ def _rows(origin, where, tiers):
     rate and amount, an amount left out being 0."""
     noun = _noun(origin)
     if not isinstance(tiers, list):
-        raise VenueError(f"{_said(origin, where)}: {tiers!r} is not a list; give a "
-                         f"list of {noun}s of {', '.join(TIER)}")
+        raise _mistyped(origin)(f"{_said(origin, where)}: {tiers!r} is not a list; "
+                                f"give a list of {noun}s of {', '.join(TIER)}")
 
     rows = []
     for k, row in enumerate(tiers):
         at = f"{where}[{k}]"
         if not isinstance(row, dict):
-            raise VenueError(f"{_said(origin, at)}: {row!r} is not a {noun}; give a "
-                             f"{noun} of {', '.join(TIER)}")
+            raise _mistyped(origin)(f"{_said(origin, at)}: {row!r} is not a {noun}; "
+                                    f"give a {noun} of {', '.join(TIER)}")
         _known(origin, at, row, TIER)
         for name in ("up_to", "leverage", "rate"):
             if name not in row:
@@ -365,7 +374,11 @@ def _choice(origin, where, value, plain, given):
 
     shape  = "{{\"{}\": n}}" if origin is None else "{{ {} = n }}"
     shapes = [repr(word) for word in plain] + [shape.format(key) for key in given]
-    raise VenueError(f"{_said(origin, where)}: {value!r}; use {' or '.join(shapes)}")
+
+    # a table is a choice's type only where the choice takes one
+    error = (VenueError if isinstance(value, str) or isinstance(value, dict) and given
+             else _mistyped(origin))
+    raise error(f"{_said(origin, where)}: {value!r}; use {' or '.join(shapes)}")
 
 
 def _venue_settings(preset):
@@ -401,8 +414,9 @@ def _venue_settings(preset):
         shapes = (('{"every": hours, "rate": r}', '{"every_bars": n, "rate": r}')
                   if origin is None else
                   ("{ every = hours, rate = r }", "{ every_bars = n, rate = r }"))
-        raise VenueError(f"{said}: {funding!r}; use 'none', 'data', {shapes[0]} or "
-                         f"{shapes[1]}")
+        error = VenueError if isinstance(funding, str) else _mistyped(origin)
+        raise error(f"{said}: {funding!r}; use 'none', 'data', {shapes[0]} or "
+                    f"{shapes[1]}")
 
     fills = defaults["fills"]
     if "limit" in fills:

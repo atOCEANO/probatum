@@ -17,7 +17,7 @@ import sys
 import numpy as np
 
 from . import _assumptions, _ipc
-from ._data import DAY, INTERVALS, _when
+from ._data import DAY, INTERVALS, _chosen, _when
 from ._errors import (MissingDependency, ProbatumAttributeError, ProbatumIndexError,
                       ProbatumKeyError, ProbatumTypeError, ProbatumValueError)
 from ._probatum import Table as _Held, stats_of
@@ -338,8 +338,7 @@ class OrderLog(Table):
     def events(self, kind):
         """The events of ``kind``, one of placed, armed, clamped, refused, not_filled,
         expired, cancelled and filled, as an order log of their own, in order."""
-        if kind not in KINDS:
-            raise ProbatumValueError(f"kind: {kind!r}; use one of {', '.join(KINDS)}")
+        _chosen("kind", kind, KINDS, f"use one of {', '.join(KINDS)}")
         return self[self._held.equal("kind", kind)]
 
 
@@ -1437,8 +1436,9 @@ def _kept(named, settlement):
     assets, None where none says, refusing a book whose accounts are kept in assets
     that do not add."""
     if settlement is not None and not (isinstance(settlement, str) and settlement):
-        raise ProbatumTypeError(f"settlement: {settlement!r}; name the asset the book "
-                                f"is kept in, such as \"USDT\"")
+        error = ProbatumValueError if isinstance(settlement, str) else ProbatumTypeError
+        raise error(f"settlement: {settlement!r}; name the asset the book is kept in, "
+                    f"such as \"USDT\"")
 
     coins = [name for name, part in named if part.provenance["markets"] == ["inverse"]]
     if coins and len(coins) < len(named):

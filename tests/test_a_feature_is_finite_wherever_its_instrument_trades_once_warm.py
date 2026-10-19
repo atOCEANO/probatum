@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 import probatum
-from probatum import DataError
+from probatum import DataError, ProbatumTypeError
 from probatum._data import features
 
 
@@ -112,17 +112,19 @@ def test_a_function_is_judged_from_the_first_bar_it_was_given():
     assert features(universe()[4:], counted)[:, 0, 0].tolist() == [4.0, 5.0]
 
 
-@pytest.mark.parametrize("given, fill, says", [
-    (np.ones((6, 2)), None, "features: shape (6, 2) for 6 bars of 2 instruments; give "
-                            "(6, 2, F)"),
-    (lambda data: np.ones((2, 2, 1)), None,
+@pytest.mark.parametrize("given, fill, error, says", [
+    (np.ones((6, 2)), None, DataError,
+     "features: shape (6, 2) for 6 bars of 2 instruments; give (6, 2, F)"),
+    (lambda data: np.ones((2, 2, 1)), None, DataError,
      "features: shape (2, 2, 1) for 4 bars of 2 instruments; give (4, 2, F)"),
-    (np.ones((6, 2, 1)), "last", "fill: 'last'; give a finite number or \"previous\""),
-    (np.ones((6, 2, 1)), True, "fill: True; give a finite number or \"previous\""),
-    (np.ones((6, 2, 1)), float("nan"),
+    (np.ones((6, 2, 1)), "last", DataError,
+     "fill: 'last'; give a finite number or \"previous\""),
+    (np.ones((6, 2, 1)), True, ProbatumTypeError,
+     "fill: True; give a finite number or \"previous\""),
+    (np.ones((6, 2, 1)), float("nan"), DataError,
      "fill: nan; give a finite number or \"previous\""),
 ])
 def test_a_feature_of_the_wrong_shape_or_a_fill_it_cannot_use_is_refused(given, fill,
-                                                                          says):
-    with pytest.raises(DataError, match=re.escape(says)):
+                                                                          error, says):
+    with pytest.raises(error, match=re.escape(says)):
         features(universe()[2:4] if callable(given) else universe(), given, fill=fill)

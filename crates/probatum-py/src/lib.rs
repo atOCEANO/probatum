@@ -19,8 +19,9 @@ use numpy::{
     PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
     PyUntypedArray, PyUntypedArrayMethods,
 };
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple, PyType};
+use pyo3::types::{PyBool, PyDict, PyList, PyTuple, PyType};
 use pyo3::PyTypeInfo;
 use rayon::prelude::*;
 
@@ -174,17 +175,29 @@ fn parse_spread(spread: Option<&Bound<'_, PyAny>>) -> PyResult<Spread> {
 }
 
 /// A run's seed, refused here as a whole number from 0 rather than left to pyo3, whose
-/// own refusal of a negative is an OverflowError.
+/// own refusal of a negative is an OverflowError: an integer out of range is a wrong
+/// value, and anything else, a bool among them, a wrong type.
 fn seed_of(seed: Option<Bound<'_, PyAny>>) -> PyResult<Option<u128>> {
     seed.map(|seed| {
-        seed.extract().map_err(|_| {
-            ProbatumValueError::new_err(format!(
-                "seed: {}; give a whole number from 0",
-                shown(&seed)
-            ))
-        })
+        let said = || format!("seed: {}; give a whole number from 0", shown(&seed));
+        if seed.is_instance_of::<PyBool>() {
+            return Err(ProbatumTypeError::new_err(said()));
+        }
+        seed.extract()
+            .map_err(|error| refused(&seed, &error, said()))
     })
     .transpose()
+}
+
+/// The refusal of `value`, which `extract` could not read with `error`: a wrong type
+/// where Python raised a TypeError reading it, and a wrong value where it raised
+/// anything else, as an integer out of range does.
+fn refused(value: &Bound<'_, PyAny>, error: &PyErr, said: String) -> PyErr {
+    if error.is_instance_of::<PyTypeError>(value.py()) {
+        ProbatumTypeError::new_err(said)
+    } else {
+        ProbatumValueError::new_err(said)
+    }
 }
 
 /// Parse a market string into the core enum, case-insensitively.
@@ -3581,22 +3594,25 @@ fn read_weights(
     let mut weights = Vec::with_capacity(width);
     if let Ok(dict) = value.cast::<PyDict>() {
         for (key, weight) in dict.iter() {
+            let said = || {
+                format!(
+                    "{at}weights: {} is not an instrument the engine holds; key each \
+                     weight by one counted from 0, of the {width}",
+                    shown(&key)
+                )
+            };
             let i = match key.extract::<usize>() {
                 Ok(i) if i < width => i,
-                _ => {
-                    return Err(ProbatumValueError::new_err(format!(
-                        "{at}weights: {} is not an instrument the engine holds; key each \
-                         weight by one counted from 0, of the {width}",
-                        shown(&key)
-                    )))
-                }
+                Ok(_) => return Err(ProbatumValueError::new_err(said())),
+                Err(error) => return Err(refused(&key, &error, said())),
             };
-            let Ok(weight) = weight.extract::<f64>() else {
-                return Err(ProbatumValueError::new_err(format!(
+            let weight = weight.extract::<f64>().map_err(|error| {
+                let said = format!(
                     "{at}weights: {} for instrument {i} is not a number; give a float",
                     shown(&weight)
-                )));
-            };
+                );
+                refused(&weight, &error, said)
+            })?;
             weights.push((i, weight));
         }
     } else if let Ok(each) = value.extract::<Vec<f64>>() {
@@ -3617,7 +3633,7 @@ fn read_weights(
         }
         weights.push((0, weight));
     } else {
-        return Err(ProbatumValueError::new_err(format!(
+        return Err(ProbatumTypeError::new_err(format!(
             "{at}weights: {} is not a weight; give a number, one per instrument, or a \
              dict from instrument to weight",
             shown(value)
@@ -3681,12 +3697,13 @@ impl<'py> Arguments<'_, 'py> {
         let Some(value) = self.value(name)? else {
             return Ok(None);
         };
-        value.extract::<f64>().map(Some).map_err(|_| {
-            ProbatumValueError::new_err(format!(
+        value.extract::<f64>().map(Some).map_err(|error| {
+            let said = format!(
                 "{}: {name} {} is not a number; give a float",
                 self.at,
                 shown(&value)
-            ))
+            );
+            refused(&value, &error, said)
         })
     }
 
@@ -3713,7 +3730,7 @@ impl<'py> Arguments<'_, 'py> {
             return Ok(false);
         };
         value.extract::<bool>().map_err(|_| {
-            ProbatumValueError::new_err(format!(
+            ProbatumTypeError::new_err(format!(
                 "{}: {name} {} is not True or False; give a bool",
                 self.at,
                 shown(&value)
@@ -3726,7 +3743,7 @@ impl<'py> Arguments<'_, 'py> {
             return Ok(default.to_string());
         };
         value.extract::<String>().map_err(|_| {
-            ProbatumValueError::new_err(format!(
+            ProbatumTypeError::new_err(format!(
                 "{}: {name} {} is not a string; use {choices}",
                 self.at,
                 shown(&value)
@@ -3831,7 +3848,7 @@ fn read_action(
     };
     for key in given.keys() {
         let Ok(name) = key.extract::<String>() else {
-            return Err(ProbatumValueError::new_err(format!(
+            return Err(ProbatumTypeError::new_err(format!(
                 "{at}: {} is not an argument's name; name each argument with a string",
                 shown(&key)
             )));
@@ -3977,12 +3994,13 @@ fn read_script<'py>(
 ) -> PyResult<Vec<Vec<Action>>> {
     let mut entries = Vec::with_capacity(script.len());
     for (bar, actions) in script.iter() {
-        let Ok(t) = bar.extract::<usize>() else {
-            return Err(ProbatumValueError::new_err(format!(
+        let t = bar.extract::<usize>().map_err(|error| {
+            let said = format!(
                 "script: {} is not a bar; key each bar's actions by its index from 0",
                 shown(&bar)
-            )));
-        };
+            );
+            refused(&bar, &error, said)
+        })?;
         if t >= bars.saturating_sub(1) {
             let fix = match bars {
                 0 | 1 => "a script needs two bars or more".to_string(),
@@ -4000,7 +4018,7 @@ fn read_script<'py>(
     let mut placements = 0;
     for (t, actions) in entries {
         let Ok(actions_iter) = actions.try_iter() else {
-            return Err(ProbatumValueError::new_err(format!(
+            return Err(ProbatumTypeError::new_err(format!(
                 "script: bar {t} holds {}; give it a list of actions",
                 shown(&actions)
             )));
@@ -4009,7 +4027,7 @@ fn read_script<'py>(
             let action = action?;
             let at = format!("script[{t}][{k}]");
             let Ok((verb, given)) = action.extract::<(String, Bound<'py, PyDict>)>() else {
-                return Err(ProbatumValueError::new_err(format!(
+                return Err(ProbatumTypeError::new_err(format!(
                     "{at}: {} is not a verb and its arguments; write \
                      (\"buy\", {{\"size\": 1.0}})",
                     shown(&action)

@@ -13,7 +13,8 @@ import numpy as np
 import pytest
 
 import probatum
-from probatum import DataError, ProbatumKeyError, ProbatumValueError, VenueError
+from probatum import (DataError, ProbatumKeyError, ProbatumTypeError,
+                      ProbatumValueError, VenueError)
 
 
 def test_version_is_single_sourced_from_the_build():
@@ -313,10 +314,26 @@ def test_a_random_setting_without_a_seed_is_refused():
 
 def test_a_seed_that_is_not_a_whole_number_from_0_is_refused():
     for build in (probatum._probatum.Engine, lambda *a, **k: probatum.Batch(*a, num_envs=2, **k)):
-        for seed, shown in ((-1, "-1"), (1.5, "1.5"), ("7", "'7'")):
+        # a whole number out of range is a wrong value, and anything else a wrong type
+        for seed, shown, kind in ((-1, "-1", ProbatumValueError),
+                                  (2**200, str(2**200), ProbatumValueError),
+                                  (1.5, "1.5", ProbatumTypeError),
+                                  ("7", "'7'", ProbatumTypeError),
+                                  (True, "True", ProbatumTypeError),
+                                  (np.array([7]), "array([7])", ProbatumTypeError)):
             says = f"seed: {shown}; give a whole number from 0"
-            with pytest.raises(ProbatumValueError, match=re.escape(says)):
+            with pytest.raises(kind, match=re.escape(says)) as caught:
                 build(series(), intrabar="random", seed=seed)
+            assert caught.type is kind
+
+
+def test_a_script_s_flag_that_is_no_bool_is_a_wrong_type():
+    for given, shown in ((1, "1"), ("yes", "'yes'")):
+        says = f"script[0][0]: reduce_only {shown} is not True or False; give a bool"
+        with pytest.raises(ProbatumTypeError, match=re.escape(says)) as caught:
+            probatum._probatum.run(series(), None, {
+                0: [("buy", {"size": 1.0, "reduce_only": given})]})
+        assert caught.type is ProbatumTypeError
 
 
 def test_a_random_bar_draws_one_way_for_a_seed_and_both_ways_over_seeds():
@@ -363,12 +380,23 @@ def test_a_target_takes_one_number_one_weight_each_or_a_dict(weights):
     ([0.5, 0.5], 0.0, "weights: 2 for the 1 the engine holds; give one per instrument"),
     ({3: 0.5}, 0.0, "weights: 3 is not an instrument the engine holds"),
     (float("nan"), 0.0, "weights: NaN for instrument 0 is not a weight; give a finite number"),
-    ("half", 0.0, "weights: 'half' is not a weight; give a number, one per instrument"),
     (0.5, -0.1, "tolerance: -0.1 is not a fraction of equity; give one from 0"),
 ])
 def test_a_target_the_engine_cannot_take_is_refused(weights, tolerance, says):
     with pytest.raises(ProbatumValueError, match=re.escape(says)):
         engine().target(weights, tolerance=tolerance)
+
+
+@pytest.mark.parametrize("weights, says", [
+    ("half", "weights: 'half' is not a weight; give a number, one per instrument"),
+    ({"0": 0.5}, "weights: '0' is not an instrument the engine holds"),
+    ({0: "half"}, "weights: 'half' for instrument 0 is not a number; give a float"),
+])
+def test_a_target_of_the_wrong_type_is_a_type_error(weights, says):
+    with pytest.raises(ProbatumTypeError, match=re.escape(says)) as caught:
+        engine().target(weights)
+
+    assert caught.type is ProbatumTypeError
 
 
 def test_a_universe_reads_an_array_of_weights_one_per_instrument():
@@ -760,7 +788,6 @@ def test_an_empty_batch_over_a_universe_keeps_its_instrument_axis():
 @pytest.mark.parametrize("script, says", [
     ({0: [("hold", {})]}, '"hold" is not a verb'),
     ({0: [("buy", {"size": 1.0, "price": 99.0})]}, "buy takes no price"),
-    ({0: [("buy", {1: 1.0})]}, "1 is not an argument's name"),
     ({0: [("buy", {"size": 1.0, "limit": 99.0, "stop": 98.0})]},
      "; give one or the other"),
     ({0: [("buy", {"size": 1.0, "limit": float("nan")})]}, "limit NaN is not a price"),
@@ -770,13 +797,27 @@ def test_an_empty_batch_over_a_universe_keeps_its_instrument_axis():
     ({0: [("transfer", {"amount": -1.0})]}, "amount: -1 is negative"),
     ({0: [("bracket", {})]}, "bracket has no stop and no take_profit; give either or both"),
     ({0: [("bracket", {"stop": 99.0, "size": 1.0})]}, "bracket takes no size"),
-    ({0: None}, "bar 0 holds None; give it a list of actions"),
     ({2: [("close", {})]}, "bar 2 has no bar after it to fill on"),
     ({2**64 - 1: [("close", {})]}, "has no bar after it to fill on"),
 ])
 def test_a_script_the_engine_cannot_play_is_refused(script, says):
     with pytest.raises(ProbatumValueError, match=re.escape(says)):
         probatum._probatum.run(series(), None, script)
+
+
+@pytest.mark.parametrize("script, says", [
+    ({0: [("buy", {1: 1.0})]}, "1 is not an argument's name"),
+    ({0: None}, "bar 0 holds None; give it a list of actions"),
+    ({"0": [("close", {})]}, "script: '0' is not a bar"),
+    ({0: ["close"]}, "script[0][0]: 'close' is not a verb and its arguments"),
+    ({0: [("buy", {"size": "1"})]}, "script[0][0]: size '1' is not a number"),
+    ({0: [("buy", {"size": 1.0, "tif": 5})]}, "script[0][0]: tif 5 is not a string"),
+])
+def test_a_script_of_the_wrong_type_is_a_type_error(script, says):
+    with pytest.raises(ProbatumTypeError, match=re.escape(says)) as caught:
+        probatum._probatum.run(series(), None, script)
+
+    assert caught.type is ProbatumTypeError
 
 
 def test_observation_is_a_zero_copy_readonly_view():

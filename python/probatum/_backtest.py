@@ -9,7 +9,7 @@ import types
 
 import numpy as np
 
-from ._data import DAY, Data, _columns, _dated, _when
+from ._data import DAY, Data, _chosen, _columns, _dated, _when
 from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
                       ProbatumTypeError, ProbatumValueError, VenueError)
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
@@ -75,10 +75,7 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
                           f"quantities, or a table of them")
 
     _sized(sizing, tolerance)
-    if not _number(risk_free):
-        raise ProbatumValueError(f"risk_free: {risk_free!r}; give the annual rate as a "
-                                 f"finite number, such as 0.04")
-
+    _rate(risk_free)
     barriers = {name: _barrier(name, given, data)
                 for name, given in (("stop", stop), ("take_profit", take_profit))}
 
@@ -124,10 +121,7 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
         raise ProbatumValueError(f"tolerance: {tolerance!r} beside a Strategy; pass it "
                                  f"to account.target")
 
-    if not _number(risk_free):
-        raise ProbatumValueError(f"risk_free: {risk_free!r}; give the annual rate as a "
-                                 f"finite number, such as 0.04")
-
+    _rate(risk_free)
     held   = _repeatable(venue)
     run    = _run(held, data)
     engine = Engine(run.candles, report=True, **run.settings)
@@ -168,12 +162,21 @@ def _rows(policy, data):
 
 def _sized(sizing, tolerance):
     """Refuse a sizing or a tolerance an array run cannot take."""
-    if sizing not in SIZINGS:
-        raise ProbatumValueError(f"sizing: {sizing!r}; use \"weight\" or \"quantity\"")
+    _chosen("sizing", sizing, SIZINGS, "use \"weight\" or \"quantity\"")
 
     if not (_number(tolerance) and tolerance >= 0.0):
-        raise ProbatumValueError(f"tolerance: {tolerance!r}; give a fraction of equity "
-                                 f"from 0, such as 0.01")
+        error = ProbatumValueError if _real(tolerance) else ProbatumTypeError
+        raise error(f"tolerance: {tolerance!r}; give a fraction of equity from 0, such "
+                    f"as 0.01")
+
+
+def _rate(risk_free):
+    """Refuse ``risk_free``, the annual rate the statistics are computed against,
+    where it is no number or not a finite one."""
+    if not _number(risk_free):
+        error = ProbatumValueError if _real(risk_free) else ProbatumTypeError
+        raise error(f"risk_free: {risk_free!r}; give the annual rate as a finite "
+                    f"number, such as 0.04")
 
 
 def _played(rows, barriers, sizing, tolerance, data, run):
@@ -225,7 +228,8 @@ def _level(record):
         raise ProbatumValueError("record: 'none', which keeps nothing a Result holds; "
                                  "use \"full\" or \"account\"")
 
-    raise ProbatumValueError(f"record: {record!r}; use \"full\" or \"account\"")
+    error = ProbatumValueError if named else ProbatumTypeError
+    raise error(f"record: {record!r}; use \"full\" or \"account\"")
 
 
 def _markets(run):
@@ -235,8 +239,13 @@ def _markets(run):
 
 def _number(value):
     """Whether ``value`` is a finite number and no bool."""
-    return (isinstance(value, (int, float, np.number)) and not isinstance(value, bool)
-            and math.isfinite(value))
+    return _real(value) and math.isfinite(value)
+
+
+def _real(value):
+    """Whether ``value`` is a real number and no bool, finite or not."""
+    return (isinstance(value, (int, float, np.integer, np.floating))
+            and not isinstance(value, bool))
 
 
 def _kind(value):

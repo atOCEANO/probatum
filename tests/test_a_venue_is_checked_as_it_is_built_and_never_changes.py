@@ -207,7 +207,6 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
     (dict(fees={"maker": -2.0}),
      "fees.maker: -2; give a rate above -1, since a rebate cannot exceed the "
      "notional"),
-    (dict(fees={"taker": "low"}), "fees.taker: 'low' is not a number; give a number"),
     (dict(leverage=-1.0), "leverage: -1; give 0 or more"),
     (dict(liquidation_fee=1.0),
      "liquidation_fee: 1; give the rate on its notional a close at the close point "
@@ -222,18 +221,12 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
      "funding: 'hourly'; use 'none', 'data', {\"every\": hours, \"rate\": r} or "
      "{\"every_bars\": n, \"rate\": r}"),
     (dict(max_open_orders=0), "max_open_orders: 0; give a whole number from 1 to 4096"),
-    (dict(reduce_only_exempt=0), "reduce_only_exempt: 0; give True or False"),
-    (dict(tiers=[(5_000.0, 50.0, 0.015, 0.0)]),
-     "tiers[0]: [5000.0, 50.0, 0.015, 0.0] is not a dict; give a dict of up_to, "
-     "leverage, rate, amount"),
     (dict(instruments={"BTCUSDT": {"tick": 0.1}}),
      "instruments: 'BTCUSDT' names no kind; key it as kind:SYMBOL, with kind one of "
      "spot, linear, inverse, or give the venue's kind with kind="),
     (dict(kind="linear", instruments={"BTCUSDT": {"tick": -0.1}}),
      "instruments.BTCUSDT: tick"),
     (dict(kinds={"linear": {"tick": -0.1}}), "kinds.linear: tick"),
-    (dict(kind="linear", instruments={1: {}}),
-     "instruments: a key of 1; key each instrument by its symbol as text"),
     (dict(kind="spot", liquidation_fee=7.0), "liquidation_fee: 7; give the rate"),
     (dict(kind="perp"), "kind: 'perp'; use spot, linear, inverse, or None"),
     (dict(intrabar="worst"), "intrabar: 'worst' is not a setting; use pessimistic"),
@@ -249,6 +242,32 @@ def test_a_setting_the_checks_refuse_is_refused_in_the_terms_it_was_given_in(set
 
     if "instruments" not in settings and "kind" not in settings:
         with pytest.raises(VenueError, match=re.escape(says)):
+            probatum.venues.frictionless.replace(**settings)
+
+
+# in a preset's file the same faults are a VenueError, as the loader's tests hold
+@pytest.mark.parametrize("settings, says", [
+    (dict(fees={"taker": "low"}), "fees.taker: 'low' is not a number; give a number"),
+    (dict(reduce_only_exempt=0), "reduce_only_exempt: 0; give True or False"),
+    (dict(tiers=[(5_000.0, 50.0, 0.015, 0.0)]),
+     "tiers[0]: [5000.0, 50.0, 0.015, 0.0] is not a dict; give a dict of up_to, "
+     "leverage, rate, amount"),
+    (dict(kind="linear", instruments={1: {}}),
+     "instruments: a key of 1; key each instrument by its symbol as text"),
+    (dict(kind=1), "kind: 1; use spot, linear, inverse, or None"),
+    (dict(intrabar=0), "intrabar: 0 is not a setting; use pessimistic"),
+    (dict(balance="1000"), "balance: '1000'; give the opening cash as a number from 0"),
+    (dict(taken=20_260_101), "taken: 20260101 is not a day; give the day"),
+    (dict(fills={"sizes": True}), "fills.sizes: True; use 'on' or 'off'"),
+    (dict(fills={"sizes": {"on": 1}}), "fills.sizes: {'on': 1}; use 'on' or 'off'"),
+    (dict(funding=8), "funding: 8; use 'none', 'data'"),
+])
+def test_a_setting_of_the_wrong_type_is_a_type_error(settings, says):
+    with pytest.raises(ProbatumTypeError, match=re.escape(says)):
+        Venue(**settings)
+
+    if "instruments" not in settings and "kind" not in settings:
+        with pytest.raises(ProbatumTypeError, match=re.escape(says)):
             probatum.venues.frictionless.replace(**settings)
 
 

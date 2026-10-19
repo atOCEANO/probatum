@@ -5,9 +5,8 @@ import operator
 import weakref
 
 from . import _probatum
-from ._backtest import _annualised, _markets, _number
+from ._backtest import _annualised, _markets, _rate
 from ._data import Data
-from ._errors import ProbatumValueError
 from ._result import Result, _Record, _provenance
 from ._strategy import Account, Bar, _Run
 from ._venue import _run, _venue_of
@@ -85,9 +84,7 @@ class Engine(Account):
     def result(self, risk_free=0.0):
         """What the account has recorded from its first bar to the current one, as
         `backtest` returns it, its statistics at ``risk_free``, an annual rate."""
-        if not _number(risk_free):
-            raise ProbatumValueError(f"risk_free: {risk_free!r}; give the annual rate "
-                                     f"as a finite number, such as 0.04")
+        _rate(risk_free)
 
         run        = self._run
         rate       = _annualised(run.data)

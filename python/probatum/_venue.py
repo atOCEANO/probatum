@@ -81,17 +81,20 @@ class Venue:
         if type(taken) is datetime.date:
             taken = taken.isoformat()
         if taken is not None and not _day(taken):
-            raise VenueError(f"taken: {taken!r} is not a day; give the day the venue's "
-                             f"tables were taken, as YYYY-MM-DD")
+            error = VenueError if isinstance(taken, str) else ProbatumTypeError
+            raise error(f"taken: {taken!r} is not a day; give the day the venue's "
+                        f"tables were taken, as YYYY-MM-DD")
 
         if kind is not None and kind not in venues.KINDS:
-            raise VenueError(f"kind: {kind!r}; use {', '.join(venues.KINDS)}, or None "
-                             f"for a venue of several kinds")
+            error = VenueError if isinstance(kind, str) else ProbatumTypeError
+            raise error(f"kind: {kind!r}; use {', '.join(venues.KINDS)}, or None for a "
+                        f"venue of several kinds")
 
         intrabar = _given_or_plain(given, "intrabar")
         if intrabar not in INTRABAR:
-            raise VenueError(f"intrabar: {intrabar!r} is not a setting; use "
-                             f"{', '.join(INTRABAR)}")
+            error = VenueError if isinstance(intrabar, str) else ProbatumTypeError
+            raise error(f"intrabar: {intrabar!r} is not a setting; use "
+                        f"{', '.join(INTRABAR)}")
 
         defaults = {setting: _given_or_plain(given, setting)
                     for setting in ("fees", "leverage", "liquidation",
@@ -553,11 +556,14 @@ def _balance(balance):
     cash    = [balance[wallet] for wallet in ("spot", "margin")] if wallets else [balance]
 
     for value in cash:
-        if (isinstance(value, bool) or not isinstance(value, (int, float))
-                or not math.isfinite(value) or value < 0.0):
-            raise VenueError(f"balance: {balance!r}; give the opening cash as a number "
-                             f"from 0, or {{\"spot\": s, \"margin\": m}} for an "
-                             f"account that holds both wallets")
+        number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        if not number or not math.isfinite(value) or value < 0.0:
+            # a dict of other wallets is the right type with the wrong keys
+            mistyped = not number and not isinstance(value, dict)
+            error    = ProbatumTypeError if mistyped else VenueError
+            raise error(f"balance: {balance!r}; give the opening cash as a number from "
+                        f"0, or {{\"spot\": s, \"margin\": m}} for an account that "
+                        f"holds both wallets")
 
     if wallets:
         return {wallet: float(balance[wallet]) for wallet in ("spot", "margin")}

@@ -363,13 +363,19 @@ def test_an_array_that_does_not_fit_the_data_is_refused_naming_where():
         probatum.backtest(np.zeros((40, 2), dtype=bool), data, VENUE)
 
 
-@pytest.mark.parametrize("given, says", [
-    (dict(sizing="weights"), "sizing: 'weights'"),
-    (dict(tolerance=-0.1), "tolerance: -0.1; give a fraction of equity from 0"),
-    (dict(risk_free=math.nan), "risk_free: nan; give the annual rate as a finite number"),
+@pytest.mark.parametrize("given, error, says", [
+    (dict(sizing="weights"), ProbatumValueError, "sizing: 'weights'"),
+    (dict(tolerance=-0.1), ProbatumValueError,
+     "tolerance: -0.1; give a fraction of equity from 0"),
+    (dict(tolerance="0.01"), ProbatumTypeError,
+     "tolerance: '0.01'; give a fraction of equity from 0"),
+    (dict(risk_free=math.nan), ProbatumValueError,
+     "risk_free: nan; give the annual rate as a finite number"),
+    (dict(risk_free="0.04"), ProbatumTypeError,
+     "risk_free: '0.04'; give the annual rate as a finite number"),
 ])
-def test_a_setting_the_run_cannot_take_is_refused_before_it_runs(given, says):
-    with pytest.raises(ProbatumValueError, match=says):
+def test_a_setting_the_run_cannot_take_is_refused_before_it_runs(given, error, says):
+    with pytest.raises(error, match=says):
         probatum.backtest(weights(), pair(), VENUE, **given)
 
 

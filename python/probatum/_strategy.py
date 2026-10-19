@@ -81,9 +81,11 @@ class Strategy:
 def _warmup(strategy):
     """``strategy``'s warm-up, read after its ``init``."""
     warmup = getattr(strategy, "warmup", 0)
-    if isinstance(warmup, bool) or not isinstance(warmup, numbers.Integral) or warmup < 0:
-        raise ProbatumValueError(f"warmup: {warmup!r}; give a whole number of bars "
-                                 f"from 0")
+    whole  = isinstance(warmup, numbers.Integral) and not isinstance(warmup, bool)
+    if not (whole and warmup >= 0):
+        error = ProbatumValueError if whole else ProbatumTypeError
+        raise error(f"warmup: {warmup!r}; give a whole number of bars from 0")
+
     return int(warmup)
 
 
@@ -513,10 +515,15 @@ class _Run:
 
 
     def own(self, order):
-        """``order``, refused where it is not a handle this account handed out."""
-        if not isinstance(order, Order) or order._run is not self:
+        """``order``, refused where it is no Order, or an Order of another run."""
+        if not isinstance(order, Order):
             raise ProbatumTypeError(f"order: {order!r}; pass an Order this "
                                     f"{self.named}'s verbs returned")
+
+        if order._run is not self:
+            raise ProbatumValueError(f"order: {order!r}, of another run; pass an Order "
+                                     f"this {self.named}'s verbs returned")
+
         return order
 
 
@@ -579,6 +586,10 @@ class _Run:
             # as objects, so a bool or a number written as text reaches weight as it
             # came rather than read as a number
             values = np.asarray(weights, dtype=object)
+            if not values.ndim:
+                each = "" if self.width == 1 else (" for each instrument, or a dict "
+                                                   "from name to weight")
+                raise ProbatumTypeError(f"weights: {weights!r}; give a number{each}")
             if values.shape != (self.width,):
                 raise ProbatumValueError(f"weights: an array of shape {values.shape} "
                                          f"for {self.width} "
@@ -818,9 +829,11 @@ class Bar:
         if n is None:
             return Data._of(data._root, (0, end), data._cols)
 
-        if isinstance(n, bool) or not isinstance(n, numbers.Integral) or n < 1:
-            raise ProbatumValueError(f"n: {n!r}; give history a whole number of bars "
-                                     f"from 1, or leave n out for every bar so far")
+        whole = isinstance(n, numbers.Integral) and not isinstance(n, bool)
+        if not (whole and n >= 1):
+            error = ProbatumValueError if whole else ProbatumTypeError
+            raise error(f"n: {n!r}; give history a whole number of bars from 1, or "
+                        f"leave n out for every bar so far")
 
         return Data._of(data._root, (max(0, end - int(n)), end), data._cols)
 

@@ -15,7 +15,7 @@ import pytest
 
 import probatum
 from probatum import (ProbatumAttributeError, ProbatumNotImplementedError,
-                      ProbatumValueError)
+                      ProbatumTypeError, ProbatumValueError)
 from probatum._venue import _run
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (
     VENUE, bars, one, pair, same, weights)
@@ -235,7 +235,7 @@ def test_a_result_at_the_account_level_crosses_a_pickle_a_copy_and_a_save(tmp_pa
     ("none", ProbatumValueError,
      "record: 'none', which keeps nothing a Result holds; use \"full\" or \"account\""),
     ("Account", ProbatumValueError, "record: 'Account'; use \"full\" or \"account\""),
-    (None, ProbatumValueError, "record: None; use \"full\" or \"account\""),
+    (None, ProbatumTypeError, "record: None; use \"full\" or \"account\""),
 ])
 def test_backtest_refuses_a_level_it_does_not_keep(record, kind, said):
     for policy in (weights(width=1), Cross()):

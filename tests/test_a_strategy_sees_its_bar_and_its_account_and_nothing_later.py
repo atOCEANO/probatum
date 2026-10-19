@@ -233,6 +233,10 @@ def test_the_bar_is_the_data_s_row_and_its_history_ends_there():
                                                  "bars"):
         strategy.bars[0].history(0)
 
+    with pytest.raises(ProbatumTypeError, match="n: 2.5; give history a whole number "
+                                                "of bars"):
+        strategy.bars[0].history(2.5)
+
 
 def test_every_field_of_the_bar_is_the_data_s_at_its_row():
     eth      = jumpy(level=10.0, seed=5)
@@ -920,6 +924,13 @@ def test_a_verb_on_one_instrument_of_several_is_taken_through_its_view():
          "weights: '0.5' for BTCUSDT; give a number"),
         (lambda bar, account: account.target([0.5, True]), ProbatumTypeError,
          "weights: True for ETHUSDT; give a number"),
+        (lambda bar, account: account.target(True), ProbatumTypeError,
+         "weights: True; give a number for each instrument, or a dict from name to "
+         "weight"),
+        (lambda bar, account: account.target("0.5"), ProbatumTypeError,
+         "weights: '0.5'; give a number for each instrument"),
+        (lambda bar, account: account.target(None), ProbatumTypeError,
+         "weights: None; give a number for each instrument"),
         (lambda bar, account: account.transfer("100"), ProbatumTypeError,
          "amount: '100'; give the cash to move"),
         (lambda bar, account: account.transfer(100.0, to=None), ProbatumTypeError,
@@ -947,6 +958,42 @@ def test_a_verb_on_one_instrument_of_several_is_taken_through_its_view():
     # numpy's bool is a flag, as the binding reads one
     run(lambda bar, account: account["ETHUSDT"].buy(1.0, limit=9.0, post_only=np.True_,
                                                     reduce_only=np.False_))
+
+
+def test_an_order_of_another_run_and_a_bare_weight_of_no_number_are_refused():
+    class Kept(probatum.Strategy):
+        handles = []
+
+
+        def next(self, bar, account):
+            if Kept.handles:
+                account.cancel(Kept.handles[0])
+            else:
+                Kept.handles.append(account.buy(1.0, limit=1.0))
+
+    data = probatum.Data(frame(), symbol="BTCUSDT", market="linear")
+    probatum.backtest(Kept(), data, VENUE)
+
+    # an Order, the type the verb takes, but a value of a run that has ended
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            ", of another run; pass an Order this account's verbs returned")) as caught:
+        probatum.backtest(Kept(), data, VENUE)
+
+    assert caught.type is ProbatumValueError
+
+    class Bare(probatum.Strategy):
+
+        def __init__(self, weight):
+            self.weight = weight
+
+
+        def next(self, bar, account):
+            account.target(self.weight)
+
+    for weight in (True, "0.5", None):
+        with pytest.raises(ProbatumTypeError) as caught:
+            probatum.backtest(Bare(weight), data, VENUE)
+        assert str(caught.value) == f"weights: {weight!r}; give a number"
 
 
 def test_a_spot_weight_below_zero_is_refused_naming_the_instrument():
@@ -1010,10 +1057,10 @@ def test_an_array_run_s_settings_and_a_bad_warmup_are_refused_beside_a_strategy(
         with pytest.raises(ProbatumValueError, match=re.escape(says)):
             probatum.backtest(Cross(), data, VENUE, **given)
 
-    for warmup in (-1, 2.5, True, "3"):
-        with pytest.raises(ProbatumValueError, match=re.escape(f"warmup: {warmup!r}; "
-                                                               f"give a whole number "
-                                                               f"of bars from 0")):
+    for warmup, error in ((-1, ProbatumValueError), (2.5, ProbatumTypeError),
+                          (True, ProbatumTypeError), ("3", ProbatumTypeError)):
+        with pytest.raises(error, match=re.escape(f"warmup: {warmup!r}; give a whole "
+                                                  f"number of bars from 0")):
             probatum.backtest(Seen(warmup=warmup), data, VENUE)
 
 

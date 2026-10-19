@@ -307,9 +307,9 @@ def test_what_combine_cannot_add_is_refused():
     assert probatum.combine({"usdt": usdt, "usdc": usdc}, settlement="USDC").provenance[
         "settlement"] == "USDC"
 
-    for given in (1, ""):
-        with pytest.raises(ProbatumTypeError, match=f"settlement: {given!r}; name the "
-                                                    f"asset the book is kept"):
+    for given, error in ((1, ProbatumTypeError), ("", ProbatumValueError)):
+        with pytest.raises(error, match=f"settlement: {given!r}; name the asset the "
+                                        f"book is kept"):
             probatum.combine({"coin": inverse()}, settlement=given)
 
     with pytest.raises(ProbatumValueError, match=re.escape(

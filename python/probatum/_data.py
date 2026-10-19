@@ -493,11 +493,9 @@ class Data:
             raise ProbatumTypeError(f"router: {type(router).__name__}, which has no "
                                     f"get_symbol_info; pass an exchange-router Router")
 
-        if market not in MARKETS:
-            raise DataError(f"market: {market!r}; use {', '.join(MARKETS)}")
-        if interval not in INTERVALS:
-            raise DataError(f"interval: {interval!r}; use one of "
-                            f"{', '.join(INTERVALS)}")
+        _chosen("market", market, MARKETS, f"use {', '.join(MARKETS)}", DataError)
+        _chosen("interval", interval, INTERVALS, f"use one of {', '.join(INTERVALS)}",
+                DataError)
 
         if isinstance(symbols, str) or not hasattr(symbols, "__iter__"):
             raise ProbatumTypeError(f"symbols: {symbols!r}; give a list of symbols")
@@ -510,6 +508,9 @@ class Data:
         if twice:
             raise DataError(f"symbols: {symbols!r} names {twice[0]} twice; name each "
                             f"once")
+
+        if not isinstance(funding, (bool, np.bool_)):
+            raise ProbatumTypeError(f"funding: {funding!r}; give True or False")
 
         if funding and market == "spot":
             raise DataError("funding: True for the spot market, which charges none; "
@@ -977,10 +978,8 @@ class Data:
         instruments their names, and a slice's coarse bars keep the ones before it as
         the slice keeps its bars, reading nothing after its end."""
         root = self._root
-        if interval not in INTERVALS:
-            raise DataError(f"interval: {interval!r}; use one of "
-                            f"{', '.join(INTERVALS)}")
-
+        _chosen("interval", interval, INTERVALS, f"use one of {', '.join(INTERVALS)}",
+                DataError)
         coarse = INTERVALS[interval]
         if coarse % root.step:
             raise DataError(f"interval: {interval!r} for {root.interval} bars; give a "
@@ -1372,6 +1371,16 @@ def _count(n, noun):
     return f"{n} {noun}{'s' * (n != 1)}"
 
 
+def _chosen(name, value, choices, fix, error=ProbatumValueError):
+    """Refuse ``value``, given as ``name``, where it is none of the words ``choices``:
+    a ProbatumTypeError where it is no text, and ``error`` where it is another word."""
+    if not isinstance(value, str):
+        raise ProbatumTypeError(f"{name}: {value!r}; {fix}")
+
+    if value not in choices:
+        raise error(f"{name}: {value!r}; {fix}")
+
+
 def _when(ns):
     """A time as a reader reads it, to the minute, or to the second where it has
     seconds."""
@@ -1399,7 +1408,8 @@ def _period(when, name):
         return (int(start.astype("datetime64[ns]").astype(np.int64)),
                 int(end.astype("datetime64[ns]").astype(np.int64)))
 
-    if isinstance(when, (int, float, np.integer, np.floating)):
+    # numpy reads None as a time that is not there
+    if when is None or isinstance(when, (int, float, np.integer, np.floating)):
         raise ProbatumTypeError(f"{name}: {when!r}; give a time or the text of one")
 
     if isinstance(when, datetime.datetime) and when.tzinfo is not None:
@@ -1479,12 +1489,14 @@ def _parts(source, symbol, market, time):
         return [_part(times, array, zone, symbol, market, {}, "array")]
 
     if array.ndim == 3 and array.shape[2] == 5:
-        width = array.shape[1]
-        names = [None] * width if symbol is None else symbol
-        if (not isinstance(names, (list, tuple)) or len(names) != width
-                or not all(name is None or isinstance(name, str) for name in names)):
-            raise DataError(f"symbol: {symbol!r} for {width} instruments; give a list "
-                            f"of {width} names")
+        width  = array.shape[1]
+        names  = [None] * width if symbol is None else symbol
+        listed = (isinstance(names, (list, tuple))
+                  and all(name is None or isinstance(name, str) for name in names))
+        if not listed or len(names) != width:
+            error = DataError if listed else ProbatumTypeError
+            raise error(f"symbol: {symbol!r} for {width} instruments; give a list of "
+                        f"{width} names")
 
         twice = [name for name in names if name is not None and names.count(name) > 1]
         if twice:
@@ -1521,8 +1533,8 @@ def _part(times, bars, zone, symbol, market, attrs, origin):
                             f"and an inverse contract's volume is counted in "
                             f"contracts; give its volume in contracts")
 
-    if market is not None and market not in MARKETS:
-        raise DataError(f"market: {market!r}; use {', '.join(MARKETS)}")
+    if market is not None:
+        _chosen("market", market, MARKETS, f"use {', '.join(MARKETS)}", DataError)
 
     if len(times) != len(bars):
         raise DataError(f"time: {len(times)} times for {len(bars)} bars; give each "
@@ -1773,9 +1785,8 @@ def _clock(parts, interval, placed=False):
 
     if interval is None:
         interval = _interval(checked)
-    if interval not in INTERVALS:
-        raise DataError(f"interval: {interval!r}; use one of {', '.join(INTERVALS)}")
-
+    _chosen("interval", interval, INTERVALS, f"use one of {', '.join(INTERVALS)}",
+            DataError)
     step = INTERVALS[interval]
 
     if step >= DAY and not placed:
@@ -1944,10 +1955,12 @@ def features(data, values, fill=None):
     counted from the first bar the feature was given; one that is not is refused
     unless ``fill`` is a finite number to put in its place or ``"previous"``, the
     instrument's last value before it."""
+    number = (isinstance(fill, (int, float, np.integer, np.floating))
+              and not isinstance(fill, bool))
     if not (fill is None or isinstance(fill, str) and fill == "previous"
-            or isinstance(fill, (int, float, np.integer, np.floating))
-            and not isinstance(fill, bool) and np.isfinite(fill)):
-        raise DataError(f"fill: {fill!r}; give a finite number or \"previous\"")
+            or number and np.isfinite(fill)):
+        error = DataError if number or isinstance(fill, str) else ProbatumTypeError
+        raise error(f"fill: {fill!r}; give a finite number or \"previous\"")
 
     start = 0
     if callable(values):

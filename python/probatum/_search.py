@@ -19,9 +19,9 @@ import warnings
 import numpy as np
 
 from ._backtest import (_agent, _annualised, _kind, _markets, _number, _played,
-                        _repeatable, backtest)
+                        _rate, _repeatable, backtest)
 from ._causality import _check, _read
-from ._data import Data, _before, _row, _when
+from ._data import Data, _before, _chosen, _row, _when
 from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
                       ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
                       ProbatumWarning)
@@ -77,29 +77,16 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
 
     kind  = _policy(policy)
     space = _spaced(space, policy, kind)
-
-    if not (isinstance(objective, str) and objective in STATS):
-        raise ProbatumValueError(f"objective: {objective!r}; use one of "
-                                 f"{', '.join(STATS)}")
-
-    if not (isinstance(direction, str) and direction in DIRECTIONS):
-        raise ProbatumValueError(f"direction: {direction!r}; use \"maximize\" or "
-                                 f"\"minimize\"")
-
+    _chosen("objective", objective, STATS, f"use one of {', '.join(STATS)}")
+    _chosen("direction", direction, DIRECTIONS, "use \"maximize\" or \"minimize\"")
     _counted("trials", trials, 1)
-
-    if not (isinstance(sampler, str) and sampler in SAMPLERS):
-        raise ProbatumValueError(f"sampler: {sampler!r}; use \"tpe\", \"random\" or "
-                                 f"\"grid\"")
-
+    _chosen("sampler", sampler, SAMPLERS, "use \"tpe\", \"random\" or \"grid\"")
     _counted("min_trades", min_trades, 0, "round trips")
 
     if keep == "holdout":
         raise ProbatumValueError("keep: 'holdout', which bounds a validation's paths; "
                                  "use \"all\" or \"none\"")
-    if not (isinstance(keep, str) and keep in KEEPS):
-        raise ProbatumValueError(f"keep: {keep!r}; use \"all\" or \"none\"")
-
+    _chosen("keep", keep, KEEPS, "use \"all\" or \"none\"")
     _counted("n_jobs", n_jobs, None)
     if n_jobs == 0 or n_jobs < -1:
         raise ProbatumValueError(f"n_jobs: {n_jobs}; give a number of workers from 1, or "
@@ -115,10 +102,7 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
         raise ProbatumNotImplementedError(f"storage: {storage!r}, which search does not "
                                           f"save to yet; leave it out")
 
-    if not _number(risk_free):
-        raise ProbatumValueError(f"risk_free: {risk_free!r}; give the annual rate as a "
-                                 f"finite number, such as 0.04")
-
+    _rate(risk_free)
     if seed is not None:
         _counted("seed", seed, 0)
     seed = np.random.SeedSequence().entropy if seed is None else int(seed)
