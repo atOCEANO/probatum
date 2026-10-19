@@ -937,6 +937,10 @@ def test_binance_tiers_ask_1_200_either_side_of_300_000():
 
     assert sim.maintenance_of(0, 5.0, 300_000.0)  == pytest.approx(1_200.0)
     assert sim.maintenance_of(0, 5.0, 300_000.01) == pytest.approx(1_200.0, abs=1e-4)
+    # inside the bound's billionth the notional is read in the second tier, as the
+    # maintenance of a notional table reads its bounds exactly
+    assert sim.maintenance_of(0, 5.0, 300_000.00015) == pytest.approx(
+        0.005 * 300_000.00015 - 300.0, abs=1e-9)
 
     broken = [(300_000.0, 125.0, 0.004, 0.0), (800_000.0, 100.0, 0.005, 250.0)]
     with pytest.raises(ValueError, match="continuity"):
@@ -1388,6 +1392,19 @@ def test_two_accounts_listed_and_ended_apart_add_into_15_350():
     assert (a.provenance["periods_per_year"], b.provenance["periods_per_year"]) == (
         8_760.0, 5_840.0)
     assert book.provenance["periods_per_year"] == 4 * 365 / (4 / 24) == 8_760.0
+
+
+def test_lots_that_sum_a_hair_past_a_tier_s_bound_stay_in_the_tier_it_closes():
+    tiers = [(100.0, 10.0, 0.005, 0.0), (200.0, 5.0, 0.01, 0.0),
+             (math.inf, 3.0, 0.02, 0.0)]
+
+    sim = Simulator(hourly(1), [[flat(100.0)]],
+                    [Instrument("BTCUSDT", tiers=tiers, tiers_by="quantity")])
+
+    held = 0.1 * 1071 + 0.1 * 818 + 0.1 * 111
+    assert held == 200.00000000000003
+    assert sim.leverage_of(0, held, held * 100.0)   == 5.0
+    assert sim.leverage_of(0, 200.1, 200.1 * 100.0) == 3.0
 
 
 def test_a_seam_cancels_a_stop_and_a_waiting_buy_and_a_flatten_closes_the_long():

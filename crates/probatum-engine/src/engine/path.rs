@@ -142,7 +142,7 @@ impl Engine {
     /// its tier's rate on the notional, less the tier's amount on a notional table.
     pub(super) fn maintenance_of(&self, i: usize, size: f64, notional: f64) -> f64 {
         let tiers = self.candles.tiers(i);
-        match tiers.tier(size, notional) {
+        match tiers.maintenance_tier(size, notional) {
             Some(tier) if tier.rate > 0.0 && notional > 0.0 => match tiers.basis() {
                 TierBasis::Notional => notional * tier.rate - tier.amount,
                 TierBasis::Quantity => notional * tier.rate,
@@ -207,9 +207,10 @@ impl Engine {
     /// price `at` gives it, by more than the rounding a path's own sums could leave,
     /// so a solve that reached that point would find no crossing there either. The
     /// path prices each leg across its bar and gap from its entry, so the rounding
-    /// scales with those spans; and the legs a reduce shrinks can sum a hair past a
-    /// quantity table's bound, where the next tier's rate takes the whole notional,
-    /// so such a table is read a hair above the size.
+    /// scales with those spans; and a quantity table, whose next tier's rate takes the
+    /// whole notional, is read a hair above the size, as the legs a reduce shrinks can
+    /// sum a hair past it, which at the edge of a bound's billionth crosses into the
+    /// next tier.
     pub(super) fn clear_of_trigger(&self, wallet: f64, at: impl Fn(usize, f64) -> f64) -> bool {
         let (mut equity, mut maintenance, mut reach) = (wallet, 0.0, wallet.abs());
         for (i, position) in self.account.positions.iter().enumerate() {
@@ -715,5 +716,21 @@ mod tests {
         assert_eq!(path.pieces, vec![(0, 1), (1, 3)]);
         let ends: Vec<(f64, f64)> = path.legs.iter().map(|leg| (leg.start, leg.end)).collect();
         assert_eq!(ends, vec![(100.0, 90.0), (90.0, 90.0), (90.0, 85.0)]);
+    }
+
+    #[test]
+    fn a_lone_leg_a_reduce_shrinks_holds_the_position_exactly() {
+        // 3 shrunk in proportion to 1.6 is 1.6000000000000003, which the last held
+        // leg takes back to the position's own size, so the legs sum to it
+        let mut e = engine(false);
+        e.reset();
+        e.track(0, 0.0, 3.0, 100.0, 3.0);
+        e.track(0, 3.0, 1.6, 100.0, 0.0);
+        let held: Vec<f64> = e.legs[0]
+            .iter()
+            .filter(|leg| leg.leave.is_none())
+            .map(|leg| leg.size)
+            .collect();
+        assert_eq!(held, vec![1.6]);
     }
 }

@@ -640,28 +640,32 @@ class Simulator:
         return any(tier.rate > 0.0 for tier in self.instruments[i].tiers)
 
 
-    def tier_of(self, i, size, notional):
+    def tier_of(self, i, size, notional, exact=False):
         """Margin, Maintenance: the tier a position's notional, or its size in
-        contracts on a quantity table, falls in."""
+        contracts on a quantity table, falls in, a measure within a billionth of a
+        bound at it, or with `exact` only one at or under it, as the cap reads the
+        instrument a fill grows."""
         inst = self.instruments[i]
         if not inst.tiers:
             return None
 
         measure = notional if inst.tiers_by == "notional" else size
         for tier in inst.tiers:
-            if measure <= tier.up_to:
+            if measure <= tier.up_to + (0.0 if exact else 1e-9 * tier.up_to):
                 return tier
         return inst.tiers[-1]
 
 
-    def leverage_of(self, i, size, notional):
-        tier = self.tier_of(i, size, notional)
+    def leverage_of(self, i, size, notional, exact=False):
+        tier = self.tier_of(i, size, notional, exact)
         return self.venue.leverage if tier is None else tier.leverage
 
 
     def maintenance_of(self, i, size, notional):
-        """Margin, Maintenance: `N * m - c` on a notional table, `N * m` by quantity."""
-        tier = self.tier_of(i, size, notional)
+        """Margin, Maintenance: `N * m - c` on a notional table, read at its bounds
+        exactly, as it is continuous across them, and `N * m` by quantity."""
+        tier = self.tier_of(i, size, notional,
+                            self.instruments[i].tiers_by == "notional")
         if tier is None or tier.rate <= 0.0 or notional <= 0.0:
             return 0.0
 
@@ -670,8 +674,9 @@ class Simulator:
         return notional * tier.rate
 
 
-    def cap_requirement(self, prices=None, sizes=None):
-        """Margin, The cap: each perpetual's notional over its tier's leverage."""
+    def cap_requirement(self, prices=None, sizes=None, exact=None):
+        """Margin, The cap: each perpetual's notional over its tier's leverage, perp
+        `exact`'s tier read at its bounds exactly."""
         total = 0.0
 
         for i in self.perps():
@@ -681,7 +686,7 @@ class Simulator:
 
             price    = self.mark[i] if prices is None else prices.get(i, self.mark[i])
             notional = abs(self.instruments[i].notional(size, price))
-            leverage = self.leverage_of(i, size, notional)
+            leverage = self.leverage_of(i, size, notional, i == exact)
             if leverage > 0.0:
                 total += notional / leverage
 
@@ -3077,9 +3082,11 @@ class Simulator:
         base  = 0.0 if q * signed <= 0.0 else abs(q)
         sizes = {j: abs(self.position[j]) for j in self.perps()}
 
+        # the instrument the fill grows is read at its bounds exactly, so a fill
+        # held at a bound is held at the bound itself (Maintenance)
         def need(extra):
             sizes[i] = base + extra
-            return self.cap_requirement(prices, sizes)
+            return self.cap_requirement(prices, sizes, exact=i)
 
         limit = growing
         inst  = self.instruments[i]

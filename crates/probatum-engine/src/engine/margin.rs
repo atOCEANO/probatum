@@ -975,8 +975,9 @@ mod tests {
     #[test]
     fn a_position_held_at_a_bound_stays_in_the_tier_that_carried_it() {
         // a bound reached through a quotient, 100,000 / 11,000, or through a sum, 0.3
-        // held and 0.6 more to a bound of 0.9, can land an ulp past it, where the
-        // tier after it asks more than the 6,000 of margin holds
+        // held and 0.6 more to a bound of 0.9, can land an ulp past it; the cap holds
+        // the fill at the bound itself, since the tier after it asks more than the
+        // 6,000 of margin holds, and the margin is read in the tier that carried it
         let cases = [
             (TierBasis::Notional, 100_000.0, 10.0, 11_000.0, vec![20.0]),
             (TierBasis::Quantity, 0.9, 5.0, 60_000.0, vec![0.3, 5.0]),
@@ -1004,13 +1005,20 @@ mod tests {
                 (used - held * price / 20.0).abs() < 1e-9,
                 "{basis:?}: {used} on {held}"
             );
+            let measure = match basis {
+                TierBasis::Notional => held * price,
+                TierBasis::Quantity => held,
+            };
+            assert!(measure <= bound, "{basis:?}: {held} past {bound}");
         }
     }
 
     #[test]
     fn the_maintenance_is_continuous_across_binances_first_btc_bound() {
         // the Specification's example: 0.4% up to 300,000 with no amount, then 0.5%
-        // less 300, so 5 BTC at 60,000 keep 1,200 in either tier and 6 keep 1,500
+        // less 300, so 5 BTC at 60,000 keep 1,200 in either tier and 6 keep 1,500; at
+        // 60,000.00003 the notional sits inside the bound's billionth, which the
+        // maintenance, read at the bound exactly, takes in the second tier
         let tiers = Tiers::new(
             TierBasis::Notional,
             vec![
@@ -1029,8 +1037,13 @@ mod tests {
             ],
         )
         .expect("continuous");
-        for (size, kept) in [(5.0, 1_200.0), (6.0, 1_500.0)] {
-            let flat = ohlc(60_000.0, 60_000.0, 60_000.0, 60_000.0, 1e6);
+        let inside = 60_000.000_03;
+        for (size, price, kept) in [
+            (5.0, 60_000.0, 1_200.0),
+            (6.0, 60_000.0, 1_500.0),
+            (5.0, inside, 0.005 * 5.0 * inside - 300.0),
+        ] {
+            let flat = ohlc(price, price, price, price, 1e6);
             let bars = Candles::new(vec![flat; 2]).with_tiers(tiers.clone());
             let config = EngineConfig {
                 quote: 100_000.0,

@@ -420,7 +420,10 @@ Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the 
 
 - **Notional tiers** (Binance, Bybit, Hyperliquid): a position's requirement is `M_i = N_i * m_k - c_k` in the tier its notional falls in, and the account's is the sum. The cumulative amounts make it continuous across tier boundaries: `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`.
 - **Quantity tiers** (OKX): the tier is chosen by the position's size in contracts, and its rate applies to the whole position.
+- A size or a notional within a billionth of a tier's bound is at that bound, in the tier the bound closes, for the margin the cap asks of a position, its notional over its tier's leverage, and for a quantity table's maintenance, so lots that floating point sums a hair past a bound stay in its tier. A notional table's maintenance, continuous across its bounds, reads them exactly, so the liquidation path's segments meet them, and the cap reads the instrument a fill grows at its bounds exactly, so a fill it holds at a bound is held at the bound itself.
 - The loader refuses a notional table whose amounts break continuity or whose first amount is not zero, any rate not below one, any tier whose maintenance rate reaches its initial rate `1 / L_k`, a table whose bounds do not rise, whose leverage rises or whose maintenance rate falls from one tier to the next, a leverage of 0.0 standing for no cap, since both requirements have to grow with the position, and a value that is not finite, but for a last bound left open.
+
+**Worked example.** On a quantity table whose second tier runs to 200 contracts at 5x, fills of 107.1, 81.8 and 11.1 contracts of a lot of 0.1 hold 200, which floating point sums to 200.00000000000003: the position is in the second tier, at 5x, and a position of 200.1 is in the third.
 
 **Worked example.** BTCUSDT's first two Binance tiers: up to 300,000 at 0.4% with no amount, then up to 800,000 at 0.5% with an amount of 300. At 300,000 of notional the first asks `0.004 * 300,000 = 1,200` and the second `0.005 * 300,000 - 300 = 1,200`.
 

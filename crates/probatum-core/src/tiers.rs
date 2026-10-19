@@ -173,7 +173,8 @@ impl Tiers {
 
     /// The tier a position of `size` and `notional` falls in, a bound belonging to
     /// the tier it closes and anything past the last bound to the last tier, or
-    /// `None` when there is no table.
+    /// `None` when there is no table. A measure within a billionth of a bound is at
+    /// it, so lots that floating point sums a hair past a bound stay in its tier.
     pub fn tier(&self, size: f64, notional: f64) -> Option<&Tier> {
         let measure = match self.basis {
             TierBasis::Notional => notional,
@@ -181,8 +182,23 @@ impl Tiers {
         };
         self.rows
             .iter()
-            .find(|tier| measure <= tier.up_to)
+            .find(|tier| measure <= tier.up_to + 1e-9 * tier.up_to)
             .or(self.rows.last())
+    }
+
+    /// The tier a position's maintenance is read in: on a notional table, where it is
+    /// continuous across the bounds, the one its notional falls in with every bound
+    /// exact, where the liquidation path breaks its segments; on a quantity table,
+    /// whose rate takes the whole notional, the one `tier` finds.
+    pub fn maintenance_tier(&self, size: f64, notional: f64) -> Option<&Tier> {
+        match self.basis {
+            TierBasis::Notional => self
+                .rows
+                .iter()
+                .find(|tier| notional <= tier.up_to)
+                .or(self.rows.last()),
+            TierBasis::Quantity => self.tier(size, notional),
+        }
     }
 }
 
@@ -211,6 +227,56 @@ mod tests {
         assert_eq!(tiers.tier(5.0, 300_000.0).map(|t| t.amount), Some(0.0));
         assert_eq!(tiers.tier(5.0, 300_001.0).map(|t| t.amount), Some(300.0));
         assert_eq!(tiers.tier(5.0, 9e9).map(|t| t.up_to), Some(800_000.0));
+    }
+
+    #[test]
+    fn lots_that_sum_a_hair_past_a_bound_stay_in_the_tier_it_closes() {
+        // the Specification's example: 107.1, 81.8 and 11.1 contracts of a lot of 0.1
+        // make 200, which floating point holds a hair past the bound
+        let rows = vec![
+            tier(100.0, 10.0, 0.005, 0.0),
+            tier(200.0, 5.0, 0.01, 0.0),
+            tier(f64::INFINITY, 3.0, 0.02, 0.0),
+        ];
+        let tiers = Tiers::new(TierBasis::Quantity, rows).expect("a quantity table");
+        let held = 0.1 * 1071.0 + 0.1 * 818.0 + 0.1 * 111.0;
+        assert!(held > 200.0);
+        assert_eq!(tiers.tier(held, 0.0).map(|t| t.leverage), Some(5.0));
+        assert_eq!(tiers.tier(200.1, 0.0).map(|t| t.leverage), Some(3.0));
+    }
+
+    #[test]
+    fn a_notional_tables_maintenance_reads_its_bounds_exactly() {
+        // the band reads a notional a hair past a bound in the tier it closes, and
+        // the maintenance, continuous there, the tier after it, where the liquidation
+        // path breaks; a quantity table's maintenance keeps the band
+        let notional = Tiers::new(
+            TierBasis::Notional,
+            vec![
+                tier(300_000.0, 125.0, 0.004, 0.0),
+                tier(800_000.0, 100.0, 0.005, 300.0),
+            ],
+        )
+        .expect("continuous");
+        let past = 300_000.0 * (1.0 + 5e-10);
+        assert_eq!(notional.tier(5.0, past).map(|t| t.amount), Some(0.0));
+        assert_eq!(
+            notional.maintenance_tier(5.0, past).map(|t| t.amount),
+            Some(300.0)
+        );
+        let quantity = Tiers::new(
+            TierBasis::Quantity,
+            vec![
+                tier(200.0, 5.0, 0.01, 0.0),
+                tier(f64::INFINITY, 3.0, 0.02, 0.0),
+            ],
+        )
+        .expect("a quantity table");
+        let held = 0.1 * 1071.0 + 0.1 * 818.0 + 0.1 * 111.0;
+        assert_eq!(
+            quantity.maintenance_tier(held, 0.0).map(|t| t.rate),
+            Some(0.01)
+        );
     }
 
     #[test]

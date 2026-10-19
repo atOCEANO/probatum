@@ -3332,9 +3332,8 @@ mod tests {
     fn a_reduce_onto_a_quantity_tiers_bound_is_read_in_the_tier_it_lies_in() {
         // 82 of margin behind a long of 3 from 100, the first 1.6 at 1% and above it
         // 5%; the bar falls to 50, which clips it for the 3 carried in at 76.49, and a
-        // sale of 1.4 at the open leaves 1.6, in the first tier. A leg shrunk in
-        // proportion holds 1.6000000000000003, which the second tier's 5% would read
-        // past its trigger; held at the position's own size it keeps 1.2 at the low
+        // sale of 1.4 at the open leaves 1.6, read in the first tier, so it keeps 1.2
+        // at the low, where the second tier's 5% would put it past its trigger
         let flat = |price| ohlc(price, price, price, price, 1e6);
         let tiers = Tiers::new(
             TierBasis::Quantity,
