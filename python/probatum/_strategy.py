@@ -114,7 +114,16 @@ def _play(strategy, run, last=False):
     last too, as a run of a search's causality check decides there to compare what it
     decides, though no bar follows to fill it (Specification, A strategy)."""
     strategy.init(run.data)
-    warmup  = _warmup(strategy)
+    warmup = _warmup(strategy)
+
+    if run.later is not None:
+        # a validation's piece after a test span opens past later, where its
+        # embargo and the fill windows it waits for end, and past its own warm-up
+        # (Specification, Fits)
+        run.open_at(max(run.later, warmup))
+        if len(run.rows) < 2:
+            return
+
     account = Account(run)
     decide, step = strategy.next, run.engine.step
     rows = run.rows.tolist()
@@ -182,6 +191,9 @@ class _Run:
         # what the run's handles carry through its end, so a Result tells the handles
         # of its own run alone
         self.token = object()
+        # the rows into its Data a validation's piece opens no earlier than
+        self.later = None
+
         self.reset()
 
 
@@ -214,6 +226,16 @@ class _Run:
         self.trips  = None
 
         self.begin()
+
+
+    def open_at(self, row):
+        """Open the account at the first printed row at or after ``row`` of the Data,
+        the rows before it read as history alone."""
+        skip      = int(np.searchsorted(self.rows, row))
+        self.rows = self.rows[skip:]
+        self.start += skip
+        if len(self.rows):
+            self.reset()
 
 
     def step(self):

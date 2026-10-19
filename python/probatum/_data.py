@@ -1283,6 +1283,25 @@ def _before(data, rows):
     return Data._of(out, (start, start + rows), range(len(data._cols)))
 
 
+def _piece(data, first, stop):
+    """The rows ``first`` to ``stop`` of ``data`` as a Data on a root of its own that
+    holds no other bar, neither an earlier nor a later one: its instruments under their
+    names, the funding events those rows own and a copy of its root's provenance,
+    keeping which instruments ``data``'s root funds (Specification, Fits)."""
+    root = data._root
+    start, _ = data._rows
+
+    seen           = Data._of(root, (start + first, start + stop), data._cols)
+    out            = _Root(seen.time.copy(), seen.bars.copy(), seen.instruments, root.interval)
+    out.names      = seen.names
+    out.funding    = seen.funding
+    out.provenance = copy.deepcopy(root.provenance)
+    funded         = _funded(root)
+    out.funded     = frozenset(k for k, column in enumerate(data._cols) if column in funded)
+
+    return Data._of(out, (0, stop - first), range(len(data._cols)))
+
+
 def _digest(data):
     """``data``'s fingerprint: blake2b of 16 bytes over a line naming the layout, the
     interval, the rows before ``data`` and its own and its instruments, then the clock,

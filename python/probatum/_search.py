@@ -21,11 +21,11 @@ import numpy as np
 from ._backtest import (_agent, _annualised, _kind, _markets, _number, _played,
                         _rate, _repeatable, backtest)
 from ._causality import _check, _read
-from ._data import Data, _before, _chosen, _row, _when
+from ._data import Data, _before, _chosen, _piece, _row, _when
 from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
                       ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
                       ProbatumWarning)
-from ._probatum import Engine, Table as _Held, run_array, run_arrays, threads
+from ._probatum import Engine, Table as _Held, run_array, run_arrays, stats_of, threads
 from ._result import COUNTS, STATS, Table, _environment, _returns, _text, _version
 from ._samplers import _Grid, _Random, _Tpe
 from ._space import Categorical, Float, Int, _whole
@@ -126,50 +126,25 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     LOGGER.info("search: %s trials of %s by %s on %s rows, %s held out", draws.count,
                 named, sampler, f"{cut:,}", f"{len(data) - cut:,}")
 
-    made, checked, pool = [], None, None
+    pools = []
+
+    def pooled(workers):
+        settings = dict(kind=kind, made=runner.made, objective=objective,
+                        min_trades=min_trades, rate=rate, risk_free=float(risk_free),
+                        keep=keep)
+        pools.append(_pooled(policy, held, inside, settings, workers, n_jobs))
+        return pools[-1]
+
     try:
-        while len(made) < draws.count and (pool is None or pool.broken is None):
-            number = len(made)
-            # once checked, weights a random or grid search draws run together in Rust,
-            # and every other trial in the workers where there are some, TPE asking a
-            # round of them at a time, since it chooses each trial from those before
-            if checked is not None and sampler != "tpe" and runner.made == "weights":
-                arrived = runner.together(number, draws)
-            elif checked is not None and resolved > 1:
-                if pool is None:
-                    settings = dict(kind=kind, made=runner.made, objective=objective,
-                                    min_trades=min_trades, rate=rate,
-                                    risk_free=float(risk_free), keep=keep)
-                    pool = _pooled(policy, held, inside, settings,
-                                   min(resolved, draws.count - number), n_jobs)
-
-                last = min(number + resolved if sampler == "tpe" else draws.count,
-                           draws.count)
-                arrived = pool.run([(k, draws.ask(k)) for k in range(number, last)])
-            else:
-                arrived = [runner.trial(number, draws.ask(number))]
-
-            for trial in arrived:
-                draws.tell(trial.number, trial)
-                if keep == "none":
-                    trial.returns = None
-                made.append(trial)
-                LOGGER.debug("search: trial %s %s%s", trial.number, trial.state,
-                             "" if trial.score is None
-                             else f", {objective} {trial.score:.6g}")
-
-                # the first trial that ran and decided something is checked before any
-                # other runs (Specification, The causality check)
-                if checked is None and trial.state != "failed" and _check(
-                        policy, kind, trial.params, inside, held, run):
-                    checked = trial.params
-                    LOGGER.info("search: trial %s's decisions are causal", trial.number)
+        made, checked, pool = _asked(
+            runner, draws, sampler, keep, resolved, None, pooled,
+            lambda params: _check(policy, kind, params, inside, held, run))
     finally:
-        if pool is not None:
+        for started in pools:
             try:
-                pool.close()
+                started.close()
             finally:
-                shutil.rmtree(pool.folder, ignore_errors=True)
+                shutil.rmtree(started.folder, ignore_errors=True)
 
     if pool is not None and pool.broken is not None:
         if not any(trial.state == "complete" for trial in made):
@@ -204,6 +179,43 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     return Study(_trials(made, space), _kept(made, keep), winner,
                  _Ran(policy, kind, held, float(risk_free), data, cut, inside),
                  provenance)
+
+
+def _asked(runner, draws, sampler, keep, resolved, checked, pooled, check):
+    """The trials ``draws`` asks, in their order: once one is checked, weights a random
+    or grid search draws run together in Rust, and every other trial in the workers
+    ``pooled`` starts where there are more than one, TPE asking a round of them at a
+    time, since it chooses each trial from those before; and the first trial that ran
+    and decided something checked by ``check`` before any other runs, where
+    ``checked`` holds no parameters checked already (Specification, The causality
+    check). Returns the trials, the parameters checked and the pool."""
+    made, pool = [], None
+    while len(made) < draws.count and (pool is None or pool.broken is None):
+        number = len(made)
+        if checked is not None and sampler != "tpe" and runner.made == "weights":
+            arrived = runner.together(number, draws)
+        elif checked is not None and resolved > 1:
+            if pool is None:
+                pool = pooled(min(resolved, draws.count - number))
+            last = min(number + resolved if sampler == "tpe" else draws.count,
+                       draws.count)
+            arrived = pool.run([(k, draws.ask(k)) for k in range(number, last)])
+        else:
+            arrived = [runner.trial(number, draws.ask(number))]
+
+        for trial in arrived:
+            draws.tell(trial.number, trial)
+            if keep == "none":
+                trial.returns = None
+            made.append(trial)
+            LOGGER.debug("search: trial %s %s%s", trial.number, trial.state,
+                         "" if trial.score is None
+                         else f", {runner.objective} {trial.score:.6g}")
+            if checked is None and trial.state != "failed" and check(trial.params):
+                checked = trial.params
+                LOGGER.info("search: trial %s's decisions are causal", trial.number)
+
+    return made, checked, pool
 
 
 def _pooled(policy, venue, data, settings, workers, n_jobs):
@@ -426,8 +438,11 @@ class _Runner:
     decisions the first trial that ran made, which every later one makes too."""
 
 
-    def __init__(self, policy, kind, data, run, rate, risk_free, objective, min_trades):
+    def __init__(self, policy, kind, data, run, rate, risk_free, objective, min_trades,
+                 pieces=None):
         self.policy, self.kind, self.data, self.run = policy, kind, data, run
+        # a validation's fit: each piece's Data, its run and the rows it opens past
+        self.pieces = pieces
         self.rate, self.risk_free = rate, risk_free
         self.objective, self.min_trades = objective, min_trades
 
@@ -505,8 +520,11 @@ class _Runner:
     def trial(self, number, params):
         """Trial ``number``, run with ``params``."""
         try:
-            made, decided = self.kind_of(params)
-            stats, returns = self.played(made, decided)
+            if self.pieces is None:
+                made, decided = self.kind_of(params)
+                stats, returns = self.played(made, decided)
+            else:
+                made, (stats, returns) = "strategy", self.pieced(params)
         except Exception as error:
             # a search raises from its last failure alone, and each one's traceback
             # holds the frames that ran it
@@ -523,6 +541,40 @@ class _Runner:
 
         self.made = made
         return _scored(number, params, stats, returns, self.objective, self.min_trades)
+
+
+    def pieced(self, params):
+        """A trial on each piece of a validation's fit, its own copy of the Strategy on
+        its own engine, scored as a search's trial where one piece ran and otherwise
+        on the pieces' returns joined end to end (Specification, Fits)."""
+        parts = []
+        for k, (data, run, later) in enumerate(self.pieces):
+            engine = self.engines.get(k)
+            if engine is None:
+                engine = self.engines[k] = Engine(
+                    run.candles,
+                    report = True,
+                    record = "full",
+                    **run.settings,
+                )
+
+            played       = _Run(engine, data, run.start, self.markets)
+            played.later = later
+            _play(copy.deepcopy(self.policy(**params)), played)
+            if len(played.rows) >= 2:
+                parts.append(engine)
+
+        if not parts:
+            raise ProbatumValueError(f"policy: no piece of the fit holds two rows past "
+                                     f"its warm-up with {params}; give the training "
+                                     f"spans more bars")
+
+        if len(parts) == 1:
+            stats = parts[0].stats(self.rate, self.risk_free)
+            return stats, _returns(np.concatenate([[self.opening],
+                                                   parts[0].equity_curve()]))
+
+        return _joined(parts, self.opening, self.rate, self.risk_free), None
 
 
     def together(self, first, draws):
@@ -562,6 +614,45 @@ class _Runner:
                                   self.objective, self.min_trades)
 
         return made
+
+
+def _joined(engines, opening, rate, risk_free):
+    """The statistics of the runs on ``engines``, each opened at ``opening``, joined end
+    to end: each one's equity scaled to continue from the end of the one before, every
+    round trip's pnl as its run made it, and the fills, the steps held in a position and
+    the funding summed, the join stopping at the first run that ends at or below zero
+    equity, the later ones adding their steps at that equity and nothing else."""
+    curves, pnl, held, fills, funding, scale = [], [], 0, 0, 0.0, 1.0
+    for engine in engines:
+        curve = engine.equity_curve()
+        if scale <= 0.0:
+            curves.append(np.full(len(curve), curves[-1][-1]))
+            continue
+
+        curves.append(curve * scale)
+        pnl.extend(trip["pnl"] for trip in engine.trades_since(0))
+        stats = engine.stats(rate, risk_free)
+        held, fills = held + engine.held_steps(), fills + stats["num_fills"]
+        funding += stats["funding_paid"]
+        scale = curves[-1][-1] / opening
+
+    return stats_of(float(opening), np.concatenate(curves), np.array(pnl, dtype=float),
+                    rate, risk_free, held, fills, funding)
+
+
+def _pieces(data, venue, specs):
+    """A fit's pieces from ``specs``, each ``(first, start, stop, later)`` in the rows
+    of ``data``, the bars before a validation's holdout: a piece from the first row on
+    is those bars cut after its last, from ``start``, and one after a test span a Data
+    of its own from ``first``, its account opening ``later`` rows in at the
+    earliest."""
+    out = []
+    for first, start, stop, later in specs:
+        piece = (_before(data, stop)[start:] if first == 0
+                 else _piece(data, first, stop))
+        out.append((piece, _run(venue, piece), later))
+
+    return out
 
 
 def _given(given, data, run):

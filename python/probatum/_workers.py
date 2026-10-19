@@ -18,7 +18,7 @@ import warnings
 from ._data import Data
 from ._errors import (MissingDependency, PolicyError, ProbatumRuntimeError,
                       ProbatumWarning)
-from ._search import GUARD, _named, _Runner, _Trial, _told
+from ._search import GUARD, _named, _pieces, _Runner, _Trial, _told
 from ._venue import _run
 
 # the runner each worker builds from its search's folder the first time a trial asks
@@ -61,25 +61,34 @@ def _started(path):
     pathlib.Path(path, f"started-{os.getpid()}").touch()
 
 
-def _loaded(path):
-    """The runner of the search whose folder is ``path``, built once a worker."""
-    runner = LOADED.get(path)
+def _loaded(path, fit=None):
+    """The runner of the search whose folder is ``path``, or of a validation's fit
+    ``fit`` on the pieces its settings list, built once a worker."""
+    runner = LOADED.get((path, fit))
     if runner is None:
+        # a validation's fits run one after another, and each holds an engine a piece,
+        # so a worker keeps the last fit's runner alone
+        for key in [key for key in LOADED if key[0] == path]:
+            del LOADED[key]
+
         folder            = pathlib.Path(path)
         settings          = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
         data              = Data.load(folder / "data")
         data._root.funded = frozenset(settings["funded"])
         policy            = pickle.loads((folder / "policy.pkl").read_bytes())
         venue             = pickle.loads((folder / "venue.pkl").read_bytes())
-        runner = LOADED[path] = _Runner(policy, settings["kind"], data, _run(venue, data),
-                                        settings["rate"], settings["risk_free"],
-                                        settings["objective"], settings["min_trades"])
+        pieces            = None if fit is None else _pieces(data, venue, settings["fits"][fit])
+
+        runner = LOADED[(path, fit)] = _Runner(
+            policy, settings["kind"], data, _run(venue, data), settings["rate"],
+            settings["risk_free"], settings["objective"], settings["min_trades"],
+            pieces=pieces)
         runner.made, runner.keep = settings["made"], settings["keep"]
 
     return runner
 
 
-def _trial(path, number, params):
+def _trial(path, number, params, fit=None):
     """Trial ``number`` with ``params`` in a worker, as plain data the search reads: its
     state, score, statistics, error, and returns where the search keeps them, the
     traceback of a failure, and the warnings it gave, each place once, as its
@@ -89,7 +98,7 @@ def _trial(path, number, params):
     caught = []
 
     try:
-        runner = _loaded(path)
+        runner = _loaded(path, fit)
     except Exception as error:
         trial = _Trial(number, params, "failed", error=_told(error), raised=error)
     else:
@@ -173,6 +182,8 @@ class _Pool:
             initializer=_started, initargs=(str(folder),))
 
         self.returned, self.broken = 0, None
+        # the validation's fit whose trials it runs, None for a search's
+        self.fit = None
         # each warning a worker gave, shown once a place, as this process shows its own
         self.registry = {}
 
@@ -188,7 +199,7 @@ class _Pool:
         for number, params in asked:
             try:
                 futures[number] = self.executor.submit(_trial, str(self.folder), number,
-                                                       params)
+                                                       params, self.fit)
             except broken as error:
                 self.broken = self.broken or error
                 break
