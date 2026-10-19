@@ -145,14 +145,14 @@ class Table:
     query that names it, with nothing imported by probatum.
 
     ``table[name]``, or ``table.name``, is a column as a read-only numpy array: floats,
-    NaN where a value is missing; integers as int64 and times as int64 nanoseconds since
-    1970, plain where none can be missing and masked where one can, so a missing value
-    is masked rather than read; booleans; and text as objects, None where it is missing.
-    ``table[i]`` is row ``i`` as a dict, from the end where ``i`` is negative, None
-    where a value is missing, and a slice, a boolean mask or an array of positions gives
-    a table of those rows, a masked position refused, since it names no row; iterating
-    gives the rows in order, ``len(table)`` counts them and ``columns`` names the
-    columns. ``to_pandas()`` and ``to_polars()`` make a frame of it. Two tables are
+    NaN where a value is missing; integers as int64, times as int64 nanoseconds since
+    1970 and booleans, plain where none can be missing and masked where one can, so a
+    missing value is masked rather than read; and text as objects, None where it is
+    missing. ``table[i]`` is row ``i`` as a dict, from the end where ``i`` is negative,
+    None where a value is missing, and a slice, a boolean mask or an array of positions
+    gives a table of those rows, a masked position refused, since it names no row;
+    iterating gives the rows in order, ``len(table)`` counts them and ``columns`` names
+    the columns. ``to_pandas()`` and ``to_polars()`` make a frame of it. Two tables are
     equal where their columns and their values are."""
 
     __slots__ = ("_held", "_kinds", "_read")
@@ -192,7 +192,7 @@ class Table:
         read = self._read.get(name)
         if read is None:
             kind, nullable = self._kinds[name]
-            masked  = nullable and kind in ("int", "time")
+            masked  = nullable and kind in ("int", "time", "bool")
             missing = None
             if masked:
                 valid = self._held.valid(name)
@@ -304,18 +304,20 @@ class Table:
 
     def to_pandas(self):
         """The table as a pandas DataFrame, made from its columns with no pyarrow: times
-        as UTC datetimes, NaT where one is missing, and an integer column that can miss
-        a value as pandas' nullable Int64."""
+        as UTC datetimes, NaT where one is missing, and an integer or a boolean column
+        that can miss a value as pandas' nullable Int64 or boolean."""
         pd  = _imported("pandas", "to_pandas")
         out = {}
 
         for name, kind, nullable, values, valid, _ in self._held.parts():
             if kind == "time":
                 out[name] = pd.DatetimeIndex(values.view("M8[ns]")).tz_localize("UTC")
-            elif kind == "int" and nullable:
+            elif kind in ("int", "bool") and nullable:
                 missing = (np.zeros(len(values), dtype=bool) if valid is None
                            else ~valid)
-                out[name] = pd.arrays.IntegerArray(values.copy(), missing)
+                made = (pd.arrays.IntegerArray if kind == "int"
+                        else pd.arrays.BooleanArray)
+                out[name] = made(values.copy(), missing)
             elif kind == "text":
                 out[name] = self._column(name, kept=False)
             else:

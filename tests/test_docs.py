@@ -74,6 +74,7 @@ _API = {
     "WalkForward": probatum.cv.WalkForward,
     "PurgedKFold": probatum.cv.PurgedKFold,
     "CombinatorialPurged": probatum.cv.CombinatorialPurged,
+    "validate": probatum.validate,
 }
 # every public function of the two modules whose examples are all calls. Listed by
 # reflection rather than by hand: the hand-written dict above had gone four

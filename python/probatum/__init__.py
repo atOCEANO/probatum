@@ -12,10 +12,12 @@ self-contained HTML document for a notebook cell or a file, computing nothing it
 recorded, ``Strategy`` is a policy that decides at each close, and ``combine`` adds
 Results from accounts at different venues into one book. ``search`` searches a
 policy's parameters over ``Int``, ``Float`` and ``Categorical`` ranges on the bars
-before a holdout, and returns the ``Study`` of every trial. Every error probatum raises
-is a ``ProbatumError`` and the built-in it means, and every warning a
-``ProbatumWarning``, outside the modules carried from emsl, which raise the built-ins
-and warn with ``UserWarning`` or ``RuntimeWarning``.
+before a holdout, and returns the ``Study`` of every trial. ``validate`` runs that
+search on the training bars of each split a splitter of ``cv`` gives, trades each
+split's winner on its test span and returns the ``Study`` of the out-of-sample paths.
+Every error probatum raises is a ``ProbatumError`` and the built-in it means, and
+every warning a ``ProbatumWarning``, outside the modules carried from emsl, which raise
+the built-ins and warn with ``UserWarning`` or ``RuntimeWarning``.
 """
 
 from ._errors import (DataError, LookaheadError, MissingDependency, PolicyError,
@@ -34,6 +36,7 @@ from ._engine import Engine
 from ._result import Result, combine
 from ._backtest import backtest
 from ._search import Study, search
+from ._validate import validate
 from .market import Market
 from ._tune import tune
 from ._walk import walk_forward
@@ -42,7 +45,8 @@ from ._chart import chart, chart_defaults
 __all__ = [
     "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
     "Instrument", "Int", "Market", "Result", "Strategy", "Study", "Venue", "backtest",
-    "chart", "chart_defaults", "combine", "search", "to_ohlcv", "tune", "walk_forward",
+    "chart", "chart_defaults", "combine", "search", "to_ohlcv", "tune", "validate",
+    "walk_forward",
     "cv", "metrics", "plot", "rl", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",

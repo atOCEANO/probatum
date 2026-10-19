@@ -37,15 +37,17 @@ class ProbatumAttributeError(ProbatumError, AttributeError):
 
 
 class ProbatumRuntimeError(ProbatumError, RuntimeError):
-    """A search that cannot go on: its workers lost, every trial of it failed, or its
-    winner run again not matching its trial."""
+    """A search or a validation that cannot go on: its workers lost, every trial of a
+    search or every path of a validation failed, or its winner run again not matching
+    its trial."""
 
 
 class ProbatumNotImplementedError(ProbatumRuntimeError, NotImplementedError):
     """What is not done yet: a Strategy that writes no ``next``, an agent, which
     ``backtest`` does not run yet, the transitions level, which it does not record yet,
-    and a search's ``storage``, which it does not save to yet. It is a
-    ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
+    a search's ``storage``, which it does not save to yet, and a model and a function,
+    which ``validate`` does not run yet. It is a ProbatumRuntimeError as
+    NotImplementedError is a RuntimeError."""
 
 
 class DataError(ProbatumValueError):
@@ -67,11 +69,12 @@ class LookaheadError(ProbatumValueError):
 
 
 class PolicyError(ProbatumTypeError):
-    """A policy ``backtest`` or ``search`` cannot run as given: a class for an instance,
-    and for a search an instance for its class, a class that is no Strategy or a
-    function that takes no data, a model that fits, an object of no kind it reads, an
-    array of values it cannot read as decisions, a trial that decides in another kind
-    than the trials before it, and a policy the workers cannot carry."""
+    """A policy ``backtest``, ``search`` or ``validate`` cannot run as given: a class
+    for an instance, and for a search or a validation an instance for its class, a class
+    that is no Strategy or a function that takes no data, a model that fits, an object
+    of no kind it reads, an array of values it cannot read as decisions, a trial that
+    decides in another kind than the trials before it, and a policy the workers cannot
+    carry."""
 
 
 class MissingDependency(ProbatumError, ImportError):

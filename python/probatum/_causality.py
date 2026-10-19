@@ -268,11 +268,13 @@ def _decided(policy, kind, params, data, venue, run, last=False):
     return _Weights(rows, barriers, sizing, tolerance, *_scales(given, rows, barriers))
 
 
-def _check(policy, kind, params, data, venue, run):
+def _check(policy, kind, params, data, venue, run, cuts=None):
     """Check ``policy`` with ``params`` on ``data``, the bars a search runs on, for
     decisions on bars that had not closed: True where it was checked, False where it
     decided nothing at or after its warm-up on a row before its last printed one, and
-    refused where its decisions do not repeat or a cut changes them."""
+    refused where its decisions do not repeat or a cut changes them; ``cuts`` are the
+    rows to cut after in place of those `_cuts` places, as a validation's path is cut
+    at its seams."""
     printed = np.flatnonzero(data.available.any(axis=1))
     whole   = _whole(lambda: _decided(policy, kind, params, data, venue, run))
     first   = whole.first(printed)
@@ -287,7 +289,10 @@ def _check(policy, kind, params, data, venue, run):
         raise ProbatumValueError(_said(differ, "in one run on the in-sample bars",
                                        "in the next", SEEDED))
 
-    for cut in _cuts(whole, rows, printed, len(data.names)):
+    if cuts is None:
+        cuts = _cuts(whole, rows, printed, len(data.names))
+
+    for cut in cuts:
         end = _when(data.time[cut])
         # the rows up to the next printed one, whose values a run plays at the cut's
         # close

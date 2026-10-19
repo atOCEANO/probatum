@@ -423,6 +423,47 @@ def test_the_winner_is_checked_where_its_parameters_differ_from_the_trial_checke
         searched(peeking, {"ahead": Categorical([False, True])})
 
 
+class Holding(Strategy):
+    """Half held from ``start`` on, so a start past the bars decides nothing."""
+
+
+    def __init__(self, start=0):
+        self.start = start
+
+
+    def init(self, data):
+        self.warmup = self.start
+
+
+    def next(self, bar, account):
+        account.target(0.5)
+
+
+def test_a_winner_that_decides_nothing_is_not_recorded_as_checked():
+    # the first trial holds half and is checked; the second, deciding nothing, wins on
+    # drawdown, and its own check finds nothing to check
+    study = searched(Holding, {"start": Categorical([0, 1_000])},
+                     objective="max_drawdown_pct", direction="minimize")
+
+    assert study.best_params == {"start": 1_000}
+    assert study.provenance["checked"] == [{"start": 0}]
+
+
+# the first trial, checked, wins the first; a winner checked after it the second
+@pytest.mark.parametrize("space", [{"fast": Int(2, 2), "slow": Int(6, 6)},
+                                   {"fast": Int(2, 3), "slow": Int(5, 6)}])
+def test_the_parameters_checked_are_copies_that_leave_the_winner_as_it_was(space):
+    study = searched(Cross, space)
+    best  = study.best_params
+
+    assert best in study.provenance["checked"]
+
+    for params in study.provenance["checked"]:
+        params["fast"] = 99
+
+    assert study.best_params == best
+
+
 def test_a_warm_up_that_leaves_two_rows_cuts_on_neither_the_last():
     # Cross decides on rows 27 and 28 of 30, and no cut ends on row 29, where it never
     # decides

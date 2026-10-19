@@ -236,10 +236,10 @@ def test_a_script_that_calls_search_outside_a_main_guard_is_told_to_add_one(tmp_
 
     assert ran.returncode != 0
     assert ("probatum._errors.ProbatumRuntimeError: n_jobs: 2, and every worker died as "
-            "it started, as they do where the script calls search outside a guard, "
-            "since spawn runs its top level again in each; put the call under if "
-            "__name__ == \"__main__\":, or where it is under one, read what the workers "
-            "printed") in ran.stderr
+            "it started, as they do where the script calls search or validate "
+            "outside a guard, since spawn runs its top level again in each; put the "
+            "call under if __name__ == \"__main__\":, or where it is under one, read "
+            "what the workers printed") in ran.stderr
     assert "search: called by a worker of a search as it starts" in ran.stderr
 
 

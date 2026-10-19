@@ -240,10 +240,11 @@ class _Pool:
         came = self.returned or any(self.folder.glob("started-*"))
         if not came and _reruns_main():
             return ProbatumRuntimeError(f"{said}, and every worker died as it started, "
-                                        f"as they do where the script calls search "
-                                        f"outside a guard, since spawn runs its top level "
-                                        f"again in each; {GUARD}, or where it is under "
-                                        f"one, read what the workers printed")
+                                        f"as they do where the script calls search or "
+                                        f"validate outside a guard, since spawn runs "
+                                        f"its top level again in each; {GUARD}, or "
+                                        f"where it is under one, read what the workers "
+                                        f"printed")
 
         return ProbatumRuntimeError(f"{said}, and the workers died with no trial complete "
                                     f"({_told(self.broken)}); their output says why")

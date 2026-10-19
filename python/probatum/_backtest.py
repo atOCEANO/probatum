@@ -202,14 +202,15 @@ def _played(rows, barriers, sizing, tolerance, data, run):
               for barrier in barriers.values()])
 
 
-def _repeatable(venue, called="backtest"):
-    """``venue`` as a Venue, refused where it decides at random, so that a run of
-    ``called`` repeats without a seed."""
+def _repeatable(venue, called="backtest", run=None):
+    """``venue`` as a Venue, refused where it decides at random, so that what
+    ``called`` runs, a ``run`` where that has a name of its own, repeats without a
+    seed."""
     held = _venue_of(venue)
     if held._intrabar == "random":
         raise VenueError(f"venue: intrabar is \"random\", which {called} refuses so "
-                         f"that a {called} repeats without a seed; replace(intrabar="
-                         f"\"pessimistic\") or \"optimistic\"")
+                         f"that a {run or called} repeats without a seed; "
+                         f"replace(intrabar=\"pessimistic\") or \"optimistic\"")
     return held
 
 

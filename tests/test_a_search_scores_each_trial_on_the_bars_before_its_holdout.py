@@ -632,7 +632,7 @@ REFUSED = [
     (dict(min_trades=-1), ProbatumValueError,
      "min_trades: -1; give a whole number of round trips from 0"),
     (dict(keep="holdout"), ProbatumValueError,
-     "keep: 'holdout', which bounds a validation's paths; use \"all\" or \"none\""),
+     "keep: 'holdout'; use \"all\" or \"none\""),
     (dict(keep="some"), ProbatumValueError, "keep: 'some'; use \"all\" or \"none\""),
     (dict(n_jobs=0), ProbatumValueError,
      "n_jobs: 0; give a number of workers from 1, or -1 for one a core"),

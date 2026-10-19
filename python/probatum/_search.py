@@ -22,9 +22,9 @@ from ._backtest import (_agent, _annualised, _kind, _markets, _number, _played,
                         _rate, _repeatable, backtest)
 from ._causality import _check, _read
 from ._data import Data, _before, _chosen, _piece, _row, _when
-from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
-                      ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
-                      ProbatumWarning)
+from ._errors import (DataError, PolicyError, ProbatumAttributeError,
+                      ProbatumNotImplementedError, ProbatumRuntimeError,
+                      ProbatumTypeError, ProbatumValueError, ProbatumWarning)
 from ._probatum import Engine, Table as _Held, run_array, run_arrays, stats_of, threads
 from ._result import COUNTS, STATS, Table, _environment, _returns, _text, _version
 from ._samplers import _Grid, _Random, _Tpe
@@ -44,6 +44,14 @@ CHUNK = 256 * 2**20
 # the package's files, which a warning skips to name the caller's line
 PACKAGE = (os.path.dirname(__file__),)
 GUARD   = 'put the call under if __name__ == "__main__":'
+UNHELD  = {
+    "search":   ("holdout: none, so every trial is scored on every bar and nothing is "
+                 "left to judge the winner on; hold out the tail, such as holdout=0.3, "
+                 "or pass holdout=0 to search every bar"),
+    "validate": ("holdout: none, so nothing is left to judge the winner on, and the "
+                 "paths show how the search holds up and no more; hold out the tail, "
+                 "such as holdout=0.3, or pass holdout=0 to validate on every bar"),
+}
 
 
 def search(policy, space, data, venue, objective="sharpe", direction="maximize",
@@ -77,27 +85,9 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
 
     kind  = _policy(policy)
     space = _spaced(space, policy, kind)
-    _chosen("objective", objective, STATS, f"use one of {', '.join(STATS)}")
-    _chosen("direction", direction, DIRECTIONS, "use \"maximize\" or \"minimize\"")
-    _counted("trials", trials, 1)
-    _chosen("sampler", sampler, SAMPLERS, "use \"tpe\", \"random\" or \"grid\"")
-    _counted("min_trades", min_trades, 0, "round trips")
-
-    if keep == "holdout":
-        raise ProbatumValueError("keep: 'holdout', which bounds a validation's paths; "
-                                 "use \"all\" or \"none\"")
+    trials, min_trades, n_jobs, resolved = _controls(objective, direction, trials,
+                                                     sampler, min_trades, n_jobs)
     _chosen("keep", keep, KEEPS, "use \"all\" or \"none\"")
-    _counted("n_jobs", n_jobs, None)
-    if n_jobs == 0 or n_jobs < -1:
-        raise ProbatumValueError(f"n_jobs: {n_jobs}; give a number of workers from 1, or "
-                                 f"-1 for one a core")
-
-    trials, min_trades, n_jobs = int(trials), int(min_trades), int(n_jobs)
-    resolved = (os.process_cpu_count() or 1) if n_jobs == -1 else int(n_jobs)
-    if sys.platform == "win32":
-        # the most workers a process pool takes on that platform
-        resolved = min(resolved, 61)
-
     if storage is not None:
         raise ProbatumNotImplementedError(f"storage: {storage!r}, which search does not "
                                           f"save to yet; leave it out")
@@ -116,9 +106,7 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     inside = _before(data, cut)
     run    = _run(held, inside)
     rate   = _annualised(inside)
-    draws  = (_Tpe(space, trials, seed, direction) if sampler == "tpe"
-              else _Random(space, trials, seed) if sampler == "random"
-              else _Grid(space, trials, seed))
+    draws  = _draws(sampler, space, trials, seed, direction)
     runner = _Runner(policy, kind, inside, run, rate, float(risk_free), objective,
                      min_trades)
 
@@ -155,19 +143,23 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
                       f"{draws.count:,}", ProbatumWarning, skip_file_prefixes=PACKAGE)
 
     winner = _winner(made, direction, min_trades)
+    # copies, as the winner's own parameters are what best and evaluate_holdout run
+    passed = [] if checked is None else [dict(checked)]
     if checked is not None and winner.params != checked:
-        _check(policy, kind, winner.params, inside, held, run)
-        LOGGER.info("search: the winner's decisions are causal")
+        if _check(policy, kind, winner.params, inside, held, run):
+            passed.append(dict(winner.params))
+            LOGGER.info("search: the winner's decisions are causal")
 
     LOGGER.info("search: %s complete of %s; the best, trial %s, %s %.6g",
                 sum(trial.state == "complete" for trial in made), len(made),
                 winner.number, objective, winner.score)
 
     provenance = dict(
-        policy=named, space={name: repr(given) for name, given in space.items()},
+        kind="trials", policy=named,
+        space={name: repr(given) for name, given in space.items()},
         objective=objective, direction=direction,
         sampler=dict(name=sampler, **draws.arguments()), seed=seed, trials=trials,
-        ran=len(made), min_trades=min_trades,
+        ran=len(made), min_trades=min_trades, checked=passed,
         holdout=dict(given=_shown(holdout), rows=len(data) - cut,
                      first=None if cut == len(data) else _when(data.time[cut])),
         keep=keep, n_jobs=dict(given=n_jobs, resolved=resolved),
@@ -230,6 +222,37 @@ def _pooled(policy, venue, data, settings, workers, n_jobs):
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
+
+
+def _controls(objective, direction, trials, sampler, min_trades, n_jobs):
+    """The controls a search's trials run by, refused where one names no statistic,
+    direction or sampler or is no whole number it takes: the trials, the round trips a
+    trial closes to be scored and the workers asked for, as ints, and the workers that
+    gives."""
+    _chosen("objective", objective, STATS, f"use one of {', '.join(STATS)}")
+    _chosen("direction", direction, DIRECTIONS, "use \"maximize\" or \"minimize\"")
+    _counted("trials", trials, 1)
+    _chosen("sampler", sampler, SAMPLERS, "use \"tpe\", \"random\" or \"grid\"")
+    _counted("min_trades", min_trades, 0, "round trips")
+    _counted("n_jobs", n_jobs, None)
+    if n_jobs == 0 or n_jobs < -1:
+        raise ProbatumValueError(f"n_jobs: {n_jobs}; give a number of workers from 1, "
+                                 f"or -1 for one a core")
+
+    resolved = (os.process_cpu_count() or 1) if n_jobs == -1 else int(n_jobs)
+    if sys.platform == "win32":
+        # the most workers a process pool takes on that platform
+        resolved = min(resolved, 61)
+
+    return int(trials), int(min_trades), int(n_jobs), resolved
+
+
+def _draws(sampler, space, trials, seed, direction):
+    """The trials ``sampler`` draws from ``space``, ``trials`` of them at most, seeded
+    with ``seed``."""
+    if sampler == "tpe":
+        return _Tpe(space, trials, seed, direction)
+    return (_Random if sampler == "random" else _Grid)(space, trials, seed)
 
 
 def _counted(name, value, least, unit=None):
@@ -342,23 +365,21 @@ def _spaced(space, policy, kind):
     return out
 
 
-def _cut(holdout, data):
+def _cut(holdout, data, called="search"):
     """The rows of ``data`` before ``holdout``, which holds out its last rows: a share
     in (0, 1) of them, rounded half to even, a whole number of them, or the time it
     starts at, its first row the first at or after it; 0 holds out nothing, and None
-    nothing with a warning. Each side needs two rows an instrument printed."""
+    nothing with the warning of ``called``, search or validate. Each side needs two
+    rows an instrument printed."""
     rows    = len(data)
     printed = data.available.any(axis=1)
 
     if holdout is None or _number(holdout) and holdout == 0:
         if printed.sum() < 2:
-            raise ProbatumValueError("data: one printed row to search; give a Data of at "
-                                     "least 2")
+            raise ProbatumValueError(f"data: one printed row to {called}; give a Data "
+                                     f"of at least 2")
         if holdout is None:
-            warnings.warn("holdout: none, so every trial is scored on every bar and "
-                          "nothing is left to judge the winner on; hold out the tail, "
-                          "such as holdout=0.3, or pass holdout=0 to search every bar",
-                          ProbatumWarning, skip_file_prefixes=PACKAGE)
+            warnings.warn(UNHELD[called], ProbatumWarning, skip_file_prefixes=PACKAGE)
         return rows
 
     if isinstance(holdout, (bool, np.bool_)):
@@ -661,9 +682,11 @@ def _given(given, data, run):
     return _played(*_read(given, data), data, run)
 
 
-def _winner(made, direction, min_trades):
+def _winner(made, direction, min_trades, pieces=False):
     """The complete trial of ``made`` with the best score, the lowest-numbered of equal
-    ones, refusing a search with none."""
+    ones, refusing a search with none; ``pieces`` where its trials ran on a
+    validation's training pieces, which a backtest of the in-sample bars does not
+    repeat."""
     complete = [trial for trial in made if trial.state == "complete"]
     if complete:
         pick = max if direction == "maximize" else min
@@ -671,15 +694,18 @@ def _winner(made, direction, min_trades):
 
     floored = [trial for trial in made if trial.state == "floored"]
     if floored:
-        most = max(trial.stats["num_trades"] for trial in floored)
+        most  = max(trial.stats["num_trades"] for trial in floored)
+        where = "the fit's training pieces" if pieces else "the in-sample bars"
         raise ProbatumValueError(f"min_trades: {min_trades}, and no trial of {len(made):,} "
-                                 f"closed that many round trips on the in-sample bars, "
-                                 f"the most {most:,}; lower it")
+                                 f"closed that many round trips on {where}, the most "
+                                 f"{most:,}; lower it")
 
-    last  = made[-1]
+    last = made[-1]
+    fix  = ("make it run on each of the fit's training pieces, each a Data of its own"
+            if pieces else f"backtest it with {last.params} to see where")
+
     error = ProbatumRuntimeError(f"policy: all {len(made):,} trials failed, the last, "
-                                 f"trial {last.number}, with {last.error}; backtest it "
-                                 f"with {last.params} to see where")
+                                 f"trial {last.number}, with {last.error}; {fix}")
     if last.trace is not None:
         error.add_note(f"in the worker that ran it:\n{last.trace}")
 
@@ -794,22 +820,89 @@ class _Ran:
 
 
 class Study:
-    """What a search found, every trial it asked kept (ADR 0026): ``trials``, a table of
-    a row each, its ``number``, ``state``, ``score``, each parameter, the 15 statistics
-    and its ``error``; ``returns``, every trial's returns on the in-sample bars,
-    ``(R, T)`` and read-only, counted as a Result counts them, a failed trial's row NaN,
-    or None where the search kept none; ``best``, the winner's Result on the in-sample
-    bars, run again when first read; ``best_params`` and ``best_score``;
-    ``evaluate_holdout()``, the winner run once on the held-out bars, and ``holdout``,
-    the Result it gave; ``looks``, how many times the winner has been handed the
-    held-out bars; and ``provenance``, what the search was given and where it ran."""
+    """What a search or a validation found (ADR 0026), ``kind`` saying which.
+
+    A search's, of kind "trials", keeps every trial it asked: ``trials``, a table of a
+    row each, its ``number``, ``state``, ``score``, each parameter, the 15 statistics
+    and its ``error``, and ``returns``, every trial's returns on the in-sample bars,
+    ``(R, T)`` and read-only, counted as a Result counts them, a failed trial's row
+    NaN. A validation's, of kind "paths", keeps ``paths``, a table of a row a path, its
+    ``number``, ``state`` and ``score``, the 15 statistics and the seven costs of the
+    account rows it owns, and its ``error``; ``fits``, a row a split, with what it
+    tests, its training, purged and embargoed bars, its pieces, its winner's
+    parameters and fitted score, its trials run and complete, its seed, state and
+    error; ``windows``, a row a stretch of a path one fit traded, with the first and
+    last account rows it owns and their times, the rows it decided on, its score, its
+    statistics and its costs; and ``returns``, each path's returns on the in-sample
+    account rows, ``(paths, T)`` and read-only, NaN where it owns no row and on a
+    failed path. ``returns`` is None where the call kept none.
+
+    Both hold a winner, a validation's the one of the search it runs over the bars
+    before the holdout first: ``best``, its Result on the in-sample bars, run again
+    when first read; ``best_params`` and ``best_score``; ``evaluate_holdout()``, the
+    winner run once on the held-out bars, and ``holdout``, the Result it gave;
+    ``looks``, how many times the winner has been handed the held-out bars; and
+    ``provenance``, what the call was given and where it ran."""
 
 
-    def __init__(self, trials, returns, winner, ran, provenance):
-        self.trials, self.returns, self.provenance = trials, returns, provenance
-        self._looks = 0
+    def __init__(self, trials, returns, winner, ran, provenance, tables=None):
+        self._trials, self.returns, self.provenance = trials, returns, provenance
+        # a validation's paths, fits and windows, None for a search's Study
+        self._tables = tables
+        self._looks  = 0
         self._winner, self._ran = winner, ran
         self._best = self._holdout = None
+
+
+    @property
+    def kind(self):
+        """What the Study holds: "trials", a search's, or "paths", a validation's."""
+        return "trials" if self._tables is None else "paths"
+
+
+    @property
+    def trials(self):
+        """A search's trials, a row each."""
+        if self._tables is not None:
+            raise ProbatumAttributeError("trials: a Study of paths, which keeps each "
+                                         "fit's winner and no trials; read paths, fits "
+                                         "or windows")
+
+        return self._trials
+
+
+    @property
+    def paths(self):
+        """A validation's paths, a row each."""
+        return self._table("paths")
+
+
+    @property
+    def fits(self):
+        """A validation's fits, a row a split."""
+        return self._table("fits")
+
+
+    @property
+    def windows(self):
+        """A validation's windows, a row each stretch of a path one fit traded."""
+        return self._table("windows")
+
+
+    def _table(self, name):
+        if self._tables is None:
+            raise ProbatumAttributeError(f"{name}: a Study of trials, which search "
+                                         f"made; validate makes a Study of paths")
+
+        return self._tables[name]
+
+
+    def _called(self):
+        """What a refusal calls the call that made the Study, and the call to make
+        again."""
+        if self._tables is None:
+            return "search", "search"
+        return "validation", "validate"
 
 
     @property
@@ -846,11 +939,12 @@ class Study:
             changed = [key for key in STATS if again[key] != row[key]]
             if changed:
                 key = changed[0]
+                noun, verb = self._called()
                 why = ("it ran in a worker, which imported the policy afresh under a hash "
                        "seed of its own, so give the policy what it reads as its "
                        "arguments, or set PYTHONHASHSEED" if self._winner.worker else
-                       "the policy's code or the globals it reads changed since the "
-                       "search, so search again")
+                       f"the policy's code or the globals it reads changed since the "
+                       f"{noun}, so {verb} again")
                 raise ProbatumRuntimeError(f"best: trial {self._winner.number}'s {key} was "
                                            f"{row[key]!r} on the in-sample bars, and run "
                                            f"again it is {again[key]!r}; {why}")
@@ -873,11 +967,12 @@ class Study:
         call returns it. ``best`` is read first, so a winner that no longer gives its
         trial's statistics is refused before the held-out bars are touched, and the look
         counts from the moment the winner is handed them, so a run that raises there
-        spends it. A search that held nothing out refuses."""
+        spends it. A search or a validation that held nothing out refuses."""
         ran = self._ran
         if ran.cut == len(ran.data):
-            raise ProbatumValueError("evaluate_holdout: the search held nothing out; "
-                                     "search with a holdout, such as holdout=0.3")
+            noun, verb = self._called()
+            raise ProbatumValueError(f"evaluate_holdout: the {noun} held nothing out; "
+                                     f"{verb} with a holdout, such as holdout=0.3")
 
         if self._holdout is None:
             self.best
@@ -890,9 +985,22 @@ class Study:
 
     def __repr__(self):
         given, ran = self.provenance, self._ran
-        what = (f"{given['ran']:,} trials of {given['policy']} by "
-                f"{given['sampler']['name']}, best {given['objective']} "
-                f"{self.best_score:,.2f} over {ran.cut:,} bars")
+
+        if self._tables is None:
+            what = (f"{given['ran']:,} trials of {given['policy']} by "
+                    f"{given['sampler']['name']}, best {given['objective']} "
+                    f"{self.best_score:,.2f} over {ran.cut:,} bars")
+        else:
+            paths, fits = self._tables["paths"], len(self._tables["fits"])
+            failed  = int((paths["state"] == "failed").sum())
+            scores  = paths["score"][~np.isnan(paths["score"])]
+            median  = float(np.median(scores)) if len(scores) else math.nan
+            counted = (f"{len(paths):,} path{'s' * (len(paths) != 1)}"
+                       + (f", {failed:,} failed," if failed else ""))
+            what = (f"{counted} of {given['policy']} from {fits:,} "
+                    f"fit{'s' * (fits != 1)} by {given['cv']['given']}, stability "
+                    f"evidence, median {given['objective']} {median:,.2f} over "
+                    f"{given['cv']['bars']:,} bars")
 
         held = len(ran.data) - ran.cut
         if not held:

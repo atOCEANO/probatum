@@ -51,10 +51,11 @@ class Strategy:
     account that close left, and places its orders through the account; they fill on
     a later bar, never on that one. ``warmup`` can be a class attribute or be set in
     ``init``, and should cover the longest history a decision reads, since an index
-    below zero reads numpy's array from its end. ``on_inherit(account)`` is called
-    before a validation window's first bar, so a policy can protect a position it did
-    not open. Its parameters are its constructor's arguments, kept as attributes of
-    the same names.
+    below zero reads numpy's array from its end. ``on_inherit(bar, account)`` is
+    called at a validation's seam, before the incoming window's first decision and
+    once every order the outgoing one left is cancelled, so a policy can protect a
+    position it did not open. Its parameters are its constructor's arguments, kept as
+    attributes of the same names.
 
     `probatum.Backtester`, `tune` and `walk_forward` drive the class as emsl did:
     ``init(engine)`` once after the reset and ``next(state, engine)`` on every bar but
@@ -74,7 +75,7 @@ class Strategy:
                                           f"it; give the strategy a next(bar, account)")
 
 
-    def on_inherit(self, account):
+    def on_inherit(self, bar, account):
         pass
 
 
@@ -162,6 +163,11 @@ def _flag(name, value):
         raise ProbatumTypeError(f"{name}: {value!r}; give True or False")
 
 
+def _store():
+    """The columns an account reads its round trips into, grown as they close."""
+    return {name: np.empty(16, dtype=TYPES.get(name, np.float64)) for name in TRIPS}
+
+
 class _Run:
     """What the views of one account share: the binding's engine, opened at the Data's
     first row its instruments printed and holding a bar for every such row; the
@@ -220,10 +226,12 @@ class _Run:
         self.curve   = np.empty(len(self.rows))
         self.curve[0] = self.opening
         self.points = 1
-        self.store  = {name: np.empty(16, dtype=TYPES.get(name, np.float64))
-                       for name in TRIPS}
-        self.closed = 0
-        self.trips  = None
+        self.store  = _store()
+
+        # the round trips read, and where a validation's last seam started the
+        # account's round trips and its equity curve
+        self.closed = self.since = self.mark = 0
+        self.trips = None
 
         self.begin()
 
@@ -236,6 +244,22 @@ class _Run:
         self.start += skip
         if len(self.rows):
             self.reset()
+
+
+    def seam(self, flatten):
+        """A validation's seam at this close: every order not yet filled cancelled, the
+        targets forgotten and with ``flatten`` each position closed, the decision's
+        events and the account's round trips and equity curve starting from it
+        (Specification, Paths and seams)."""
+        self.engine.seam(flatten)
+
+        self.synced, self.state, self.events = False, None, None
+        self.last   = self.engine.num_events()
+        self.window = (self.last, self.last)
+
+        self.closed += len(self.engine.trades_since(self.closed))
+        self.since, self.mark = self.closed, self.k
+        self.store, self.trips = _store(), None
 
 
     def step(self):
@@ -681,12 +705,13 @@ class _Run:
 
 
     def trades(self):
-        """The round trips closed so far, each read once, as it closes, into columns that
-        grow."""
+        """The round trips closed so far, or since a validation's last seam, each read
+        once, as it closes, into columns that grow."""
         new = self.engine.trades_since(self.closed)
 
         if new or self.trips is None:
-            count, columns = self.closed + len(new), {}
+            read = self.closed - self.since
+            count, columns = read + len(new), {}
             for name in TRIPS:
                 column = self.store[name]
                 if count > len(column):
@@ -696,22 +721,24 @@ class _Run:
                     values = [self.names[k] for k in values]
                 elif name in ("open_bar", "close_bar"):
                     values = [self.bar(bar) for bar in values]
-                column[self.closed:count] = values
-                columns[name] = column[:count]
+
+                column[read:count] = values
+                columns[name]      = column[:count]
                 columns[name].flags.writeable = False
-            self.closed, self.trips = count, Trades(columns, count)
+
+            self.closed, self.trips = self.closed + len(new), Trades(columns, count)
 
         return self.trips
 
 
     def equity_curve(self):
-        """The equity at the opening and at each bar the account has seen since, read
-        once each."""
+        """The equity at the opening, or at a validation's last seam, and at each bar
+        the account has seen since, read once each."""
         tail = self.engine.equity_since(self.points - 1)
         self.curve[self.points:self.points + len(tail)] = tail
         self.points += len(tail)
 
-        view = self.curve[:self.points]
+        view = self.curve[self.mark:self.points]
         view.flags.writeable = False
         return view
 
@@ -996,7 +1023,8 @@ class Account(_Verbs):
     live `Order` handles; ``events``, every `Event` of its orders since the last close,
     oldest first; ``trades``, the round trips closed so far, the columns of
     ``result.trades`` as read-only arrays; ``equity_curve``, the equity at the opening
-    and at every bar since, one a row its instruments printed, as ``result.equity``;
+    and at every bar since, one a row its instruments printed, as ``result.equity``,
+    both starting again at each seam of a validation's path;
     and the two wallets, ``spot`` and ``margin``, each with its ``cash`` and
     ``equity``, the margin wallet also with its maintenance ``requirement`` and
     ``available``, the room the cap still leaves. ``account["ETHUSDT"]`` is one
