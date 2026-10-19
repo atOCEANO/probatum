@@ -1431,11 +1431,16 @@ def _period(when, name):
     if when is None or isinstance(when, (int, float, np.integer, np.floating)):
         raise ProbatumTypeError(f"{name}: {when!r}; give a time or the text of one")
 
-    if isinstance(when, datetime.datetime) and when.tzinfo is not None:
-        when = when.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    # numpy reads a datetime to the microsecond, so a pandas Timestamp gives its own
+    # instant, in UTC, nanoseconds and all
+    instant = when
+    if isinstance(when, datetime.datetime) and hasattr(when, "to_datetime64"):
+        instant = when.to_datetime64()
+    elif isinstance(when, datetime.datetime) and when.tzinfo is not None:
+        instant = when.astimezone(datetime.timezone.utc).replace(tzinfo=None)
 
     try:
-        ns = int(np.datetime64(when, "ns").astype(np.int64))
+        ns = int(np.datetime64(instant, "ns").astype(np.int64))
     except (TypeError, ValueError):
         raise ProbatumTypeError(f"{name}: {when!r}; give a time or the text of "
                                 f"one") from None

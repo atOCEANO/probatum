@@ -110,6 +110,13 @@ def test_split_and_after_part_the_bars_at_a_time_or_a_position():
     assert (len(train), len(test))   == (40, 8)
     assert len(universe().after(-5)) == 5
 
+    # a pandas Timestamp keeps its nanoseconds, so one past a bar's open starts the
+    # bars after it, as the same time from numpy does
+    past = "2024-01-02 12:00:00.000000001"
+
+    assert len(universe().after(pd.Timestamp(past, tz="UTC"))) == 11
+    assert len(universe().after(np.datetime64(past.replace(" ", "T")))) == 11
+
 
 def test_a_slice_keeps_the_bars_before_it_for_a_feature_to_warm_up_on():
     from probatum._data import features
@@ -140,6 +147,9 @@ def test_select_takes_instruments_in_the_order_named():
     (lambda data: data.split(""), DataError, "when: '' is not a time"),
     (lambda data: data.split(None), ProbatumTypeError,
      "when: None; give a time or the text of one"),
+    (lambda data: data.split(pd.NaT), DataError, "when: NaT is not a time; give one"),
+    (lambda data: data.split(pd.Timestamp), ProbatumTypeError,
+     "when: <class 'pandas.Timestamp'>; give a time"),
     (lambda data: data.after(1.5), ProbatumTypeError,
      "when: 1.5; give a time or the text of one"),
     (lambda data: data[::2], ProbatumTypeError,
