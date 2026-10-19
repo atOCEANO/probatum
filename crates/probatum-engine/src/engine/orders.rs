@@ -564,6 +564,11 @@ impl Engine {
     /// waiting for its open, a target's leg among them, whose target keeps the weights
     /// it asked for. True if it was found and removed.
     pub fn cancel(&mut self, id: OrderId) -> bool {
+        self.cancel_for(id, EventReason::CancelledByAccount)
+    }
+
+    /// Cancel an order not yet filled by id, the cancel logged for `reason`.
+    fn cancel_for(&mut self, id: OrderId, reason: EventReason) -> bool {
         let order = match self.book.cancel(id) {
             Some(order) => order,
             None => {
@@ -580,7 +585,7 @@ impl Engine {
             Some(order.instrument),
             None,
             None,
-            EventReason::CancelledByAccount,
+            reason,
         );
         true
     }
@@ -683,6 +688,45 @@ impl Engine {
         ids.len()
     }
 
+    /// A validation's seam (Specification, Paths and seams): every order not yet
+    /// filled cancelled for the seam, those waiting for their open in the order they
+    /// were placed and then the resting ones by slot, every target forgotten, a
+    /// transfer already queued kept, and with `flatten` a reduce-only ioc market order
+    /// closing each instrument's position, in the instruments' order, placed and
+    /// filled for the seam. Returns how many orders it cancelled.
+    pub fn seam(&mut self, flatten: bool) -> usize {
+        let ids: Vec<OrderId> = self
+            .pending
+            .iter()
+            .chain(self.book.iter())
+            .map(|order| order.id)
+            .collect();
+        for &id in &ids {
+            self.cancel_for(id, EventReason::Seam);
+        }
+        self.targets.reset();
+        self.seams.clear();
+        if flatten {
+            for instrument in 0..self.account.positions.len() {
+                let pos = self.account.positions[instrument].qty.get();
+                if pos == 0.0 {
+                    continue;
+                }
+                let (side, size) = if pos > 0.0 {
+                    (Side::Sell, pos)
+                } else {
+                    (Side::Buy, -pos)
+                };
+                let reason = EventReason::Seam;
+                if let Some(id) = self.queue(instrument, side, size, true, TimeInForce::Ioc, reason)
+                {
+                    self.seams.push(id);
+                }
+            }
+        }
+        ids.len()
+    }
+
     /// The resting order placed first, or `None` with nothing resting. A replace
     /// keeps an order's id, and so its age.
     pub fn oldest_resting(&self) -> Option<OrderId> {
@@ -729,11 +773,11 @@ impl Engine {
 mod tests {
     use crate::candles::Candles;
     use crate::engine::fixtures::{
-        cfg, crash_series, dip_series, levered, ohlc, perp_cfg, report_cfg, series, universe,
-        ABSENT,
+        cfg, crash_series, dip_series, flat_series, levered, ohlc, perp_cfg, report_cfg, series,
+        universe, ABSENT,
     };
     use crate::engine::{Engine, EngineConfig};
-    use crate::reporter::{Cause, EventKind, EventReason, OrderEvent, Refusal};
+    use crate::reporter::{Cause, EventKind, EventReason, FillReason, OrderEvent, Refusal};
     use crate::sizes::{PriceRule, Sizes};
     use probatum_core::{Market, OrderId, OrderType, Price, Side, TimeInForce};
 
@@ -1539,6 +1583,135 @@ mod tests {
             ]
         );
         assert_eq!(e.waiting().count(), 0);
+    }
+
+    #[test]
+    fn a_seam_cancels_every_order_not_yet_filled_and_forgets_the_targets() {
+        // the second instrument prints no bar on the second row, so its buy waits
+        // through it beside a resting bid and a target's leg placed at that close
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), ABSENT],
+            vec![flat(100.0), flat(10.0)],
+        ];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        e.reset();
+        let waiting = e
+            .order_on(
+                1,
+                Side::Buy,
+                1.0,
+                OrderType::Market,
+                None,
+                None,
+                false,
+                false,
+                TimeInForce::Ioc,
+            )
+            .expect("a market buy");
+        let resting = bid(&mut e, 0, 90.0).expect("a resting bid");
+        e.step();
+        let _ = e.target(&[(0, 0.5)], 0.0, false);
+        let leg = e
+            .waiting()
+            .map(|(order, _)| order.id)
+            .find(|&id| id != waiting)
+            .expect("the target's leg");
+        assert_eq!(e.seam(false), 3);
+        e.step();
+        assert_eq!((e.position(0), e.position(1)), (0.0, 0.0));
+        let cancelled: Vec<(u64, EventReason)> = log(&e)
+            .iter()
+            .filter(|event| event.kind == EventKind::Cancelled)
+            .map(|event| (event.order.map_or(0, |id| id.0), event.reason))
+            .collect();
+        let seam = EventReason::Seam;
+        assert_eq!(
+            cancelled,
+            vec![(waiting.0, seam), (leg.0, seam), (resting.0, seam)]
+        );
+        assert!(e.targets.asked.iter().all(|weight| weight.is_nan()));
+    }
+
+    #[test]
+    fn a_flattening_seam_closes_each_position_and_its_fills_read_seam() {
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![vec![flat(100.0), flat(10.0)]; 4];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        e.reset();
+        for instrument in [0, 1] {
+            e.order_on(
+                instrument,
+                Side::Buy,
+                1.0,
+                OrderType::Market,
+                None,
+                None,
+                false,
+                false,
+                TimeInForce::Ioc,
+            )
+            .expect("a market buy");
+        }
+        let resting = bid(&mut e, 0, 90.0).expect("a resting bid");
+        e.step();
+        assert_eq!(e.seam(true), 1);
+        // a close the seam queued can only shrink what it closes, and lives one bar
+        assert_eq!(e.waiting().count(), 2);
+        assert!(e
+            .waiting()
+            .all(|(order, _)| order.reduce_only && order.tif == TimeInForce::Ioc));
+        e.step();
+        assert_eq!((e.position(0), e.position(1)), (0.0, 0.0));
+        let fills = e.reporter().expect("reporting is on").fills();
+        let closes: Vec<(usize, Side, FillReason)> = fills
+            .iter()
+            .filter(|fill| fill.tick == 2)
+            .map(|fill| (fill.instrument, fill.side, fill.reason))
+            .collect();
+        assert_eq!(
+            closes,
+            vec![
+                (0, Side::Sell, FillReason::Seam),
+                (1, Side::Sell, FillReason::Seam)
+            ]
+        );
+        let placed: Vec<EventReason> = log(&e)
+            .iter()
+            .filter(|event| event.kind == EventKind::Placed && event.tick == 1)
+            .map(|event| event.reason)
+            .collect();
+        assert_eq!(placed, vec![EventReason::Seam, EventReason::Seam]);
+        assert!(log(&e).iter().any(|event| event.order == Some(resting)
+            && event.kind == EventKind::Cancelled
+            && event.reason == EventReason::Seam));
+        let trips = e.round_trips();
+        assert!(
+            trips.len() == 2
+                && trips
+                    .iter()
+                    .all(|trip| trip.reason == Some(FillReason::Seam))
+        );
+    }
+
+    #[test]
+    fn a_flattening_seam_buys_back_a_short() {
+        // a short of 1 opened at the second bar's open, and the seam at its close
+        // queues a reduce-only buy of 1, which flattens it at the third bar's open
+        let mut e = Engine::new(flat_series(), levered());
+        e.reset();
+        e.market_sell(1.0);
+        e.step();
+        assert_eq!(e.position(0), -1.0);
+        assert_eq!(e.seam(true), 0);
+        let closes: Vec<(Side, f64)> = e
+            .waiting()
+            .map(|(order, _)| (order.side, order.size.get()))
+            .collect();
+        assert_eq!(closes, vec![(Side::Buy, 1.0)]);
+        e.step();
+        assert_eq!(e.position(0), 0.0);
     }
 
     #[test]

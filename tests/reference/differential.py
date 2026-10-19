@@ -178,14 +178,14 @@ def money(cfg):
 KINDS = os.environ.get(
     "KINDS",
     "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,"
-    "cancel_all,reduce_limit,stop_entry,exits,transfer,target,retarget,bracket",
+    "cancel_all,reduce_limit,stop_entry,exits,transfer,target,retarget,bracket,seam",
 ).split(",")
 
 # the kinds that only mean something with a live position or order to act on; a run
 # in which one never met anything agreed about nothing
 TRACKED = [kind for kind in ("close", "reduce", "cancel", "replace", "cancel_all",
                              "ioc_limit", "fok_limit", "reduce_limit", "stop_entry",
-                             "exits", "bracket")
+                             "exits", "bracket", "seam")
            if kind in KINDS]
 
 
@@ -481,6 +481,8 @@ def place(sim, action, t, close, theirs, script, reached=None):
             reached[t][kind] += 1
         elif kind == "cancel_all" and sim.resting():
             reached[t][kind] += 1
+        elif kind == "seam" and (sim.pending or sim.resting() or sim.position[0] != 0.0):
+            reached[t][kind] += 1
 
     got = None
     if kind in ("market", "fok", "reduce") and u >= 0.7:
@@ -559,6 +561,12 @@ def place(sim, action, t, close, theirs, script, reached=None):
     elif kind == "cancel_all":
         script.take(t, "cancel_all")
         sim.cancel_all()
+        theirs.clear()
+    elif kind == "seam":
+        # a validation's seam, closing the position in half of them
+        flatten = u >= 0.5
+        script.take(t, "seam", flatten=flatten)
+        sim.seam(flatten)
         theirs.clear()
     elif kind == "replace" and theirs:
         # the side and kind stay the order's own: a replacement moves an order, it

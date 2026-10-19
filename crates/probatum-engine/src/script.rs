@@ -71,6 +71,9 @@ pub enum Action {
         tolerance: f64,
         transfer: bool,
     },
+    /// A validation's seam, as `Engine::seam` takes one, closing every position
+    /// where it flattens.
+    Seam(bool),
 }
 
 /// The actions to take at each bar's close, `bars[t]` at bar `t` in order, for
@@ -179,6 +182,9 @@ impl Strategy for Script {
                 } => {
                     // a weight it would refuse was refused when the script was read
                     let _ = engine.target(weights, tolerance, transfer);
+                }
+                Action::Seam(flatten) => {
+                    engine.seam(flatten);
                 }
             }
         }

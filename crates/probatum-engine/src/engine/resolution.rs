@@ -113,6 +113,8 @@ impl Engine {
             }
             let reason = if self.targets.placed(order.id) {
                 FillReason::Rebalance
+            } else if self.seams.contains(&order.id) {
+                FillReason::Seam
             } else {
                 FillReason::Market
             };

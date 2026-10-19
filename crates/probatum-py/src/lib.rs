@@ -1630,6 +1630,7 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::TakeProfit => "take_profit".to_string(),
         EventReason::Rebalance => "rebalance".to_string(),
         EventReason::Retargeted => "replaced by a later target".to_string(),
+        EventReason::Seam => "seam".to_string(),
         EventReason::Replace => "replace".to_string(),
         EventReason::Value { amount } => format!("value of {amount}"),
         EventReason::Refused(why) => refusal_text(why),
@@ -2337,6 +2338,21 @@ impl Engine {
                 trigger,
             )
             .map(|id| id.0))
+    }
+
+    /// A validation's seam: cancel every order not yet filled, those waiting for
+    /// their open first and then the resting ones, forget every target, and with
+    /// `flatten` close each instrument's position with a reduce-only market order,
+    /// each for the seam, returning how many orders were cancelled.
+    #[pyo3(signature = (flatten = false))]
+    fn seam(&mut self, flatten: bool) -> usize {
+        self.inner.seam(flatten)
+    }
+
+    /// The steps since the account opened that ended holding a position, as the
+    /// exposure statistic counts them, or 0 with reporting off.
+    fn held_steps(&self) -> usize {
+        self.inner.held_steps()
     }
 
     /// Cancel every order not yet filled, or every one on `instrument`, those waiting
@@ -3579,7 +3595,7 @@ impl Batch {
 /// The verbs a script takes, as an error lists them.
 const VERBS: &str =
     "buy, sell, buy_value, sell_value, bracket, close, cancel, cancel_all, replace, \
-     transfer or target";
+     transfer, target or seam";
 
 /// The weights a target takes, as each instrument and its weight: one number for an
 /// engine of one instrument, one weight for each instrument in order, or a dict from
@@ -3840,6 +3856,7 @@ fn read_action(
         "replace" => &["order", "price", "trigger", "size"],
         "transfer" => &["amount", "to"],
         "target" => &["weights", "tolerance", "transfer"],
+        "seam" => &["flatten"],
         _ => {
             return Err(ProbatumValueError::new_err(format!(
                 "{at}: {verb:?} is not a verb; use {VERBS}"
@@ -3945,6 +3962,7 @@ fn read_action(
         }
         "close" => Action::Close(args.traded(width)?),
         "cancel_all" => Action::CancelAll(args.instrument(width)?),
+        "seam" => Action::Seam(args.flag("flatten")?),
         "cancel" => Action::Cancel(args.order(placements)?),
         "replace" => Action::Replace {
             order: args.order(placements)?,
@@ -4361,7 +4379,8 @@ fn units_of(market: &str, contract: Option<f64>) -> PyResult<Units> {
 /// `weights`, `tolerance` and `transfer`, as `Engine.target` takes them. `buy`, `sell`,
 /// their value forms, `bracket` and `close` name the `instrument` they trade, counted
 /// from 0, which one instrument leaves out, and `cancel_all` cancels one instrument's
-/// orders when it names one and every order when it does not. An order is named by an
+/// orders when it names one and every order when it does not; `seam` is a validation's
+/// seam, closing every position where `flatten` is true. An order is named by an
 /// earlier placement in the script, counting its buys, sells, value orders and closes
 /// from 0, and a bracket as two, its stop's and then its take-profit's, which names
 /// nothing once the engine refused that placement or a close found nothing to close,

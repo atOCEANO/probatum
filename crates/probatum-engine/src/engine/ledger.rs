@@ -231,6 +231,7 @@ impl Engine {
             FillReason::Stop => EventReason::Stop,
             FillReason::TakeProfit => EventReason::TakeProfit,
             FillReason::Rebalance => EventReason::Rebalance,
+            FillReason::Seam => EventReason::Seam,
             FillReason::Liquidation => EventReason::Liquidation,
             FillReason::Dust => unreachable!("dust is swept at the close, never filled"),
         };

@@ -672,6 +672,9 @@ def place(sim, action, t, theirs, script, reached):
         reached[t][kind] += 1
     elif kind == "cancel_all" and sim.resting(i):
         reached[t][kind] += 1
+    elif kind == "seam" and (sim.pending or sim.resting()
+                             or any(q != 0.0 for q in sim.position)):
+        reached[t][kind] += 1
 
     got = None
     if kind in ("market", "fok", "reduce") and u >= 0.7:
@@ -696,6 +699,13 @@ def place(sim, action, t, theirs, script, reached):
                if order["kind"] == "limit" and order["side"] not in (None, side)]
         if own and (17.0 * u) % 1.0 < 0.2:
             price = own[0]["price"]
+        elif sim.venue.limit == "through" and (29.0 * u) % 1.0 < 0.15:
+            # now and then, where a limit fills a step through, at the extreme the
+            # instrument's next bar reaches, so that bar can touch it short of a step
+            ahead = next((sim.bars[k][i] for k in range(t + 1, len(sim.bars))
+                          if sim.bars[k][i] is not None), None)
+            if ahead is not None:
+                price = ahead.low if side == "buy" else ahead.high
 
         tif = {"ioc_limit": "ioc", "fok_limit": "fok"}.get(kind, "gtc")
         post_only, reduce_only = kind == "post", kind == "reduce_limit"
@@ -773,6 +783,12 @@ def place(sim, action, t, theirs, script, reached):
             script.take(t, "cancel_all", instrument=i)
             sim.cancel_all(i)
             theirs[:] = [got for got in theirs if sim.orders[got[0]]["instrument"] != i]
+    elif kind == "seam":
+        # a validation's seam, closing every position in half of them
+        flatten = u >= 0.5
+        script.take(t, "seam", flatten=flatten)
+        sim.seam(flatten)
+        theirs.clear()
     elif kind == "replace" and theirs:
         order, placed = theirs[0]
         sizeless = sim.orders[order]["leg"] and (7.0 * u) % 1.0 > 0.5

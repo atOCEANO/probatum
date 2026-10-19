@@ -240,6 +240,8 @@ pub struct Engine {
     /// wallet it goes into.
     transfers: Vec<(f64, Wallet)>,
     targets: Targets,
+    /// The closes a validation's seam queued, whose fills the logs name seam.
+    seams: Vec<OrderId>,
     tick: usize,
     id_counter: u64,
     /// Fills applied since the last reset. A run whose orders never filled, on a
@@ -359,6 +361,7 @@ impl Engine {
             spare: Vec::new(),
             transfers: Vec::new(),
             targets: Targets::new(width),
+            seams: Vec::new(),
             tick: 0,
             id_counter: 1,
             fills: 0,
@@ -554,6 +557,7 @@ impl Engine {
         self.values.clear();
         self.transfers.clear();
         self.targets.reset();
+        self.seams.clear();
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));
         self.mark_from(self.tick);
         // The id counter deliberately survives a reset. Restarting it made an id
@@ -876,6 +880,14 @@ impl Engine {
         self.fills
     }
 
+    /// Steps since the last reset that ended holding a position, as the exposure
+    /// statistic counts them, or zero with reporting off.
+    pub fn held_steps(&self) -> usize {
+        self.reporter
+            .as_ref()
+            .map_or(0, Reporter::in_position_steps)
+    }
+
     /// The account equity marked at the current bar's close, without building a
     /// full `State`. The batched RL reward reads this per env, so it skips the
     /// open-orders vector a snapshot would allocate. Matches `state().equity`.
@@ -958,7 +970,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{cfg, ohlc, perp_cfg, report_cfg, series, universe, ABSENT};
+    use super::fixtures::{cfg, flat_series, ohlc, perp_cfg, report_cfg, series, universe, ABSENT};
     use super::{Engine, EngineConfig, Intrabar, Liquidation};
     use crate::candles::{printed, Candles, Instrument};
     use crate::clock::Clock;
@@ -984,6 +996,26 @@ mod tests {
         assert_eq!(e.candles_all(), bars.as_slice());
         assert_eq!((e.open_time(2), e.open_time(3)), (Some(4 * day), None));
         assert_eq!(Engine::new(series(), cfg()).open_time(0), None);
+    }
+
+    #[test]
+    fn the_steps_that_end_holding_a_position_are_counted_with_reporting_on() {
+        // a buy at the first close fills at the second bar's open and a close at the
+        // fourth bar's close fills at the fifth's, so three of seven steps end holding
+        // the position; with reporting off none is counted
+        for (report, held) in [(true, 3), (false, 0)] {
+            let config = EngineConfig { report, ..cfg() };
+            let mut e = Engine::new(flat_series(), config);
+            e.reset();
+            e.market_buy(1.0);
+            for tick in 1..8 {
+                e.step();
+                if tick == 3 {
+                    e.close().expect("a close of the long");
+                }
+            }
+            assert_eq!(e.held_steps(), held);
+        }
     }
 
     #[test]

@@ -18,6 +18,8 @@ pub enum FillReason {
     TakeProfit,
     /// A leg a `target` placed.
     Rebalance,
+    /// A position a validation's seam closed.
+    Seam,
     Liquidation,
     /// A position below half a lot, zeroed at the close, which ends its round trip.
     Dust,
@@ -32,6 +34,7 @@ impl FillReason {
             FillReason::Stop => "stop",
             FillReason::TakeProfit => "take_profit",
             FillReason::Rebalance => "rebalance",
+            FillReason::Seam => "seam",
             FillReason::Liquidation => "liquidation",
             FillReason::Dust => "dust",
         }
@@ -214,6 +217,8 @@ pub enum EventReason {
     PartnerFilled,
     /// A target's leg cancelled by a later target in the same decision.
     Retargeted,
+    /// Cancelled, placed or filled at a validation's seam.
+    Seam,
     Liquidation,
 }
 
@@ -504,6 +509,11 @@ impl Reporter {
             level,
             ..Reporter::default()
         }
+    }
+
+    /// Steps recorded while holding a position, which the exposure statistic counts.
+    pub fn in_position_steps(&self) -> usize {
+        self.in_position_steps
     }
 
     /// What it books.

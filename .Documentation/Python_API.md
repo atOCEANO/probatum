@@ -733,7 +733,7 @@ Each entry in `trades()` is one round trip: a maximal run of one sign, from the 
 | `pnl` | Its net PnL: `realized` less `fees` and `funding`, and for one still open what it holds at the last close as well. The trade statistics are built from it, so they reproduce from the log. |
 | `ret` | `pnl` over `size * entry`. |
 | `best`, `worst` | How far its side's price went for it and against it, as a fraction of `entry`, over the part of each bar it was in: its entry bar from the fill to the close, its exit bar from the open to the fill, and every bar between whole. They are bounds that never overstate, since nothing inside a bar says when its high and its low came ([ADR 0023](Decisions.md)). |
-| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance`, `liquidation` or `dust`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
+| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance`, `seam`, `liquidation` or `dust`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
 | `open` | True for the round trip still open at the end. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.
@@ -777,7 +777,7 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | `lifted` | The part of the adjustment the margin bound applied, per unit, so `adjustment - lifted` is the bar's hold; in dollars on an inverse account, and zero for a forced close. |
 | `paid_in` | What the margin bound paid into the margin wallet for the part of its lift the bar could not hold, in the account's asset, never below zero. |
 | `taker` | True when the fill took liquidity. A takeover is the venue's and is not; a sale on the book is. |
-| `reason` | `market`, `limit`, `stop`, `take_profit` for a bracket's take-profit, `rebalance` for a leg of a `target`, or `liquidation`. |
+| `reason` | `market`, `limit`, `stop`, `take_profit` for a bracket's take-profit, `rebalance` for a leg of a `target`, `seam` for a close at a validation's seam, or `liquidation`. |
 
 ### The order log
 
