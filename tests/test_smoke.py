@@ -1201,6 +1201,20 @@ def test_cancel_all_drops_resting_orders():
     assert s["open_orders"] == []
 
 
+def test_cancel_all_drops_a_market_order_waiting_for_its_open_too():
+    e = engine()
+    e.reset()
+
+    e.market_buy(1.0)
+    e.limit_buy(1.0, 50.0)
+
+    assert e.cancel_all() == 2
+
+    s = e.step()
+
+    assert s["open_orders"] == [] and s["position"] == 0.0
+
+
 def test_qty_helpers_size_from_weight_and_quote():
     e = engine()
     e.reset()  # bar 0 close 150, equity 10000, flat

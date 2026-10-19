@@ -521,14 +521,15 @@ class _Run:
 
 
     def cancel(self, order):
-        """Whether ``order`` was resting and is cancelled."""
+        """Whether ``order`` was open, resting or waiting for its open, and is
+        cancelled."""
         order       = self.own(order)
         self.synced = False
         return self.engine.cancel(order.id)
 
 
     def cancel_all(self, k):
-        """How many resting orders were cancelled, on column ``k`` or on every one."""
+        """How many open orders were cancelled, on column ``k`` or on every one."""
         self.synced = False
         return self.engine.cancel_all(k)
 
@@ -940,7 +941,7 @@ class _Verbs:
 
     def cancel(self, order):
         """Cancel ``order``, an `Order` this account placed, returning whether it was
-        resting."""
+        still open, resting or waiting for its open."""
         return self._run.cancel(order)
 
 
@@ -1074,7 +1075,8 @@ class Account(_Verbs):
 
 
     def cancel_all(self):
-        """Cancel every resting order, returning how many were."""
+        """Cancel every order still open, resting or waiting for its open, returning
+        how many were."""
         return self._run.cancel_all(None)
 
 
@@ -1131,7 +1133,8 @@ class InstrumentAccount(_Verbs):
 
 
     def cancel_all(self):
-        """Cancel every order resting on the instrument, returning how many were."""
+        """Cancel every order still open on the instrument, resting or waiting for its
+        open, returning how many were."""
         return self._run.cancel_all(self._k)
 
 

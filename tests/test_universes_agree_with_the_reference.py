@@ -202,6 +202,30 @@ def waiting_and_unlisted():
     return times, ["linear", "linear"], columns, cfg, actions
 
 
+def cancelled_while_waiting():
+    """Two perpetuals, the second printing no bar on the second and third rows: a
+    market buy of it at the first close waits through them, and the second close
+    cancels every order, which takes it."""
+    def flat(price):
+        return Bar(price, price, price, price, 1e6)
+
+    columns = [
+        [flat(100.0)] * 5,
+        [flat(10.0), None, None, flat(10.0), flat(10.0)],
+    ]
+
+    times = [k * differential.HOUR for k in range(5)]
+    cfg   = dict(kinds=["linear", "linear"], quote=10_000.0, balance=10_000.0,
+                 fee_taker=0.0, fee_maker=0.0, slippage_bps=0.0, max_open_orders=8,
+                 leverage=0.0, funding=("none",), tiers=[(None, "notional")] * 2,
+                 intrabar="pessimistic")
+
+    actions = [(1, "market", "buy", 1.0, 0.0), (1, "cancel_all", "buy", 0.0, 0.0), None,
+               None]
+
+    return times, ["linear", "linear"], columns, cfg, actions
+
+
 def beside(first, actions, margin=100.0):
     """Two perpetuals on three quiet rows at 100 and then `first`, an (open, high,
     low, close), on the first and a quiet row on the second, on `margin` with no cap,
@@ -254,6 +278,8 @@ BUILT = {
         "a target leg on an instrument yet to print", waiting_and_unlisted()),
     "a target replacing the leg an earlier one left waiting": (
         "a waiting target leg replaced", waiting_and_unlisted()),
+    "a market order waiting through its instrument's missing bars, cancelled": (
+        "a waiting market order cancelled", cancelled_while_waiting()),
     "two perps closed out where the margin ran out": (
         "a wallet a fill left within rounding of zero set to zero",
         closed_out_on_two(10.0)),

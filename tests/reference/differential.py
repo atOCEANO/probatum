@@ -31,9 +31,7 @@ HOUR = 3_600 * 10**9
 TOL  = 1e-6
 
 # the rules the reference applies that the engine does not have yet
-NOT_IN_THE_ENGINE = {
-    "a waiting market order cancelled",
-}
+NOT_IN_THE_ENGINE = set()
 
 
 def walk(rng, n):

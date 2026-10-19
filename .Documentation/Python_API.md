@@ -426,7 +426,7 @@ result = probatum.backtest(Breakout(), btc, venue)
 | `target(weights, tolerance=0.0, transfer=False)` | the legs that bring each instrument to its weight of equity, `weights` one number with one instrument, one for each in order, or a dict from name to weight ([ADR 0009](Decisions.md)) |
 | `bracket(stop=None, take_profit=None)` | an OCO pair of reduce-only exits with no size of their own, at those prices |
 | `close()` | a reduce-only market order that flattens the position, or None where it is flat |
-| `cancel(order)`, `cancel_all()` | the cancellation of a resting order, or of every one |
+| `cancel(order)`, `cancel_all()` | the cancellation of an order still open, resting or waiting for its open, or of every one |
 | `replace(order, price=None, trigger=None, size=None)` | the same order moved under its id, a limit by its `price` and a stop by its `trigger`, or None where it no longer rests or cannot move |
 | `transfer(amount, to="margin")` | cash moved between the wallets at the start of the next bar ([ADR 0008](Decisions.md)) |
 
@@ -579,8 +579,8 @@ eng = probatum._probatum.Engine(
 | `bracket(stop=None, take_profit=None)` | two ids or `None`s | A stop and a take-profit as one OCO pair, each a reduce-only leg with no size of its own that closes the position it finds. A leg takes its side from the position it arms on, at once when one is held and otherwise at the first fill that opens one, so a leg in a later slot can close it on that bar; the first fill of either cancels the other, and the bracket goes when that position closes or flips. `None` for a leg not asked for or refused; a non-finite price raises ([ADR 0010](Decisions.md)). |
 | `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `post_only` and `tif`. |
 | `close()` | id or `None` | Queue a reduce-only market order sized to the whole position, held to `max_qty` where the venue's sizes are on. `None` when flat or where those sizes refuse it. |
-| `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
-| `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
+| `cancel(order_id)` | bool | Drop an order not yet filled, resting or waiting for its open. True if it was found. |
+| `cancel_all()` | int | Drop every order not yet filled, those waiting for their open first; returns how many were dropped. |
 | `transfer(amount, to)` | `None` | Move cash into the `"spot"` or `"margin"` wallet from the other. It lands at the start of the next bar, before any fill, held to what the wallet it leaves can give ([ADR 0008](Decisions.md)). |
 | `target(weights, tolerance=0.0, transfer=False)` | list of ids | Queue the market orders that bring each instrument to a weight of equity at the last close, every reducing leg before every growing one. `weights` is a number with one instrument, one weight per instrument, or a dict from instrument to weight; a leg below `tolerance` of equity is skipped, and `transfer=True` moves the spot legs' shortfall across from the margin wallet. A second target in one decision replaces the first, and a later one replaces the legs earlier ones left waiting on what it names ([ADR 0009](Decisions.md)). |
 | `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order under the same id, with the same side, type and flags, into the first free slot. `None`, and nothing changed, if it is no longer resting or the moved order cannot rest ([ADR 0010](Decisions.md)). |

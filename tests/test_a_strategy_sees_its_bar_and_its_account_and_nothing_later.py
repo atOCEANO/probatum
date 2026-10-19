@@ -729,6 +729,23 @@ def test_a_run_that_has_ended_goes_with_nothing_but_a_handle_kept():
         gc.enable()
 
 
+def test_a_market_order_cancelled_before_its_open_never_fills():
+    class Withdrawn(probatum.Strategy):
+
+        def next(self, bar, account):
+            if bar.i == 3:
+                self.order     = account.buy(1.0)
+                self.waiting   = self.order.status
+                self.cancelled = account.cancel(self.order)
+
+    result = probatum.backtest(Withdrawn(), one(), VENUE)
+    kept   = result.policy
+
+    assert (kept.waiting, kept.cancelled, kept.order.status) == ("pending", True,
+                                                                "cancelled")
+    assert len(result.fills) == 0
+
+
 def test_a_bracket_leg_its_partner_cancels_on_the_bar_it_armed_shows_the_side_it_took():
     # placed while flat beside a buy, the bracket arms as the buy fills at the open, and
     # the bar reaches the take-profit, whose fill cancels the stop on that bar

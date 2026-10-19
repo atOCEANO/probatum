@@ -52,7 +52,7 @@ pub enum Action {
     /// Flatten an instrument's position.
     Close(usize),
     Cancel(OrderRef),
-    /// Cancel every resting order, or only an instrument's.
+    /// Cancel every order not yet filled, or only an instrument's.
     CancelAll(Option<usize>),
     Replace {
         order: OrderRef,

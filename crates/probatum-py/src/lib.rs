@@ -2282,7 +2282,8 @@ impl Engine {
         Ok(self.inner.close_on(instrument).map(|id| id.0))
     }
 
-    /// Cancel a resting order by id. True if it was found and removed.
+    /// Cancel an order not yet filled by id, a resting one or one waiting for its
+    /// open. True if it was found and removed.
     fn cancel(&mut self, order_id: u64) -> bool {
         self.inner.cancel(OrderId(order_id))
     }
@@ -2325,9 +2326,9 @@ impl Engine {
             .map(|id| id.0))
     }
 
-    /// Cancel every resting order, or every one on `instrument`, returning how many
-    /// were dropped. Pending market orders are not resting and still fill on the next
-    /// step.
+    /// Cancel every order not yet filled, or every one on `instrument`, those waiting
+    /// for their open first and then the resting ones, returning how many were
+    /// dropped.
     #[pyo3(signature = (instrument = None))]
     fn cancel_all(&mut self, instrument: Option<usize>) -> PyResult<usize> {
         Ok(match instrument {

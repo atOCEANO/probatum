@@ -560,10 +560,19 @@ impl Engine {
             .get()
     }
 
-    /// Cancel a resting order by id. True if it was found and removed.
+    /// Cancel an order not yet filled by id: a resting one, or a market or value order
+    /// waiting for its open, a target's leg among them, whose target keeps the weights
+    /// it asked for. True if it was found and removed.
     pub fn cancel(&mut self, id: OrderId) -> bool {
-        let Some(order) = self.book.cancel(id) else {
-            return false;
+        let order = match self.book.cancel(id) {
+            Some(order) => order,
+            None => {
+                let Some(at) = self.pending.iter().position(|order| order.id == id) else {
+                    return false;
+                };
+                self.values.retain(|&(value, _)| value != id);
+                self.pending.remove(at)
+            }
         };
         self.log_event(
             EventKind::Cancelled,
@@ -647,22 +656,25 @@ impl Engine {
         Some(id)
     }
 
-    /// Cancel every resting order, returning how many were dropped. Pending market
-    /// orders are not resting and fill on the next step regardless.
+    /// Cancel every order not yet filled, returning how many were dropped: those
+    /// waiting for their open, in the order they were placed, and then the resting
+    /// ones by slot.
     pub fn cancel_all(&mut self) -> usize {
-        let ids: Vec<OrderId> = self.book.iter().map(|order| order.id).collect();
-        for &id in &ids {
-            self.cancel(id);
-        }
-        ids.len()
+        self.cancel_each(|_| true)
     }
 
-    /// Cancel every order resting on `instrument`, returning how many were dropped.
+    /// Cancel every order not yet filled on `instrument`, as `cancel_all` cancels
+    /// them, returning how many were dropped.
     pub fn cancel_all_on(&mut self, instrument: usize) -> usize {
+        self.cancel_each(|order| order.instrument == instrument)
+    }
+
+    fn cancel_each(&mut self, which: impl Fn(&Order) -> bool) -> usize {
         let ids: Vec<OrderId> = self
-            .book
+            .pending
             .iter()
-            .filter(|order| order.instrument == instrument)
+            .chain(self.book.iter())
+            .filter(|&order| which(order))
             .map(|order| order.id)
             .collect();
         for &id in &ids {
@@ -1416,6 +1428,117 @@ mod tests {
             false,
             TimeInForce::Gtc,
         )
+    }
+
+    #[test]
+    fn cancelling_a_waiting_value_order_leaves_the_others_their_amounts() {
+        // two value buys wait for the next open; the second keeps its 1,000 once the
+        // first is cancelled, and buys 5 at the open of 200
+        let config = EngineConfig {
+            quote: 10_000.0,
+            ..report_cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        let first = e
+            .order_value(0, Side::Buy, 500.0, false, TimeInForce::Ioc)
+            .expect("a value buy");
+        let second = e
+            .order_value(0, Side::Buy, 1_000.0, false, TimeInForce::Ioc)
+            .expect("a value buy");
+        assert!(e.cancel(first));
+        let amounts: Vec<Option<f64>> = e.waiting().map(|(_, amount)| amount).collect();
+        assert_eq!(amounts, vec![Some(1_000.0)]);
+        e.step();
+        let fill = e.reporter().expect("reporting is on").fills()[0];
+        assert_eq!((fill.order, fill.size), (Some(second), 5.0));
+    }
+
+    #[test]
+    fn cancel_all_on_an_instrument_drops_only_its_orders_and_counts_them() {
+        // the first instrument prints no bar on the second row, so its market buy
+        // waits through it beside its own resting bid and one on the other instrument
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(10.0)],
+            vec![ABSENT, flat(10.0)],
+            vec![flat(100.0), flat(10.0)],
+        ];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        e.reset();
+        e.order_on(
+            0,
+            Side::Buy,
+            1.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            TimeInForce::Ioc,
+        )
+        .expect("a market buy");
+        bid(&mut e, 0, 90.0).expect("a resting bid");
+        let other = bid(&mut e, 1, 9.0).expect("a bid on the other instrument");
+        e.step();
+        assert_eq!(e.cancel_all_on(0), 2);
+        assert_eq!(e.waiting().count(), 0);
+        let left: Vec<OrderId> = e.book.iter().map(|order| order.id).collect();
+        assert_eq!(left, vec![other]);
+    }
+
+    #[test]
+    fn an_order_not_yet_filled_is_cancelled_whether_it_waits_or_rests() {
+        // the second instrument prints no bar on the second row, so a market buy and
+        // a value buy placed at the first close wait through it beside a resting bid
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = vec![
+            vec![flat(100.0), flat(10.0)],
+            vec![flat(100.0), ABSENT],
+            vec![flat(100.0), flat(10.0)],
+        ];
+        let mut e = Engine::new(universe(&[Market::Spot, Market::Spot], rows), report_cfg());
+        e.reset();
+        let market = e
+            .order_on(
+                1,
+                Side::Buy,
+                1.0,
+                OrderType::Market,
+                None,
+                None,
+                false,
+                false,
+                TimeInForce::Ioc,
+            )
+            .expect("a market buy");
+        let value = e
+            .order_value(1, Side::Buy, 10.0, false, TimeInForce::Ioc)
+            .expect("a value buy");
+        let resting = bid(&mut e, 0, 90.0).expect("a resting bid");
+        e.step();
+        assert_eq!(e.waiting().count(), 2);
+        assert!(e.cancel(market));
+        assert!(!e.cancel(market));
+        // the waiting one first, as it was placed, and then the resting one
+        assert_eq!(e.cancel_all(), 2);
+        e.step();
+        assert_eq!((e.position(0), e.position(1)), (0.0, 0.0));
+        let cancelled: Vec<(u64, EventReason)> = log(&e)
+            .iter()
+            .filter(|event| event.kind == EventKind::Cancelled)
+            .map(|event| (event.order.map_or(0, |id| id.0), event.reason))
+            .collect();
+        let by_account = EventReason::CancelledByAccount;
+        assert_eq!(
+            cancelled,
+            vec![
+                (market.0, by_account),
+                (value.0, by_account),
+                (resting.0, by_account)
+            ]
+        );
+        assert_eq!(e.waiting().count(), 0);
     }
 
     #[test]
