@@ -70,6 +70,10 @@ _API = {
     "combine": probatum.combine,
     # a preset's replace takes the settings the constructor does
     "Venue": probatum.Venue,
+    "Holdout": probatum.cv.Holdout,
+    "WalkForward": probatum.cv.WalkForward,
+    "PurgedKFold": probatum.cv.PurgedKFold,
+    "CombinatorialPurged": probatum.cv.CombinatorialPurged,
 }
 # every public function of the two modules whose examples are all calls. Listed by
 # reflection rather than by hand: the hand-written dict above had gone four
@@ -381,7 +385,7 @@ def test_nothing_is_exported_without_being_documented():
 def test_nothing_a_module_exports_is_undocumented_either():
     text    = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     missing = []
-    for name in ("metrics", "ta", "plot"):
+    for name in ("metrics", "ta", "plot", "cv"):
         for export in getattr(probatum, name).__all__:
             # named in prose as `export`, called in an example as export(, or
             # reached through its module either way

@@ -45,6 +45,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Int` | A whole number a search draws, on a lattice. [Below](#the-space). |
 | `probatum.Float` | A number a search draws, from an interval or a lattice. [Below](#the-space). |
 | `probatum.Categorical` | One of the choices a search draws among. [Below](#the-space). |
+| `probatum.cv` | The splitters, `Holdout`, `WalkForward`, `PurgedKFold` and `CombinatorialPurged`, which scikit-learn's tools take, each leaving out of training every row whose label reaches a test span. [Below](#splitters). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
@@ -937,6 +938,31 @@ space = {"fast": probatum.Int(5, 40), "slow": probatum.Int(40, 200, step=10),
          "stop": probatum.Float(0.01, 0.05, step=0.01),
          "kind": probatum.Categorical(["ema", "sma"])}
 print(space["slow"], space["stop"])      # Int(40, 200, step=10) Float(0.01, 0.05, step=0.01)
+```
+
+<br>
+
+## Splitters
+
+`probatum.cv` holds the ways of dividing time, each a splitter scikit-learn's own tools take, built without importing scikit-learn: `split(X, y=None, groups=None)` gives each split's training and test rows, and `get_n_splits` counts them ([ADR 0035](Decisions.md), [Specification](Specification.md#the-splitters)).
+
+| Splitter | What it gives |
+| :--- | :--- |
+| `probatum.cv.Holdout(tail, end=None)` | one split: the last `tail` bars tested, a share of them or a number, and the bars before trained on |
+| `probatum.cv.WalkForward(train, test, anchored=False, end=None)` | windows from the first bar, each testing the next `test` bars and trained on the `train` bars before it, or with `anchored` on every bar before it, the last window taking the remainder |
+| `probatum.cv.PurgedKFold(k, embargo=None, end=None)` | `k` groups of bars in order, as scikit-learn's KFold sizes folds, each tested in turn |
+| `probatum.cv.CombinatorialPurged(groups, test_groups, embargo=None, end=None)` | every combination of `test_groups` of `groups` such groups tested, recombined into `C(groups - 1, test_groups - 1)` out-of-sample paths |
+
+- **Bars and rows.** A splitter divides bars. Its rows are the long, time-major rows an estimator reads, row `r` bar `r // N` of instrument `r % N`, so X holds every bar and instrument of the grid in that order, and an X of another length is refused. `end` is each row's label end, an int64 array `(T,)` or `(T, N)`: the bar whose price closed its trade, from its own bar plus one on, at `T` or later for a label that runs past the bars, and the least int64 for a row with no label, which is in no set. Without `end` each row is a bar holding a label of no length.
+- **The purge.** A training row is left out where its label reaches a test span from before it, or where it starts after the span up to the latest end of the span's labels, and the embargo leaves out the bars after that; a label that ends past the last bar, at `T` or later, never trains. `embargo=None` is the longest label held. Holdout and WalkForward take no embargo, since no training row follows their test spans.
+- **The contract.** Every split is checked before the first is given, and one the purge leaves with no row to train or test on is refused rather than skipped, since scikit-learn's searches count on `get_n_splits`. `y` is not read, and `groups` is ignored with a warning. A splitter has no `get_params`, `shuffle` or `random_state`, never changes, compares and hashes by what it holds and pickles as its call. scikit-learn's `cross_val_predict` takes PurgedKFold and CombinatorialPurged with one test group built without `end`, whose test sets cover each row once; built with it, the last bar's rows, whose labels end past it, are in no test set, so `cross_val_predict` refuses them.
+
+```python
+end = numpy.arange(1_000) + 25                   # each label ends 24 bars after its entry
+splitter = probatum.cv.PurgedKFold(5, embargo=24, end=end)
+train, test = list(splitter.split(numpy.zeros(1_000)))[2]
+print(test.min(), test.max(), train.max())       # 400 599 974: purged, embargoed, censored
+print(probatum.cv.CombinatorialPurged(8, 2).get_n_splits())   # 28, recombined into 7 paths
 ```
 
 <br>
