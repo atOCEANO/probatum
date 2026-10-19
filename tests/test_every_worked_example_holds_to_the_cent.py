@@ -1388,3 +1388,34 @@ def test_two_accounts_listed_and_ended_apart_add_into_15_350():
     assert (a.provenance["periods_per_year"], b.provenance["periods_per_year"]) == (
         8_760.0, 5_840.0)
     assert book.provenance["periods_per_year"] == 4 * 365 / (4 / 24) == 8_760.0
+
+
+def test_a_seam_cancels_a_stop_and_a_waiting_buy_and_a_flatten_closes_the_long():
+    # window 1 decides to row 9 and window 2 from row 10, where ETH prints no bar
+    bars = [[flat(100.0), flat(50.0)] for _ in range(13)]
+    bars[10][1] = None
+
+    instruments = [Instrument("BTCUSDT"), Instrument("ETHUSDT")]
+    held        = {
+        5: [("buy", dict(instrument=0, size=1.0))],
+        8: [("sell", dict(instrument=0, size=1.0, stop=95.0))],
+    }
+
+    cancelled = run(hourly(13), bars, instruments, script={
+        **held, 9: [("buy", dict(instrument=1, size=1.0))],
+        10: [("seam", dict(flatten=False))]})
+
+    seams = [(event["bar"], event["order"]) for event in cancelled.events
+             if event["kind"] == "cancelled" and event["reason"] == "seam"]
+    assert seams == [(10, 3), (10, 2)]
+    assert cancelled.position == [1.0, 0.0]
+    assert [fill["instrument"] for fill in cancelled.fills] == [0]
+
+    flattened = run(hourly(13), bars, instruments, script={
+        **held, 9: [("seam", dict(flatten=True))], 10: [("seam", dict(flatten=False))]})
+
+    [close] = [fill for fill in flattened.fills if fill["bar"] == 10]
+    assert (close["side"], close["size"], close["reason"]) == ("sell", 1.0, "seam")
+    assert flattened.position == [0.0, 0.0]
+    assert [(event["kind"], event["reason"]) for event in flattened.events
+            if event["bar"] == 9] == [("cancelled", "seam"), ("placed", "seam")]

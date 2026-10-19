@@ -14,7 +14,7 @@ each rule as it applies it, so a test of random cases can show what they reached
 
 Scope: the clock, the step's order of events, market, value, limit and stop
 orders with their time in force, `post_only`, `reduce_only`, brackets, `replace`
-and cancels, `target`, the slot table, maker after the first bar, self-trade
+and cancels, a validation's seams, `target`, the slot table, maker after the first bar, self-trade
 refusal, the worse exit first, the fill model (the trailing window, the liquidity
 budget, the spread, slippage, impact, sizes and dust), fees, funding, the spot and
 margin wallets with transfers, `target` across them, the margin cap with leverage
@@ -1297,6 +1297,37 @@ class Simulator:
                 if instrument is None or o["instrument"] == instrument]
         for order in live:
             self.cancel(order["id"])
+
+        return len(live)
+
+
+    def seam(self, flatten=False):
+        """Validation, Paths and seams: every order not yet filled cancelled with the
+        reason seam, the waiting ones in the order they were placed and then the
+        resting ones by slot, every target forgotten, a transfer already queued kept,
+        and with `flatten` a reduce-only ioc market order closing each instrument's
+        position, in the instruments' order, placed and filled with the reason seam."""
+        live = self.pending + self.resting()
+        if live:
+            self.hit("a seam's cancels")
+
+        for order in live:
+            self.cancel(order["id"], "seam")
+
+        self.asked         = [None] * len(self.instruments)
+        self.wanted        = [None] * len(self.instruments)
+        self.asked_before  = list(self.asked)
+        self.wanted_before = list(self.wanted)
+        self.decided, self.target_legs, self.target_transfer = -1, [], None
+
+        if flatten:
+            for i, q in enumerate(self.position):
+                if q != 0.0:
+                    self.hit("a seam's close", self.t + 1)
+                    order = self.new_order(i, "sell" if q > 0.0 else "buy", "market",
+                                           size=abs(q), tif="ioc", reduce_only=True,
+                                           reason="seam")
+                    self.place_market(order)
 
         return len(live)
 

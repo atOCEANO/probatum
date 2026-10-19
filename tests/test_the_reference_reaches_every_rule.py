@@ -85,6 +85,8 @@ RULES = [
     "a replace",
     "a round trip closed",
     "a sale on the book and its backstop level both reached",
+    "a seam's cancels",
+    "a seam's close",
     "a size rounded down to the lot",
     "a size rounded to no lot refused",
     "a sized leg gone with the position its fill closed",
@@ -420,6 +422,8 @@ def decisions(rng, row, instruments, wallets, rough):
             out.append(("target", dict(weights=weights,
                                        tolerance=rng.choice([0.0, 0.0, 0.3]),
                                        transfer=wallets and rng.random() < 0.5)))
+        elif verb < 0.97:
+            out.append(("seam", dict(flatten=rng.random() < 0.5)))
         elif wallets:
             out.append(("transfer", dict(amount=rng.choice([20.0, 200.0, 5_000.0]),
                                          to=rng.choice(["spot", "margin"]))))
