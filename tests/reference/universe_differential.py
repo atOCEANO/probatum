@@ -3,8 +3,9 @@
 The comparison `differential` makes at one instrument, over universes of two to five
 instruments, spot and linear perpetuals, on one clock. An instrument other than the
 first lists a row or a few late now and then and prints no bar on some rows, so its
-orders wait and its position keeps its mark, and the perpetuals share one margin
-wallet, so the cap, the margin bound and funding run across them. Every fourth
+orders wait and its position keeps its mark, and now and then is delisted, its orders
+cancelled and its position closed at its last close, and the perpetuals share one
+margin wallet, so the cap, the margin bound and funding run across them. Every fourth
 universe is drawn around a shape random ones rarely reach, a stop beside another
 perp that moves against both or a limit filled on its gap, and every eighth around a
 take-profit, on a bar that may liquidate the account or with the account between its
@@ -60,6 +61,29 @@ def universe(rng):
                         else bar for t, bar in enumerate(bars)])
 
     return times, kinds, columns
+
+
+def delistings(seed, case, times, columns):
+    """The bars of case `case` of `seed` with its delistings, and each instrument's
+    delisting time or None, drawn apart from the stream the cases come from: now and
+    then an instrument other than the first, which prints every row, is delisted on a
+    row after its first bar, at that row's open or halfway to it from the row before,
+    and prints nothing from that row on."""
+    draw = random.Random(f"delist {seed} {case}")
+
+    cut, times_of = [columns[0]], [None]
+    for column in columns[1:]:
+        first = next(t for t, bar in enumerate(column) if bar is not None)
+        if draw.random() >= 0.25 or first + 1 >= len(times):
+            cut.append(column)
+            times_of.append(None)
+            continue
+
+        row = draw.randrange(first + 1, len(times))
+        times_of.append(draw.choice([times[row], (times[row - 1] + times[row]) // 2]))
+        cut.append([None if t >= row else bar for t, bar in enumerate(column)])
+
+    return cut, times_of
 
 
 def calm(rng, price):
@@ -841,11 +865,13 @@ def make_reference(times, kinds, columns, cfg, start=0):
     )
 
     own         = cfg.get("fees") or [{}] * len(kinds)
+    delist      = cfg.get("delist") or [None] * len(kinds)
     instruments = [Instrument(f"I{k}", kind=kind, tiers=cfg["tiers"][k][0],
                               tiers_by=cfg["tiers"][k][1], **reference_rules(cfg, k),
                               maker=own[k].get("fee_maker"),
-                              taker=own[k].get("fee_taker"))
+                              taker=own[k].get("fee_taker"), delist=delist[k])
                    for k, kind in enumerate(kinds)]
+
     rows = [[column[t] for column in columns] for t in range(len(times))]
     return Simulator(times, rows, instruments, venue, funding=events, start=start)
 
@@ -857,9 +883,10 @@ def opens(columns):
 
 def venue(cfg):
     """The engine's settings for a universe, as the binding takes them."""
-    rules = cfg.get("rules") or [{}] * len(cfg["kinds"])
-    own   = cfg.get("fees") or [{}] * len(cfg["kinds"])
-    out   = dict(
+    rules  = cfg.get("rules") or [{}] * len(cfg["kinds"])
+    own    = cfg.get("fees") or [{}] * len(cfg["kinds"])
+    delist = cfg.get("delist") or [None] * len(cfg["kinds"])
+    out    = dict(
         market="perp", quote=cfg["balance"], fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
         max_open_orders=cfg["max_open_orders"], leverage=cfg["leverage"],
@@ -867,9 +894,9 @@ def venue(cfg):
         sizes=cfg.get("sizes", False), liquidation_fee=cfg.get("liquidation_fee"),
         **engine_liquidation(cfg.get("liquidation", "takeover")), **engine_fills(cfg),
         instruments=[dict(market="spot" if kind == "spot" else "perp", tiers=rows,
-                          tiers_by=by, **rule, **fee)
-                     for kind, (rows, by), rule, fee
-                     in zip(cfg["kinds"], cfg["tiers"], rules, own)],
+                          tiers_by=by, **rule, **fee, delist=at)
+                     for kind, (rows, by), rule, fee, at
+                     in zip(cfg["kinds"], cfg["tiers"], rules, own, delist)],
     )
 
     source = cfg["funding"]
@@ -1010,6 +1037,7 @@ def compare(cases, seed):
             cfg.update(fees(seed, number, kinds))
             tables = opened(seed, number, [rows for rows, _ in cfg["tiers"]])
             cfg["tiers"] = [(rows, by) for rows, (_, by) in zip(tables, cfg["tiers"])]
+            columns, cfg["delist"] = delistings(seed, number, times, columns)
             case = (times, kinds, columns, cfg, plan(rng, columns, cfg))
 
         case[3].setdefault("intrabar", setting(seed, number))

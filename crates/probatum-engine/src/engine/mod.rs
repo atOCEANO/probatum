@@ -282,6 +282,11 @@ pub struct Engine {
     /// Whether a tier table or the venue's leverage caps each instrument's perp
     /// positions, which holds for the engine's whole life.
     capped: Vec<bool>,
+    /// Whether a row of the series reaches any instrument's delisting time, which
+    /// holds for the engine's whole life, and whether each is delisted by the
+    /// current row.
+    delists: bool,
+    delisted: Vec<bool>,
     /// Where each perp's position started on this bar's path, which decides the
     /// exits a liquidating bar holds back: the open for one carried into the bar or
     /// opened at it, the reference of the fill that opened or flipped it, or of a
@@ -341,6 +346,9 @@ impl Engine {
             fee_maker: config.fee_maker,
         };
         let costs = (0..width).map(|i| candles.fees(i, venue)).collect();
+        let delisted = (0..width).map(|i| candles.delisted(0, i)).collect();
+        let last = candles.len() - 1;
+        let delists = (0..width).any(|i| candles.delisted(last, i));
         let mut engine = Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
@@ -377,6 +385,8 @@ impl Engine {
             notes: Vec::new(),
             maintains,
             capped,
+            delists,
+            delisted,
             starts: vec![f64::NAN; width],
             inside: vec![false; width],
             entered: vec![(f64::NAN, false); width],
@@ -560,6 +570,11 @@ impl Engine {
         self.seams.clear();
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));
         self.mark_from(self.tick);
+        // an instrument whose delisting time the opening row reached opens delisted,
+        // with nothing held or waiting to close
+        for i in 0..self.delisted.len() {
+            self.delisted[i] = self.candles.delisted(self.tick, i);
+        }
         // The id counter deliberately survives a reset. Restarting it made an id
         // handed out in one episode name a live order in the next, so a handle
         // carried across a reset cancelled somebody else's order (ADR 0010).
@@ -745,6 +760,9 @@ impl Engine {
                 self.inside.fill(false);
             }
             self.reach = 0.0;
+            if self.delists {
+                self.delist();
+            }
 
             // 1. pending market orders fill at the open, and a perp they opened, grew
             //    or flipped has its path solved before the resting orders meet the

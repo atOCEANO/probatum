@@ -517,23 +517,28 @@ class Simulator:
         # and whether a fill inside the bar last opened, flipped or grew it (What a bar
         # cannot show); and the fill that opened or flipped it, which the round trip it
         # began counts its entry bar from (Round trips)
-        self.start       = [None] * n
-        self.inside      = [False] * n
-        self.entered     = [(None, False)] * n
-        self.mark        = [None] * n
-        self.history     = [[] for _ in range(n)]  # each instrument's own bars
-        self.listed      = [False] * n
-        self.delisted    = [False] * n
+        self.start   = [None] * n
+        self.inside  = [False] * n
+        self.entered = [(None, False)] * n
+        self.mark    = [None] * n
+        self.history = [[] for _ in range(n)]     # each instrument's own bars
+        self.listed  = [False] * n
+
+        # Time, The clock: an instrument whose delisting time the opening row reached
+        # opens delisted, with nothing held or waiting to close
+        self.delisted = [inst.delist is not None and self.times[start] >= inst.delist
+                         for inst in self.instruments]
+
         self.trip        = [None] * n
         self.trips       = []
-        self.pending     = []                      # market orders, filling at each one's next bar
-        self.slots       = []                      # Orders, Maker, taker and the book: one table
+        self.pending     = []          # market orders, filling at each one's next bar
+        self.slots       = []          # Orders, Maker, taker and the book: one table
         self.transfers   = []
         self.orders      = {}
         self.next_id     = 1
         self.fills       = []
         self.events      = []
-        self.decided     = -1                      # the row whose close the last `target` came from
+        self.decided     = -1          # the row whose close the last `target` came from
         self.target_legs = []
 
         # Orders, Target: the weight the latest target asked of each instrument, or
@@ -974,6 +979,7 @@ class Simulator:
             return "the instrument has not printed its first bar"
 
         if self.delisted[i]:
+            self.hit("an order on a delisted instrument refused")
             return "the instrument is delisted"
 
         if order["size"] is None:
@@ -2404,6 +2410,7 @@ class Simulator:
 
             for order in [o for o in self.pending + self.resting()
                           if o["instrument"] == i]:
+                self.hit("an order cancelled by a delisting")
                 self.cancel(order["id"], "delist")
 
             self.hit("a delisting")
@@ -2411,6 +2418,7 @@ class Simulator:
 
             q = self.position[i]
             if q != 0.0:
+                self.hit("a position closed by a delisting")
                 cash = self.margin_cash
                 self.apply(i, "sell" if q > 0.0 else "buy", abs(q), self.mark[i],
                            rate=0.0, taker=False, order=None, reason="delist",

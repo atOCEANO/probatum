@@ -30,6 +30,7 @@ use probatum_core::{
     Candle, Market, Order, OrderId, OrderType, Side, State, Tier, TierBasis, TierError, Tiers,
     TimeInForce, Wallet,
 };
+use probatum_engine::candles::printed;
 use probatum_engine::reporter::{
     Cause, EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Record, Refusal, Reporter,
 };
@@ -1158,19 +1159,56 @@ fn instruments_from(
                 None => Ok(None),
             }
         };
+        let delist = match given("delist")? {
+            Some(value) => Some(value.extract::<i64>().map_err(|_| {
+                VenueError::new_err(format!(
+                    "instruments[{i}]: delist: {}; give the time in nanoseconds since 1970, \
+                     UTC",
+                    shown(&value)
+                ))
+            })?),
+            None => None,
+        };
         out.push(Instrument {
             market: Some(market),
             tiers,
             sizes: rules.sizes,
             maker: rate("fee_maker")?,
             taker: rate("fee_taker")?,
+            delist,
         });
     }
     Ok(out)
 }
 
+/// Refuse a delisting time on bars with no times, which no row can reach, and one
+/// at or before the open of the instrument's last bar, which would trade it after
+/// the venue delisted it.
+fn delistings(specs: &[Instrument], series: &Candles) -> PyResult<()> {
+    for (i, spec) in specs.iter().enumerate() {
+        let Some(at) = spec.delist else {
+            continue;
+        };
+        let Some(clock) = series.clock() else {
+            return Err(VenueError::new_err(format!(
+                "instruments[{i}]: delist: {at} for candles with no times; pass times="
+            )));
+        };
+        let last = (0..series.len())
+            .rev()
+            .find(|&t| printed(&series.bar(t, i)));
+        if let Some(open) = last.and_then(|t| clock.time(t)).filter(|&open| open >= at) {
+            return Err(VenueError::new_err(format!(
+                "instruments[{i}]: delist: {at}, and its last bar opens at {open}; give a \
+                 time after it"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The settings an instrument of a universe takes by name.
-const SETTINGS: [&str; 12] = [
+const SETTINGS: [&str; 13] = [
     "market",
     "tiers",
     "tiers_by",
@@ -1183,6 +1221,7 @@ const SETTINGS: [&str; 12] = [
     "reduce_only_exempt",
     "fee_maker",
     "fee_taker",
+    "delist",
 ];
 
 /// Reject a fee rate at or below -1. A rebate larger than the notional turns the
@@ -1585,6 +1624,7 @@ fn refusal_text(why: Refusal) -> String {
             format!("it would trade against the account's own order {}", own.0)
         }
         Refusal::Unlisted => "the instrument has not printed its first bar".to_string(),
+        Refusal::Delisted => "the instrument is delisted".to_string(),
         Refusal::Lot { size, lot } => format!("size: {size} rounds to nothing at a lot of {lot}"),
         Refusal::MinNotional { size, least } => {
             format!("size: {size} is below the minimum notional of {least}")
@@ -1672,6 +1712,7 @@ fn reason_text(event: &OrderEvent) -> String {
         EventReason::PositionClosed => "its position closed".to_string(),
         EventReason::PartnerFilled => "its OCO partner filled".to_string(),
         EventReason::Liquidation => "liquidation".to_string(),
+        EventReason::Delist => "delist".to_string(),
     }
 }
 
@@ -2586,11 +2627,12 @@ impl Engine {
     }
 
     /// The fill log as a list of dicts, one per fill in the order they landed, or
-    /// None when reporting is off or below the full level. Each carries its bar and open time, the order
-    /// that made it (None for a forced close), its side, size and price, the
-    /// reference it is measured from, the spread, slippage, impact and adjustment
-    /// beyond that per unit, what of the adjustment the margin bound lifted and what
-    /// it paid in, its fee, whether it took liquidity, and its reason (ADR 0022).
+    /// None when reporting is off or below the full level. Each carries its bar and
+    /// open time, the order that made it (None for a forced close or a delisting's),
+    /// its side, size and price, the reference it is measured from, the spread,
+    /// slippage, impact and adjustment beyond that per unit, what of the adjustment the
+    /// margin bound lifted and what it paid in, its fee, whether it took liquidity, and
+    /// its reason (ADR 0022).
     fn fills<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyList>>> {
         fills_of(py, &self.inner, self.units)
     }
@@ -4310,6 +4352,7 @@ fn build_series(
         backstop,
         liquidation_fee,
     )?;
+    delistings(&specs, &series)?;
     let series = place_funding(
         series.with_instruments(specs),
         funding_rate,

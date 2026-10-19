@@ -1878,12 +1878,22 @@ mod tests {
         // paid in, so the wallet ends at zero
         let mut e = between_the_close_point_and_the_trigger(ohlc(95.0, 95.0, 95.0, 95.0, 1e6), 0.0);
         e.market_sell(10.0);
+        let cash = e.current_state().margin_cash;
         let taker = e.step();
         let charge = e.reporter().expect("reporting is on").ledger()[3]
             .costs
             .liquidation;
         assert!((charge + 0.45).abs() < 1e-9, "the charge was {charge}");
         assert!(taker.margin_cash.abs() < 1e-9, "kept {}", taker.margin_cash);
+        // what the sale put at stake, which the wallet's hair is read against: the
+        // wallet before it, what the bound paid in and the notional
+        let sale = *e
+            .reporter()
+            .expect("reporting is on")
+            .fills()
+            .last()
+            .expect("the sale");
+        assert_eq!(e.reach, cash.abs() + sale.paid_in + sale.size * sale.price);
         // a limit at 95 above an open of 94.96 fills as a maker for no fee, so its
         // close point is the trigger, below the fill: nothing is lifted and the
         // wallet keeps 0.5, where the taker's fee would have paid it 0.45 more

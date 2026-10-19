@@ -23,6 +23,8 @@ pub enum FillReason {
     Liquidation,
     /// A position below half a lot, zeroed at the close, which ends its round trip.
     Dust,
+    /// A position closed at its last close as its instrument was delisted.
+    Delist,
 }
 
 impl FillReason {
@@ -37,6 +39,7 @@ impl FillReason {
             FillReason::Seam => "seam",
             FillReason::Liquidation => "liquidation",
             FillReason::Dust => "dust",
+            FillReason::Delist => "delist",
         }
     }
 }
@@ -49,7 +52,7 @@ pub struct FillRecord {
     pub tick: usize,
     /// The instrument it traded.
     pub instrument: usize,
-    /// The order that filled, or `None` for a forced close.
+    /// The order that filled, or `None` for a forced close or a delisting's close.
     pub order: Option<OrderId>,
     pub side: Side,
     pub size: f64,
@@ -119,6 +122,8 @@ pub enum Refusal {
     SelfTrade(OrderId),
     /// An order on an instrument that has not printed its first bar.
     Unlisted,
+    /// An order on an instrument the venue has delisted.
+    Delisted,
     /// A size that rounds down to no lot.
     Lot { size: f64, lot: f64 },
     /// A size whose notional at the last close falls short of the venue's minimum.
@@ -220,6 +225,8 @@ pub enum EventReason {
     /// Cancelled, placed or filled at a validation's seam.
     Seam,
     Liquidation,
+    /// Cancelled as its instrument was delisted.
+    Delist,
 }
 
 /// One event in an order's life (ADR 0022).

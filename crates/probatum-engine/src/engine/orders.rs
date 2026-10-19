@@ -2,8 +2,8 @@
 //! instrument's next open and a limit or a stop rests in the book until a bar
 //! reaches it, and `resolution` fills both. A size, price or trigger that could
 //! never fill is refused here rather than given a slot, and so is an order on an
-//! instrument that has not printed its first bar, and the order log says why (ADRs
-//! 0007, 0010, 0022).
+//! instrument that has not printed its first bar or is delisted, and the order log
+//! says why (ADRs 0007, 0010, 0022).
 
 use probatum_core::{Order, OrderId, OrderType, Price, Qty, Side, TimeInForce};
 
@@ -215,6 +215,9 @@ impl Engine {
         if self.marks[instrument].is_nan() {
             return self.refuse(id, instrument, given, Refusal::Unlisted);
         }
+        if self.delisted[instrument] {
+            return self.refuse(id, instrument, given, Refusal::Delisted);
+        }
         // The same guard the resting book has carried since ADR 0007, extended to
         // the queue on the day ADR 0010 made the queue a bounded resource too. A
         // size that can never fill used to take a slot anyway, so two of them ahead
@@ -253,15 +256,18 @@ impl Engine {
     }
 
     /// Why a limit or a stop could not rest as `order`, or `None`: an instrument
-    /// that has not printed its first bar, a size, price or trigger that can never
-    /// fill, a full share of the book, a limit that would trade against the
-    /// account's own, or a post_only limit that would cross. `replacing` is the
-    /// order a replace moves, whose slot has just been given up (ADRs 0007, 0010,
-    /// 0011).
+    /// that has not printed its first bar or is delisted, a size, price or trigger
+    /// that can never fill, a full share of the book, a limit that would trade
+    /// against the account's own, or a post_only limit that would cross. `replacing`
+    /// is the order a replace moves, whose slot has just been given up (ADRs 0007,
+    /// 0010, 0011).
     fn resting_refusal(&mut self, order: &mut Order, replacing: Option<&Order>) -> Option<Refusal> {
         let last = self.marks[order.instrument];
         if last.is_nan() {
             return Some(Refusal::Unlisted);
+        }
+        if self.delisted[order.instrument] {
+            return Some(Refusal::Delisted);
         }
         // A size that is not a positive finite number can never fill (ADR 0014), so
         // it is refused a slot rather than resting inert forever. A non-finite price
@@ -471,6 +477,9 @@ impl Engine {
         if self.marks[instrument].is_nan() {
             return self.refuse(id, instrument, given, Refusal::Unlisted);
         }
+        if self.delisted[instrument] {
+            return self.refuse(id, instrument, given, Refusal::Delisted);
+        }
         if !positive(amount) {
             return self.refuse(id, instrument, given, Refusal::Amount(amount));
         }
@@ -568,7 +577,7 @@ impl Engine {
     }
 
     /// Cancel an order not yet filled by id, the cancel logged for `reason`.
-    fn cancel_for(&mut self, id: OrderId, reason: EventReason) -> bool {
+    pub(super) fn cancel_for(&mut self, id: OrderId, reason: EventReason) -> bool {
         let order = match self.book.cancel(id) {
             Some(order) => order,
             None => {

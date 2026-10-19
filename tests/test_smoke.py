@@ -646,6 +646,13 @@ def test_a_universe_of_one_keeps_an_instrument_column_per_instrument():
      "instruments[0]: fee_taker: -1.5; give a rate above -1"),
     (None, {"instruments": [{}, {"fee_maker": "low"}]}, {}, VenueError,
      "instruments[1]: fee_maker: 'low'; give a number"),
+    (None, {"instruments": [{"delist": "soon"}, {}]}, {}, VenueError,
+     "instruments[0]: delist: 'soon'; give the time in nanoseconds since 1970, UTC"),
+    (None, {"instruments": [{}, {"delist": 10}]}, {}, VenueError,
+     "instruments[1]: delist: 10 for candles with no times; pass times="),
+    (None, {"instruments": [{}, {"delist": 20}], "times": np.array([0, 10, 20])}, {},
+     VenueError, "instruments[1]: delist: 20, and its last bar opens at 20; give a "
+                 "time after it"),
     (None, {"funding_instruments": [None]}, {}, DataError,
      "given without funding_times"),
     (None, {"funding_instruments": [-1]}, {}, DataError,

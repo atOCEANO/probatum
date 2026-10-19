@@ -2,7 +2,7 @@
 //! and when reporting is on it is logged with what it paid and carried into the
 //! round trips, each of which holds every fee of its own fills (ADRs 0022, 0023).
 
-use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Side};
+use probatum_core::{Candle, CostModel, Fill, Market, OrderId, Price, Qty, Side};
 
 use super::path::FillNote;
 use super::{Engine, CLOSE_EPS};
@@ -103,22 +103,8 @@ impl Engine {
         let spot = self.account.spot_cash;
         self.account.margin_cash += credit;
         self.account.apply_fill(i, &fill, fee);
-        // a close that leaves no perp held where the margin ran out leaves the wallet
-        // at the zero exact arithmetic gives, which floating point misses by a hair
-        // either side, and a hair above zero is equity the cap levers; a wallet
-        // within the rounding of the money the bar's perp fills put at stake is set
-        // to zero, as a takeover sets it, and the hair is the liquidation charge
-        // (ADRs 0015, 0018)
         if perp {
-            self.reach += cash.abs() + credit + applied * fill.price.get();
-            if self.account.perps_held() == 0
-                && self.account.margin_cash.abs() <= 1e-12 * self.reach
-            {
-                if let Some(reporter) = self.reporter.as_mut() {
-                    reporter.costs_mut().liquidation += self.account.margin_cash;
-                }
-                self.account.margin_cash = 0.0;
-            }
+            self.margin_hair(cash.abs() + credit + applied * fill.price.get());
             let (held, entry, _) = before;
             let signed = fill.side.sign() * applied;
             let closed = if held * signed < 0.0 {
@@ -234,6 +220,7 @@ impl Engine {
             FillReason::Seam => EventReason::Seam,
             FillReason::Liquidation => EventReason::Liquidation,
             FillReason::Dust => unreachable!("dust is swept at the close, never filled"),
+            FillReason::Delist => unreachable!("a delisting closes with no order"),
         };
         self.log_event(
             EventKind::Filled,
@@ -342,6 +329,24 @@ impl Engine {
         }
     }
 
+    /// Put `staked` of a perp fill at stake on the bar: the margin wallet before it,
+    /// what the bound paid in and its notional. A close that leaves no perp held where
+    /// the margin ran out leaves the wallet at the zero exact arithmetic gives, which
+    /// floating point misses by a hair either side, and a hair above zero is equity
+    /// the cap levers; a wallet within the rounding of the money the bar's perp fills
+    /// put at stake is set to zero, as a takeover sets it, and the hair is the
+    /// liquidation charge (ADRs 0015, 0018).
+    #[inline(always)]
+    fn margin_hair(&mut self, staked: f64) {
+        self.reach += staked;
+        if self.account.perps_held() == 0 && self.account.margin_cash.abs() <= 1e-12 * self.reach {
+            if let Some(reporter) = self.reporter.as_mut() {
+                reporter.costs_mut().liquidation += self.account.margin_cash;
+            }
+            self.account.margin_cash = 0.0;
+        }
+    }
+
     /// Set a spot wallet that a fill of `notional` left a hair below zero, as a cash
     /// clamp or a lot's tolerance can, by no more than a hundred-millionth of that
     /// notional, to zero, the hair booked as a negative dust adjustment, so the wallet
@@ -383,19 +388,94 @@ impl Engine {
             self.disarm(i, None);
         }
     }
+
+    /// Delist each instrument whose delisting time the row reached (Specification,
+    /// The clock): its orders cancelled, those waiting for their open in the order
+    /// they were placed and then the resting ones by slot, and its position closed
+    /// before the bar opens, at its last close and with no fee.
+    pub(super) fn delist(&mut self) {
+        for i in 0..self.delisted.len() {
+            if self.delisted[i] || !self.candles.delisted(self.tick, i) {
+                continue;
+            }
+            self.delisted[i] = true;
+            let ids: Vec<OrderId> = self
+                .pending
+                .iter()
+                .chain(self.book.iter())
+                .filter(|order| order.instrument == i)
+                .map(|order| order.id)
+                .collect();
+            for id in ids {
+                self.cancel_for(id, EventReason::Delist);
+            }
+            let q = self.account.positions[i].qty.get();
+            if q == 0.0 {
+                continue;
+            }
+            let side = if q > 0.0 { Side::Sell } else { Side::Buy };
+            let (size, mark, reason) = (q.abs(), self.marks[i], FillReason::Delist);
+            let fill = Fill {
+                side,
+                size: Qty(size),
+                price: Price(mark),
+                is_taker: false,
+            };
+            let before = self.before_fill(i);
+            let perp = self.account.markets[i] == Market::Perp;
+            let (cash, spot) = (self.account.margin_cash, self.account.spot_cash);
+            self.account.apply_fill(i, &fill, 0.0);
+            if perp {
+                self.margin_hair(cash.abs() + size * mark);
+            }
+            // the close empties the position, so the bar's check holds no leg of it
+            // and no order meets the bar from where it started
+            self.book_fill(i, size, mark, 0.0, before, reason, Moment::BeforeOpen);
+            if let Some(reporter) = self.reporter.as_mut() {
+                reporter.record_fill(FillRecord {
+                    tick: self.tick,
+                    instrument: i,
+                    order: None,
+                    side,
+                    size,
+                    price: mark,
+                    costs: FillCosts {
+                        reference: mark,
+                        ..FillCosts::default()
+                    },
+                    lifted: 0.0,
+                    paid_in: 0.0,
+                    fee: 0.0,
+                    taker: false,
+                    reason,
+                });
+                if perp {
+                    reporter.flow(i, self.account.margin_cash - cash);
+                    if self.account.perps_held() == 0 {
+                        reporter.set_closer(i);
+                    }
+                } else {
+                    reporter.flow(i, self.account.spot_cash - spot);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Moment;
     use crate::candles::{Candles, Instrument};
+    use crate::clock::Clock;
     use crate::engine::fixtures::{
-        cfg, crash_series, flat_series, levered, ohlc, perp_cfg, report_cfg, series,
+        cfg, crash_series, flat_series, levered, ohlc, perp_cfg, report_cfg, series, ABSENT,
     };
     use crate::engine::CLOSE_EPS;
     use crate::engine::{Engine, EngineConfig};
     use crate::execution::FillCosts;
-    use crate::reporter::{BarCosts, EventKind, FillReason, FillRecord, RoundTrip};
+    use crate::reporter::{
+        BarCosts, EventKind, EventReason, FillReason, FillRecord, OrderEvent, Refusal, RoundTrip,
+    };
     use crate::sizes::Sizes;
     use probatum_core::{
         Candle, Fill, Market, OrderId, OrderType, Price, Qty, Side, TimeInForce, Wallet,
@@ -1588,5 +1668,194 @@ mod tests {
             (fees[0] - 30.0).abs() < 1e-9 && (fees[1] - 15.0).abs() < 1e-9,
             "{fees:?}"
         );
+    }
+
+    /// The Specification's delisting: hourly rows from 10:00, the first instrument
+    /// delisted at 12:00, its last bar opening at 11:00 and closing at 50, and the
+    /// second printing every row, both of `market`, every fill paying 0.1%.
+    fn delisting(market: Market) -> Engine {
+        let hour = 3_600_000_000_000;
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = [
+            [flat(48.0), flat(10.0)],
+            [ohlc(49.0, 51.0, 48.5, 50.0, 1e6), flat(10.0)],
+            [ABSENT, flat(10.0)],
+            [ABSENT, flat(10.0)],
+        ];
+        let clock = Clock::new((10..14).map(|h| h * hour).collect::<Vec<_>>());
+        let old = Instrument {
+            market: Some(market),
+            delist: Some(12 * hour),
+            ..Instrument::default()
+        };
+        let new = Instrument {
+            market: Some(market),
+            ..Instrument::default()
+        };
+        let bars =
+            Candles::universe(rows.concat(), 2, Some(clock)).with_instruments(vec![old, new]);
+        let config = EngineConfig {
+            market,
+            quote: 1_000.0,
+            fee_taker: 0.001,
+            fee_maker: 0.001,
+            report: true,
+            ..cfg()
+        };
+        Engine::new(bars, config)
+    }
+
+    fn on(e: &mut Engine, i: usize, kind: OrderType, price: Option<f64>) -> Option<OrderId> {
+        let gtc = TimeInForce::Gtc;
+        e.order_on(i, Side::Buy, 1.0, kind, price, None, false, false, gtc)
+    }
+
+    #[test]
+    fn a_delisting_closes_the_position_at_its_last_close_with_no_fee() {
+        // a long of 2 bought at 49 closes on the 12:00 row at 50 with no fee, and the
+        // market order waiting on it is cancelled before the bid resting since 11:00,
+        // where the other instrument's bid rests on
+        for kind in [Market::Spot, Market::Perp] {
+            let mut e = delisting(kind);
+            e.reset();
+            let (market, ioc) = (OrderType::Market, TimeInForce::Ioc);
+            e.order_on(0, Side::Buy, 2.0, market, None, None, false, false, ioc);
+            e.step();
+            let bid = on(&mut e, 0, OrderType::Limit, Some(40.0)).expect("resting");
+            let waiting = on(&mut e, 0, OrderType::Market, None).expect("waiting");
+            assert!(on(&mut e, 1, OrderType::Limit, Some(5.0)).is_some());
+            let cash = e.current_state().margin_cash;
+            e.step();
+            assert_eq!(e.position(0), 0.0);
+            // a perp's close puts the wallet before it and its notional at stake, and
+            // leaving no perp held, its instrument takes any deficit set to zero later
+            let perp = kind == Market::Perp;
+            assert_eq!(e.reach, if perp { cash.abs() + 2.0 * 50.0 } else { 0.0 });
+            let reporter = e.reporter().expect("reporting is on");
+            assert_eq!(reporter.closer(), perp.then_some(0));
+            // the long's wallet lost 98.098 to it, or its fee of 0.098 on a perp, and its
+            // close gave back 100, or the 2 it realized
+            assert!(
+                (reporter.flow_of(0) - 1.902).abs() < 1e-9,
+                "{}",
+                reporter.flow_of(0)
+            );
+            let last = *fills(&e).last().expect("a fill");
+            assert_eq!(
+                (last.tick, last.order, last.side, last.size, last.price, last.fee),
+                (2, None, Side::Sell, 2.0, 50.0, 0.0)
+            );
+            assert_eq!((last.taker, last.reason), (false, FillReason::Delist));
+            assert_eq!(last.costs.reference, 50.0);
+            let cancelled: Vec<(Option<OrderId>, EventReason)> = events(&e)
+                .iter()
+                .filter(|event| event.kind == EventKind::Cancelled)
+                .map(|event| (event.order, event.reason))
+                .collect();
+            let delist = EventReason::Delist;
+            assert_eq!(
+                cancelled,
+                vec![(Some(waiting), delist), (Some(bid), delist)]
+            );
+            // 1,000 less 98 and its fee of 0.098 for the long, plus 100 for its close
+            assert!((e.equity() - 1_001.902).abs() < 1e-9, "{}", e.equity());
+            let [trip] = trips(&e) else {
+                panic!("one round trip");
+            };
+            assert_eq!(
+                (trip.close_tick, trip.exit, trip.reason),
+                (Some(2), 50.0, Some(FillReason::Delist))
+            );
+            assert!((trip.fees - 0.098).abs() < 1e-12, "{}", trip.fees);
+        }
+    }
+
+    #[test]
+    fn an_order_on_a_delisted_instrument_is_refused_from_the_row_that_delists_it() {
+        let refused = |e: &Engine| events(e).last().map(|event| event.reason);
+        let delisted = Some(EventReason::Refused(Refusal::Delisted));
+        let mut e = delisting(Market::Perp);
+        e.reset();
+        e.step();
+        assert!(on(&mut e, 0, OrderType::Market, None).is_some());
+        e.step();
+        assert_eq!(on(&mut e, 0, OrderType::Market, None), None);
+        assert_eq!(refused(&e), delisted);
+        assert_eq!(on(&mut e, 0, OrderType::Limit, Some(40.0)), None);
+        assert_eq!(refused(&e), delisted);
+        assert_eq!(
+            e.order_value(0, Side::Buy, 100.0, false, TimeInForce::Ioc),
+            None
+        );
+        assert_eq!(refused(&e), delisted);
+        assert!(on(&mut e, 1, OrderType::Market, None).is_some());
+        // an account opened on the delisting row opens with it delisted, and one
+        // opened the row before does not
+        e.reset_at(2);
+        assert_eq!(on(&mut e, 0, OrderType::Market, None), None);
+        assert_eq!(refused(&e), delisted);
+        e.reset_at(1);
+        assert!(on(&mut e, 0, OrderType::Market, None).is_some());
+    }
+
+    #[test]
+    fn a_margin_wallet_within_a_trillionth_of_the_stake_is_set_to_zero() {
+        // with no perp held, a stake of 1,000 reads 2e-10 in the wallet as a hair, and
+        // the bar's stake of 2,000 after a second reads 3e-9 as money the wallet keeps
+        let mut e = Engine::new(flat_series(), levered());
+        e.reset();
+        e.account.margin_cash = 2e-10;
+        e.margin_hair(1_000.0);
+        assert_eq!(e.account.margin_cash, 0.0);
+        e.account.margin_cash = 3e-9;
+        e.margin_hair(1_000.0);
+        assert_eq!(e.account.margin_cash, 3e-9);
+    }
+
+    #[test]
+    fn a_delisting_that_empties_the_margin_wallet_sets_its_rounding_to_zero() {
+        // a long of 1 bought at 0.3 on a wallet of 0.1 and closed at 0.2 leaves the
+        // 2.8e-17 by which 0.1 - 0.09999999999999998 misses zero, which the liquidation
+        // charge takes
+        let hour = 3_600_000_000_000;
+        let flat = |price| ohlc(price, price, price, price, 1e6);
+        let rows = [
+            [flat(0.3), flat(10.0)],
+            [ohlc(0.3, 0.3, 0.2, 0.2, 1e6), flat(10.0)],
+            [ABSENT, flat(10.0)],
+        ];
+        let clock = Clock::new((10..13).map(|h| h * hour).collect::<Vec<_>>());
+        let perp = Instrument {
+            market: Some(Market::Perp),
+            ..Instrument::default()
+        };
+        let old = Instrument {
+            delist: Some(12 * hour),
+            ..perp.clone()
+        };
+        let bars =
+            Candles::universe(rows.concat(), 2, Some(clock)).with_instruments(vec![old, perp]);
+        let config = EngineConfig {
+            market: Market::Perp,
+            quote: 0.1,
+            report: true,
+            ..cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let (market, ioc) = (OrderType::Market, TimeInForce::Ioc);
+        e.order_on(0, Side::Buy, 1.0, market, None, None, false, false, ioc);
+        e.step();
+        assert_eq!(e.position(0), 1.0);
+        e.step();
+        assert_eq!(e.current_state().margin_cash, 0.0);
+        let charged = e.reporter().expect("reporting is on").ledger()[2]
+            .costs
+            .liquidation;
+        assert!(charged > 0.0 && charged < 1e-15, "{charged}");
+    }
+
+    fn events(e: &Engine) -> &[OrderEvent] {
+        e.reporter().expect("reporting is on").events()
     }
 }

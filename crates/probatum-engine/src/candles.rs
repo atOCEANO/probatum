@@ -26,6 +26,9 @@ pub struct Instrument {
     pub maker: Option<f64>,
     /// Its own taker rate, or `None` for the venue's.
     pub taker: Option<f64>,
+    /// When the venue delisted it, in UTC nanoseconds, or `None` (Specification, The
+    /// clock).
+    pub delist: Option<i64>,
 }
 
 /// An immutable OHLCV series, or a universe of them, shared cheaply across envs.
@@ -85,9 +88,14 @@ impl Candles {
     }
 
     /// The same universe with what the venue says about each instrument. Panics
-    /// unless there is one per instrument.
+    /// unless there is one per instrument, and where one has a delisting time on a
+    /// series without a clock, which has no time to delist it at.
     pub fn with_instruments(mut self, instruments: Vec<Instrument>) -> Candles {
         assert_eq!(instruments.len(), self.width, "one spec per instrument");
+        assert!(
+            self.clock.is_some() || instruments.iter().all(|spec| spec.delist.is_none()),
+            "a delisting time needs a clock"
+        );
         self.instruments = instruments.into();
         self
     }
@@ -159,6 +167,15 @@ impl Candles {
     /// Instrument `i`'s size and price rules.
     pub fn sizes(&self, i: usize) -> Sizes {
         self.instruments[i].sizes
+    }
+
+    /// Whether instrument `i` is delisted by row `t`: whether `t` opens at or after
+    /// its delisting time.
+    pub fn delisted(&self, t: usize, i: usize) -> bool {
+        match (self.instruments[i].delist, &self.clock) {
+            (Some(at), Some(clock)) => clock.time(t).is_some_and(|open| open >= at),
+            _ => false,
+        }
     }
 
     /// Instrument `i`'s fee rates, each its own where it has one and the venue's
@@ -270,7 +287,7 @@ pub fn printed(bar: &Candle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::Candles;
+    use super::{Candles, Instrument};
     use crate::clock::Clock;
     use probatum_core::Candle;
 
@@ -355,6 +372,33 @@ mod tests {
     #[should_panic(expected = "whole rows")]
     fn bars_that_do_not_fill_whole_rows_are_refused() {
         Candles::universe(series(5).as_slice().to_vec(), 3, None);
+    }
+
+    #[test]
+    fn an_instrument_is_delisted_from_the_first_row_at_or_after_its_time() {
+        let delisted = Instrument {
+            delist: Some(10),
+            ..Instrument::default()
+        };
+        let clock = Clock::new(vec![0, 10, 20]);
+        let universe = Candles::universe(series(6).as_slice().to_vec(), 2, Some(clock))
+            .with_instruments(vec![delisted, Instrument::default()]);
+        assert_eq!(
+            (0..3).map(|t| universe.delisted(t, 0)).collect::<Vec<_>>(),
+            vec![false, true, true]
+        );
+        assert!((0..3).all(|t| !universe.delisted(t, 1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "a delisting time needs a clock")]
+    fn a_delisting_time_on_bars_without_times_is_refused() {
+        let delisted = Instrument {
+            delist: Some(10),
+            ..Instrument::default()
+        };
+        Candles::universe(series(4).as_slice().to_vec(), 2, None)
+            .with_instruments(vec![delisted, Instrument::default()]);
     }
 
     #[test]

@@ -534,7 +534,7 @@ eng = probatum._probatum.Engine(
     min_notional=0.0,        # the smallest notional an order may have
     max_qty=None,            # the largest size an order may have
     reduce_only_exempt=False,  # True spares a reduce-only order the minimum notional
-    instruments=None,        # a universe's market, tiers, size rules and fees, a dict each
+    instruments=None,        # a universe's market, tiers, size rules, fees and delist, a dict each
     intrabar="pessimistic",  # how what a bar cannot show is decided, "optimistic" or "random"
     seed=None,               # the run's seed, which "random" draws from
     contract=None,           # the dollars one inverse contract is worth
@@ -548,7 +548,7 @@ eng = probatum._probatum.Engine(
 
 **A venue's sizes hold every order to its instrument's grid.** With `sizes=True` a size is rounded down to the `lot` when it is placed, and so is every fill after its clamps, and an order that rounds to no lot is refused; a limit or a trigger is rounded to the `tick`, or to `sigfigs` significant figures within `decimals` decimals, Hyperliquid's rule, where a whole-number price is always allowed and an asset with `n` size decimals takes a lot of `10**-n` and `decimals` of `6 - n` on a perpetual and `8 - n` on spot; an order below `min_notional` at the last close is refused, a reduce-only one spared where `reduce_only_exempt` says the venue spares it; one above `max_qty` is held to it, rounded down to the lot; and a position floating point leaves below half a lot is zeroed at the close as dust. On an inverse contract the lot and `max_qty` are in contracts, the tick in dollars and `min_notional` in the coin. `limit="through"` fills a limit only once its bar trades half a step of the price rule past it, and with no price rule it fills on touch ([Specification](Specification.md#sizes-and-dust)).
 
-**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers`, `tiers_by`, size rules and, where it charges apart from the venue, its own `fee_maker`, `fee_taker` or both, a side it leaves out charging the venue's rate, or `market`, `tiers` and the size rules for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
+**A universe of N instruments shares one account.** Pass `(T, N, 5)` candles, NaN in all five values where an instrument printed no bar, with `instruments`, a dict per instrument giving its `market`, `tiers`, `tiers_by`, size rules and, where it charges apart from the venue, its own `fee_maker`, `fee_taker` or both, a side it leaves out charging the venue's rate, and where the venue delisted it, its `delist` time in nanoseconds since 1970, which needs `times=` and comes after the open of its last bar, or `market`, `tiers` and the size rules for every one. Each instrument fills on its own bar and waits where it printed none, `target` brings each to its weight of equity, and the views carry an instrument axis: `shape` is `(T, N, 5)`, `data` and `observation` are `(T, N, 5)` and `(rows, N, 5)`, and `closes` and its companions `(T, N)`. The order shortcuts trade the first instrument, and the state `step` returns reads its position and bar beside the account.
 
 **An inverse contract is counted in its coin.** `market="inverse"` with `contract=`, the dollars one contract is worth, takes one instrument's `(T, 5)` candles, quoted in dollars. Sizes are contracts and prices are dollars, as the venue quotes them, while `quote`, equity, fees, funding and every other sum are in the coin, a taker's costs among them, each its rate of the coin notional ([Specification](Specification.md#inverse-contracts)). The account holds that one contract in one wallet, so there is no `transfer`, `qty_from_quote(cash)` is `cash / contract` contracts at any price, and the ledger's `equity_in_quote` values equity in dollars at each close ([ADR 0016](Decisions.md)).
 
@@ -733,7 +733,7 @@ Each entry in `trades()` is one round trip: a maximal run of one sign, from the 
 | `pnl` | Its net PnL: `realized` less `fees` and `funding`, and for one still open what it holds at the last close as well. The trade statistics are built from it, so they reproduce from the log. |
 | `ret` | `pnl` over `size * entry`. |
 | `best`, `worst` | How far its side's price went for it and against it, as a fraction of `entry`, over the part of each bar it was in: its entry bar from the fill to the close, its exit bar from the open to the fill, and every bar between whole. They are bounds that never overstate, since nothing inside a bar says when its high and its low came ([ADR 0023](Decisions.md)). |
-| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance`, `seam`, `liquidation` or `dust`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
+| `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance`, `seam`, `liquidation`, `dust` or `delist`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
 | `open` | True for the round trip still open at the end. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.
@@ -768,16 +768,16 @@ Each entry in `fills()` is one fill, forced closes included ([ADR 0022](Decision
 | :--- | :--- |
 | `bar`, `time` | The bar it landed on, and that bar's open time when the engine was built with `times=`, else `None`. |
 | `instrument` | The instrument, 0 with one. |
-| `order` | The id of the order that filled, or `None` for a forced close. |
+| `order` | The id of the order that filled, or `None` for a forced close or a delisting's close. |
 | `side`, `size`, `price` | What filled, and at what price. |
-| `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, a limit's own price or the price the market reached it at since the last close, and for a forced close its price where the margin ran out. |
+| `reference` | The price the fill is measured from: the open for a market order, the worse of the open and the trigger for a stop, a limit's own price or the price the market reached it at since the last close, for a forced close its price where the margin ran out, and for a delisting's close its instrument's last close. |
 | `spread`, `slippage`, `impact` | What it paid beyond the reference, in price, each its share of how far the price moved before the bar held it. |
 | `fee` | The fee, in quote. |
 | `adjustment` | How far the price then moved: held back inside the bar, or lifted by the margin bound. |
 | `lifted` | The part of the adjustment the margin bound applied, per unit, so `adjustment - lifted` is the bar's hold; in dollars on an inverse account, and zero for a forced close. |
 | `paid_in` | What the margin bound paid into the margin wallet for the part of its lift the bar could not hold, in the account's asset, never below zero. |
-| `taker` | True when the fill took liquidity. A takeover is the venue's and is not; a sale on the book is. |
-| `reason` | `market`, `limit`, `stop`, `take_profit` for a bracket's take-profit, `rebalance` for a leg of a `target`, `seam` for a close at a validation's seam, or `liquidation`. |
+| `taker` | True when the fill took liquidity. A takeover is the venue's and is not, nor is a delisting's close; a sale on the book is. |
+| `reason` | `market`, `limit`, `stop`, `take_profit` for a bracket's take-profit, `rebalance` for a leg of a `target`, `seam` for a close at a validation's seam, `liquidation`, or `delist` for the close of a position its instrument's delisting ended. |
 
 ### The order log
 
@@ -791,7 +791,7 @@ Each entry in `order_log()` is one event in an order's life ([ADR 0022](Decision
 | `side` | `buy` or `sell`, what a placed, refused or armed event's order asked, else `None`, as for a bracket's leg until it arms. |
 | `size` | What a fill or a clamp came to, what a placed or armed order asks in all, or what a refused call gave, else `None`, as for a value order on spot or a linear contract and a bracket's leg that closes the position it finds. |
 | `price` | What a fill was booked at, or a placed or armed limit's price or stop's trigger on the price rule, else `None`. |
-| `reason` | Why, in words: `max_open_orders: 8 already resting`, `the spot wallet's cash allows 5 of the 20 asked`, `nothing could fill: the liquidity budget allows none`, `ioc: one bar`, `liquidation`. |
+| `reason` | Why, in words: `max_open_orders: 8 already resting`, `the spot wallet's cash allows 5 of the 20 asked`, `nothing could fill: the liquidity budget allows none`, `ioc: one bar`, `liquidation`, `delist`, `the instrument is delisted`. |
 
 A refused placement still returns `None`, and the log holds it under the id it would have had, with its reason. A clamp, a market order's miss and a `fok` market order that could not fill whole each name the rule that held them ([Specification](Specification.md#the-fill-log-and-the-order-log)): `the liquidity budget`, `reduce_only`, `the spot wallet's holding`, `the spot wallet's cash`, `the margin wallet's equity`, `the largest position`, which is the last tier's bound, or `the margin cap`, as in `fok: the margin cap allows 3.3333333333333335 of the 5 asked`; a market order that nothing could fill reads `nothing could fill: the bar printed no volume` or `nothing could fill: the size is below what a fill can book` where no rule held it. An `ioc` limit a rule empties, or a `fok` limit one holds short of its size, logs nothing on its bar and expires as `ioc: one bar` or `fok: one bar`. A hold to the largest order reads `the maximum order quantity allows 1 of the 5 asked`, and a clamped transfer names the wallet it leaves, as in `transfer: the spot wallet's cash allows 600 of the 1000 asked` or `transfer: the margin wallet's free cash allows 600 of the 1000 asked`. The numbers are printed as the engine holds them, with no unit.
 
