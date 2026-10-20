@@ -17,10 +17,11 @@ from ._errors import (DataError, ProbatumAttributeError, ProbatumKeyError,
 from ._space import _flag, _number, _whole
 from ._streams import stream
 
-__all__ = ["AlphaBeta", "Difference", "Interval", "Permutations", "Probability",
-           "Statistics", "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap",
-           "effective_sample", "min_track_record_length", "probabilistic_sharpe",
-           "sharpe", "sharpe_difference", "sharpe_interval", "trade_order"]
+__all__ = ["AlphaBeta", "Consistency", "Decay", "Difference", "Interval", "Permutations",
+           "Probability", "Statistics", "TrackRecord", "alpha_beta", "autocorrelation",
+           "bootstrap", "effective_sample", "min_track_record_length",
+           "probabilistic_sharpe", "sharpe", "sharpe_difference", "sharpe_interval",
+           "trade_order"]
 
 NORMAL   = statistics.NormalDist()
 ROUNDING = 1e-20     # a standardised influence's variance below this is rounding
@@ -47,6 +48,21 @@ RETURNS = {
 }
 # the statistics read on the growth a bar, which a return of -100% leaves undefined
 GROWTH = ("total_return_pct", "net_profit_pct", "cagr_pct")
+# the score past which a stretch of a run gains, for the objectives that have one
+BREAK_EVEN = {
+    "sharpe":           0.0,
+    "sortino":          0.0,
+    "calmar":           0.0,
+    "total_return_pct": 0.0,
+    "net_profit_pct":   0.0,
+    "cagr_pct":         0.0,
+    "avg_trade_pct":    0.0,
+    "profit_factor":    1.0,
+}
+# the objectives that grow with the span they are scored on, whose decay would measure
+# the spans' lengths
+GROWS = ("total_return_pct", "net_profit_pct", "max_drawdown_pct", "num_trades",
+         "num_fills", "funding_paid")
 # the statistics a bootstrap of the closed round trips serves: words, unit and method
 TRADES = {
     "win_rate":      ("win rate", "", "percentile bootstrap of round trips"),
@@ -307,6 +323,64 @@ class Permutations(_Frozen):
                 f"middle 95% {self.losing_run_low} to {self.losing_run_high}; each trip "
                 f"compounds its return on the equity it opened on, and what the account "
                 f"marked inside a trade is left out")
+
+
+class Consistency(_Frozen):
+    """How a fit's score holds up across a run: ``scores``, each part's in order, the
+    ``unit`` its parts are, stretches of a search's winner or a validation's windows;
+    ``break_even``, the score past which a part gains, None for an objective that has
+    none; ``share``, the share of parts past it in the ``direction`` the search went,
+    None without one; and the ``objective``."""
+
+    __slots__ = ("scores", "unit", "break_even", "share", "objective", "direction")
+
+
+    def __init__(self, scores, unit, break_even, share, objective, direction):
+        self._set(
+            scores     = tuple(float(score) for score in scores),
+            unit       = unit,
+            break_even = None if break_even is None else float(break_even),
+            share      = None if share is None else float(share),
+            objective  = objective,
+            direction  = direction,
+        )
+
+
+    def __str__(self):
+        flip   = -1.0 if _shown(self.objective)[2] else 1.0
+        listed = ", ".join(f"{flip * score + 0.0:.2f}" for score in self.scores)
+        if self.share is None:
+            return (f"{self.objective} has no break-even, so no part gains or loses: "
+                    f"{listed}")
+
+        past = round(self.share * len(self.scores))
+        side = "above" if self.direction == "maximize" else "below"
+        return (f"{past} of {len(self.scores)} {self.unit} scored {side} "
+                f"{self.break_even:g}: {listed}")
+
+
+class Decay(_Frozen):
+    """How far fits fell on the bars they had not seen: ``gaps``, each fit's score less
+    what its bars then earned, signed so that a positive gap is worse out of sample in
+    either ``direction``, and ``mean``, their mean, in the ``objective``."""
+
+    __slots__ = ("gaps", "mean", "objective", "direction")
+
+
+    def __init__(self, gaps, mean, objective, direction):
+        self._set(
+            gaps      = tuple(float(gap) for gap in gaps),
+            mean      = float(mean),
+            objective = objective,
+            direction = direction,
+        )
+
+
+    def __str__(self):
+        listed  = ", ".join(f"{gap:.2f}" for gap in self.gaps)
+        counted = f"{len(self.gaps)} gap{'s' * (len(self.gaps) != 1)}"
+        return (f"decay {self.mean:.2f} in {self.objective}, the mean of {counted} "
+                f"between what a fit scored and what its bars then earned: {listed}")
 
 
 class Statistics(Mapping):

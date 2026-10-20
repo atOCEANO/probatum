@@ -14,6 +14,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+import textwrap
 import warnings
 
 import numpy as np
@@ -26,11 +27,14 @@ from ._errors import (DataError, PolicyError, ProbatumAttributeError,
                       ProbatumNotImplementedError, ProbatumRuntimeError,
                       ProbatumTypeError, ProbatumValueError, ProbatumWarning)
 from ._probatum import Engine, Table as _Held, run_array, run_arrays, stats_of, threads
-from ._result import COUNTS, STATS, Table, _environment, _returns, _text, _version
+from ._result import (COSTS, COUNTS, STATS, Table, _environment, _money, _returns,
+                      _text, _version)
 from ._samplers import _Grid, _Random, _Tpe
 from ._space import Categorical, Float, Int, _whole
 from ._strategy import Strategy, _Run, _play
 from ._venue import _run
+from .stats import (BREAK_EVEN, GROWS, RETURNS, TRADES, Consistency, Decay, _percent,
+                    bootstrap, sharpe_interval)
 
 LOGGER     = logging.getLogger("probatum")
 SAMPLERS   = ("tpe", "random", "grid")
@@ -152,7 +156,7 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
 
     LOGGER.info("search: %s complete of %s; the best, trial %s, %s %.6g",
                 sum(trial.state == "complete" for trial in made), len(made),
-                winner.number, objective, winner.score)
+                winner.number, objective, _signed(objective) * winner.score + 0.0)
 
     provenance = dict(
         kind="trials", policy=named,
@@ -202,7 +206,8 @@ def _asked(runner, draws, sampler, keep, resolved, checked, pooled, check):
             made.append(trial)
             LOGGER.debug("search: trial %s %s%s", trial.number, trial.state,
                          "" if trial.score is None
-                         else f", {runner.objective} {trial.score:.6g}")
+                         else f", {runner.objective} "
+                              f"{_signed(runner.objective) * trial.score + 0.0:.6g}")
             if checked is None and trial.state != "failed" and check(trial.params):
                 checked = trial.params
                 LOGGER.info("search: trial %s's decisions are causal", trial.number)
@@ -788,6 +793,51 @@ def _kept(made, keep):
     return out
 
 
+def _line(label, said):
+    """One line of a Study's summary, its words wrapped at 88 columns beneath
+    themselves."""
+    return textwrap.fill(f"  {label:<18}{said}", width=88, subsequent_indent=" " * 20,
+                         break_long_words=False, break_on_hyphens=False)
+
+
+def _day(time):
+    """The UTC date of ``time``, int64 nanoseconds since 1970."""
+    return str(np.datetime64(int(time), "ns").astype("datetime64[D]"))
+
+
+def _venue_named(given):
+    """The venue a summary names: its preset's name, or what it was built as."""
+    return given["venue_name"] or "a venue built by hand"
+
+
+def _signed(objective):
+    """-1 for an objective a text prints as a loss, the negative return it is, else 1."""
+    return -1.0 if objective in RETURNS and RETURNS[objective][2] else 1.0
+
+
+def _bounds(held, flip):
+    """An interval's bounds as a summary prints them, a loss as the negative return it
+    is."""
+    low, high = sorted((flip * held.low + 0.0, flip * held.high + 0.0))
+    return f"{low:.2f} to {high:.2f}"
+
+
+def _consistent(scores, unit, objective, direction):
+    """A Consistency of ``scores``, the share of them past the objective's break-even
+    in ``direction``, where it has one."""
+    if not len(scores):
+        raise ProbatumValueError(f"consistency: no {unit[:-1]} completed, so there is no "
+                                 f"score to read")
+
+    even = BREAK_EVEN.get(objective)
+    past = (None if even is None else
+            sum(1 for score in scores
+                if (score > even if direction == "maximize" else score < even)))
+
+    return Consistency(scores, unit, even, None if even is None else past / len(scores),
+                       objective, direction)
+
+
 class _Ran:
     """How a Study runs its winner again: the policy and its kind, the venue and the
     risk-free rate, the whole Data, the row its holdout starts at and the in-sample
@@ -983,18 +1033,305 @@ class Study:
         return self._holdout
 
 
+    def summary(self, null=None):
+        """The Study in a few lines of text. A search's: what it searched, at which
+        venue and on what bars, its in-sample span and holdout, the winner's parameters
+        and score, with ``null``, a random search of the same policy over the same space
+        on the same venue and in-sample bars scored alike, the mean of the null's
+        complete trials, and the holdout as it stands. A validation's: its paths and
+        how they were cut, each path's score, their median with the median path's
+        interval, its costs as a share of the gross edge, the reminder that paths are
+        stability evidence, and the holdout (Specification, Summaries)."""
+        given = self.provenance
+        data  = given["data"]
+        names = [name.split(":", 1)[-1] for name in data["instruments"]]
+        where = (f"{names[0] if len(names) == 1 else f'{len(names)} instruments'} "
+                 f"{data['interval']}")
+
+        if self._tables is None:
+            lines = [f"search: {given['policy']}, {_venue_named(given)}, {where}, "
+                     f"{given['ran']:,} {given['sampler']['name']} trials",
+                     f"in sample {_day(self._ran.inside.time[0])} to "
+                     f"{_day(self._ran.inside.time[-1])}, {self._held()}"]
+            chosen = ", ".join(f"{key} {value}" for key, value in self.best_params.items())
+            best   = _signed(given["objective"]) * self.best_score + 0.0
+            lines.append(_line("best", f"{chosen}: {given['objective']} {best:.2f}"))
+            if null is not None:
+                lines.append(_line("null", self._null(null)))
+            lines.append(_line("holdout", self._held_out()))
+            return "\n".join(lines)
+
+        if null is not None:
+            raise ProbatumValueError("null: given to a validation's summary, which reads "
+                                     "its paths; give the null to its search's summary")
+
+        paths, fits = self._tables["paths"], self._tables["fits"]
+        cut   = given["cv"]
+        lines = [f"validate: {given['policy']}, {_venue_named(given)}, {where}, "
+                 f"{self._held()}",
+                 _line("paths", f"{len(paths):,} out-of-sample path"
+                                f"{'s' * (len(paths) != 1)} from {len(fits):,} fits by "
+                                f"{cut['given']}, over the bars before the holdout"),
+                 _line("embargo", f"{cut['embargo']:,} bars after each test span")]
+
+        objective = given["objective"]
+        flip      = _signed(objective)
+        done      = np.asarray(paths["state"]) == "complete"
+        scores    = np.asarray(paths["score"], dtype=np.float64)
+
+        lines.append(_line(objective, "  ".join(f"{flip * score + 0.0:.2f}"
+                                                for score in scores[done])
+                           or "no path completed"))
+
+        if done.any():
+            median = flip * float(np.median(scores[done])) + 0.0
+            lines.append(_line("median", f"{median:.2f}; "
+                                         f"{self._median_path(scores, done)}"))
+            lines.append(_line("costs", self._costs(paths, done)))
+
+        lines.append(_line("evidence", "the paths are stability evidence; the verdict "
+                                       "comes from the holdout"))
+        lines.append(_line("holdout", self._held_out()))
+        return "\n".join(lines)
+
+
+    def consistency(self, stretches=None):
+        """How the winner's score holds up across its run, as a Consistency: a search's
+        winner scored on ``stretches`` stretches of its run over the in-sample bars, 4
+        unless given, its rows after the first divided as PurgedKFold divides bars and
+        each scored by the objective as a validation's window is, or a validation's
+        windows; and the share of them past the objective's break-even in the search's
+        direction, where the objective has one (Specification, Consistency and decay)."""
+        given = self.provenance
+        objective, direction = given["objective"], given["direction"]
+
+        if self._tables is not None:
+            if stretches is not None:
+                raise ProbatumValueError("stretches: given to a validation, whose windows "
+                                         "are its stretches; leave it out")
+            scores = np.asarray(self._tables["windows"]["score"], dtype=np.float64)
+            return _consistent(scores[~np.isnan(scores)], "windows", objective, direction)
+
+        stretches = 4 if stretches is None else stretches
+        if not _whole(stretches):
+            raise ProbatumTypeError(f"stretches: {stretches!r}; give a whole number from 2")
+
+        result = self.best
+        rows   = len(result.time)
+        if not 2 <= stretches <= rows - 1:
+            raise ProbatumValueError(f"stretches: {stretches}; give a whole number from 2 "
+                                     f"to {rows - 1:,}, the in-sample rows after the first")
+
+        from ._validate import _owned
+        positions = result.holdings["position"].reshape(rows, -1)
+        holding   = (np.abs(positions) > 0.0).any(axis=1)
+        rate, risk_free = result.provenance["periods_per_year"], given["risk_free"]
+
+        size, extra = divmod(rows - 1, stretches)
+        scores, first = [], 1
+        for k in range(stretches):
+            last = first + size + (k < extra) - 1
+            scores.append(float(_owned(result, holding, first, last, rate,
+                                       risk_free)[0][objective]))
+            first = last + 1
+
+        return _consistent(scores, "stretches", objective, direction)
+
+
+    def decay(self):
+        """The mean gap between what a fit scored and what its bars then earned, as a
+        Decay, signed so that a positive decay is worse out of sample: each window of a
+        validation against its fit's in-sample score, or a search's winner against its
+        holdout, which needs a look whose run kept its result. An objective that grows
+        with the span it is scored on is refused, since spans of other lengths would
+        make the gap measure their lengths (Specification, Consistency and decay)."""
+        given = self.provenance
+        objective, direction = given["objective"], given["direction"]
+
+        if objective in GROWS:
+            raise ProbatumValueError(f"decay: {objective} grows with the span it is scored "
+                                     f"on, so a gap would measure the spans' lengths; "
+                                     f"decay reads a rate or a ratio, such as sharpe")
+
+        if self._tables is not None:
+            windows, fits = self._tables["windows"], self._tables["fits"]
+            fitted = dict(zip(np.asarray(fits["number"]).tolist(),
+                              np.asarray(fits["fitted"], dtype=np.float64).tolist()))
+            pairs = [(fitted[fit], score) for fit, score in zip(
+                np.asarray(windows["fit"]).tolist(),
+                np.asarray(windows["score"], dtype=np.float64).tolist())]
+            pairs = [(a, b) for a, b in pairs if not (math.isnan(a) or math.isnan(b))]
+        else:
+            noun = "the search"
+            if self._ran.cut == len(self._ran.data):
+                raise ProbatumValueError(f"decay: {noun} held nothing out, so no bars "
+                                         f"earned after the fit; search with a holdout, "
+                                         f"such as holdout=0.3")
+            if self._holdout is None and not self._looks:
+                raise ProbatumValueError("decay: the holdout is not yet run; "
+                                         "evaluate_holdout() runs it, and spends a look")
+            if self._holdout is None:
+                raise ProbatumValueError(f"decay: the holdout was read {self._looks} "
+                                         f"time{'s' * (self._looks != 1)} and its run "
+                                         f"raised, so no result is kept; "
+                                         f"evaluate_holdout() runs it again, and spends a "
+                                         f"look")
+
+            pairs = [(self.best_score, float(self._holdout.stats[objective]))]
+
+        gaps = [a - b if direction == "maximize" else b - a for a, b in pairs]
+        if not gaps:
+            raise ProbatumValueError("decay: no window completed, so no fit has bars it "
+                                     "earned on")
+
+        return Decay(gaps, sum(gaps) / len(gaps), objective, direction)
+
+
+    def _held(self):
+        """What the Study held out, as its summary says it."""
+        held = self.provenance["holdout"]
+        if not held["rows"]:
+            return "every bar searched, none held out"
+
+        given = held["given"]
+        if isinstance(given, float) and 0.0 < given < 1.0:
+            return f"holdout the last {given:.0%} ({held['rows']:,} bars)"
+        if isinstance(given, int) and not isinstance(given, bool):
+            return f"holdout the last {held['rows']:,} bars"
+        return f"holdout from {held['first']} ({held['rows']:,} bars)"
+
+
+    def _held_out(self):
+        """The holdout as it stands: none, not yet run, run, or run and raised."""
+        noun, verb = self._called()
+        if self._ran.cut == len(self._ran.data):
+            return f"none: the {noun} held every bar"
+
+        if self._holdout is None:
+            if not self._looks:
+                return "not yet run; evaluate_holdout() spends a look"
+            return (f"read {self._looks} time{'s' * (self._looks != 1)}; its run raised, so "
+                    f"no result is kept")
+
+        objective = self.provenance["objective"]
+        record    = self._holdout.stats
+        flip      = _signed(objective)
+        said      = f"{objective} {flip * record[objective] + 0.0:.2f}"
+        held      = record.interval(objective)
+
+        if held is not None:
+            what = ("middle {} of resampled histories" if held.kind == "range"
+                    else "{} interval").format(_percent(held.level))
+            said += f", {what} {_bounds(held, flip)}"
+
+        said += f", look {self._looks} of {self._looks}"
+        if held is not None and self._looks > 1:
+            wider = record.interval(objective, level=1.0 - 0.05 / self._looks)
+            said += f"; at {_percent(wider.level)}, {_bounds(wider, flip)}"
+
+        return said
+
+
+    def _null(self, null):
+        """The line a null gives: the mean score of its complete trials, refused unless
+        it is a random search of the same policy over the same space on the same venue
+        and in-sample bars, scored alike."""
+        if not isinstance(null, Study):
+            raise ProbatumTypeError(f"null: {type(null).__name__}; give the Study of a "
+                                    f"random search")
+
+        if null.kind != "trials":
+            raise ProbatumValueError("null: a validation's Study; give the Study of a "
+                                     "random search")
+
+        mine, theirs = self.provenance, null.provenance
+        if theirs["sampler"]["name"] != "random":
+            raise ProbatumValueError(f"null: a search by {theirs['sampler']['name']}; give "
+                                     f"a random search, whose trials are independent "
+                                     f"draws of the space")
+
+        for key, said in (("policy", "policy"), ("space", "space"), ("venue", "venue"),
+                          ("fingerprint", "in-sample bars"), ("objective", "objective"),
+                          ("direction", "direction"), ("min_trades", "min_trades"),
+                          ("risk_free", "risk-free rate")):
+            if theirs[key] != mine[key]:
+                raise ProbatumValueError(
+                    f"null: its {said}, {theirs[key]!r}, is not the search's, "
+                    f"{mine[key]!r}; give a random search of the same policy over the "
+                    f"same space, venue and in-sample bars, scored alike")
+
+        trials = null.trials
+        scores = np.asarray(trials["score"], dtype=np.float64)[
+            np.asarray(trials["state"]) == "complete"]
+        if not scores.size:
+            raise ProbatumValueError("null: none of its trials completed, so it has no "
+                                     "mean to give")
+
+        mean = _signed(mine["objective"]) * scores.mean() + 0.0
+        return f"mean {mine['objective']} {mean:.2f} over {scores.size:,} trials"
+
+
+    def _median_path(self, scores, done):
+        """The median path's interval, the lower of the two middle paths for an even
+        count, on its returns, with the reason where it has none."""
+        objective, given = self.provenance["objective"], self.provenance
+        ordered = np.flatnonzero(done)[np.argsort(scores[done], kind="stable")]
+        path    = int(ordered[(len(ordered) - 1) // 2])
+
+        if self.returns is None:
+            return "no path's interval: the returns were not kept"
+        if objective in TRADES:
+            return (f"no path's interval: {objective} reads round trips, which a path's "
+                    f"returns do not hold")
+        if objective != "sharpe" and objective not in RETURNS:
+            return f"no path's interval: {objective} has none"
+
+        returns = self.returns[path][~np.isnan(self.returns[path])]
+        rate, risk_free = given["periods_per_year"], given["risk_free"]
+
+        try:
+            held = (sharpe_interval(returns, periods_per_year=rate, risk_free=risk_free)
+                    if objective == "sharpe" else
+                    bootstrap(returns, objective, periods_per_year=rate,
+                              risk_free=risk_free))
+        except ProbatumValueError as error:
+            return f"no path's interval: {error}"
+
+        what = ("middle {} of resampled histories" if held.kind == "range"
+                else "{} interval").format(_percent(held.level))
+        return (f"the median path's {what} {_bounds(held, _signed(objective))}, and the "
+                f"paths share bars")
+
+
+    def _costs(self, paths, done):
+        """The complete paths' costs as a share of their gross edge, the net profit
+        and the costs summed."""
+        balance = self._ran.venue._balance
+        opening = sum(balance.values()) if isinstance(balance, dict) else balance
+        paid    = sum(float(np.asarray(paths[name], dtype=np.float64)[done].sum())
+                      for name in COSTS)
+
+        net = float((np.asarray(paths["net_profit_pct"], dtype=np.float64)[done]
+                     * opening / 100.0).sum())
+        if net + paid <= 0.0:
+            return f"costs {_money(paid)}, with no gross edge"
+        return f"took {paid / (net + paid):.0%} of the gross edge"
+
+
     def __repr__(self):
         given, ran = self.provenance, self._ran
 
         if self._tables is None:
+            best = _signed(given["objective"]) * self.best_score + 0.0
             what = (f"{given['ran']:,} trials of {given['policy']} by "
                     f"{given['sampler']['name']}, best {given['objective']} "
-                    f"{self.best_score:,.2f} over {ran.cut:,} bars")
+                    f"{best:,.2f} over {ran.cut:,} bars")
         else:
             paths, fits = self._tables["paths"], len(self._tables["fits"])
-            failed  = int((paths["state"] == "failed").sum())
-            scores  = paths["score"][~np.isnan(paths["score"])]
-            median  = float(np.median(scores)) if len(scores) else math.nan
+            failed = int((paths["state"] == "failed").sum())
+            scores = paths["score"][~np.isnan(paths["score"])]
+            median = (_signed(given["objective"]) * float(np.median(scores)) + 0.0
+                      if len(scores) else math.nan)
             counted = (f"{len(paths):,} path{'s' * (len(paths) != 1)}"
                        + (f", {failed:,} failed," if failed else ""))
             what = (f"{counted} of {given['policy']} from {fits:,} "
