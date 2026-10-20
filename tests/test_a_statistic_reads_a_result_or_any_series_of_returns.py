@@ -154,6 +154,141 @@ def test_each_result_says_its_numbers_never_changes_and_pickles_as_it_was():
             made.count = 9
 
 
+@pytest.fixture(scope="module")
+def traded():
+    """A run of 251 round trips, a long held on the bars a coin flip picks, so its
+    exposure leaves its returns no memory for the bootstrap's blocks to span."""
+    close = 100.0 + np.random.default_rng(9).normal(0.0, 1.0, 1_000).cumsum()
+    bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(1_000, 1e3)])
+    data  = probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(1_000, dtype=np.int64) * 3_600_000_000_000,
+    )
+
+    weights = np.where(np.random.default_rng(9).random(1_000) < 0.5, 1.0, 0.0)
+    return probatum.backtest(weights, data, "frictionless")
+
+
+def test_a_bootstrap_repeats_on_every_read_for_a_result_and_its_series(traded):
+    rate = traded.provenance["periods_per_year"]
+    once = stats.bootstrap(traded, "cagr_pct")
+
+    assert once == stats.bootstrap(traded, "cagr_pct")
+    assert once == stats.bootstrap(traded.returns[1:], "cagr_pct", periods_per_year=rate)
+    assert once != stats.bootstrap(traded, "cagr_pct", seed=3)
+    assert once.estimate == pytest.approx(traded.stats["cagr_pct"], rel=1e-9)
+    assert (once.method, once.kind, once.count) == (
+        "studentized stationary block bootstrap", "interval", 999)
+    assert once.block >= 1.0 and once.lag is None and once.floored is None
+
+
+def test_a_drawdown_is_a_range_of_histories_and_a_loss_prints_as_a_negative_return(traded):
+    fall = stats.bootstrap(traded, "max_drawdown_pct")
+
+    assert fall.kind == "range" and 0.0 < fall.low <= fall.estimate <= fall.high
+    assert str(fall).startswith(f"max drawdown -{fall.estimate:.2f}%; middle 95% of "
+                                f"resampled histories -{fall.high:.2f}% to "
+                                f"-{fall.low:.2f}%, stationary block bootstrap, block ")
+
+    worst = stats.bootstrap(traded, "value_at_risk")
+    assert worst.kind == "interval" and str(worst).startswith(
+        f"value at risk -{worst.estimate:.2f}%, two-sided 95% interval")
+    assert worst.method == "percentile stationary block bootstrap"
+
+
+def test_a_result_s_trade_statistics_take_a_bootstrap_of_its_round_trips(traded):
+    assert traded.stats["num_trades"] == 251
+
+    for name, method in (("win_rate", "percentile bootstrap of round trips"),
+                         ("profit_factor", "bias-corrected and accelerated bootstrap of "
+                                           "round trips"),
+                         ("avg_trade_pct", "studentized bootstrap of round trips")):
+        interval = stats.bootstrap(traded, name)
+        assert interval.estimate == pytest.approx(traded.stats[name], rel=1e-12)
+        assert interval.low <= interval.estimate <= interval.high
+        assert (interval.method, interval.count, interval.block) == (method, 251, None)
+        assert str(interval).endswith(f"{method}, 251 round trips")
+
+
+def test_a_bootstrap_refuses_what_its_sample_cannot_support_by_name(result, traded):
+    with pytest.raises(ProbatumValueError, match="statistic: 'max_drawdown'; give one of "
+                       "total_return_pct, net_profit_pct, cagr_pct"):
+        stats.bootstrap(result, "max_drawdown")
+    with pytest.raises(ProbatumValueError, match="statistic: win_rate reads round trips, "
+                       "which a plain series does not hold; pass the Result"):
+        stats.bootstrap(MONTHLY, "win_rate", periods_per_year=12)
+    with pytest.raises(ProbatumValueError, match=f"round trips: "
+                       f"{result.stats['num_trades']} closed; an interval of win_rate "
+                       f"needs at least 60"):
+        stats.bootstrap(result, "win_rate")
+    with pytest.raises(ProbatumValueError, match="sortino: inf, a reward over no measured "
+                       "risk; an estimate ranked at infinity has no interval"):
+        stats.bootstrap([0.01, 0.02, 0.0, 0.03], "sortino", periods_per_year=12)
+    with pytest.raises(ProbatumValueError, match="returns: 399 of them; a bootstrap of "
+                       "returns needs at least 500"):
+        stats.bootstrap(result, "cagr_pct")
+
+    rng       = np.random.default_rng(6)
+    stretched = np.where(np.repeat(rng.random(20) < 0.5, 30), rng.normal(0.0, 0.01, 600),
+                         0.0)
+    with pytest.raises(ProbatumValueError, match=r"returns: 600 in blocks of 29\.7, 20\.2 "
+                       r"of them; a bootstrap of returns needs at least 100 blocks"):
+        stats.bootstrap(stretched, "volatility_pct", periods_per_year=365)
+
+    gone = np.random.default_rng(4).normal(0.0, 0.01, 1_000)
+    gone[300] = -1.0
+    with pytest.raises(ProbatumValueError, match="total_return_pct: a return of -100.00%, "
+                       "which leaves no equity to grow; growth has no interval past a "
+                       "loss of all of it"):
+        stats.bootstrap(gone, "total_return_pct", periods_per_year=365)
+    assert stats.bootstrap(gone, "volatility_pct", periods_per_year=365).high > 0.0
+
+    tied = np.random.default_rng(2).normal(0.001, 0.01, 1_000)
+    tied[np.argsort(tied)[:60]] = -0.02
+    with pytest.raises(ProbatumValueError, match="conditional_value_at_risk: the 50 "
+                       "lowest returns are all -2.00%; an interval needs a tail that "
+                       "varies"):
+        stats.bootstrap(tied, "conditional_value_at_risk", periods_per_year=365)
+    assert stats.bootstrap(tied, "value_at_risk", periods_per_year=365).low < 2.0
+
+    # ten losses beside 490 flat bars: every resample's 50th lowest return is flat
+    flat = np.random.default_rng(8).permutation(np.concatenate(
+        [np.full(10, -0.01), np.zeros(490), np.random.default_rng(7).uniform(0.0, 0.01,
+                                                                          500)]))
+    with pytest.raises(ProbatumValueError, match="value_at_risk: its resamples put both "
+                       "bounds on 0.00%; an interval needs resamples that differ "
+                       "between them"):
+        stats.bootstrap(flat, "value_at_risk", periods_per_year=365)
+
+    deep = tied.copy()
+    deep[np.argsort(deep)[:300]] = -0.02
+    with pytest.raises(ProbatumValueError, match="value_at_risk: its resamples put both "
+                       "bounds on -2.00%"):
+        stats.bootstrap(deep, "value_at_risk", periods_per_year=365)
+    with pytest.raises(ProbatumValueError, match="win_rate: its resamples put both bounds "
+                       "on 0.47; an interval needs resamples that differ between them"):
+        stats.bootstrap(traded, "win_rate", level=0.01)
+    with pytest.raises(ProbatumValueError, match="profit_factor: its resamples put both "
+                       "bounds on 1.07"):
+        stats.bootstrap(traded, "profit_factor", level=0.2, resamples=4, seed=0)
+    with pytest.raises(ProbatumValueError, match="resamples: 3 at a level of 0.2, which "
+                       "puts both bounds on one resample; give more"):
+        stats.bootstrap(tied, "volatility_pct", periods_per_year=365, level=0.2,
+                        resamples=3)
+    with pytest.raises(ProbatumValueError, match="resamples: 1; give a whole number "
+                       "from 2"):
+        stats.bootstrap(traded, "win_rate", resamples=1)
+    with pytest.raises(ProbatumValueError, match="resamples: 2, every one of them on one "
+                       "side of the profit factor's estimate; give more"):
+        stats.bootstrap(traded, "profit_factor", resamples=2, seed=0)
+    with pytest.raises(ProbatumTypeError, match=r"statistic: \['sortino'\]; give one of"):
+        stats.bootstrap(traded, ["sortino"])
+    with pytest.raises(ProbatumTypeError, match="seed: 1.5; give a whole number from 0"):
+        stats.bootstrap(traded, "win_rate", seed=1.5)
+
+
 def test_the_autocorrelation_is_1_at_lag_0_and_0_where_nothing_varies():
     assert stats.autocorrelation(MONTHLY, 0)     == 1.0
     assert stats.autocorrelation([0.01] * 6, 1)  == 0.0

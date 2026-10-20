@@ -1022,11 +1022,13 @@ A validation's Study is of `kind` `"paths"`. `paths` is a table of a row a path:
 | `probatum.stats.sharpe_interval(returns, periods_per_year=None, risk_free=None, level=0.95)` | an `Interval`, the Sharpe's two-sided interval by the delta method |
 | `probatum.stats.probabilistic_sharpe(returns, benchmark=0.0, periods_per_year=None, risk_free=None)` | a `Probability`, the one-sided probability that the Sharpe is above `benchmark`, an annual Sharpe |
 | `probatum.stats.min_track_record_length(returns, benchmark=0.0, confidence=0.95, periods_per_year=None, risk_free=None)` | a `TrackRecord`, the returns and the years at which a Sharpe this high would give that confidence |
+| `probatum.stats.bootstrap(returns, statistic, periods_per_year=None, risk_free=None, level=0.95, resamples=2000, seed=None)` | an `Interval` of `statistic` by a bootstrap: of the returns for `total_return_pct`, `net_profit_pct`, `cagr_pct`, `volatility_pct`, `sortino`, `value_at_risk` and `conditional_value_at_risk`, with `max_drawdown_pct` and `calmar` as the middle of the resampled histories, and of a Result's closed round trips for `win_rate`, `profit_factor` and `avg_trade_pct` |
 | `probatum.stats.autocorrelation(returns, lag=1)`, `probatum.stats.effective_sample(returns)` | emsl's autocorrelation and its count of independent returns, which no interval reads |
 
 - **One variance.** The interval, the probability and the track record read one variance: the long-run variance of the Sharpe's influence series, with Newey and West's weights at the lag their 1994 rule picks on that series, floored at its value at lag zero, so autocorrelation widens an interval and never narrows it. Each names that lag and whether the floor bound.
-- **What comes back.** An `Interval` holds `statistic`, `estimate`, `low`, `high`, `level`, `method`, `count`, `lag` and `floored`; a `Probability` holds `value`, `benchmark`, `lag`, `floored` and `count`; a `TrackRecord` holds `observations` and `years`, None where the Sharpe is not above the benchmark, `series_years`, `sharpe`, `confidence`, `benchmark`, `lag`, `floored` and `count`. Each never changes, compares by what it holds, and prints as a sentence that says it.
-- **What is refused.** A plain series without `periods_per_year` and a Result given one or a `risk_free`, which it names itself (ProbatumTypeError); a NaN or an infinity, naming its position, and an interval the sample cannot support, fewer than 4 returns or returns that never vary, returns whose Sharpe's influence is zero on every bar (ProbatumValueError).
+- **Two bootstraps.** The returns are resampled in blocks whose mean length is the longest Politis and White's rule, as Patton's code computes it, finds on the returns, their squared deviations or their tail, so the stretches a strategy's exposure switches on and off set it; each interval records it as `block`. Total return, net profit, CAGR, volatility, Sortino and conditional value at risk are studentized, each resample's move over its own standard error, and value at risk is percentile. The round trips are drawn evenly, and the win rate's interval is percentile, the profit factor's bias-corrected and accelerated and the average trade's studentized. A drawdown's and a Calmar's `kind` is `"range"`, the middle of the resampled histories, which says what histories like the run's do and is no confidence interval. Each resampling draws from a stream the values it resamples seed, so an interval is the same on every read and in any process with no seed, and `seed=` draws others.
+- **What comes back.** An `Interval` holds `statistic`, `estimate`, `low`, `high`, `level`, `method`, `count`, `lag`, `floored`, `block` and `kind`, a drawdown and a value at risk as positive losses that its text prints as negative returns; a `Probability` holds `value`, `benchmark`, `lag`, `floored` and `count`; a `TrackRecord` holds `observations` and `years`, None where the Sharpe is not above the benchmark, `series_years`, `sharpe`, `confidence`, `benchmark`, `lag`, `floored` and `count`. Each never changes, compares by what it holds, and prints as a sentence that says it.
+- **What is refused.** A plain series without `periods_per_year` and a Result given one or a `risk_free`, which it names itself (ProbatumTypeError); a NaN or an infinity, naming its position, and an interval the sample cannot support: fewer than 4 returns or returns that never vary, returns whose Sharpe's influence is zero on every bar, fewer than 500 returns or 100 of the bootstrap's blocks for a bootstrap of them, a return of -100% or worse for growth, a tail whose `k` lowest returns are all equal for conditional value at risk, a studentized statistic with no standard error, an interval whose resamples put both its bounds on one value, fewer than 60 closed round trips or trips that cannot vary in what the statistic counts, fewer than 2 resamples or too few for the level, resamples all on one side of the profit factor's estimate, and an estimate ranked at infinity (ProbatumValueError); a statistic that is not a string (ProbatumTypeError).
 
 ```python
 monthly = [0.02, -0.01, 0.03, 0.0, 0.01, -0.02, 0.04, 0.01]
@@ -1035,6 +1037,8 @@ print(probatum.stats.probabilistic_sharpe(monthly, periods_per_year=12))
 print(probatum.stats.min_track_record_length(monthly, periods_per_year=12))
 print(round(probatum.stats.sharpe(monthly, periods_per_year=12, long_run=True), 2))
 print(probatum.stats.sharpe_interval(result).count)   # the Quickstart's 999 returns
+print(probatum.stats.bootstrap(result, "cagr_pct"))
+print(probatum.stats.bootstrap(result, "max_drawdown_pct"))
 ```
 
 ```text
@@ -1043,9 +1047,11 @@ probabilistic sharpe 0.899 against zero, one-sided
 minimum track record 1.0 years for 95% one-sided confidence against zero; this series has 0.67
 2.95
 999
+cagr -0.42%, two-sided 95% interval -0.95% to 0.09%, studentized stationary block bootstrap, block 2.6, 999 returns
+max drawdown -0.06%; middle 95% of resampled histories -0.12% to -0.02%, stationary block bootstrap, block 2.6, 999 returns
 ```
 
-The two-sided interval holds zero while the one-sided probability is 0.899; both are right, and each says which it is. The returns reverse from month to month, so the long-run Sharpe, 2.95, is above the Sharpe the square root of time scales, and the interval's floor holds it to the width independent returns would give.
+The two-sided interval holds zero while the one-sided probability is 0.899; both are right, and each says which it is. The returns reverse from month to month, so the long-run Sharpe, 2.95, is above the Sharpe the square root of time scales, and the interval's floor holds it to the width independent returns would give. Eight returns are far too few to resample, so the bootstrap reads the Quickstart's run, its 999 returns in blocks of 2.6.
 
 <br>
 

@@ -32,7 +32,8 @@ def test_the_inference_section_prints_what_the_page_shows(capsys):
     for block in blocks:
         exec(compile(block, str(PAGE), "exec"), names)
 
-    said = capsys.readouterr().out.splitlines()
+    said  = capsys.readouterr().out.splitlines()
+    lines = shown("Inference")
 
-    assert said[-5:] == shown("Inference")
-    assert said[-5].startswith("sharpe 1.73, two-sided 95% interval -0.92 to 4.39")
+    assert said[-len(lines):] == lines
+    assert lines[0].startswith("sharpe 1.73, two-sided 95% interval -0.92 to 4.39")
