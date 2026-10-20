@@ -6,6 +6,7 @@ layer's own, a run's tables and a book's sum. The engine is held to the examples
 models by its own tests, which name the same numbers.
 """
 
+import itertools
 import math
 
 import numpy as np
@@ -15,6 +16,7 @@ import pytest
 import probatum
 from probatum import ProbatumKeyError
 
+from reference import statistics
 from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, periods_per_year,
                                  play_array, run)
 
@@ -1436,3 +1438,105 @@ def test_a_seam_cancels_a_stop_and_a_waiting_buy_and_a_flatten_closes_the_long()
     assert flattened.position == [0.0, 0.0]
     assert [(event["kind"], event["reason"]) for event in flattened.events
             if event["bar"] == 9] == [("cancelled", "seam"), ("placed", "seam")]
+
+
+MONTHLY = [0.02, -0.01, 0.03, 0.0, 0.01, -0.02, 0.04, 0.01]
+
+
+def test_eight_monthly_returns_have_a_sharpe_of_1_73_whose_interval_is_floored_at_lag_0():
+    assert statistics.sharpe(MONTHLY, 12) == pytest.approx(0.5 * math.sqrt(12.0))
+
+    z = statistics.influence(MONTHLY)
+    assert [round(14.0 * math.sqrt(3.5) * v, 9) for v in z] == [
+        19.0, -29.0, 27.0, -9.0, 7.0, -53.0, 31.0, 7.0]
+
+    g = statistics.autocovariances(z, 2)
+    assert [round(v * 5_488.0, 9) for v in g]  == [5_880.0, -3_437.0, 1_286.0]
+    assert round(statistics.bartlett(g, 2), 4) == 0.3926
+
+    variance, lag, floored = statistics.floored(z)
+    assert (round(variance, 4), lag, floored) == (1.0714, 2, True)
+
+    low, high, lag, floored = statistics.sharpe_interval(MONTHLY, 12)
+    assert (round(low, 2), round(high, 2), lag, floored) == (-0.92, 4.39, 2, True)
+
+
+def test_their_probabilistic_sharpe_is_0_899_and_their_track_record_12_6_returns():
+    assert round(statistics.probabilistic_sharpe(MONTHLY, 12), 3) == 0.899
+
+    needed = statistics.min_track_record(MONTHLY, 12)
+    assert (round(needed, 1), round(needed / 12, 2)) == (12.6, 1.05)
+    assert round(statistics.probabilistic_sharpe(MONTHLY, 12, benchmark=1.0), 3) == 0.705
+
+    needed = statistics.min_track_record(MONTHLY, 12, benchmark=1.0)
+    assert (round(needed, 1), round(needed / 12, 2)) == (65.9, 5.49)
+
+
+def test_their_long_run_sharpe_is_2_95_a_year_at_lag_1():
+    centre  = statistics.mean(MONTHLY)
+    centred = [v - centre for v in MONTHLY]
+
+    assert [round(v * 1e4, 9) for v in statistics.autocovariances(centred, 2)] == [
+        3.5, -2.125, 0.875]
+    assert statistics.lag(centred) == 1
+    assert round(statistics.long_run_sharpe(MONTHLY, 12), 2) == 2.95
+
+
+def test_a_correlogram_with_no_lag_significant_reads_r_1_and_r_0_alone():
+    assert round(2.0 * math.sqrt(3.0 / 1_000.0), 3) == 0.110
+    assert round(statistics.stationary(0.1 / 1.1, 1_000), 2) == 2.02
+
+    noise = np.random.Generator(np.random.PCG64(31)).standard_normal(1_000).tolist()
+    rho   = [statistics.correlation(noise[37:], noise[37 - j:1_000 - j]) for j in range(1, 38)]
+    assert max(abs(r) for r in rho) < 2.0 * math.sqrt(3.0 / 1_000.0)
+
+    r      = [statistics.covariance(noise[2:], noise[2 - j:1_000 - j]) for j in range(3)]
+    length = statistics.stationary(2.0 * r[1] / (r[0] + 2.0 * r[1]), 1_000)
+    assert statistics.block_lengths(noise)[0] == max(1.0, min(length, 95))
+
+
+def test_a_difference_of_0_05_a_bar_over_1000_normal_bars_has_a_p_value_of_0_115():
+    variance = 2.0 - 2.0 * 0.5 + (0.01 + 0.0025 - 2.0 * 0.005 * 0.25) / 2.0
+    error    = math.sqrt(variance / 999)
+
+    assert (round(variance, 4), round(error, 4)) == (1.005, 0.0317)
+    assert round(2.0 * statistics.NORMAL.cdf(-0.05 / error), 3) == 0.115
+    assert round(statistics.bootstrap_p([1.0] * 113 + [0.0] * 1_887, 0.5), 3) == 0.057
+
+
+def test_a_strategy_of_0_5_percent_and_0_8_of_its_benchmark_has_an_alpha_of_6_percent():
+    benchmark = [-0.02, -0.01, 0.0, 0.01, 0.02]
+    strategy  = [-0.01, -0.005, 0.005, 0.015, 0.02]
+    found     = statistics.alpha_beta(strategy, benchmark, 12)
+
+    assert (round(found["alpha"], 9), round(found["beta"], 9), found["lag"]) == (
+        0.06, 0.8, 0)
+    assert (round(found["alpha_error"] / 12 * 100, 3), round(found["beta_error"], 3)) == (
+        0.063, 0.04)
+
+    lagged = statistics.alpha_beta(strategy, benchmark, 12, given=1)
+    assert (round(lagged["alpha_error"] / 12 * 100, 3), round(lagged["beta_error"], 3)) == (
+        0.049, 0.028)
+    assert (round(found["tracking_error"] * 100, 2),
+            round(found["information_ratio"], 2)) == (1.22, 4.9)
+
+
+def test_three_trips_of_20_and_minus_10_twice_end_at_9720_in_every_order():
+    # each trip returns its pnl on the equity it opened on in the run's own order
+    pnl, opened_on = [2_000.0, -1_200.0, -1_080.0], [10_000.0, 12_000.0, 10_800.0]
+
+    for order in itertools.permutations(range(3)):
+        ended = 10_000.0 * math.prod(1.0 + pnl[i] / opened_on[i] for i in order)
+        fall, run = statistics.trade_path(pnl, opened_on, order)
+        together = abs(order.index(1) - order.index(2)) == 1
+        assert round(ended, 6)       == 9_720.0
+        assert (round(fall, 6), run) == ((19.0, 2) if together else (10.0, 1))
+
+
+def test_three_of_four_stretches_score_above_0_and_three_windows_decay_by_1_07():
+    assert statistics.stretches(1, 1_000, 4) == [(1, 250), (251, 500), (501, 750),
+                                                 (751, 1_000)]
+    assert statistics.gained([0.81, 1.22, -0.30, 0.94], "sharpe", "maximize") == 3
+
+    gaps, mean = statistics.decay([1.8, 1.2, 2.0], [0.6, 1.4, -0.2], "maximize")
+    assert ([round(gap, 9) for gap in gaps], round(mean, 2)) == ([1.2, -0.2, 2.2], 1.07)
