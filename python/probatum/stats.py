@@ -8,18 +8,19 @@ Inference)."""
 import hashlib
 import math
 import statistics
+from collections.abc import Mapping
 
 import numpy as np
 
-from ._errors import (DataError, ProbatumAttributeError, ProbatumTypeError,
-                      ProbatumValueError)
+from ._errors import (DataError, ProbatumAttributeError, ProbatumKeyError,
+                      ProbatumTypeError, ProbatumValueError)
 from ._space import _flag, _number, _whole
 from ._streams import stream
 
 __all__ = ["AlphaBeta", "Difference", "Interval", "Permutations", "Probability",
-           "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap", "effective_sample",
-           "min_track_record_length", "probabilistic_sharpe", "sharpe", "sharpe_difference",
-           "sharpe_interval", "trade_order"]
+           "Statistics", "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap",
+           "effective_sample", "min_track_record_length", "probabilistic_sharpe",
+           "sharpe", "sharpe_difference", "sharpe_interval", "trade_order"]
 
 NORMAL   = statistics.NormalDist()
 ROUNDING = 1e-20     # a standardised influence's variance below this is rounding
@@ -308,6 +309,102 @@ class Permutations(_Frozen):
                 f"marked inside a trade is left out")
 
 
+class Statistics(Mapping):
+    """A run's record of its fifteen statistics: a Mapping of each name to its value,
+    each name an attribute too, that holds what its intervals read, the returns after
+    the first row, the closed round trips' pnl and the opening balance, at the
+    annualisation and the risk-free rate the run had. ``interval(name, level=0.95)``
+    is a statistic's Interval, computed when first read and kept, or None where it has
+    none: exposure, the counts and funding paid, and a sample that cannot support one.
+    Pickling leaves out what it has computed, which is the same when computed again
+    (Specification, Inference)."""
+
+    __slots__ = ("_values", "_returns", "_pnl", "_opening", "_rate", "_risk_free", "_kept")
+
+
+    def __init__(self, values, returns, pnl, opening, rate, risk_free):
+        for name, value in (("_values", dict(values)), ("_returns", returns), ("_pnl", pnl),
+                            ("_opening", float(opening)), ("_rate", float(rate)),
+                            ("_risk_free", float(risk_free)), ("_kept", {})):
+            object.__setattr__(self, name, value)
+
+
+    def __getitem__(self, name):
+        return self._values[name]
+
+
+    def __iter__(self):
+        return iter(self._values)
+
+
+    def __len__(self):
+        return len(self._values)
+
+
+    def __getattr__(self, name):
+        values = object.__getattribute__(self, "_values")
+        if name in values:
+            return values[name]
+        raise ProbatumAttributeError(f"Statistics.{name}: no such statistic; give one of "
+                                     f"{', '.join(values)}")
+
+
+    def __setattr__(self, name, value):
+        raise ProbatumAttributeError(f"Statistics.{name}: a run's record does not change; "
+                                     f"run again for another")
+
+
+    def __delattr__(self, name):
+        raise ProbatumAttributeError(f"Statistics.{name}: a run's record does not change; "
+                                     f"run again for another")
+
+
+    def __reduce__(self):
+        return Statistics, (self._values, self._returns, self._pnl, self._opening,
+                            self._rate, self._risk_free)
+
+
+    def __repr__(self):
+        return f"Statistics({self._values!r})"
+
+
+    def interval(self, name, level=0.95):
+        """Statistic ``name``'s Interval at ``level``, or None where it has none."""
+        if not isinstance(name, str):
+            raise ProbatumTypeError(f"name: {name!r}; give one of {', '.join(self._values)}")
+        if name not in self._values:
+            raise ProbatumKeyError(f"name: {name!r}; give one of {', '.join(self._values)}")
+
+        level = _fraction("level", level)
+        if (name, level) not in self._kept:
+            self._kept[(name, level)] = self._made(name, level)
+
+        return self._kept[(name, level)]
+
+
+    def _made(self, name, level):
+        apart = _rank(2000, (1.0 - level) / 2.0) != _rank(2000, (1.0 + level) / 2.0)
+        if (name in TRADES or name in RETURNS) and not apart:
+            return None
+
+        if name in TRADES:
+            return (None if _thin_trips(self._pnl, name)
+                    else _trips_core(self._pnl, self._opening, name, level, 2000,
+                                     None)[0])
+
+        if name != "sharpe" and name not in RETURNS:
+            return None
+
+        x = self._returns - self._risk_free / self._rate
+        if _thin(x):
+            return None
+
+        if name == "sharpe":
+            return _sharpe_core(x, self._rate, level)[0]
+        return _return_core(np.asarray(self._returns), x, self._rate, (name,), level, 2000,
+                            None)[name][0]
+
+
 def _percent(level):
     return f"{level * 100.0:.10g}%"
 
@@ -363,15 +460,13 @@ def sharpe_interval(returns, periods_per_year=None, risk_free=None, level=0.95):
     no interval)."""
     x, rate = _read(returns, periods_per_year, risk_free)
     level = _fraction("level", level)
+    _supports(x)
 
-    variance, lag, floored = _variance(x)
-    error = math.sqrt(variance / (x.size - 1))
-    z     = NORMAL.inv_cdf((1.0 + level) / 2.0)
-    estimate, root = _per_bar(x), math.sqrt(rate)
+    made, said = _sharpe_core(x, rate, level)
+    if made is None:
+        raise ProbatumValueError(said)
 
-    return Interval("sharpe", estimate * root, (estimate - z * error) * root,
-                    (estimate + z * error) * root, level, "delta method", x.size, lag,
-                    floored)
+    return made
 
 
 def probabilistic_sharpe(returns, benchmark=0.0, periods_per_year=None, risk_free=None):
@@ -735,18 +830,26 @@ def _per_bar(x):
     return float(x.mean() / x.std(ddof=1))
 
 
-def _supports(x, name="returns"):
-    """Refuse returns, given as ``name``, that cannot support an interval: fewer than 4,
-    or returns that never vary (Specification, Samples with no interval)."""
-    counted = "of them" if name == "returns" else "returns"
+def _thin(x, name="returns"):
+    """Why returns, given as ``name``, cannot support an interval, fewer than 4 or
+    returns that never vary, or None where they can (Specification, Samples with no
+    interval)."""
     if x.size < 4:
-        raise ProbatumValueError(f"{name}: {x.size} {counted}; an interval needs at "
-                                 f"least 4")
+        counted = "of them" if name == "returns" else "returns"
+        return f"{name}: {x.size} {counted}; an interval needs at least 4"
 
     if np.all(x == x[0]):
         same = "" if name == "returns" else " returns"
-        raise ProbatumValueError(f"{name}: all {x.size}{same} are the same; an interval "
-                                 f"needs returns that vary")
+        return (f"{name}: all {x.size}{same} are the same; an interval needs returns "
+                f"that vary")
+
+    return None
+
+
+def _supports(x, name="returns"):
+    said = _thin(x, name)
+    if said:
+        raise ProbatumValueError(said)
 
 
 def _resamples(value, name="resamples"):
@@ -905,34 +1008,64 @@ def _trade_interval(returns, statistic, periods_per_year, risk_free, level, resa
                                  f"series does not hold; pass the Result")
     _read(returns, periods_per_year, risk_free)
 
-    trades  = returns.trades
-    pnl     = np.asarray(trades["pnl"][~trades["open"]], dtype=np.float64)
-    opening = float(returns.equity[0])
-    count   = pnl.size
+    pnl  = _closed(returns.trades)
+    said = _thin_trips(pnl, statistic)
+    if said:
+        raise ProbatumValueError(said)
+
+    made, said = _trips_core(pnl, float(returns.equity[0]), statistic, level, resamples,
+                             seed)
+    if made is None:
+        raise ProbatumValueError(said)
+
+    return made
+
+
+def _closed(trades):
+    """The closed round trips' pnl, in the order the table holds them."""
+    pnl = np.array(trades["pnl"][~np.asarray(trades["open"])], dtype=np.float64)
+    pnl.setflags(write=False)
+    return pnl
+
+
+def _thin_trips(pnl, statistic):
+    """Why the closed round trips' ``pnl`` cannot support ``statistic``'s interval, or
+    None where they can (Specification, Samples with no interval)."""
+    count = pnl.size
     won, lost = np.count_nonzero(pnl > 0.0), np.count_nonzero(pnl < 0.0)
 
     if count < FLOOR:
-        raise ProbatumValueError(f"round trips: {count} closed; an interval of "
-                                 f"{statistic} needs at least {FLOOR}")
+        return (f"round trips: {count} closed; an interval of {statistic} needs at least "
+                f"{FLOOR}")
 
     if statistic == "win_rate" and not 0 < won < count:
-        raise ProbatumValueError(f"win_rate: {won} of {count} round trips won; an "
-                                 f"interval needs one that won and one that did not")
+        return (f"win_rate: {won} of {count} round trips won; an interval needs one that "
+                f"won and one that did not")
 
     if statistic == "profit_factor" and (won == 0 or lost < 2):
-        raise ProbatumValueError(f"profit_factor: {won} round trips won and {lost} lost; "
-                                 f"an interval needs one that won and two that lost")
+        return (f"profit_factor: {won} round trips won and {lost} lost; an interval needs "
+                f"one that won and two that lost")
 
     if statistic == "avg_trade_pct" and np.all(pnl == pnl[0]):
-        raise ProbatumValueError("avg_trade_pct: every round trip made the same; an "
-                                 "interval needs pnl that varies")
+        return ("avg_trade_pct: every round trip made the same; an interval needs pnl "
+                "that varies")
 
-    estimate, low, high = _trade_bounds(pnl, opening, statistic, level, resamples,
-                                        _drawn(pnl, "stats trades", seed))
-    if low == high:
-        raise ProbatumValueError(_met(statistic, low))
+    return None
 
-    return Interval(statistic, estimate, low, high, level, TRADES[statistic][2], count)
+
+def _sharpe_core(x, rate, level):
+    """The Sharpe's interval of excess returns ``x`` that vary beside None, or None
+    beside why its influence gives it none."""
+    variance, lag, floored = _floored(_influence(x))
+    if variance < ROUNDING:
+        return None, _still()
+
+    error = math.sqrt(variance / (x.size - 1))
+    z     = NORMAL.inv_cdf((1.0 + level) / 2.0)
+    estimate, root = _per_bar(x), math.sqrt(rate)
+    return Interval("sharpe", estimate * root, (estimate - z * error) * root,
+                    (estimate + z * error) * root, level, "delta method", x.size, lag,
+                    floored), None
 
 
 def _return_core(r, x, rate, names, level, resamples, seed):
@@ -1122,6 +1255,22 @@ def _long_run(psi, m):
     sums   = prefix[:, np.minimum(starts + m + 1, count)] - prefix[:, np.maximum(starts, 0)]
     summed = (sums * sums).sum(axis=1) / (count * (m + 1.0))
     return np.maximum(summed, (psi * psi).sum(axis=1) / count)
+
+
+def _trips_core(pnl, opening, statistic, level, resamples, seed):
+    """A trade statistic's interval by a bootstrap of the closed round trips' ``pnl``
+    that can support one, beside None, or None beside why its resamples give none."""
+    try:
+        estimate, low, high = _trade_bounds(pnl, opening, statistic, level, resamples,
+                                            _drawn(pnl, "stats trades", seed))
+    except ProbatumValueError as error:
+        return None, str(error)
+
+    if low == high:
+        return None, _met(statistic, low)
+
+    return Interval(statistic, estimate, low, high, level, TRADES[statistic][2],
+                    pnl.size), None
 
 
 def _trade_bounds(pnl, opening, statistic, level, resamples, rng):

@@ -13,6 +13,7 @@ import os
 import pathlib
 import platform
 import sys
+import textwrap
 
 import numpy as np
 
@@ -22,6 +23,7 @@ from ._errors import (MissingDependency, ProbatumAttributeError, ProbatumIndexEr
                       ProbatumKeyError, ProbatumTypeError, ProbatumValueError)
 from ._probatum import Table as _Held, stats_of
 from ._venue import _settlement
+from .stats import Statistics, _closed, _percent, sharpe
 
 # the format a saved Result is written in, which this version reads, as every later
 # one will
@@ -124,6 +126,46 @@ def _returns(equity):
     before = equity[:-1]
     grown  = np.divide(equity[1:], before, out=np.ones_like(before), where=before > 0.0)
     return np.concatenate([[0.0], grown - 1.0])
+
+
+def _money(value):
+    """An amount as a summary prints it: whole from a hundred, to three figures below,
+    as a coin's are, and to the eighth decimal where three figures would take an
+    exponent, so an amount too small for that prints as 0, never as -0."""
+    if abs(value) >= 100.0:
+        return f"{value:,.0f}"
+
+    shown = f"{value:.3g}"
+    if "e" in shown:
+        shown = f"{value:.8f}".rstrip("0").rstrip(".")
+    return "0" if shown == "-0" else shown
+
+
+def _row(label, value, said):
+    """One line of a summary, its value right-aligned under the others and its words
+    wrapped at 88 columns beneath themselves."""
+    return textwrap.fill(f"  {label:<16}{value:>8}   {said}", width=88,
+                         subsequent_indent=" " * 29, break_long_words=False,
+                         break_on_hyphens=False)
+
+
+def _under_water(time, equity):
+    """The longest time from a row at the running peak to the first row back at or
+    above it, or to the last row while it is below, in days."""
+    under = equity < np.maximum.accumulate(equity)
+
+    longest, at = 0, 0
+    while at < len(equity):
+        if not under[at]:
+            at += 1
+            continue
+
+        start = at - 1
+        while at < len(equity) and under[at]:
+            at += 1
+        longest = max(longest, int(time[min(at, len(equity) - 1)] - time[start]))
+
+    return longest / DAY
 
 
 def _recorded(provenance):
@@ -510,10 +552,13 @@ class Result:
         self._baselines   = tables.get("baselines")
         self._record      = record
         self._parts       = None
-        self.stats        = stats
-        self.policy       = _frozen(policy) if isinstance(policy, np.ndarray) else policy
-        self.bust         = bool(bust)
-        self.provenance   = provenance
+        self.stats        = None if stats is None else Statistics(
+            stats, self.returns[1:], _closed(self.trades), self.equity[0],
+            provenance["periods_per_year"], provenance["risk_free"])
+
+        self.policy     = _frozen(policy) if isinstance(policy, np.ndarray) else policy
+        self.bust       = bool(bust)
+        self.provenance = provenance
 
         # with no fill log, the bars it was liquidated on are the close bars of the round
         # trips forced closes ended, each on the bar it closed out
@@ -594,6 +639,102 @@ class Result:
                      f"{'; '.join(named)}")
 
         return said + ")"
+
+
+    def summary(self):
+        """The run in a few lines of text: what ran, at which venue and on what bars,
+        its span and opening balance, its return, its Sharpe with the interval and the
+        lag beside the long-run Sharpe where the two differ by more than 0.1, its
+        maximum drawdown as a loss with the longest time under water, its round trips,
+        its costs and its optimistic assumptions; a book names its accounts, margined
+        apart with no capital moving between them, and a run below the full level names
+        its level (Specification, Summaries)."""
+        given    = self.provenance
+        book     = given.get("results")
+        accounts = list(book.values()) if book else [given]
+        names    = []
+
+        for account in accounts:
+            for name in (account.get("data") or {}).get("instruments", []):
+                if name.split(":", 1)[-1] not in names:
+                    names.append(name.split(":", 1)[-1])
+
+        what = (f"a book of {' and '.join(book)}" if book
+                else f"{given['policy']}, {given['venue_name'] or 'a venue built by hand'}")
+        where    = names[0] if len(names) == 1 else f"{len(names)} instruments"
+        interval = (accounts[0].get("data") or {}).get("interval", "")
+        lines    = [f"{what}, {where} {interval}".rstrip()]
+
+        first, last = (np.datetime64(int(self.time[at]), "ns").astype("datetime64[D]")
+                       for at in (0, -1))
+        span = (f"{first} to {last}, {len(self.time):,} bars, opening balance "
+                f"{_money(self.equity[0])}")
+        span += f" {given['settlement']}" if given.get("settlement") else ""
+        if _recorded(given) != "full":
+            span += f", recorded at the {_recorded(given)} level"
+        lines.append(span)
+
+        stats = self.stats
+        if stats is None:
+            lines.append(_row("statistics", "", "none, the clock too short to annualise"))
+        else:
+            lines.extend(self._rows(stats))
+
+        paid = sorted(((name, value) for name, value in self.costs.items() if value),
+                      key=lambda item: -abs(item[1]))
+        lines.append(_row("costs", _money(-sum(self.costs.values())),
+                          ", ".join(f"{name} {_money(-value)}"
+                                    for name, value in paid) or "none"))
+
+        table = self.assumptions
+        named = [f"{row['name']} {row['value']}"
+                 + (f" at {row['venue']}" if "venue" in row else "")
+                 for row in table[table.grade == "optimistic"]]
+        lines.append(_row("assumptions", "", f"{len(named)} optimistic: {', '.join(named)}"
+                          if named else "none optimistic"))
+
+        if book:
+            lines.append(_row("accounts", "", f"{' and '.join(book)}, margined apart; no "
+                              f"capital moves between them"))
+
+        return "\n".join(lines)
+
+
+    def _rows(self, stats):
+        """The summary's lines that read the run's record of statistics."""
+        lines = []
+        lines.append(_row("return", f"{stats['total_return_pct']:+.1f}%",
+                          f"CAGR {stats['cagr_pct']:+.1f}%, volatility "
+                          f"{stats['volatility_pct']:.1f}%, in the market "
+                          f"{stats['exposure_pct']:.0f}% of bars"))
+
+        held = stats.interval("sharpe")
+        if held is None:
+            count = len(self.time) - 1
+            told  = (f"no interval: {count} returns, where one needs 4" if count < 4
+                     else "no interval: the returns never vary"
+                     if np.all(self.returns[1:] == self.returns[1])
+                     else "no interval: its influence is zero on every bar")
+        else:
+            told = (f"{_percent(held.level)} interval {held.low:.2f} to {held.high:.2f}, "
+                    f"delta method, Newey-West lag {held.lag}"
+                    + (" floored at lag zero" if held.floored else ""))
+
+        lines.append(_row("sharpe", f"{stats['sharpe']:.2f}", told))
+
+        longer = sharpe(self, long_run=True)
+        if abs(longer - stats["sharpe"]) > 0.1:
+            lines.append(_row("long-run sharpe", f"{longer:.2f}",
+                              "the mean over the returns' long-run deviation, which "
+                              "their autocorrelation moves"))
+
+        lines.append(_row("max drawdown", f"{-stats['max_drawdown_pct'] + 0.0:.1f}%",
+                          f"{_under_water(self.time, self.equity):,.0f} days under water"))
+        lines.append(_row("round trips", f"{stats['num_trades']:,}",
+                          f"win rate {stats['win_rate']:.0%}, profit factor "
+                          f"{stats['profit_factor']:.2f}"))
+
+        return lines
 
 
     @property
@@ -818,7 +959,8 @@ class Result:
         # plays no policy, so it carries the baselines only once they are computed
         policy = self.policy if isinstance(self.policy, np.ndarray) else None
         tables = {name: self._table(name) for name in SCHEMAS}
-        return Result, (self.time, self.equity, tables, self.stats, policy, self.bust,
+        stats  = None if self.stats is None else dict(self.stats)
+        return Result, (self.time, self.equity, tables, stats, policy, self.bust,
                         self.provenance)
 
 
