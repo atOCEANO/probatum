@@ -13,7 +13,7 @@ import pathlib
 import re
 
 import probatum
-from probatum import metrics, plot, ta
+from probatum import metrics, plot, stats, ta
 from probatum import Backtester
 
 # the gate copies the pages to /docs; a source checkout has them beside tests
@@ -82,6 +82,10 @@ _API.update({name: getattr(metrics, name) for name in metrics.__all__
              if callable(getattr(metrics, name))})
 _API.update({name: getattr(ta, name) for name in ta.__all__
              if callable(getattr(ta, name)) and not isinstance(getattr(ta, name), type)})
+# stats shares five names with metrics, sharpe_interval among them, on other
+# signatures, so its functions are keyed by the module they are called through
+_API.update({f"stats.{name}": getattr(stats, name) for name in stats.__all__
+             if not isinstance(getattr(stats, name), type)})
 
 # a bare name, or an attribute hanging off one of these or off probatum.Data, is
 # the library function. self.log.at_bar is Recorder.at_bar, which takes **values
@@ -126,6 +130,13 @@ def called(func):
     base = func.value
     if isinstance(base, ast.Name) and base.id in _ROOTS:
         return func.attr
+
+    if isinstance(base, ast.Name) and base.id == "stats":
+        return f"stats.{func.attr}"
+
+    if (isinstance(base, ast.Attribute) and base.attr == "stats"
+            and isinstance(base.value, ast.Name) and base.value.id == "probatum"):
+        return f"stats.{func.attr}"
 
     # a Result's methods are keyed by the class, since load is the Data's name too
     if (isinstance(base, ast.Attribute) and base.attr == "Result"
@@ -385,7 +396,8 @@ def test_nothing_is_exported_without_being_documented():
 def test_nothing_a_module_exports_is_undocumented_either():
     text    = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     missing = []
-    for name in ("metrics", "ta", "plot", "cv"):
+
+    for name in ("metrics", "ta", "plot", "cv", "stats"):
         for export in getattr(probatum, name).__all__:
             # named in prose as `export`, called in an example as export(, or
             # reached through its module either way

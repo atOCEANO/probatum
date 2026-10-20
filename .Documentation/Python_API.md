@@ -47,6 +47,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Categorical` | One of the choices a search draws among. [Below](#the-space). |
 | `probatum.cv` | The splitters, `Holdout`, `WalkForward`, `PurgedKFold` and `CombinatorialPurged`, which scikit-learn's tools take, each leaving out of training every row whose label reaches a test span. [Below](#splitters). |
 | `probatum.validate` | Run a search on the training bars of each split a splitter gives and trade each split's winner on its test span, every out-of-sample path one run across explicit seams. [Below](#validation). |
+| `probatum.stats` | How far a run's statistics can be trusted, read from a Result or any series of returns: the Sharpe's interval, its probability of beating a benchmark and the track record that would show it. [Below](#inference). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
@@ -1008,6 +1009,43 @@ held = study.evaluate_holdout()                 # the first search's winner, onc
 ### The Study of paths
 
 A validation's Study is of `kind` `"paths"`. `paths` is a table of a row a path: `number`, `state`, `score`, the fifteen [statistics](#statistics) and the seven [costs](#the-ledger) of the account rows it owns, and `error`. `fits` is a row a split: `number`; `test`, the bars it tests; `train`, `purged` and `embargoed`, its training bars and those the purge and the embargo took; `pieces`; each parameter of its winner, missing where the fit failed; `fitted`, the winner's score; `trials` and `complete`; `seed`; `state` and `error`. `windows` is a row a stretch of a path one fit traded: `path`, `fit`, `first` and `last`, the account rows it owns, and their times `first_time` and `last_time`, `decided`, the closes it decided at, `score`, the statistics and the costs, so `returns[path, first:last + 1]` is what it was scored on. `returns` is `(paths, T)` over the in-sample account rows, read-only, NaN where a path owns no row and on a failed path, and None under `keep="none"`. `best`, `best_params`, `best_score`, `evaluate_holdout()`, `holdout` and `looks` are the first search's. `trials` is refused, as `paths`, `fits` and `windows` are on a search's Study. `provenance` records the splitter and its layout, the seam, the seeds of the first search and of every fit and the parameters checked for causality, beside what a search's records. A validation logs its start and its end, each fit and each path at INFO to the `probatum` logger.
+
+<br>
+
+## Inference
+
+`probatum.stats` says how far a run's statistics can be trusted ([ADR 0031](Decisions.md), [Specification](Specification.md#inference)). Each function takes a Result, whose returns after its first row it reads at the run's own annualisation and risk-free rate, or a plain series of returns, a 1-D array, a list or a pandas Series read by position, with `periods_per_year`, which has no default, and `risk_free`, an annual rate, 0 unless given.
+
+| Call | Gives |
+| :--- | :--- |
+| `probatum.stats.sharpe(returns, periods_per_year=None, risk_free=None, long_run=False)` | the Sharpe, a Result's its record's; with `long_run`, over the long-run deviation of the returns, which their autocorrelation moves |
+| `probatum.stats.sharpe_interval(returns, periods_per_year=None, risk_free=None, level=0.95)` | an `Interval`, the Sharpe's two-sided interval by the delta method |
+| `probatum.stats.probabilistic_sharpe(returns, benchmark=0.0, periods_per_year=None, risk_free=None)` | a `Probability`, the one-sided probability that the Sharpe is above `benchmark`, an annual Sharpe |
+| `probatum.stats.min_track_record_length(returns, benchmark=0.0, confidence=0.95, periods_per_year=None, risk_free=None)` | a `TrackRecord`, the returns and the years at which a Sharpe this high would give that confidence |
+| `probatum.stats.autocorrelation(returns, lag=1)`, `probatum.stats.effective_sample(returns)` | emsl's autocorrelation and its count of independent returns, which no interval reads |
+
+- **One variance.** The interval, the probability and the track record read one variance: the long-run variance of the Sharpe's influence series, with Newey and West's weights at the lag their 1994 rule picks on that series, floored at its value at lag zero, so autocorrelation widens an interval and never narrows it. Each names that lag and whether the floor bound.
+- **What comes back.** An `Interval` holds `statistic`, `estimate`, `low`, `high`, `level`, `method`, `count`, `lag` and `floored`; a `Probability` holds `value`, `benchmark`, `lag`, `floored` and `count`; a `TrackRecord` holds `observations` and `years`, None where the Sharpe is not above the benchmark, `series_years`, `sharpe`, `confidence`, `benchmark`, `lag`, `floored` and `count`. Each never changes, compares by what it holds, and prints as a sentence that says it.
+- **What is refused.** A plain series without `periods_per_year` and a Result given one or a `risk_free`, which it names itself (ProbatumTypeError); a NaN or an infinity, naming its position, and an interval the sample cannot support, fewer than 4 returns or returns that never vary, returns whose Sharpe's influence is zero on every bar (ProbatumValueError).
+
+```python
+monthly = [0.02, -0.01, 0.03, 0.0, 0.01, -0.02, 0.04, 0.01]
+print(probatum.stats.sharpe_interval(monthly, periods_per_year=12))
+print(probatum.stats.probabilistic_sharpe(monthly, periods_per_year=12))
+print(probatum.stats.min_track_record_length(monthly, periods_per_year=12))
+print(round(probatum.stats.sharpe(monthly, periods_per_year=12, long_run=True), 2))
+print(probatum.stats.sharpe_interval(result).count)   # the Quickstart's 999 returns
+```
+
+```text
+sharpe 1.73, two-sided 95% interval -0.92 to 4.39, delta method, Newey-West lag 2 floored at lag zero, 8 returns
+probabilistic sharpe 0.899 against zero, one-sided
+minimum track record 1.0 years for 95% one-sided confidence against zero; this series has 0.67
+2.95
+999
+```
+
+The two-sided interval holds zero while the one-sided probability is 0.899; both are right, and each says which it is. The returns reverse from month to month, so the long-run Sharpe, 2.95, is above the Sharpe the square root of time scales, and the interval's floor holds it to the width independent returns would give.
 
 <br>
 

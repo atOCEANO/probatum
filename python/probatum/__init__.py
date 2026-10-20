@@ -15,6 +15,9 @@ policy's parameters over ``Int``, ``Float`` and ``Categorical`` ranges on the ba
 before a holdout, and returns the ``Study`` of every trial. ``validate`` runs that
 search on the training bars of each split a splitter of ``cv`` gives, trades each
 split's winner on its test span and returns the ``Study`` of the out-of-sample paths.
+``stats`` says how far a run's statistics can be trusted, read from a Result or any
+series of returns: the Sharpe's interval, its probability of beating a benchmark and
+the track record that would show it.
 Every error probatum raises is a ``ProbatumError`` and the built-in it means, and
 every warning a ``ProbatumWarning``, outside the modules carried from emsl, which raise
 the built-ins and warn with ``UserWarning`` or ``RuntimeWarning``.
@@ -29,7 +32,7 @@ from ._probatum import Batch
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
 from ._space import Categorical, Float, Int
-from . import cv, metrics, plot, rl, ta, venues
+from . import cv, metrics, plot, rl, stats, ta, venues
 from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
 from ._engine import Engine
@@ -45,7 +48,7 @@ __all__ = [
     "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
     "Instrument", "Int", "Market", "Result", "Strategy", "Study", "Venue", "backtest",
     "chart", "chart_defaults", "combine", "search", "to_ohlcv", "tune", "validate",
-    "cv", "metrics", "plot", "rl", "ta", "venues",
+    "cv", "metrics", "plot", "rl", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
     "ProbatumNotImplementedError", "DataError", "VenueError", "SpecError",
