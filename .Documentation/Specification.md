@@ -27,7 +27,7 @@
 
 ## Specification
 
-This page is every rule the engine applies to money: when an order fills and at what price, what each fill costs, when funding is charged, how margin is measured, where an account is liquidated, what a run records, how a search scores and checks its trials, and how a validation divides the bars and runs its paths. Each rule is stated as an equation where it has one and followed by a worked example, and every worked example is a test, so a number on this page is a number the engine produces. Why each rule is the way it is lives in [Decisions](Decisions.md).
+This page is every rule the engine applies to money: when an order fills and at what price, what each fill costs, when funding is charged, how margin is measured, where an account is liquidated, what a run records, how a search scores and checks its trials, how a validation divides the bars and runs its paths, and how far a run's statistics can be trusted. Each rule is stated as an equation where it has one and followed by a worked example, and every worked example is a test, so a number on this page is a number the engine produces. Why each rule is the way it is lives in [Decisions](Decisions.md).
 
 The contracts are spot, linear perpetuals margined in the quote currency, and inverse perpetuals margined in their coin. Products are written with `*`, and every price is in the quote currency unless a rule says otherwise.
 
@@ -883,10 +883,147 @@ Every split appears twice: S0, S5, S9, S12 and S14 give both their groups to one
 <br>
 
 
+## Inference
+
+`probatum.stats` says how far a run's statistics can be trusted: an interval for each, the Sharpe's chance of beating a benchmark and the track record that would show it, the difference between two Sharpes on the same bars, alpha and beta against a benchmark, and what the order of the trades decided. It reads only what a run records, and every interval names its method.
+
+### What a statistic reads
+
+- A Result's series is its `n = T - 1` returns after the first row, `r_t = E_t / E_{t-1} - 1`, zero after a row whose equity is not above zero, which are the returns its statistics read, at its annualisation `ppy` and its risk-free rate, so a Result refuses `periods_per_year`. A plain series, a 1-D array, a list or a pandas Series read by position, needs `periods_per_year`, which has no default, and takes `risk_free` as an annual rate, 0 unless given; a NaN or an infinity in it is refused, naming its first position.
+- The excess returns are `x_t = r_t - risk_free / ppy`, and the Sharpe is `sqrt(ppy) * xbar / s'`, `xbar` their mean and `s'` their deviation with `n - 1` in its divisor, as the record's is.
+- An interval is computed when it is first read and then kept; a search's trials never compute one, so a trial's row holds point estimates. Its level is in `(0, 1)`, 0.95 unless given. Its bounds are in its statistic's units and sign, a drawdown and a value at risk positive magnitudes, which a text prints as losses.
+- `autocorrelation(x, lag)` is `sum_{t > lag} (x_t - xbar) * (x_{t-lag} - xbar) / sum_t (x_t - xbar)^2`, 1 at lag 0 and 0 where the returns never vary or number no more than `lag + 1`, and `effective_sample(x)` is `n * (1 - a) / (1 + a)`, `a` the first autocorrelation held to `[0, 0.99]`, at least 2, and `n` itself below 4 returns. No interval reads either.
+- A resampling draws at least 2 resamples, and an interval enough of them for its level that its two order statistics are two resamples; a smaller `resamples` or `n` is refused.
+- Each resampling draws from a stream of its own, PCG64 from a NumPy `SeedSequence` of a 64-bit BLAKE2b digest of the float64 values it resamples, keyed by its name: `stats returns` on the returns, `stats trades` on the round trips' pnl, `stats sharpe difference` on the two series' returns, the first series' before the second's, and `stats trade order` on the round trips' returns. An interval is therefore the same on every read, after a save and a load, and in any process, and `seed=` stands in for the digest.
+
+### The Sharpe's variance
+
+For the excess returns, with `n` in every divisor: `mu = (1/n) * sum_t x_t`, `s^2 = (1/n) * sum_t (x_t - mu)^2`, `S = mu / s` and `u_t = (x_t - mu) / s`.
+- The Sharpe's influence series is `z_t = u_t - (S / 2) * (u_t^2 - 1)`, the delta method over the joint moments of returns and squared returns, and `g_j = (1/n) * sum_{t > j} z_t * z_{t-j}` are its autocovariances. At lag zero `g_0 = 1 - S * k3 + (S^2 / 4) * (k4 - 1)`, `k3` and `k4` the means of `u^3` and `u^4`, the latter 3 on a normal series.
+- The lag is Newey and West's 1994 rule for the Bartlett kernel, on `z` itself: `p = floor(4 * (n / 100)^(2/9))`, `s0 = g_0 + 2 * sum_{j=1..p} g_j`, `s1 = 2 * sum_{j=1..p} j * g_j` and `m = min(floor(1.1447 * ((s1 / s0)^2 * n)^(1/3)), n - 1)`, or 0 where `s0` is not above zero. Nothing is prewhitened.
+- The variance is the Bartlett sum at that lag floored at its lag-zero value, `V = max(g_0 + 2 * sum_{j=1..m} (1 - j / (m + 1)) * g_j, g_0)`, so autocorrelation can widen an interval and never narrow it.
+- The Sharpe's standard error is `sqrt(V / (n - 1))` a bar, and its interval is the per-bar Sharpe `xbar / s'` plus and minus `z_q` of them, `z_q` the normal quantile at `(1 + level) / 2`, both annualised by `sqrt(ppy)`. It names its lag, "delta method, Newey-West lag 9", and where the floor binds says so, "delta method, Newey-West lag 9 floored at lag zero".
+
+**Worked example.** Eight monthly returns, 2%, -1%, 3%, 0%, 1%, -2%, 4% and 1%, with `periods_per_year=12` and no risk-free rate.
+- Their mean is 1% and `s'` is 2%, so the Sharpe is 0.5 a bar and `0.5 * sqrt(12) = 1.73` a year. With 8 in the divisor `s` is `sqrt(3.5)` percent, so `S = 1 / sqrt(3.5) = 0.5345`, `k3 = 0` and `k4 = 2`.
+- The deviations from the mean are 1, -2, 2, -1, 0, -3, 3 and 0 percent, and for a deviation `d`, `z = (14 * d + 7 - 2 * d^2) / (14 * sqrt(3.5))`, so `14 * sqrt(3.5) * z_t` is 19, -29, 27, -9, 7, -53, 31 and 7. Then `g_0 = 5,880 / 5,488 = 1.0714`, `g_1 = -3,437 / 5,488 = -0.6263` and `g_2 = 1,286 / 5,488 = 0.2343`.
+- `p = floor(4 * 0.08^(2/9)) = 2`, `s0 = 1,578 / 5,488` and `s1 = -1,730 / 5,488`, so `m = floor(1.1447 * (1.2019 * 8)^(1/3)) = floor(2.434) = 2`.
+- The Bartlett sum `g_0 + 2 * (2/3 * g_1 + 1/3 * g_2) = 0.3926` is below `g_0`, so `V = 1.0714` and the standard error is `sqrt(1.0714 / 7) = 0.3912` a bar.
+- The interval is `0.5 +/- 1.96 * 0.3912` a bar, -0.92 to 4.39 a year: "sharpe 1.73, two-sided 95% interval -0.92 to 4.39, delta method, Newey-West lag 2 floored at lag zero, 8 returns".
+
+### The probabilistic Sharpe and the minimum track record
+
+- The probabilistic Sharpe against an annual Sharpe `B` is `Phi((xbar / s' - B / sqrt(ppy)) * sqrt(n - 1) / sqrt(V))`, one-sided, with `V` the variance above.
+- The minimum track record at a confidence `c` is `1 + V * (Phi^-1(c) / (xbar / s' - B / sqrt(ppy)))^2` returns, the count at which the same Sharpe and variance would give that probability, and its years are that count over `ppy`. A Sharpe not above the benchmark has none.
+- Both carry the variance's lag and whether its floor bound.
+
+**Worked example.** The eight monthly returns above, against zero: `Phi(0.5 * sqrt(7) / sqrt(1.0714)) = Phi(1.278) = 0.899`, and at 95% the track record is `1 + 1.0714 * (1.6449 / 0.5)^2 = 12.6` returns, 1.05 years, where the series has 8, 0.67 years. Against an annual Sharpe of 1, `0.5 - 1 / sqrt(12) = 0.2113` a bar, so the probability is `Phi(0.540) = 0.705` and the track record 65.9 returns, 5.49 years.
+
+**Worked example.** Without autocorrelation `V = g_0`, and both reproduce Bailey and Lopez de Prado (2012). A monthly Sharpe of 0.458 over 24 months with a skew of -2.448 and a kurtosis of 10.164 has `V = 1 + 2.448 * 0.458 + (9.164 / 4) * 0.458^2 = 2.6018` and a probabilistic Sharpe of `Phi(0.458 * sqrt(23) / sqrt(2.6018)) = 0.913`, 0.982 at a normal skew and kurtosis and 0.953 over 36 months (figure 6). A monthly Sharpe of `2 / sqrt(12)` against `1 / sqrt(12)` with a skew of -0.72 and a kurtosis of 5.78 needs 59.895 months at 95% (appendix A.3).
+
+### The long-run Sharpe
+
+`sharpe(x, long_run=True)` is `sqrt(ppy) * mu / sqrt(L)`: `L = c_0 + 2 * sum_{j=1..m} (1 - j / (m + 1)) * c_j` is the Bartlett long-run variance of the returns, `c_j = (1/n) * sum_{t > j} (x_t - mu) * (x_{t-j} - mu)`, at the lag the 1994 rule above takes on `x - mu`. It is not floored, so returns that reverse raise it, and it is above zero wherever the returns vary. A summary prints it beside the Sharpe where the two differ by more than 0.1.
+
+**Worked example.** The eight monthly returns: in squared percent `c_0 = 28 / 8 = 3.5`, `c_1 = -17 / 8 = -2.125` and `c_2 = 7 / 8 = 0.875`, so with `p = 2`, `s0 = 3.5 + 2 * (-2.125 + 0.875) = 1` and `s1 = 2 * (-2.125 + 2 * 0.875) = -0.75`, the lag is `floor(1.1447 * (0.5625 * 8)^(1/3)) = floor(1.890) = 1` and `L = 3.5 - 2.125 = 1.375`. The long-run Sharpe is `sqrt(12) * 1 / sqrt(1.375) = 2.95` a year, beside a Sharpe of 1.73.
+
+### Intervals of the returns
+
+- Total return and net profit, CAGR, volatility, Sortino, value at risk and conditional value at risk take a stationary block bootstrap of the run's returns (Politis and Romano 1994). A resample is `n` returns: its first index is drawn evenly from the `n`, and each next index is the one after the last, wrapping from the last return to the first, with probability `1 - 1/b`, and drawn evenly again otherwise, so its blocks have a mean length `b`. `B` resamples are drawn, 2,000 unless `resamples` gives another count. Value at risk is the loss of the `k`-th lowest return, `k = ceil(n / 20)`, and conditional value at risk the mean loss of the `k` lowest, in percent.
+- `b` is the largest of the stationary lengths that Politis and White's rule, as Patton's code computes it (`opt_block_length_REV_dec07`), gives three series: the returns, their squared deviations from their mean, and the indicator of a return at or below the `k`-th lowest, so the dependence in a strategy's squared returns, the stretches its exposure switches on and off, sets the blocks where the returns' own correlogram does not see it. On a series `y` of `N` values, counted from 1:
+  - `K = 5`, `m_max = ceil(sqrt(N)) + K`, `b_max = ceil(min(3 * sqrt(N), N / 3))` and the threshold `h = 2 * sqrt(log10(N) / N)`.
+  - `rho_j`, for `j` from 1 to `m_max`, is the correlation of `y_t` with `y_{t-j}` over `t` from `m_max + 1` to `N`, each side centred on its own mean. `m_hat` is the first `j` whose `rho_j` to `rho_{j+K-1}` are all below `h` in magnitude, or where no `K` in a row are, the largest `j` whose `rho_j` is above it, and `M = min(2 * m_hat, m_max)`.
+  - `R_j`, for `j` from 0 to `M`, is the covariance of `y_t` with `y_{t-j}` over `t` from `M + 1` to `N`, each side centred on its own mean. With the flat-top weights `w(v) = 1` for `v < 1/2` and `2 * (1 - v)` from `1/2` to 1, `G = 2 * sum_{j=1..M} w(j / M) * j * R_j` and `g = R_0 + 2 * sum_{j=1..M} w(j / M) * R_j`, and the length is `abs(G / g)^(2/3) * N^(1/3)`, held to `b_max`.
+  - Where it departs from Patton's code, a length is held to at least 1, the shortest mean block a stationary bootstrap has; a series that never varies, holds fewer than `m_max + 3` values or gives a correlation a side that never varies gives 1, and a `g` of zero gives `b_max`.
+- Total return and net profit, CAGR, volatility, Sortino and conditional value at risk are studentized (Hall 1988), each read on a pivot `theta` with an influence series `psi`, `n` in every divisor:
+  - total return, net profit and CAGR on the growth a bar `g = (1/n) * sum_t ln(1 + r_t)`, `psi_t = ln(1 + r_t) - g`, total return and net profit being `exp(n * g) - 1` and CAGR `exp(ppy * g) - 1`, held to `1e12`;
+  - volatility on `ln s'`, `psi_t = ((r_t - m)^2 - v) / (2 * v)`, `m` and `v` the returns' mean and variance, volatility being `sqrt(ppy) * s'`;
+  - Sortino on the Sortino a bar `S = xbar / d`, `d^2 = (1/n) * sum_t min(x_t, 0)^2`, `psi_t = (x_t - xbar) / d - (S / (2 * d^2)) * (min(x_t, 0)^2 - d^2)`, annualised by `sqrt(ppy)`;
+  - conditional value at risk on the mean `L` of the `k` lowest returns, `psi_t = q + (n / k) * (r_t - q) * [r_t <= q] - L`, `q` the `k`-th lowest, conditional value at risk being `-L`.
+- `V` is the Bartlett sum of `psi`'s autocovariances at the lag the 1994 rule takes on `psi`, floored at its lag-zero value, as the Sharpe's is, and the standard error is `e = sqrt(V / (n - 1))`. Each resample gives `t = (theta* - theta) / e*`, `theta*` its pivot and `e*` the same standard error of its own influence series at the sample's lag; a resample whose `e*` is zero or not finite has `t` infinite in the sign of `theta* - theta`, or 0 where the two are equal, and a resample's Sortino with no return below the rate is ranked as the record ranks it. The interval is `theta - t_hi * e` to `theta - t_lo * e`, `t_lo` and `t_hi` the order statistics of the `t` at `(1 - level) / 2` and `(1 + level) / 2`, carried to the statistic, so a volatility's bounds stay above zero and a total return's above -100%.
+- Value at risk's interval is percentile, its bounds the order statistics of the resamples' values at the same two levels, each computed as the record computes it. An order statistic at `q` is the `ceil(B * q)`-th lowest of the `B`, the first at least, a product within `1e-9` of a whole number taken as that number, so 95% of 2,000 gives the 50th and the 1,950th where its binary value would give the 51st, never interpolated, so resamples ranked at infinity can make a bound infinite and never NaN. Total return's interval covers `exp(n * E[ln(1 + r)]) - 1`, the median of compounded outcomes over the run's length, CAGR's `exp(ppy * E[ln(1 + r)]) - 1`, and the others the population value of their statistic.
+- Maximum drawdown and Calmar take the same order statistics of the same resamples as the middle 95% of resampled histories, which says what histories like the run's do and is not a confidence interval, so it is held to no coverage.
+
+**Worked example.** 1,000 returns whose correlogram never reaches `2 * sqrt(3 / 1,000) = 0.110` in magnitude have `m_hat = 1` and `M = 2`, whose weights at lags 1 and 2 are 1 and 0, so `G = 2 * R_1`, `g = R_0 + 2 * R_1` and the length is `abs(2 * R_1 / (R_0 + 2 * R_1))^(2/3) * 1,000^(1/3)`: at `R_1 = 0.05 * R_0`, `(0.1 / 1.1)^(2/3) * 10 = 2.02`. At the population autocovariances of returns correlated `0.7^j` at lag `j`, `G / g = 2 * 0.7 / (1 - 0.49)` and 200 returns give `2.745^(2/3) * 200^(1/3) = 11.47`, as Patton, Politis and White (2009) print in their table 1.
+
+### Intervals of the round trips
+
+The win rate, the profit factor and the average trade take a bootstrap of the closed round trips' pnl: `B` resamples, 2,000 unless `resamples` gives another count, of `k` trips drawn evenly with replacement from the `k` closed, each statistic computed on each as the record computes it.
+- The win rate's interval is percentile, as above.
+- The profit factor's is bias-corrected and accelerated (Efron 1987): `z0 = Phi^-1(f)`, `f` the share of resamples below the estimate with a tie counting half, and `a = sum_i (P - P_i)^3 / (6 * (sum_i (P - P_i)^2)^(3/2))`, `P_i` the profit factor without trip `i` and `P` the mean of those. Its bounds are the order statistics, ranked as above and the first at least, at `Phi(z0 + (z0 + z) / (1 - a * (z0 + z)))` for `z` the normal quantiles at `(1 - level) / 2` and `(1 + level) / 2`. Resamples that all fall on one side of the estimate leave `z0` without a value, and the interval is refused, asking for more of them.
+- The average trade's is studentized: each resample gives `t = (m* - m) / (s* / sqrt(k))`, `m` and `m*` the mean pnl of the trips and of the resample and `s` and `s*` their deviations with `k - 1` in the divisor, and the interval is `m - t_hi * s / sqrt(k)` to `m - t_lo * s / sqrt(k)`, `t_lo` and `t_hi` the order statistics of the `t` at `(1 - level) / 2` and `(1 + level) / 2`, in percent of the opening balance. A resample whose trips all made the same has `t` infinite in the sign of `m* - m`, or 0 where the two are equal.
+
+### Samples with no interval
+
+- Fewer than 4 returns, or returns that never vary, give no return statistic and no Sharpe an interval. Returns whose Sharpe's influence is zero on every bar, which its quadratic allows only for two values in one proportion, leave it no standard error, and it has no interval, probability or track record.
+- A bootstrap of the returns needs 500 of them, holding at least 100 of its mean blocks. Below 500 the coverage cells' heavy-tailed and autocorrelated returns cover too little, and the bootstrap's variance falls short by about one over the square root of its count of blocks (Politis and White 2004), so returns that switch in and out of the market in stretches too long for their length get none. A run short enough to sit in one stretch reads as independent, and its interval is that stretch's.
+- A return of -100% or worse gives total return, net profit and CAGR none, since the growth they are read on has no value past it.
+- Conditional value at risk needs a tail that varies: where the `k` lowest returns are all equal, as for a run that never lost on a bar, it has none, and nor has any other studentized statistic whose standard error is zero on the sample.
+- An interval whose resamples put both its bounds on one value has none, as value at risk's where its `k`-th lowest sits among many flat bars, a win rate's at a narrow level, or any interval at a level too narrow for its resamples. A range of resampled histories is kept as they give it, though they meet at one value, as for returns that never lose, whose every resampled drawdown is zero.
+- Fewer than 60 closed round trips give no trade statistic one: at 60 every trade statistic's interval holds to the coverage cells' band, and at 50 the average trade of a strategy that wins often and small sits on its edge. The win rate needs a trip that won and one that did not, the profit factor one that won and two that lost, since its acceleration leaves out each trip in turn, and the average trade trips that did not all make the same.
+- An estimate ranked at infinity has no interval: no resample of the sample can measure a risk the sample lacks, as for a profit factor with no losing trip, a Sortino with no return below the rate and a Calmar with no drawdown.
+- A Result's statistics hold None for such an interval. Asked for directly, it is refused, naming why and what would give one: "returns: 3 of them; an interval needs at least 4", or "returns: 600 in blocks of 29.7, 20.2 of them; a bootstrap of returns needs at least 100 blocks".
+
+### Two Sharpes on the same bars
+
+`sharpe_difference(a, b)` compares two Results on the same rows, or two plain series of one length, or a Result alone with its buy-and-hold baseline on the same rows at the Result's own risk-free rate, which a run at `account` does not have. `D` is the difference of the two per-bar Sharpes, and both methods are reported, each naming itself.
+- The delta method: the influence series `z_a - z_b`, each as for one Sharpe, its variance `V` the Bartlett sum floored at its lag-zero value at the lag the 1994 rule takes on it, `se = sqrt(V / (n - 1))`, the p-value `2 * Phi(-abs(D) / se)` and the interval `D +/- z_q * se`, annualised.
+- Ledoit and Wolf's (2008) studentized circular block bootstrap: a resample joins `ceil(n / l)` blocks of `l` rows, each starting at a row drawn evenly and wrapping past the last, the same rows of both series, cut to `n`. `l` is Patton's circular length on `z_a - z_b`, the ceiling of `(3/2)^(1/3)` times the stationary length before it is held, held to `b_max` and at least 1. Each resample gives `D*` and its natural standard error `s* = sqrt(V* / (n - 1))`, `V* = (1/q) * sum_{i=1..q} (sum of z* over block i)^2 / l` over its `q = floor(n / l)` whole blocks, `z*` its own influence series, and `d* = abs(D* - D) / s*`, infinite for a resample whose returns never vary or whose `s*` is zero. The p-value is `(#{d* >= abs(D) / se} + 1) / (B + 1)` over the `B` resamples and the interval `D +/- d_level * se`, `d_level` the order statistic of the `d*` at `level`.
+- Two series whose influence series are the same on every bar, a series beside itself or beside a positive multiple of it at no risk-free rate, or two whose influence is zero on every bar, leave the difference no standard error, and are refused. A variance below `1e-20` counts as zero, here and for one Sharpe: the influence is standardised, so its rounding stays below that while the Sharpe is under about a thousand a bar.
+- Both depart from that paper in two places: Newey and West's Bartlett kernel at the 1994 lag stands for its prewhitened quadratic-spectral kernel, and Politis and White's block length for its calibration.
+
+**Worked example.** At lag zero the delta method is Memmel's (2003) correction of Jobson and Korkie. Two normal series with per-bar Sharpes of 0.10 and 0.05 correlated 0.5 have `E[(z_a - z_b)^2] = 2 - 2 * 0.5 + (0.01 + 0.0025 - 2 * 0.005 * 0.25) / 2 = 1.005`, so over 1,000 bars `se = sqrt(1.005 / 999) = 0.0317` and a difference of 0.05 a bar has a p-value of `2 * Phi(-1.576) = 0.115`. If 113 of 2,000 resamples have `d*` at or above `abs(D) / se`, the bootstrap's p-value is `114 / 2,001 = 0.057`.
+
+### Alpha and beta
+
+`alpha_beta(result, benchmark)` regresses the run's excess returns on the benchmark's with an intercept, `x_t = alpha + beta * y_t + e_t`, by least squares over the run's `n` returns.
+- The covariance is Newey and West's, `(X'X)^-1 * W * (X'X)^-1` for the rows `X_t = (1, y_t)` and `W = sum_t e_t^2 * X_t X_t' + sum_{j=1..m} (1 - j / (m + 1)) * sum_{t > j} e_t * e_{t-j} * (X_t X_{t-j}' + X_{t-j} X_t')`, with no small-sample factor. `m` is the given `lag`, or the 1994 rule above on the slope's score `y_t * e_t`.
+- Alpha is annualised by `ppy` and beta is per bar, each with its standard error and its interval `+/- z_q` of them, alpha with its t statistic. The tracking error is the deviation of `x_t - y_t`, `n - 1` in its divisor, times `sqrt(ppy)`, and the information ratio the mean of `x_t - y_t` over that deviation, times `sqrt(ppy)`.
+- The benchmark is the run's buy-and-hold baseline unless one is given: a Result on the same rows, an array shaped as the run's returns, its row 0 ignored, or a pandas Series indexed by the run's row times exactly.
+
+**Worked example.** A benchmark returns -2%, -1%, 0%, 1% and 2% over five months and a strategy -1%, -0.5%, 0.5%, 1.5% and 2%, with no risk-free rate.
+- The residuals of `0.5% + 0.8 * y` are 0.1%, -0.2%, 0%, 0.2% and -0.1%, which sum to zero and to zero against the benchmark, so alpha is 0.5% a month, 6% a year, and beta is 0.8. In percent `X'X = [[5, 0], [0, 10]]`.
+- The slope's score is -0.2, 0.2, 0, 0.2 and -0.2, whose `s1` is zero, so the lag is 0, `W = [[0.1, 0], [0, 0.16]]`, and the standard errors are `sqrt(0.1) / 5 = 0.063%` a month for alpha and `sqrt(0.16) / 10 = 0.04` for beta.
+- With `lag=1`, the two adjacent residual products of -0.02 take `[[0.04, 0], [0, 0.08]]` from `W`, and the standard errors are 0.049% and 0.028.
+- The strategy beats the benchmark by 1%, 0.5%, 0.5%, 0.5% and 0%, a mean of 0.5% and a deviation of 0.354%, so the tracking error is `0.354 * sqrt(12) = 1.22%` and the information ratio `0.5 / 0.354 * sqrt(12) = 4.90`.
+
+### The order of trades
+
+`trade_order(result, n=2000)` permutes the closed round trips `n` times, every instrument's in one sequence, which in the run is the order they closed.
+- Trip `i` returns `pnl_i / E_i`, `E_i` the account's equity at the close of the row before its opening fill, or the opening equity for a trip opened on the first row, and an order compounds the returns from the opening equity, staying at zero once it reaches it: the model of a policy sized on its equity, so the order is all that moves.
+- The drawdown is the largest fall from the running peak at trade closes, the opening equity included, as a share of the peak and at most a total loss, and the losing run the longest run of trips whose pnl is below zero.
+- It reports the run's own drawdown and losing run, the middle 95% of the permutations' for each, the share of permutations whose drawdown is deeper by more than a part in a trillion, so that orders apart only by rounding count as level, and `n`, and says the drawdown is at trade closes and leaves out what the account marked inside a trade. Fewer than 2 closed round trips cannot be permuted.
+
+**Worked example.** Three round trips return 20%, -10% and -10% on the equity they opened on, from 10,000. Every order ends at 9,720. In the run's order the drawdown is 19%, from 12,000 to 9,720, with a losing run of 2; the four orders of the six that put the two losses together draw down 19%, and the two that part them 10%, with losing runs of 1. So the middle 95% of the permutations' drawdowns is 10% to 19% and of their losing runs 1 to 2, and none draws down deeper than the run.
+
+### Summaries
+
+- `Result.summary()` prints the run's header and span, its return, its Sharpe with the interval and the lag or why it has none, the long-run Sharpe beside it where they differ by more than 0.1, its maximum drawdown as a loss with the longest time under water in days, from a row at the running peak to the first row back at or above it or to the last row, its round trips with the win rate and the profit factor, its costs and its assumptions. A combined book names each account and says the accounts are margined apart and no capital moves between them, and a run recorded below the full level names its level.
+- A search's `summary(null=None)` prints its header, its in-sample span, the best trial's parameters and score, and its holdout. `null` is a random search of the same policy over the same space on the same venue and in-sample bars, scored by the same objective, direction, `min_trades` and risk-free rate, and is refused naming what differs; its line is the mean score of its complete trials and their count, "null mean sharpe 0.38 over 500 trials".
+- A validation's `summary()` prints its header and its paths, the embargo, each path's score, the median of the complete paths' scores, and the interval of the median path's objective on its returns, or the range of its resampled histories for drawdown and Calmar, the median path being the lower of the two middle ones for an even count, with "the paths share bars"; where the returns were not kept, or the objective reads round trips, which a path's returns do not hold, it says so and gives none. Then its costs as a share of the gross edge, the net profit plus the costs, each summed over the complete paths, or "costs N, with no gross edge", the label "the paths are stability evidence; the verdict comes from the holdout", and the holdout.
+- The holdout reads as its state:
+  - none held out: "holdout none: the search held every bar";
+  - held out and not yet run: "holdout not yet run; evaluate_holdout() spends a look", the line before naming what is held out, "holdout the last 30% (9,641 bars)";
+  - run: "holdout sharpe 0.52, 95% interval -1.35 to 2.39, look 1 of 1", and after `k` looks the interval at the level `1 - 0.05 / k` beside it;
+  - a look whose run raised: "holdout read 2 times; its run raised, so no result is kept".
+
+### Consistency and decay
+
+- `consistency(stretches=None)` scores a search's best trial on `stretches` stretches of its run over the in-sample bars, a whole number from 2 and 4 unless given: its rows after the first divided as `PurgedKFold` divides bars, each scored by the objective as a validation's window is, opening at the equity of the close before it. A validation's stretches are its windows, and `stretches` given to one is refused.
+- A stretch gains where its score is past the objective's break-even in the search's direction: 0 for `sharpe`, `sortino`, `calmar`, `total_return_pct`, `net_profit_pct`, `cagr_pct` and `avg_trade_pct`, and 1 for `profit_factor`. The other objectives have no break-even, so their scores are given, the share is None and the text says why.
+- `decay()` is the mean gap between what a fit scored and what its bars then earned, signed so that a positive decay is worse out of sample in either direction. A validation's gaps are each window's fit's in-sample score against the window's score. A search's one gap is its best trial's in-sample score against its holdout's, which needs a look whose run kept its result: with nothing held out, or a look whose run raised, it is refused naming what was or was not kept, and before a look naming `evaluate_holdout()`, which spends one.
+- An objective that grows with its span, `total_return_pct`, `net_profit_pct`, `max_drawdown_pct`, the counts or `funding_paid`, has no decay, since spans of different lengths would make the gap measure their lengths.
+
+**Worked example.** A search maximising the Sharpe whose best trial ran over 1,001 in-sample rows scores 0.81, 1.22, -0.30 and 0.94 on rows 1 to 250, 251 to 500, 501 to 750 and 751 to 1,000: "3 of 4 stretches scored above 0". A validation whose three windows' fits scored 1.8, 1.2 and 2.0 in sample and whose windows scored 0.6, 1.4 and -0.2 has gaps of 1.2, -0.2 and 2.2, a decay of 1.07.
+
+<br>
+<br>
+
+
 ## Numbers that are the same everywhere
 
 - Basic arithmetic and `sqrt` are correctly rounded everywhere, but `ln`, `exp` and `powf` may differ by platform, so integer powers are written as products and every other transcendental function goes through the `libm` crate.
-- Random draws come from named streams, PCG64 in Python and ChaCha in Rust, each derived from the run's seed through a NumPy `SeedSequence` and recorded with it; a search's random and grid samplers draw from them, a log scale's `ln` and `exp` taken through `libm`.
+- Random draws come from named streams, PCG64 in Python and ChaCha in Rust, each derived from the run's seed through a NumPy `SeedSequence` and recorded with it; a search's random and grid samplers draw from them, a log scale's `ln` and `exp` taken through `libm`. A statistic's resampling draws from a named stream seeded by a digest of the values it resamples instead, so it repeats with no seed ([Inference](#inference)).
 - Sums run in a fixed instrument order, the batch has no cross-environment reductions, and the statistics a search ranks on are summed in a fixed order.
 - Compensated sums are used only for totals reported over many bars, such as fees, funding and turnover; cash and positions stay plain arithmetic in event order.
 - A perpetual fill that leaves no perpetual held, with the margin wallet's size within `1e-12` times the money at stake, leaves the wallet at zero, as a takeover does, the remainder booked as the liquidation charge. The money at stake is what the bar's perpetual fills have put there so far, for each the margin wallet before it, what the margin bound paid in and its notional. Exact arithmetic leaves zero where the margin ran out, and floating point a hair either side of it, which above zero is equity the cap would lever.
