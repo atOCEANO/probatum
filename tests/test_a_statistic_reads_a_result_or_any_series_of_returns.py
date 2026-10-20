@@ -289,6 +289,133 @@ def test_a_bootstrap_refuses_what_its_sample_cannot_support_by_name(result, trad
         stats.bootstrap(traded, "win_rate", seed=1.5)
 
 
+def held(result):
+    """The run's buy-and-hold baseline as returns a row, the first nothing."""
+    equity = np.asarray(result.baselines["buy_and_hold"])
+    return np.concatenate([[0.0], equity[1:] / equity[:-1] - 1.0])
+
+
+def test_a_run_alone_is_tested_against_buying_and_holding_its_own_bars(result):
+    found = stats.sharpe_difference(result)
+    rate  = result.provenance["periods_per_year"]
+    plain = stats.sharpe_difference(result.returns[1:], held(result)[1:],
+                                    periods_per_year=rate)
+
+    assert found.delta == plain.delta and found.bootstrap.low == pytest.approx(
+        plain.bootstrap.low, rel=1e-12)
+    assert found.estimate == pytest.approx(
+        stats.sharpe(result) - stats.sharpe(held(result)[1:], periods_per_year=rate))
+    assert (found.delta.method, found.bootstrap.method) == (
+        "delta method", "studentized circular block bootstrap")
+    assert 0.0 <= found.delta.p <= 1.0 and 0.0 < found.bootstrap.p <= 1.0
+
+    lines = str(found).split("\n")
+    assert len(lines) == 2 and lines[0].startswith("sharpe difference ")
+    assert "p-value" in lines[0] and "block" in lines[1]
+
+
+def test_two_sharpes_are_refused_unless_they_read_the_same_bars(result, traded):
+    with pytest.raises(probatum.DataError, match="b: a Result on other rows; compare "
+                       "runs on the same bars"):
+        stats.sharpe_difference(result, traded)
+    with pytest.raises(ProbatumTypeError, match="b: list beside a Result; pass two "
+                       "Results, or two plain series"):
+        stats.sharpe_difference(result, MONTHLY)
+    with pytest.raises(ProbatumTypeError, match="b: NoneType beside a plain series"):
+        stats.sharpe_difference(MONTHLY, periods_per_year=12)
+    with pytest.raises(ProbatumValueError, match="b: 6 returns beside 8; give two series "
+                       "of one length"):
+        stats.sharpe_difference(MONTHLY, MONTHLY[:6], periods_per_year=12)
+    with pytest.raises(ProbatumValueError, match="b: returns whose Sharpe moves as a's "
+                       "does on every bar, so the difference has no standard error; "
+                       "compare series that differ"):
+        stats.sharpe_difference(MONTHLY, [3.0 * r for r in MONTHLY], periods_per_year=12)
+    with pytest.raises(ProbatumValueError, match="b: two values whose Sharpe's "
+                       "influence is zero on every bar, as a's is, so the difference "
+                       "has no standard error; compare series that take a third"):
+        stats.sharpe_difference([0.3] * 3 + [0.075] * 12, [0.02] * 5 + [0.01] * 10,
+                                periods_per_year=12)
+    with pytest.raises(ProbatumValueError, match="b: position 2 holds nan"):
+        stats.sharpe_difference(MONTHLY, [0.01, 0.0, np.nan, 0.02, 0.0, 0.01, 0.0, 0.03],
+                                periods_per_year=12)
+
+
+def test_a_run_kept_at_the_account_level_has_no_baseline_to_be_measured_against():
+    close = 100.0 + np.random.default_rng(5).normal(0.0, 1.0, 400).cumsum()
+    bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(400, 1e3)])
+    data  = probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(400, dtype=np.int64) * 3_600_000_000_000,
+    )
+
+    kept = probatum.backtest(np.where(np.arange(400) % 40 < 20, 1.0, 0.0), data,
+                             "frictionless", record="account")
+
+    with pytest.raises(ProbatumValueError, match="b: none given, and a run recorded at "
+                       "'account' has no baselines; pass one, or run at the full level"):
+        stats.sharpe_difference(kept)
+    with pytest.raises(ProbatumValueError, match="benchmark: none given"):
+        stats.alpha_beta(kept)
+
+
+def test_alpha_and_beta_read_buying_and_holding_unless_a_benchmark_is_given(result):
+    found = stats.alpha_beta(result)
+    times = pd.to_datetime(result.time, utc=True)
+
+    assert stats.alpha_beta(result, benchmark=held(result)) == found
+    assert stats.alpha_beta(result, benchmark=pd.Series(held(result), index=times)) == found
+
+    # the first row is ignored, so a benchmark read as pct_change() is taken as it is
+    unread = held(result)
+    unread[0] = np.nan
+    assert stats.alpha_beta(result, benchmark=unread) == found
+
+    unread[3] = np.nan
+    with pytest.raises(ProbatumValueError, match="benchmark: position 3 holds nan"):
+        stats.alpha_beta(result, benchmark=unread)
+
+    assert found.count == 399 and found.alpha_low <= found.alpha <= found.alpha_high
+    assert str(found).startswith(f"alpha {found.alpha * 100:.2f}% a year, standard error")
+    with pytest.raises(probatum.DataError, match="benchmark: a Series whose index is not "
+                       "the run's row times"):
+        stats.alpha_beta(result, benchmark=pd.Series(held(result)))
+    with pytest.raises(ProbatumValueError, match="benchmark: 8 values beside a run of 400 "
+                       "rows; give one a row"):
+        stats.alpha_beta(result, benchmark=MONTHLY)
+    with pytest.raises(ProbatumTypeError, match="result: list; alpha_beta reads a Result"):
+        stats.alpha_beta(MONTHLY)
+    with pytest.raises(ProbatumValueError, match="lag: -1; give a whole number of bars"):
+        stats.alpha_beta(result, lag=-1)
+
+
+def test_the_order_of_trades_permutes_a_run_s_closed_round_trips(traded):
+    found = stats.trade_order(traded)
+
+    assert (found.count, found.n) == (251, 2_000)
+    assert found.drawdown_low <= found.drawdown_high and 0.0 <= found.deeper <= 1.0
+    assert found.losing_run_low <= found.losing_run_high
+    assert found == stats.trade_order(traded) and found != stats.trade_order(traded, seed=4)
+
+    said = str(found)
+    assert said.startswith(f"drawdown at trade closes -{found.drawdown:.2f}% in the order "
+                           f"the 251 round trips closed; middle 95% of 2,000 other orders")
+    assert said.endswith("what the account marked inside a trade is left out")
+
+    close = 100.0 + np.random.default_rng(5).normal(0.0, 1.0, 50).cumsum()
+    bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(50, 1e3)])
+    data  = probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(50, dtype=np.int64) * 3_600_000_000_000,
+    )
+    with pytest.raises(ProbatumValueError, match="round trips: 0 closed; permuting needs "
+                       "at least 2"):
+        stats.trade_order(probatum.backtest(np.ones(50), data, "frictionless"))
+
+
 def test_the_autocorrelation_is_1_at_lag_0_and_0_where_nothing_varies():
     assert stats.autocorrelation(MONTHLY, 0)     == 1.0
     assert stats.autocorrelation([0.01] * 6, 1)  == 0.0

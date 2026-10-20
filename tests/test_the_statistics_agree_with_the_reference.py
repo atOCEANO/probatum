@@ -9,6 +9,7 @@ up and the floor both binds and does not.
 """
 
 import collections
+import itertools
 import math
 
 import numpy as np
@@ -344,6 +345,97 @@ def test_each_trade_statistic_s_bounds_agree_on_the_module_s_own_resamples(seed)
         assert found == tuple(pytest.approx(value, **near) for value in expected)
 
 
+def pair(seed):
+    """Two series on the same bars, the second half the first and its own noise, with
+    their bars a year and their annual risk-free rate."""
+    first, rate, free = series(seed)
+    noise = np.random.Generator(np.random.PCG64(5_000 + seed)).normal(0.0003, 0.01,
+                                                                      first.size)
+    return first, 0.5 * first + noise, rate, free
+
+
+@pytest.mark.parametrize("seed", CASES[:40])
+def test_the_delta_method_s_difference_of_two_sharpes_agrees(seed):
+    a, b, rate, free = pair(seed)
+    xa, xb = (statistics.excess(v.tolist(), rate, free) for v in (a, b))
+    d, error, p, (low, high), lag, floored = statistics.difference(xa, xb, rate, level=0.9)
+    found = stats.sharpe_difference(a, b, periods_per_year=rate, risk_free=free, level=0.9,
+                                    resamples=20).delta
+    near = dict(rel=1e-9, abs=1e-12)
+
+    assert (found.lag, found.floored, found.count) == (lag, floored, a.size)
+    assert (found.estimate, found.low, found.high, found.p) == (
+        pytest.approx(d, **near), pytest.approx(low, **near), pytest.approx(high, **near),
+        pytest.approx(p, **near))
+
+
+def test_two_series_with_one_influence_have_no_difference_to_test():
+    # three times a series is that series to rounding alone
+    x       = statistics.excess([0.02, -0.01, 0.03, 0.0, 0.01, -0.02, 0.04, 0.01], 12.0, 0.0)
+    tripled = [3.0 * v for v in x]
+
+    assert statistics.difference(x, tripled, 12.0) is None
+    assert statistics.studentized_difference(x, tripled, 12.0, [[0]] * 4) is None
+
+    with pytest.raises(probatum.ProbatumValueError, match="b: returns whose Sharpe moves "
+                       "as a's does"):
+        stats.sharpe_difference(x, tripled, periods_per_year=12)
+
+    two = [0.3125, 0.078125, 0.078125, 0.078125, 0.078125]
+
+    assert statistics.sharpe_interval(two, 12.0) is None
+    assert statistics.probabilistic_sharpe(two, 12.0) is None
+
+
+@pytest.mark.parametrize("seed", CASES[:12])
+def test_the_studentized_bootstrap_agrees_on_the_module_s_own_blocks(seed):
+    a, b, rate, free = pair(seed)
+    a, b = a[:300], b[:300]
+    xa, xb = (statistics.excess(v.tolist(), rate, free) for v in (a, b))
+    z      = stats._influence(np.array(xa)) - stats._influence(np.array(xb))
+    length = stats._block_lengths(z)[1]
+    rng    = stats._drawn(np.concatenate([a, b]), "stats sharpe difference", None)
+    starts = np.concatenate(list(stats._block_starts(a.size, length, 200, rng)))
+    p, (low, high), theirs = statistics.studentized_difference(
+        xa, xb, rate, starts.tolist(), level=0.9)
+    found = stats.sharpe_difference(a, b, periods_per_year=rate, risk_free=free, level=0.9,
+                                    resamples=200).bootstrap
+    near = dict(rel=1e-9, abs=1e-12)
+
+    assert (found.block, found.p) == (theirs, pytest.approx(p, rel=1e-12))
+    assert (found.low, found.high) == (pytest.approx(low, **near),
+                                       pytest.approx(high, **near))
+
+
+@pytest.mark.parametrize("seed", CASES[:30])
+def test_alpha_and_beta_agree_at_the_1994_lag_and_at_a_given_one(seed):
+    x, y, rate, free = pair(seed)
+
+    for given in (None, 3):
+        found  = stats._regression(x, y, rate, given, 0.95)
+        theirs = statistics.alpha_beta(x.tolist(), y.tolist(), rate, given=given)
+        near   = dict(rel=1e-9, abs=1e-12)
+        assert found.lag == theirs["lag"]
+        for name in ("alpha", "alpha_error", "beta", "beta_error", "tracking_error",
+                     "information_ratio"):
+            assert getattr(found, name) == pytest.approx(theirs[name], **near)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_each_order_of_trades_agrees_on_the_module_s_own_permutations(seed):
+    pnl       = trips(seed)
+    opened_on = 10_000.0 + np.cumsum(pnl) - pnl
+    returned  = pnl / opened_on
+    rng       = stats._drawn(returned, "stats trade order", None)
+    orders    = rng.permuted(np.broadcast_to(np.arange(pnl.size), (200, pnl.size)), axis=1)
+
+    falls, runs = stats._paths(returned, pnl, orders)
+
+    for order, fall, run in zip(orders, falls, runs):
+        theirs = statistics.trade_path(pnl.tolist(), opened_on.tolist(), order.tolist())
+        assert (fall, run) == (pytest.approx(theirs[0], rel=1e-9, abs=1e-12), theirs[1])
+
+
 def test_a_result_is_read_at_its_own_annualisation_and_risk_free_rate():
     close = 100.0 + np.random.default_rng(3).normal(0.0, 1.0, 600).cumsum()
     bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(600, 1e3)])
@@ -364,3 +456,43 @@ def test_a_result_is_read_at_its_own_annualisation_and_risk_free_rate():
     assert stats.sharpe_interval(result) == stats.sharpe_interval(
         result.returns[1:], periods_per_year=rate, risk_free=0.04)
     assert stats.sharpe_interval(result).count == 599
+
+
+def test_the_order_of_trades_reads_each_trip_on_the_equity_before_it_opened():
+    # a fee moves the equity of the row a trip opens on, so only the row before it is
+    # the equity the rule names
+    rows  = 4 * statistics.FLOOR + 1
+    close = 100.0 + np.random.default_rng(3).normal(0.0, 1.0, rows).cumsum()
+    bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(rows, 1e3)])
+    data  = probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(rows, dtype=np.int64) * 3_600_000_000_000,
+    )
+
+    run = probatum.backtest(np.where(np.arange(rows) % 4 < 2, 1.0, 0.0), data,
+                            probatum.venues.binance_perp.replace(funding="none"))
+
+    closed    = ~np.asarray(run.trades["open"])
+    order     = np.argsort(np.asarray(run.trades["close_bar"])[closed], kind="stable")
+    pnl       = np.asarray(run.trades["pnl"])[closed][order].tolist()
+    opened    = np.asarray(run.trades["open_bar"])[closed][order].tolist()
+    opened_on = [float(run.equity[max(bar - 1, 0)]) for bar in opened]
+    fall, longest = statistics.trade_path(pnl, opened_on, list(range(len(pnl))))
+    found = stats.trade_order(run, n=20)
+
+    assert (found.drawdown, found.losing_run) == (pytest.approx(fall, rel=1e-12), longest)
+
+
+def test_an_order_deeper_than_the_run_s_only_by_rounding_is_level():
+    # the Specification's example: trips of 20%, -10% and -10% in each of their orders,
+    # where the two that put the losses first fall a few ulps further than the run's
+    returned = np.array([0.2, -0.1, -0.1])
+    orders   = np.array(list(itertools.permutations(range(3))))
+
+    falls, _ = stats._paths(returned, returned, orders)
+
+    assert np.count_nonzero(falls > falls[0]) == 2
+    assert stats._deeper(falls, falls[0])     == statistics.deeper(falls.tolist(), falls[0])
+    assert stats._deeper(falls, falls[0])     == 0.0

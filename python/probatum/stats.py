@@ -11,13 +11,15 @@ import statistics
 
 import numpy as np
 
-from ._errors import ProbatumAttributeError, ProbatumTypeError, ProbatumValueError
+from ._errors import (DataError, ProbatumAttributeError, ProbatumTypeError,
+                      ProbatumValueError)
 from ._space import _flag, _number, _whole
 from ._streams import stream
 
-__all__ = ["Interval", "Probability", "TrackRecord", "autocorrelation", "bootstrap",
-           "effective_sample", "min_track_record_length", "probabilistic_sharpe", "sharpe",
-           "sharpe_interval"]
+__all__ = ["AlphaBeta", "Difference", "Interval", "Permutations", "Probability",
+           "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap", "effective_sample",
+           "min_track_record_length", "probabilistic_sharpe", "sharpe", "sharpe_difference",
+           "sharpe_interval", "trade_order"]
 
 NORMAL   = statistics.NormalDist()
 ROUNDING = 1e-20     # a standardised influence's variance below this is rounding
@@ -100,17 +102,18 @@ class Interval(_Frozen):
     ``high``, in its units and with its sign, a drawdown and a value at risk positive
     losses; ``level``; ``method``, how it was found; ``count``, the returns or round
     trips it read; ``lag`` and ``floored``, the delta method's lag and whether its
-    floor at lag zero bound; ``block``, a stationary bootstrap's mean block; and
-    ``kind``, ``"interval"``, or ``"range"`` for the middle of the resampled histories,
-    which is no confidence interval. Its text says each, a loss as the negative return
+    floor at lag zero bound; ``block``, a block bootstrap's block; ``kind``,
+    ``"interval"``, or ``"range"`` for the middle of the resampled histories, which is
+    no confidence interval; and ``p``, the two-sided p-value of an estimate of zero,
+    where the interval is a test's. Its text says each, a loss as the negative return
     it is."""
 
     __slots__ = ("statistic", "estimate", "low", "high", "level", "method", "count", "lag",
-                 "floored", "block", "kind")
+                 "floored", "block", "kind", "p")
 
 
     def __init__(self, statistic, estimate, low, high, level, method, count, lag=None,
-                 floored=None, block=None, kind="interval"):
+                 floored=None, block=None, kind="interval", p=None):
         self._set(
             statistic = statistic,
             estimate  = float(estimate),
@@ -123,6 +126,7 @@ class Interval(_Frozen):
             floored   = None if floored is None else bool(floored),
             block     = None if block is None else float(block),
             kind      = kind,
+            p         = None if p is None else float(p),
         )
 
 
@@ -139,6 +143,8 @@ class Interval(_Frozen):
             how += " floored at lag zero" if self.floored else ""
         if self.block is not None:
             how += f", block {self.block:.1f}"
+        if self.p is not None:
+            how += f", p-value {self.p:.3f}"
 
         noun = "round trips" if self.statistic in TRADES else "returns"
         return (f"{words} {flip * self.estimate + 0.0:.2f}{unit}{what} {low:.2f}{unit} to "
@@ -202,6 +208,104 @@ class TrackRecord(_Frozen):
         return (f"minimum track record {_years(self.years)} years for "
                 f"{_percent(self.confidence)} one-sided confidence against "
                 f"{_against(self.benchmark)}; this series has {_years(self.series_years)}")
+
+
+class Difference(_Frozen):
+    """Two Sharpes on the same bars: ``estimate``, the first's less the second's a year,
+    and its two tests, ``delta``, the delta method's, and ``bootstrap``, Ledoit and
+    Wolf's studentized circular block bootstrap, each an Interval with its p-value of no
+    difference."""
+
+    __slots__ = ("estimate", "delta", "bootstrap")
+
+
+    def __init__(self, estimate, delta, bootstrap):
+        self._set(estimate=float(estimate), delta=delta, bootstrap=bootstrap)
+
+
+    def __str__(self):
+        return f"{self.delta}\n{self.bootstrap}"
+
+
+class AlphaBeta(_Frozen):
+    """A regression of a run's excess returns on a benchmark's: ``alpha`` a year,
+    with its ``alpha_error``, its two-sided interval ``alpha_low`` to ``alpha_high``
+    and ``alpha_t``; ``beta``, with ``beta_error``, ``beta_low`` and ``beta_high``; the
+    ``tracking_error`` and the ``information_ratio`` a year; and ``lag``, ``level`` and
+    ``count``, the returns it read. Alpha and the tracking error are fractions."""
+
+    __slots__ = ("alpha", "alpha_error", "alpha_low", "alpha_high", "alpha_t", "beta",
+                 "beta_error", "beta_low", "beta_high", "tracking_error",
+                 "information_ratio", "lag", "level", "count")
+
+
+    def __init__(self, alpha, alpha_error, alpha_low, alpha_high, alpha_t, beta, beta_error,
+                 beta_low, beta_high, tracking_error, information_ratio, lag, level, count):
+        self._set(
+            alpha             = float(alpha),
+            alpha_error       = float(alpha_error),
+            alpha_low         = float(alpha_low),
+            alpha_high        = float(alpha_high),
+            alpha_t           = float(alpha_t),
+            beta              = float(beta),
+            beta_error        = float(beta_error),
+            beta_low          = float(beta_low),
+            beta_high         = float(beta_high),
+            tracking_error    = float(tracking_error),
+            information_ratio = float(information_ratio),
+            lag               = int(lag),
+            level             = float(level),
+            count             = int(count),
+        )
+
+
+    def __str__(self):
+        return (f"alpha {self.alpha * 100.0:.2f}% a year, standard error "
+                f"{self.alpha_error * 100.0:.2f}%, two-sided {_percent(self.level)} "
+                f"interval {self.alpha_low * 100.0:.2f}% to {self.alpha_high * 100.0:.2f}%, "
+                f"t {self.alpha_t:.2f}; beta {self.beta:.3g}, standard error "
+                f"{self.beta_error:.3g}, interval {self.beta_low:.3g} to "
+                f"{self.beta_high:.3g}; tracking error {self.tracking_error * 100.0:.2f}%, "
+                f"information ratio {self.information_ratio:.2f}; Newey-West lag "
+                f"{self.lag}, {self.count:,} returns")
+
+
+class Permutations(_Frozen):
+    """The order of a run's round trips: ``drawdown``, the drawdown at trade closes in
+    the order they closed, in percent and a positive loss, with ``drawdown_low`` and
+    ``drawdown_high``, the middle 95% of ``n`` permuted orders', and ``deeper``, the
+    share of them that drew down further; ``losing_run``, the longest run of losing
+    trips in the run's order, with ``losing_run_low`` and ``losing_run_high``; and
+    ``count``, the round trips. Each trip compounds its return on the equity it opened
+    on, and what the account marked inside a trade is left out."""
+
+    __slots__ = ("drawdown", "drawdown_low", "drawdown_high", "deeper", "losing_run",
+                 "losing_run_low", "losing_run_high", "count", "n")
+
+
+    def __init__(self, drawdown, drawdown_low, drawdown_high, deeper, losing_run,
+                 losing_run_low, losing_run_high, count, n):
+        self._set(
+            drawdown        = float(drawdown),
+            drawdown_low    = float(drawdown_low),
+            drawdown_high   = float(drawdown_high),
+            deeper          = float(deeper),
+            losing_run      = int(losing_run),
+            losing_run_low  = int(losing_run_low),
+            losing_run_high = int(losing_run_high),
+            count           = int(count),
+            n               = int(n),
+        )
+
+
+    def __str__(self):
+        return (f"drawdown at trade closes {-self.drawdown + 0.0:.2f}% in the order the "
+                f"{self.count:,} round trips closed; middle 95% of {self.n:,} other orders "
+                f"{-self.drawdown_high + 0.0:.2f}% to {-self.drawdown_low + 0.0:.2f}%, "
+                f"{self.deeper:.1%} of them deeper; longest losing run {self.losing_run}, "
+                f"middle 95% {self.losing_run_low} to {self.losing_run_high}; each trip "
+                f"compounds its return on the equity it opened on, and what the account "
+                f"marked inside a trade is left out")
 
 
 def _percent(level):
@@ -329,17 +433,7 @@ def bootstrap(returns, statistic, periods_per_year=None, risk_free=None, level=0
                                  f"{', '.join([*RETURNS, *TRADES])}")
 
     level = _fraction("level", level)
-
-    if not _whole(resamples):
-        raise ProbatumTypeError(f"resamples: {resamples!r}; give a whole number from 2")
-    if resamples < 2:
-        raise ProbatumValueError(f"resamples: {resamples}; give a whole number from 2")
-
-    if seed is not None and not _whole(seed):
-        raise ProbatumTypeError(f"seed: {seed!r}; give a whole number from 0, or None")
-    if seed is not None and seed < 0:
-        raise ProbatumValueError(f"seed: {seed}; give a whole number from 0, or None")
-
+    resamples, seed = _resamples(resamples), _seed(seed)
     if _rank(resamples, (1.0 - level) / 2.0) == _rank(resamples, (1.0 + level) / 2.0):
         raise ProbatumValueError(f"resamples: {resamples} at a level of {level:g}, which "
                                  f"puts both bounds on one resample; give more")
@@ -357,6 +451,157 @@ def bootstrap(returns, statistic, periods_per_year=None, risk_free=None, level=0
         raise ProbatumValueError(said)
 
     return made
+
+
+def sharpe_difference(a, b=None, periods_per_year=None, risk_free=None, level=0.95,
+                      resamples=2000, seed=None):
+    """The difference of two Sharpes on the same bars, ``a``'s less ``b``'s, as a
+    Difference that tests it twice: by the delta method, on the long-run variance of
+    the two influence series' difference at the 1994 lag floored at lag zero, and by
+    Ledoit and Wolf's studentized circular block bootstrap. ``a`` and ``b`` are two
+    Results on the same rows or two plain series of one length, read as ``sharpe``
+    reads them, or ``a`` is a Result alone, measured against its own buy-and-hold
+    baseline at its own risk-free rate (Specification, Two Sharpes on the same bars)."""
+    level = _fraction("level", level)
+    resamples, seed = _resamples(resamples), _seed(seed)
+    first, second, rate, raw = _paired(a, b, periods_per_year, risk_free, "a", "b")
+    _supports(first, "a")
+    _supports(second, "b")
+
+    count = first.size
+    z     = _influence(first) - _influence(second)
+    variance, lag, floored = _floored(z)
+
+    if variance < ROUNDING and _floored(_influence(first))[0] < ROUNDING:
+        raise ProbatumValueError("b: two values whose Sharpe's influence is zero on "
+                                 "every bar, as a's is, so the difference has no "
+                                 "standard error; compare series that take a third")
+    if variance < ROUNDING:
+        raise ProbatumValueError("b: returns whose Sharpe moves as a's does on every bar, "
+                                 "so the difference has no standard error; compare series "
+                                 "that differ")
+
+    d     = _per_bar(first) - _per_bar(second)
+    error = math.sqrt(variance / (count - 1))
+    root  = math.sqrt(rate)
+    q     = NORMAL.inv_cdf((1.0 + level) / 2.0)
+    delta = Interval("sharpe difference", d * root, (d - q * error) * root,
+                     (d + q * error) * root, level, "delta method", count, lag, floored,
+                     p=2.0 * NORMAL.cdf(-abs(d) / error))
+
+    length = _block_lengths(z)[1]
+    rng    = _drawn(np.concatenate(raw), "stats sharpe difference", seed)
+    found  = _studentized(first, second, d, length,
+                          _block_starts(count, length, resamples, rng))
+
+    half      = _ordered(found, level) * error
+    p         = (np.count_nonzero(found >= abs(d) / error) + 1) / (resamples + 1)
+    bootstrap = Interval(
+        "sharpe difference",
+        d * root,
+        (d - half) * root,
+        (d + half) * root,
+        level,
+        "studentized circular block bootstrap",
+        count,
+        block = length,
+        p     = p,
+    )
+
+    return Difference(d * root, delta, bootstrap)
+
+
+def alpha_beta(result, benchmark=None, lag=None, level=0.95):
+    """Alpha and beta of a Result against a benchmark, as an AlphaBeta: the least
+    squares of the run's excess returns on the benchmark's with an intercept, their
+    covariance Newey and West's at ``lag`` or at the 1994 rule's on the slope's score,
+    with the tracking error and the information ratio. ``benchmark`` is the run's
+    buy-and-hold baseline unless given: a Result on the same rows, an array shaped as
+    the run's returns, its row 0 ignored, or a pandas Series indexed by the run's row
+    times (Specification, Alpha and beta)."""
+    from ._result import Result
+    if not isinstance(result, Result):
+        raise ProbatumTypeError(f"result: {type(result).__name__}; alpha_beta reads a "
+                                f"Result")
+
+    level = _fraction("level", level)
+    if lag is not None and not _whole(lag):
+        raise ProbatumTypeError(f"lag: {lag!r}; give a whole number of bars from 0, or "
+                                f"None for the 1994 rule's")
+    if lag is not None and lag < 0:
+        raise ProbatumValueError(f"lag: {lag}; give a whole number of bars from 0, or "
+                                 f"None for the 1994 rule's")
+
+    x, y, rate, _ = _paired(result, benchmark, None, None, "result", "benchmark")
+    _supports(x)
+    _supports(y, "benchmark")
+
+    return _regression(x, y, rate, lag, level)
+
+
+def _regression(x, y, rate, lag, level):
+    """Alpha and beta of the excess returns ``x`` on a benchmark's ``y``, at ``rate``
+    bars a year (Specification, Alpha and beta)."""
+    rows = np.column_stack([np.ones(x.size), y])
+    coef, *_ = np.linalg.lstsq(rows, x, rcond=None)
+
+    e          = x - rows @ coef
+    m          = lag if lag is not None else _lag(y * e)
+    covariance = _newey_west(rows, e, m)
+    q          = NORMAL.inv_cdf((1.0 + level) / 2.0)
+
+    alpha, alpha_error = coef[0] * rate, math.sqrt(covariance[0, 0]) * rate
+    beta, beta_error = coef[1], math.sqrt(covariance[1, 1])
+
+    # a run that is exactly a line in its benchmark leaves no error to scale alpha by
+    t = (alpha / alpha_error if alpha_error > 0.0
+         else math.copysign(math.inf, alpha) if alpha != 0.0 else 0.0)
+
+    active = x - y
+    spread = active.std(ddof=1)
+
+    return AlphaBeta(alpha, alpha_error, alpha - q * alpha_error, alpha + q * alpha_error,
+                     t, beta, beta_error, beta - q * beta_error, beta + q * beta_error,
+                     spread * math.sqrt(rate), _ranked(active.mean(), spread,
+                                                       math.sqrt(rate)), m, level, x.size)
+
+
+def trade_order(result, n=2000, seed=None):
+    """The drawdown and the longest losing run of a Result's closed round trips in the
+    order they closed, beside ``n`` permutations of that order, as Permutations: each
+    trip returns its pnl on the account's equity at the close before its opening fill,
+    and an order compounds those returns from the opening equity, the model of a policy
+    sized on its equity, so the order is all that moves. The drawdown is at trade closes
+    and leaves out what the account marked inside a trade (Specification, The order of
+    trades)."""
+    from ._result import Result
+    if not isinstance(result, Result):
+        raise ProbatumTypeError(f"result: {type(result).__name__}; trade_order reads a "
+                                f"Result")
+
+    n, seed = _resamples(n, "n"), _seed(seed)
+
+    trades = result.trades
+    closed = ~np.asarray(trades["open"])
+    pnl    = np.asarray(trades["pnl"][closed], dtype=np.float64)
+    if pnl.size < 2:
+        raise ProbatumValueError(f"round trips: {pnl.size} closed; permuting needs at "
+                                 f"least 2")
+
+    order    = np.argsort(np.asarray(trades["close_bar"][closed]), kind="stable")
+    opened   = np.asarray(trades["open_bar"][closed])[order]
+    pnl      = pnl[order]
+    equity   = np.asarray(result.equity)
+    returned = pnl / equity[np.maximum(opened - 1, 0)]
+
+    fall, run = _paths(returned, pnl, np.arange(pnl.size)[None, :])
+    rng    = _drawn(returned, "stats trade order", seed)
+    orders = rng.permuted(np.broadcast_to(np.arange(pnl.size), (n, pnl.size)), axis=1)
+    falls, runs = _paths(returned, pnl, orders)
+
+    return Permutations(fall[0], _ordered(falls, 0.025), _ordered(falls, 0.975),
+                        _deeper(falls, fall[0]), run[0],
+                        _ordered(runs, 0.025), _ordered(runs, 0.975), pnl.size, n)
 
 
 def autocorrelation(returns, lag=1):
@@ -490,16 +735,102 @@ def _per_bar(x):
     return float(x.mean() / x.std(ddof=1))
 
 
-def _supports(x):
-    """Refuse returns that cannot support an interval: fewer than 4, or returns that
-    never vary (Specification, Samples with no interval)."""
+def _supports(x, name="returns"):
+    """Refuse returns, given as ``name``, that cannot support an interval: fewer than 4,
+    or returns that never vary (Specification, Samples with no interval)."""
+    counted = "of them" if name == "returns" else "returns"
     if x.size < 4:
-        raise ProbatumValueError(f"returns: {x.size} of them; an interval needs at "
+        raise ProbatumValueError(f"{name}: {x.size} {counted}; an interval needs at "
                                  f"least 4")
 
     if np.all(x == x[0]):
-        raise ProbatumValueError(f"returns: all {x.size} are the same; an interval "
+        same = "" if name == "returns" else " returns"
+        raise ProbatumValueError(f"{name}: all {x.size}{same} are the same; an interval "
                                  f"needs returns that vary")
+
+
+def _resamples(value, name="resamples"):
+    # two at least, the fewest that can spread
+    if not _whole(value):
+        raise ProbatumTypeError(f"{name}: {value!r}; give a whole number from 2")
+    if value < 2:
+        raise ProbatumValueError(f"{name}: {value}; give a whole number from 2")
+    return int(value)
+
+
+def _seed(seed):
+    if seed is not None and not _whole(seed):
+        raise ProbatumTypeError(f"seed: {seed!r}; give a whole number from 0, or None")
+    if seed is not None and seed < 0:
+        raise ProbatumValueError(f"seed: {seed}; give a whole number from 0, or None")
+    return seed
+
+
+def _paired(a, b, periods_per_year, risk_free, head, name):
+    """The excess returns of two series on the same bars, passed as ``head`` and
+    ``name``, the bars a year they share and their returns as given: two Results on the
+    same rows at one annualisation and one risk-free rate, two plain series of one
+    length, or a Result and, as ``b`` is not given, its buy-and-hold baseline, or as
+    ``name`` is the benchmark, an array or a pandas Series of a value a row of the
+    Result, its first ignored."""
+    from ._result import Result, _recorded, _returns
+    if not isinstance(a, Result):
+        if isinstance(b, Result) or b is None:
+            raise ProbatumTypeError(f"{name}: {type(b).__name__} beside a plain series; "
+                                    f"pass two Results, or two plain series")
+
+        x, rate = _read(a, periods_per_year, risk_free, head)
+        y, _ = _read(b, periods_per_year, risk_free, name)
+        if y.size != x.size:
+            raise ProbatumValueError(f"{name}: {y.size} returns beside {x.size}; give two "
+                                     f"series of one length")
+        return x, y, rate, (_series(a, head), _series(b, name))
+
+    x, rate = _read(a, periods_per_year, risk_free, head)
+    free = a.provenance["risk_free"]
+
+    if b is None:
+        if _recorded(a.provenance) != "full":
+            raise ProbatumValueError(f"{name}: none given, and a run recorded at "
+                                     f"{_recorded(a.provenance)!r} has no baselines; pass "
+                                     f"one, or run at the full level")
+        held = np.asarray(a.baselines["buy_and_hold"], dtype=np.float64)
+        if not np.all(np.isfinite(held)):
+            raise ProbatumValueError(f"{name}: none given, and the run's buy-and-hold "
+                                     f"baseline is missing on some rows; pass one")
+        other = _returns(held)[1:]
+    elif isinstance(b, Result):
+        if not np.array_equal(a.time, b.time):
+            raise DataError(f"{name}: a Result on other rows; compare runs on the same "
+                            f"bars")
+        given = b.provenance
+        if (given["periods_per_year"], given["risk_free"]) != (rate, free):
+            raise DataError(f"{name}: a Result at {given['periods_per_year']} bars a year "
+                            f"and a risk-free rate of {given['risk_free']}, beside "
+                            f"{rate} and {free}; compare runs at one of each")
+        other = np.asarray(b.returns[1:])
+    elif name != "benchmark":
+        raise ProbatumTypeError(f"{name}: {type(b).__name__} beside a Result; pass two "
+                                f"Results, or two plain series")
+    else:
+        if hasattr(b, "index") and hasattr(b, "to_numpy"):
+            try:
+                times = np.asarray(b.index.values).astype("datetime64[ns]").view(np.int64)
+            except (TypeError, ValueError):
+                times = None
+            if times is None or not np.array_equal(times, a.time):
+                raise DataError(f"{name}: a Series whose index is not the run's row "
+                                f"times; index it by them, as result.time holds them")
+            b = b.to_numpy()
+
+        values = _series(b, name, first=1)
+        if values.size != a.time.size:
+            raise ProbatumValueError(f"{name}: {values.size} values beside a run of "
+                                     f"{a.time.size} rows; give one a row, the first "
+                                     f"ignored, as result.returns holds them")
+        other = values[1:]
+
+    return x, other - free / rate, rate, (np.asarray(a.returns[1:]), other)
 
 
 def _variance(x):
@@ -983,3 +1314,87 @@ def _rank(count, q):
     """The rank ``ceil(count * q)``, a rank within 1e-9 of a whole number being that
     number, the first at least (Specification, Intervals of the returns)."""
     return max(1, math.ceil(count * q - NUDGE))
+
+
+def _block_starts(count, length, resamples, rng):
+    """The blocks' starting rows of ``resamples`` circular block resamples of ``count``
+    rows, some resamples at a time, each joining ``ceil(count / length)`` blocks."""
+    blocks = -(-count // length)
+    chunk  = max(1, 2_000_000 // count)
+    for done in range(0, resamples, chunk):
+        yield rng.integers(0, count, (min(chunk, resamples - done), blocks))
+
+
+def _studentized(first, second, d, length, starts):
+    """Ledoit and Wolf's studentized statistics ``abs(D* - D) / s*`` of the circular
+    block resamples whose blocks start at ``starts``, each block ``length`` rows, the
+    same rows of both excess series, a resample's natural standard error read from its
+    own influence series over its whole blocks."""
+    count   = first.size
+    whole   = count // length
+    offsets = np.arange(length)
+    found   = []
+
+    for chunk in starts:
+        rows  = len(chunk)
+        taken = ((chunk[:, :, None] + offsets) % count).reshape(rows, -1)[:, :count]
+        a, b = first[taken], second[taken]
+
+        # a resample whose returns never vary, or whose standard error is zero, has
+        # no ratio to take, and counts as infinite
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z      = _influences(a) - _influences(b)
+            sums   = z[:, :whole * length].reshape(rows, whole, length).sum(axis=2)
+            spread = np.sqrt((sums * sums / length).mean(axis=1) / (count - 1))
+            moved  = (a.mean(axis=1) / a.std(axis=1, ddof=1)
+                      - b.mean(axis=1) / b.std(axis=1, ddof=1))
+            ratio = np.abs(moved - d) / spread
+
+        found.append(np.where(np.isnan(ratio), math.inf, ratio))
+
+    return np.concatenate(found)
+
+
+def _influences(x):
+    """``_influence`` along each row of ``x``."""
+    mu = x.mean(axis=1, keepdims=True)
+    s  = np.sqrt(((x - mu) ** 2).mean(axis=1, keepdims=True))
+    u  = (x - mu) / s
+    return u - (mu / s) / 2.0 * (u * u - 1.0)
+
+
+def _newey_west(rows, e, m):
+    """``(X'X)^-1 * W * (X'X)^-1`` for the regressors ``rows`` and residuals ``e``, with
+    Bartlett weights at lag ``m`` and no small-sample factor."""
+    scored = rows * e[:, None]
+    w      = scored.T @ scored
+    for j in range(1, m + 1):
+        joint = scored[j:].T @ scored[:-j]
+        w += (1.0 - j / (m + 1.0)) * (joint + joint.T)
+
+    bread = np.linalg.inv(rows.T @ rows)
+    return bread @ w @ bread
+
+
+def _deeper(falls, fall):
+    """The share of the drawdowns ``falls`` deeper than ``fall`` by more than a part in a
+    trillion, so orders that differ only by rounding count as level (Specification, The
+    order of trades)."""
+    return np.count_nonzero(falls > fall * (1.0 + 1e-12)) / falls.size
+
+
+def _paths(returned, pnl, orders):
+    """The drawdown at trade closes, in percent, and the longest losing run of each
+    order of round trips in ``orders``, compounding each trip's return from 1 and
+    staying at zero once there."""
+    grown  = np.cumprod(np.maximum(1.0 + returned[orders], 0.0), axis=1)
+    path   = np.concatenate([np.ones((len(grown), 1)), grown], axis=1)
+    peak   = np.maximum.accumulate(path, axis=1)
+    falls  = np.minimum((peak - path) / peak, 1.0).max(axis=1) * 100.0
+    losing = pnl[orders] < 0.0
+    run = longest = np.zeros(len(orders), dtype=np.int64)
+    for column in losing.T:
+        run     = np.where(column, run + 1, 0)
+        longest = np.maximum(longest, run)
+
+    return falls, longest
