@@ -95,6 +95,14 @@ docker build --target test-sdist .      # the source archive, built and tested
 docker build --target miri .            # the zero-copy views' and the tables' memory, under Miri
 ```
 
+The coverage cells run apart from all of them, at each stage that changes a statistic:
+
+```bash
+docker build --progress=plain --target coverage .
+```
+
+`tests/test_intervals_cover_as_often_as_they_claim.py` simulates each interval `probatum.stats` gives on the shapes a strategy's returns and round trips take and holds it to cover what it estimates between 93% and 97% of the time at 95% ([ADR 0031](Decisions.md)): the Sharpe's on independent, heavy-tailed, autocorrelated and switched returns at 1,000 daily bars and a year of hourly ones, the bootstrap's of the returns on the first three at 500 and 1,000 daily bars and a year of hourly ones, with the switched returns held to the floor of blocks that refuses them, the round trips' at 60 and 160 trips that win evenly, rarely and large or often and small, the Sharpe difference's at two equal Sharpes, and alpha's and beta's. Each cell's replications draw from streams of their own, so its count is the same on any number of cores, and each prints its coverage. A cell outside the band is a defect of its statistic, fixed before the statistic ships. A test marked `coverage` runs only where `--coverage` is passed, as this stage passes it.
+
 `test-sdist` builds the source archive a release ships, installs it the way pip does on a platform with no wheel, and runs the whole suite against it, so a file left out of the archive fails there rather than for the first user on an unusual platform.
 
 `miri` runs the candle tests and the Arrow table's under Miri, an interpreter that checks every memory access a test makes and reports what is never freed. Every zero-copy view reads the candles through `floats` in probatum-core, the library's one reinterpretation of memory ([ADR 0040](Decisions.md)), and a mistake there can read past the buffer and still return the right values, which an ordinary test cannot see. A table leaves through the Arrow C stream interface, whose reader may move the stream out of the capsule that holds it and a column out of its batch, and release what it holds in any order ([ADR 0026](Decisions.md)), and a mistake there frees what a reader still holds or never frees it at all; the release of all of it, the capsule's free among it, is probatum-core's, which Miri runs. The stage needs a nightly compiler, pinned by date.
