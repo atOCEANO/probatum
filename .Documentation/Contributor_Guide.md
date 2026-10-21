@@ -40,7 +40,8 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/probatum-engine` |
 | A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/probatum-py` |
 | A convenience over the bindings (a new runner, a wrapper) | `python/probatum` |
-| A statistic read off a finished run | `python/probatum/metrics.py` |
+| A statistic or an interval read off a finished run | `python/probatum/stats.py`, and the same rule in plain loops in `tests/reference/statistics.py` |
+| One of emsl's statistics of a `BacktestResult` | `python/probatum/metrics.py` |
 | An indicator, which is a function of arrays and never sees the engine | `python/probatum/ta.py` |
 | Anything a chart draws (a mark, a guard, a panel rule) | `python/probatum/_chart.py` and `plot.py` |
 | How a chart is painted (a primitive, the legend, the controls) | `python/probatum/_static` |
