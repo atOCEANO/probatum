@@ -12,10 +12,9 @@ run recorded rather than being told them again. Two readings of one number are h
 two numbers come to disagree, which is the whole reason ``initial`` and
 ``periods_per_year`` are carried on the result at all (ADR 0004).
 
-Four exports read something else. ``cost_curve`` and ``breakeven_bps`` take a
-``strategy`` and its ``data`` and run the backtest themselves, once per cost level.
-``deflated_sharpe`` takes two ``TuneResult`` objects, the study and its null, and
-``deflation_threshold`` takes two floats.
+Three exports read something else. ``cost_curve`` and ``breakeven_bps`` take a
+``strategy`` and its ``data`` and run the backtest themselves, once per cost level,
+and ``deflation_threshold`` takes two floats.
 
 The return series is derived by the identical rule the engine uses: seeded from
 the opening balance, one return per interval, and a non-positive previous equity
@@ -26,7 +25,6 @@ contributing zero rather than a meaningless ratio. ``metrics.sharpe`` reproduces
 from __future__ import annotations
 
 import math
-import warnings
 
 import numpy as np
 
@@ -56,7 +54,6 @@ __all__ = [
     "value_at_risk",
     "conditional_value_at_risk",
     "probabilistic_sharpe",
-    "deflated_sharpe",
     "deflation_threshold",
     "min_track_record_length",
     "autocorrelation",
@@ -915,47 +912,6 @@ def _psr_variance(result, observed):
 _EULER = 0.5772156649015329
 
 
-def deflated_sharpe(study, null):
-    """The probability the winner of ``study`` is real, given how many times you
-    looked (Bailey and Lopez de Prado, 2014).
-
-    A search returns the best of many noisy scores, so its winner is high partly
-    because it is good and partly because you looked a lot. This computes the
-    Sharpe you would expect the best of that many looks to reach **by luck alone**,
-    and asks for the probability the winner beats it.
-
-    ``null`` is a second ``TuneResult`` from a **random** search over the same
-    space and the same bars::
-
-        study = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3)
-        null = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3,
-                          sampler="random")
-        metrics.deflated_sharpe(study, null)
-
-    Both take the same ``oos``, because the fingerprint is checked and a holdout
-    changes which bars a search actually ran on. A null fitted on the whole
-    series is not a null for a search fitted on 70% of it.
-
-    It is required, and that is the whole design. The threshold depends on how
-    many independent looks were taken and how much the scores vary across them,
-    and a TPE search supplies neither honestly: it concentrates its trials in the
-    winning basin, so the trials are not independent draws and the spread between
-    them **shrinks as the search converges**. Computed from the search's own
-    trials, this number would grow more permissive the harder you overfit, which
-    is exactly backwards. A random search over the same space is an honest "best
-    of N looks at this space" and cannot do that (ADR 0032).
-
-    The two arguments answer different halves of the threshold, and the null
-    answers only one of them: how far a sharpe scatters over this space. How many
-    times you looked is a property of **your** search and is read off it
-    (ADR 0032).
-    """
-    looks, spread = _null_shape(study, null)
-    return probabilistic_sharpe(
-        study.best_result, benchmark=deflation_threshold(spread, looks)
-    )
-
-
 def deflation_threshold(spread, looks):
     """The Sharpe the best of ``looks`` independent draws would reach by luck
     alone, when the draws are spread ``spread`` apart.
@@ -975,86 +931,6 @@ def deflation_threshold(spread, looks):
         (1.0 - _EULER) * _normal_ppf(1.0 - 1.0 / looks)
         + _EULER * _normal_ppf(1.0 - 1.0 / (looks * math.e))
     )
-
-
-def _null_shape(study, null):
-    if getattr(study, "best_result", None) is None:
-        raise TypeError(
-            "deflated_sharpe needs the TuneResult a search returned, since it "
-            "reads the winner's own returns"
-        )
-
-    if study.objective != "sharpe":
-        raise ValueError(
-            f"this search selected on {study.objective!r}, and the deflation is "
-            f"about the quantity you selected on, so deflating its sharpe would "
-            f"be answering a question nobody asked; tune with objective='sharpe'"
-        )
-
-    if getattr(study, "direction", None) == "minimize":
-        raise ValueError(
-            "this search minimized its objective, and a deflation asks how high "
-            "the best of many looks would reach on luck alone, so the threshold "
-            "it compares against is the wrong end of the spread; tune with "
-            "direction='maximize' to deflate a winner"
-        )
-
-    if getattr(null, "sampler", None) != "random":
-        raise ValueError(
-            "null must be a search run with sampler='random'. A TPE search "
-            "concentrates its trials, so the spread between them shrinks as it "
-            "converges and the threshold would fall the harder you overfit"
-        )
-
-    if null.data_hash != study.data_hash:
-        raise ValueError(
-            f"the null ran on different bars ({null.data_hash} against "
-            f"{study.data_hash}), so it is not a null for this search; run it "
-            f"over the same data and the same space, with the same oos"
-        )
-
-    # an activity floor fails the thin cells, and the thin cells are where the
-    # extreme sharpes live, so the trials that survive one scatter LESS than the
-    # space does. Reading the spread off them made the threshold fall the
-    # stricter the floor, which is the same inversion this decision exists to
-    # prevent, arriving through the other term (ADR 0032)
-    if getattr(null, "min_trades", 0):
-        raise ValueError(
-            f"the null was searched with min_trades={null.min_trades}, and an "
-            f"activity floor keeps the trials that traded most, whose sharpes "
-            f"scatter less than the whole space does; run the null at "
-            f"min_trades=0. The search being deflated may still use one"
-        )
-
-    scored = [t["stats"]["sharpe"] for t in null.trials if t["stats"]]
-    scored = [s for s in scored if math.isfinite(s)]
-    if len(scored) < 2:
-        raise ValueError(
-            f"the null produced {len(scored)} usable trials, and the spread "
-            f"across them is what sets the threshold; it needs at least 2"
-        )
-
-    # every trial of the SEARCH is a look, including one that failed: a
-    # configuration you evaluated and rejected was still one you evaluated.
-    # Counting the null's trials instead answered about the wrong search
-    # entirely, so a 5-trial null made a 120-trial winner 46% more convincing
-    # than a 400-trial null did, and nothing said which number it described
-    looks = len(study.trials)
-    if looks < 2:
-        raise ValueError(
-            f"this search ran {looks} trial(s), and a deflation is a correction "
-            f"for having looked more than once; it needs at least 2"
-        )
-
-    if len(null.trials) < looks:
-        warnings.warn(
-            f"the null drew {len(null.trials)} trials to estimate the spread that "
-            f"deflates a search of {looks}, so the threshold rests on fewer draws "
-            f"than the thing it is judging; run the null at the same n_trials",
-            stacklevel=3,
-        )
-
-    return looks, float(np.std(np.asarray(scored, dtype=np.float64), ddof=1))
 
 
 def min_track_record_length(result, benchmark=0.0, confidence=0.95,
@@ -1494,8 +1370,7 @@ def compare(results, keys=None):
                                      "max_drawdown_pct", "num_trades"]
 
     # a key nothing reports printed as the word None in every row, which reads as
-    # a run that scored nothing rather than as a column that does not exist.
-    # `tune` checks its objective against the same set before it searches
+    # a run that scored nothing rather than as a column that does not exist
     available = set()
     for _name, result in named:
         available.update(result.stats or {})

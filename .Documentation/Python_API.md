@@ -51,7 +51,6 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
-| `probatum.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
 | `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
 | `probatum.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
 | `probatum.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
@@ -243,7 +242,6 @@ binance = probatum.Market(
 )
 
 result = binance.backtest(candles).run(MyStrategy())
-study = binance.tune(MyStrategy, space, candles, n_trials=200, oos=0.3)
 env = binance.env(candles, num_envs=4096, window=60)
 engine = binance.engine(candles)          # takes a frame like its siblings
 ```
@@ -254,7 +252,6 @@ Each method takes only the arguments that are **not** the venue, so a knob canno
 | :--- | :--- |
 | `engine(candles, report=False)` | [the engine](#the-engine-it-drives) the strategy runner drives. |
 | `backtest(candles, periods_per_year=None, risk_free=0.0)` | a `Backtester`. |
-| `tune(strategy, space, data, **search)` | a `TuneResult`; `search` is the search controls only. |
 | `env(data, **rest)` | a `VectorEnv`; `rest` is the RL arguments only. |
 | `replace(**changes)` | a copy with some knobs changed. |
 | `as_dict()` | the knobs as the keyword arguments the engine takes. |
@@ -465,7 +462,7 @@ print(result.equity_curve[-1], len(result.trades))
 
 `Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, budget, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (the [round trips](#trades), a list of dicts), `.fills` (the [fill log](#fills)), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the round trips cannot always say: a forced close ends one with the reason `liquidation`, but an account drained by fees or funding ends none at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
 
-**`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it counts the bars the index holds, the rows less one per 365 days of their span, so hourly candles annualize at 8760 without being told, a feed missing a day annualizes at the bars it actually has, and a stock's daily bars at the 252 or so a year it trades. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0004](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
+**`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it counts the bars the index holds, the rows less one per 365 days of their span, so hourly candles annualize at 8760 without being told, a feed missing a day annualizes at the bars it actually has, and a stock's daily bars at the 252 or so a year it trades. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0004](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional.
 
 A strategy uses any order type, the sizing helpers, and the state's `open_orders` to manage risk. This one sizes each entry to half of equity and rests a reduce-only stop-loss under the position:
 
@@ -493,11 +490,11 @@ class SmaWithStop(Strategy):
                 engine.stop("sell", pos, trigger, reduce_only=True)
 ```
 
-The stop rests only once a position is held (orders fill on the next bar, so there is nothing to protect until then), and `reduce_only` keeps it from flipping the position short instead of closing it. This same class is ready for [tuning](#tuning): its `fast`, `slow`, and `stop_pct` are already constructor arguments.
+The stop rests only once a position is held (orders fill on the next bar, so there is nothing to protect until then), and `reduce_only` keeps it from flipping the position short instead of closing it.
 
 ### The engine it drives
 
-The Backtester and `tune` drive emsl's engine, `probatum._probatum.Engine`, which `probatum.Market` hands out as well: built over a candle array with the engine's settings as keywords, it is reset, given orders, stepped and read a bar at a time, and the `Batch` and the RL environment take the same settings.
+The Backtester drives emsl's engine, `probatum._probatum.Engine`, which `probatum.Market` hands out as well: built over a candle array with the engine's settings as keywords, it is reset, given orders, stepped and read a bar at a time, and the `Batch` and the RL environment take the same settings.
 
 ```python
 import probatum
@@ -686,7 +683,7 @@ With `report=True`, seven accessors read the recorded run (each returns `None` w
 
 An engine built with `record="account"` keeps less: `fills()` and `order_log()` return `None` with reporting on, `ledger()` has none of the columns for each instrument, and `tables()` gives the ledger and the round trips alone ([Specification](Specification.md#recording-levels)).
 
-`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. The engine's `stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` and `tune` read it from the candles' own timestamps instead, and only fall back when there are none ([ADR 0004](Decisions.md)).
+`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. The engine's `stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` reads it from the candles' own timestamps instead, and only falls back when there are none ([ADR 0004](Decisions.md)).
 
 ### Statistics
 
@@ -704,7 +701,7 @@ An engine built with `record="account"` keeps less: `fills()` and `order_log()` 
 | `num_fills` | count | Fills applied over the run. Zero beside orders you placed means the feed never filled them. |
 | `funding_paid` | quote | Funding over the run: positive is paid away, negative is received. Zero on spot. A perp result cannot be decomposed without it, since a carry and a direction otherwise look the same ([ADR 0020](Decisions.md)). |
 
-Two things about ranking, because `tune` takes an argmax over these. `calmar` scales a **negative** return by its drawdown rather than dividing by it, so the losing runs order by how much they lost; dividing made the deepest bust score highest, since the deeper the loss the larger the divisor ([ADR 0030](Decisions.md)). And `cagr_pct` saturates rather than escaping to infinity: annualizing raises the growth ratio to one-over-the-years, so on minute candles the exponent leaves the float range and every profitable run ties at the top. An annualized rate off a few hours is an extrapolation and not a measurement, so rank a sub-year run on `total_return_pct` or `sharpe`.
+Two things about ranking, because a search takes an argmax over these. `calmar` scales a **negative** return by its drawdown rather than dividing by it, so the losing runs order by how much they lost; dividing made the deepest bust score highest, since the deeper the loss the larger the divisor ([ADR 0030](Decisions.md)). And `cagr_pct` saturates rather than escaping to infinity: annualizing raises the growth ratio to one-over-the-years, so on minute candles the exponent leaves the float range and every profitable run ties at the top. An annualized rate off a few hours is an extrapolation and not a measurement, so rank a sub-year run on `total_return_pct` or `sharpe`.
 
 The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0022](Decisions.md)). They read each closed round trip's `pnl`, after its fees and its funding, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADRs 0023, 0030](Decisions.md)). So they reproduce from the log:
 
@@ -1083,100 +1080,6 @@ The two-sided interval holds zero while the one-sided probability is 0.899; both
 
 <br>
 
-## Tuning
-
-`probatum.tune` searches a strategy's parameters for the configuration that maximizes (or minimizes) an objective. Each trial is a full backtest through the same `Backtester` above, so the `Strategy` you backtest is the `Strategy` you tune: declare the tunable parameters as constructor arguments and store them as fields, and `tune` builds a fresh strategy per trial from the sampled values. The search runs across worker processes, rebuilding the engine in each worker rather than shipping a live one across the boundary, so it scales over cores ([ADR 0032](Decisions.md)). It needs optuna and cloudpickle, which the `[tune]` extra pulls in; probatum is not on PyPI, so install it from a release as the [README](../README.md#install) shows.
-
-```python
-from probatum import tune
-from probatum import Strategy
-
-
-class SmaCross(Strategy):
-    def __init__(self, fast, slow):        # the tunables, as constructor arguments
-        self.fast = fast
-        self.slow = slow
-
-    def init(self, engine):
-        self.close = engine.closes
-        self.warmup = self.slow
-
-    def next(self, state, engine):
-        i = state["tick_index"]
-        fast = self.close[i - self.fast:i].mean()
-        slow = self.close[i - self.slow:i].mean()
-        if state["position"] == 0 and fast > slow:
-            engine.market_buy(1.0)
-        elif state["position"] > 0 and fast < slow:
-            engine.close()
-
-
-result = tune(
-    SmaCross,                              # the strategy, or any callable that builds one
-    {"fast": (5, 40), "slow": (40, 200)},  # the search space
-    candles,                               # numpy, DataFrame, or parquet path
-    objective="sharpe",
-    n_trials=200,
-    oos=0.3,                               # search the first 70%, keep the rest back
-    n_jobs=-1,                             # every core; 1 runs in this process
-)
-print(result.best_params)
-print(result.best_value)                  # in-sample: the best of 200 tries
-print(result.oos_stats["sharpe"])         # the same strategy on bars no trial saw
-best = result.best_strategy()             # a fresh SmaCross with the best parameters
-```
-
-`tune(strategy, space, data, ...)` takes the strategy, the search space, the data, and then the same engine knobs as the `Backtester` (`market`, `quote`, the costs, `leverage`, `periods_per_year`, `risk_free`), plus the search controls below. It returns a `TuneResult`.
-
-### In-sample and out-of-sample
-
-`TuneResult.best_stats` is in-sample. It is the maximum of a noisy score over every trial, on the bars the search was allowed to see, so it is biased upward by the act of searching and by more the harder you searched. Quoting it as a result is the most common way a backtest misleads, and no statistic computed from the same bars can undo it.
-
-`oos=0.3` fits every trial on the first 70% of the series and re-runs the winner on the last 30%, which no trial ever saw, into `TuneResult.oos_stats` and `TuneResult.oos_result`. The split is always the **end** of the series, never a random slice, because a strategy is a claim about what comes next and shuffling would let a trial fit around the very bars meant to test it ([ADR 0032](Decisions.md)).
-
-Two costs worth knowing. The search sees less data, which matters on a short series. And the winner warms up **inside** the held-out bars rather than being handed history across the boundary, so a strategy with a 200-bar warm-up gives up its first 200 bars there; that understates the out-of-sample result rather than flattering it, which is the direction to err in.
-
-Leaving `oos` out warns, because the default cannot be silent without being a trap. `oos=0` says you meant to search the whole series and passes quietly.
-
-### The search space
-
-`space` maps each parameter name (matching a constructor argument) to a range:
-
-| Form | Meaning |
-| :--- | :--- |
-| `(low, high)` of two ints | Integer axis over `[low, high]`. |
-| `(low, high)` with a float end | Continuous axis over `[low, high]`. |
-| `(low, high, "log")` | Same, sampled on a log scale. |
-| `[a, b, c]` | Categorical choice from the list. |
-| `tune.Int(low, high, step=, log=)` | Integer axis with an explicit step or log scale. |
-| `tune.Float(low, high, step=, log=)` | Continuous axis with an explicit step or log scale. |
-| `tune.Categorical([...])` | Categorical choice. |
-
-### The objective
-
-`objective` is either a stats key (`"sharpe"`, `"calmar"`, `"total_return_pct"`, any of the [stats](#statistics)) or a callable that receives the `BacktestResult` and returns a number. `direction` (`"maximize"` by default, or `"minimize"`) sets which way is better. A trial whose strategy or objective raises, or whose objective is `NaN`, is marked failed and the search moves on; an infinite value (`profit_factor` with no losing trades, say) is kept and ranks at the extreme. If every trial fails, `tune` raises, with the last error attached. Before the search, `tune` checks the space names against the strategy's constructor signature and a string objective against the known stat keys, so a misspelled name or key raises at once; the check is by inspection, not a probe run, so no one corner of the space can abort an otherwise valid search.
-
-### Controls and the result
-
-| Argument | Default | Does |
-| :--- | :--- | :--- |
-| `n_trials` | 100 | How many parameter sets to try. |
-| `n_jobs` | 1 | Worker processes; `-1` uses every core. `1` runs in this process, with no pickling. |
-| `seed` | `None` | Seeds the sampler. |
-| `direction` | `"maximize"` | `"maximize"` or `"minimize"`. |
-| `verbose` | `False` | `True` restores optuna's per-trial logging. |
-| `min_trades` | 0 | Fails a trial that closed fewer round trips, where `search` floors it. |
-
-The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
-
-It also carries `.best_result`, the winner re-run on the bars it was chosen on, so it can be charted or measured without rebuilding the search's configuration by hand, plus `.oos_result` and `.oos_stats` when a [holdout](#in-sample-and-out-of-sample) was kept. The last five, `.objective`, `.sampler`, `.direction`, `.min_trades` and `.data_hash`, are what a search knows about itself, and they exist so that [`deflated_sharpe`](#what-the-number-is-worth) can check a null belongs to this search rather than trusting you: the right statistic, an honest sampler, the direction it was pointed, no activity floor narrowing its spread, and the same bars. A deflation asks how high the best of many looks would reach on luck alone, so a search that minimized its objective is refused rather than measured against the wrong end of its own spread.
-
-`sampler` is `"tpe"` by default, which learns where the good parameters are, or `"random"`, which does not. Random search is worse at finding a winner and is exactly what you want for a null.
-
-With `n_jobs=1` a seeded search is reproducible, since the sampler is told results in a fixed order. With `n_jobs>1` the sampler sees results in completion order, so the exact sequence of trials can vary run to run even with a seed; each trial's score is still deterministic. On Windows, calling `tune` with `n_jobs>1` from a script means putting the call under `if __name__ == "__main__":`, the standard requirement for the spawn start method; a notebook needs no guard.
-
-<br>
-
 ## Metrics
 
 The fifteen [statistics](#statistics) come back from the engine. `probatum.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
@@ -1255,26 +1158,7 @@ The published estimators count bars and assume each is an independent bet, which
 
 And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0030](Decisions.md)).
 
-None of them corrects for having searched. `deflated_sharpe(study, null)` does:
-
-```python
-study = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3)
-null  = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3, sampler="random")
-
-metrics.deflated_sharpe(study, null)      # is the winner real, given 200 looks?
-```
-
-Both take the same `oos`. The fingerprint is checked, and a holdout changes which bars a search actually ran on, so a null fitted on the whole series is not a null for a search fitted on 70% of it.
-
-A search returns the best of many noisy scores, so its winner is high partly because it is good and partly because you looked a lot. This computes the Sharpe the best of that many looks would reach **by luck alone** and asks for the probability the winner beats it.
-
-**The null is required, and that is the design rather than an inconvenience.** The threshold depends on how many independent looks were taken and how far the scores scatter, and a TPE search supplies neither honestly: it concentrates its trials in the winning basin, so they are not independent draws and the spread between them *shrinks as it converges*. Computed from the search's own trials this number would grow more permissive the harder you overfit, which is exactly backwards. A random search over the same space is an honest "best of N looks here" and cannot do that ([ADR 0032](Decisions.md)).
-
-**The two arguments answer different halves of the threshold.** The null says how far a sharpe scatters over this space and these bars, and nothing else. How many times you looked is a property of your search, so it is read off the study: every trial of it, including the failed ones, because a configuration you evaluated and rejected is one you evaluated. Taking the count off the null instead answered about the wrong search, and made a winner more convincing the smaller the null ([ADR 0032](Decisions.md)).
-
-Five things are refused rather than guessed: a null that is not a random search, a null over different bars (checked by fingerprint), a search that selected on something other than `sharpe`, a null too small to set a threshold, and a null carrying a `min_trades` floor, since an activity floor keeps the trials that traded most and those scatter less than the space does. A null thinner than the search it judges warns instead of raising. `deflation_threshold(spread, looks)` is the bar itself, if you want to see it.
-
-A tuned parameter set is still in-sample no matter what probability is attached to it, so this complements the [holdout](#in-sample-and-out-of-sample) rather than replacing it.
+None of them corrects for having searched; a search's [Study](#the-study) does, deflating its winner's Sharpe against a random search of the same ground. `deflation_threshold(spread, looks)` is the Sharpe the best of `looks` independent draws spread `spread` apart reaches by luck alone.
 
 `report(result, frame=None)` returns everything above as one flat dict, for storing or comparing runs; `summary(result, frame=None)` prints the headline and returns the same dict.
 
@@ -1424,7 +1308,7 @@ Every error probatum raises is one of its own classes and the built-in it means,
 
 A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which follows what arrived: a value of a type the argument does not take raises a `TypeError`, and one of its type that the call cannot take a `ValueError`, so `tolerance="0.01"` is a `ProbatumTypeError` and `tolerance=-0.01` a `ProbatumValueError`. So a Data's wrong value is a `DataError` and its wrong type a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a Venue built in Python splits the same way between `VenueError` and `ProbatumTypeError`, while every wrong setting in a preset's file is a `VenueError`. A policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
 
-What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `tune`, `metrics`, `chart`, `plot`, `rl`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
+What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `metrics`, `chart`, `plot`, `rl`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
 
 Every warning probatum gives is a `probatum.ProbatumWarning`, a `UserWarning`, named at the line of your code that caused it, so a test can make probatum's warnings errors without touching anyone else's. Outside those modules probatum prints nothing: long work is logged to the `probatum` logger, `Data.from_router` logging each instrument it built at INFO and each call to the router at DEBUG, which Python's `logging` turns on.
 

@@ -110,10 +110,11 @@ def test_a_market_backtest_matches_the_same_knobs_typed_out():
 
 
 def test_a_knob_passed_beside_the_market_is_two_answers_to_one_question():
+    pytest.importorskip("gymnasium")
     venue = Market(kind="perp")
 
     with pytest.raises(TypeError) as excinfo:
-        venue.tune(Alternate, {"x": (1, 2)}, series(), fee_taker=0.001)
+        venue.env(series(), fee_taker=0.001)
 
     assert "belongs to the market" in str(excinfo.value)
     assert "replace" in str(excinfo.value)

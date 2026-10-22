@@ -19,7 +19,7 @@ import time
 import numpy as np
 
 import probatum
-from probatum import Batch, tune
+from probatum import Batch
 from probatum._probatum import Engine
 from probatum import Backtester, Strategy
 from probatum.rl import VectorEnv
@@ -40,7 +40,7 @@ def make_series(n):
 
 class SmaCross(Strategy):
     """Fast/slow moving-average crossover: long when fast crosses above slow, flat
-    when it crosses back. The two windows are the tunables.
+    when it crosses back.
     """
 
 
@@ -121,18 +121,6 @@ def bench_backtester(data):
     return best_rate(lambda: bt.run(SmaCross()), steps)
 
 
-def bench_tune(data, n_trials, n_jobs):
-    space = {"fast": (5, 40), "slow": (40, 200)}
-
-    def run():
-        tune(SmaCross, space, data, objective="sharpe", n_trials=n_trials, n_jobs=n_jobs, seed=0)
-
-    t0 = time.perf_counter()
-    run()
-    dt = time.perf_counter() - t0
-    return n_trials / dt
-
-
 def weighted(width, bars):
     t      = np.arange(bars, dtype=np.float64)
     closes = np.stack([100.0 + 20.0 * np.sin(t / 15.0 + k) + 0.05 * t
@@ -202,6 +190,43 @@ def bench_strategy(width, every=False, bars=50_000):
                      bars)
 
 
+def crossing(data, fast, slow):
+    up      = probatum.ta.sma(data.close, fast)
+    down    = probatum.ta.sma(data.close, slow)
+    weights = np.full(len(data), np.nan)
+    weights[probatum.ta.crossover(up, down)]  = 1.0
+    weights[probatum.ta.crossunder(up, down)] = 0.0
+    return weights
+
+
+class Crossing(Strategy):
+    """``crossing``'s weights decided at each close, a trial at a time."""
+
+
+    def __init__(self, fast, slow):
+        self.fast = fast
+        self.slow = slow
+
+
+    def init(self, data):
+        self.weights = crossing(data, self.fast, self.slow)
+
+
+    def next(self, bar, account):
+        if not np.isnan(self.weights[bar.i]):
+            account.target(self.weights[bar.i])
+
+
+def bench_search(policy, trials, n_jobs):
+    data, _weights = weighted(1, BARS)
+    space = {"fast": probatum.Int(5, 40), "slow": probatum.Int(40, 200)}
+    t0    = time.perf_counter()
+
+    probatum.search(policy, space, data, probatum.Venue(), sampler="random",
+                    trials=trials, holdout=0, n_jobs=n_jobs, seed=0)
+    return trials / (time.perf_counter() - t0)
+
+
 def bench_vectorenv(data, num_envs, steps):
     env = VectorEnv(data, num_envs=num_envs, window=32, market="perp", quote=10_000, seed=0)
     obs, _ = env.reset(seed=0)
@@ -245,9 +270,11 @@ def main():
     engine_bps     = bench_engine(data)
     backtester_bps = bench_backtester(data)
 
-    tune_trials    = 48
-    tune_seq       = bench_tune(data, n_trials=tune_trials, n_jobs=1)
-    tune_par       = bench_tune(data, n_trials=tune_trials, n_jobs=-1)
+    trials       = 48
+    search_array = bench_search(crossing, trials, n_jobs=1)
+    search_seq   = bench_search(Crossing, trials, n_jobs=1)
+    search_par   = bench_search(Crossing, trials, n_jobs=-1)
+
     array_one      = bench_array(1)
     array_fifty    = bench_array(50)
     strategy_one   = bench_strategy(1)
@@ -270,8 +297,10 @@ def main():
           f"close")
     print(f"strategy,bars_per_sec,{strategy_fifty:.0f},50000 bars N=50 the same weights "
           f"decided at each close")
-    print(f"tune,trials_per_sec,{tune_seq:.2f},n_jobs=1 {tune_trials} trials")
-    print(f"tune,trials_per_sec,{tune_par:.2f},n_jobs=-1 {tune_trials} trials {cores} cores")
+    print(f"search,trials_per_sec,{search_array:.2f},{trials} trials of weights run together")
+    print(f"search,trials_per_sec,{search_seq:.2f},n_jobs=1 {trials} trials of a strategy")
+    print(f"search,trials_per_sec,{search_par:.2f},n_jobs=-1 {trials} trials of a strategy "
+          f"{cores} cores")
     print(f"vectorenv,env_steps_per_sec,{vectorenv_eps:.0f},{rl_envs} envs x {rl_steps} steps")
     print(f"batch,env_steps_per_sec,{batch_eps:.0f},{rl_envs} envs x {rl_steps} steps")
 

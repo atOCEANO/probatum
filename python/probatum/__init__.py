@@ -4,8 +4,7 @@ The compiled Rust core is ``probatum._probatum``, whose engine the Backtester an
 drive. ``Engine`` is an account at a venue on a Data for a loop the caller owns, opened
 with ``reset`` and moved one bar at a time with ``step``. ``Batch`` runs many
 independent envs over one shared series and steps them in parallel with the GIL
-released, and ``tune`` searches a strategy's parameters by running many backtests
-across cores. ``chart`` renders a frame, your own arrays and a run into one
+released. ``chart`` renders a frame, your own arrays and a run into one
 self-contained HTML document for a notebook cell or a file, computing nothing itself.
 ``Venue`` holds a venue's rules, and ``venues`` the presets, each one a Venue.
 ``backtest`` runs a policy on a Data at a venue and returns the ``Result`` it
@@ -41,13 +40,12 @@ from ._backtest import backtest
 from ._search import Study, search
 from ._validate import validate
 from .market import Market
-from ._tune import tune
 from ._chart import chart, chart_defaults
 
 __all__ = [
     "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
     "Instrument", "Int", "Market", "Result", "Strategy", "Study", "Venue", "backtest",
-    "chart", "chart_defaults", "combine", "search", "to_ohlcv", "tune", "validate",
+    "chart", "chart_defaults", "combine", "search", "to_ohlcv", "validate",
     "cv", "metrics", "plot", "rl", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",

@@ -351,7 +351,7 @@ probatum.chart(
 
 ### Naming the window once
 
-The call above writes `20` twice: once as the parameter the strategy trades on, once as prose in the legend. Under [`tune`](Python_API.md#tuning) that legend is wrong on every trial but one, because each trial builds a fresh strategy with a different window and nothing rewrites the string.
+The call above writes `20` twice: once as the parameter the strategy trades on, once as prose in the legend. Under [`search`](Python_API.md#search) that legend is wrong on every trial but one, because each trial builds a fresh strategy with a different window and nothing rewrites the string.
 
 A `marks()` method fixes it, and it is an ordinary method rather than anything the library knows about. Nothing calls it during a run, so a sweep pays nothing for it.
 

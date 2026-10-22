@@ -1,17 +1,16 @@
 """The venue and your account on it, as one object.
 
-A backtest, a parameter search and an RL rollout each take the same eleven of the
-engine's knobs. Written out at three call sites they are three chances to disagree,
-and the claim this library makes, that one fill model sits behind every surface,
-was being upheld by whoever typed them retyping them identically. ``Market`` holds
-them once and hands out the surfaces itself::
+A backtest and an RL rollout each take the same eleven of the engine's knobs.
+Written out at two call sites they are two chances to disagree, and the claim this
+library makes, that one fill model sits behind every surface, was being upheld by
+whoever typed them retyping them identically. ``Market`` holds them once and hands
+out the surfaces itself::
 
     binance = probatum.Market(kind="perp", fee_taker=0.0004, fee_maker=0.0002,
                           slippage_bps=2.0, funding_rate=0.0001,
                           funding_interval=8)
 
     result = binance.backtest(candles).run(MyStrategy())
-    study = binance.tune(MyStrategy, space, candles, n_trials=200, oos=0.3)
     env = binance.env(candles, num_envs=4096, window=60)
 
 Each method takes only the arguments that are not the venue, so there is nothing
@@ -116,16 +115,6 @@ class Market:
             risk_free        = risk_free,
             **self.as_dict(),
         )
-
-
-    def tune(self, strategy, space, data, **search):
-        """Run ``probatum.tune`` at this venue. ``search`` takes the search controls
-        (``objective``, ``n_trials``, ``oos``, ``n_jobs``, ``seed``, ...) and not
-        the venue, which this object already is.
-        """
-        from ._tune import tune
-        self._only_the_search(search, "tune")
-        return tune(strategy, space, data, **search, **self.as_dict())
 
 
     def env(self, data, **rest):

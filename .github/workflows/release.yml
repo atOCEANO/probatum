@@ -123,7 +123,7 @@ jobs:
             pip install "probatum @ <the wheel's URL, from the Assets below>"
             ```
 
-            The optional extras go in brackets before the `@`: `"probatum[tune,sb3] @ <URL>"`.
+            The optional extras go in brackets before the `@`: `"probatum[search,sb3] @ <URL>"`.
 
             Building from source instead needs the [Rust toolchain](https://rustup.rs):
 

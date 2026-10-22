@@ -107,7 +107,6 @@ binance = probatum.Market(kind="perp", fee_taker=0.0004, slippage_bps=2.0,
                       leverage=5.0, funding_rate=0.0001, funding_interval=8)
 
 result = binance.backtest(candles).run(MyStrategy())
-study = binance.tune(MyStrategy, space, candles, n_trials=200, oos=0.3)
 env = binance.env(candles, num_envs=4096, window=60)
 ```
 
@@ -201,59 +200,34 @@ The observation, reward, action, and autoreset contract, and the full training e
 
 ### Parameter search
 
-Search a strategy's parameters for the setting that maximizes an objective. `tune` runs each trial as a full backtest through the same `Backtester`, so the strategy you backtest is the strategy you tune, and the trials run across worker processes, so the search scales over cores. This is the path for a strategy you write.
+Search a policy's parameters for the setting that maximizes an objective. `probatum.search` runs each trial as a full backtest on the bars of a `probatum.Data` before a holdout, and returns a `probatum.Study` of every trial.
 
 ```python
-from probatum import tune
-from probatum import Strategy
+import numpy
+import probatum
 
-class SmaCross(Strategy):
-    def __init__(self, fast, slow):           # the tunables, as constructor arguments
-        self.fast, self.slow = fast, slow
+def crossing(data, fast, slow):                   # the parameters, as keyword arguments
+    up = probatum.ta.ema(data.close, fast)
+    down = probatum.ta.ema(data.close, slow)
+    weights = numpy.full(len(data), numpy.nan)    # NaN holds the position
+    weights[probatum.ta.crossover(up, down)] = 1.0
+    weights[probatum.ta.crossunder(up, down)] = 0.0
+    return weights
 
-    def init(self, engine):
-        self.close = engine.closes
-        self.warmup = self.slow               # read after init, so it can be computed
-
-    def next(self, state, engine):
-        i = state["tick_index"]
-        fast = self.close[i - self.fast:i].mean()
-        slow = self.close[i - self.slow:i].mean()
-        if state["position"] == 0 and fast > slow:
-            engine.market_buy(1.0)            # long when the fast average leads
-        elif state["position"] > 0 and fast < slow:
-            engine.close()                    # flat when it falls back
-
-result = tune(
-    SmaCross,                                 # your strategy, or any callable that builds one
-    {"fast": (5, 40), "slow": (40, 200)},     # the space to search
-    ohlcv,
-    objective="sharpe", n_trials=200, oos=0.3,     # search 70%, keep 30% back
-    n_jobs=-1,                                     # -1 uses every core
-)
-print(result.best_params)
-print(result.best_value)                      # in-sample: the best of 200 tries
-print(result.oos_stats["sharpe"])             # on bars no trial ever saw
+space = {"fast": probatum.Int(5, 40), "slow": probatum.Int(40, 200, step=10)}
+study = probatum.search(crossing, space, data, "frictionless", sampler="random",
+                        trials=200, holdout=0.3, seed=7)   # search 70%, hold 30% back
+print(study.best_params)
+print(study.best_score)                           # in-sample: the best of 200 tries
+held = study.evaluate_holdout()                   # the one run on bars no trial saw
+print(held.stats["sharpe"])
 ```
 
-**Read the second number, not the first.** `best_value` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `oos=0.3` fits every trial on the first 70% of the series and scores the winner on the last 30%, which no trial ever touched. The gap between the two is what the search invented. Leave `oos` out and it says so ([ADR 0032](.Documentation/Decisions.md)).
+**Read the second number, not the first.** `best_score` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `holdout=0.3` runs every trial on the first 70% of the rows and keeps the last 30% for one run of the winner, which `evaluate_holdout()` counts as a look. The gap between the two is what the search invented. Leave `holdout` out and every score is in-sample, which the search warns of ([ADR 0032](.Documentation/Decisions.md)).
 
-`objective` takes any stats key, or a function of your own over the finished run, so you can score on something the stats set does not name. It receives the whole `BacktestResult`, which puts the equity curve and every trade in reach, and a lambda or a closure survives the trip to the worker processes:
+A Study also judges the search across its trials: `study.summary(null=null)`, given a random search of the same ground, deflates the winner's Sharpe for every trial asked and prints the probability the search overfit, and `study.reality_check()` asks whether any trial beats cash at all ([ADR 0033](.Documentation/Decisions.md)).
 
-```python
-def risk_adjusted(result):
-    stats = result.stats
-    if stats["num_trades"] < 20:                       # ignore configs that barely trade
-        return -1e9
-    return stats["sharpe"] - 0.1 * stats["max_drawdown_pct"]
-
-result = tune(SmaCross, {"fast": (5, 40), "slow": (40, 200)}, ohlcv,
-              objective=risk_adjusted, n_trials=200, oos=0.3, n_jobs=-1)
-```
-
-Higher wins by default; pass `direction="minimize"` when your metric is a cost. A trial whose objective returns `NaN` is failed and the search moves on. `n_jobs=-1` spreads the trials over every core, and the cost is reproducibility: a parallel search asks for trials before earlier ones have reported, so the sampler follows a different path each run. Pin `n_jobs=1` when a result has to reproduce from its seed.
-
-`tune` needs optuna and cloudpickle, which the `tune` extra installs ([Install](#install)); the [Python API](.Documentation/Python_API.md#tuning) covers the search space, objective, and result in full.
+A random or grid search of a policy that returns weights runs its trials together in Rust, many to a call; a `Strategy` subclass, built for each trial from its parameters, runs them one at a time, across worker processes with `n_jobs=-1`. `objective` takes any statistic's name, and `direction="minimize"` ranks a cost. The default sampler, `"tpe"`, needs optuna, and the workers need cloudpickle, which the `search` extra installs ([Install](#install)); the [Python API](.Documentation/Python_API.md#search) covers the policy, the space, the samplers and the Study in full.
 
 ### Judging the result
 
@@ -274,7 +248,7 @@ metrics.compare({"cheap": a, "dear": b})          # several runs, side by side
 
 Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `summary` prints the two on adjacent lines and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
 
-For how far the numbers can be trusted, `probatum.stats` gives each statistic of a run its interval, named for its method: the Sharpe's by the delta method over a long-run variance that autocorrelation widens and never narrows, with its probability of beating a benchmark and the track record that would show it, the others by a bootstrap of the returns or of the round trips. It also tests two Sharpes on the same bars and measures alpha and beta against buying and holding, and `result.summary()` prints the run with its Sharpe's interval ([Python API](.Documentation/Python_API.md#inference)). `metrics.deflated_sharpe(study, null)` asks whether a search's winner beats what the best of that many looks would have reached by luck; it requires a random-search null and refuses to guess one.
+For how far the numbers can be trusted, `probatum.stats` gives each statistic of a run its interval, named for its method: the Sharpe's by the delta method over a long-run variance that autocorrelation widens and never narrows, with its probability of beating a benchmark and the track record that would show it, the others by a bootstrap of the returns or of the round trips. It also tests two Sharpes on the same bars and measures alpha and beta against buying and holding, and `result.summary()` prints the run with its Sharpe's interval ([Python API](.Documentation/Python_API.md#inference)). `probatum.stats.deflated_sharpe(study, null)` asks whether a search's winner beats what the best of that many trials would have reached by luck; it requires a random-search null and refuses to guess one.
 
 ### Looking at the result
 
@@ -371,7 +345,7 @@ From 1.0, a **minor** release will not remove an exported name, remove a keyword
 - The statistics are never `NaN` and rank monotonically, so a bad run cannot win a search.
 - `probatum.ta` returns one value per bar, warm-up as a gap, never a shorter array.
 - A `T-1` array on a chart maps entry `i` to bar `i + 1`.
-- `tune` holds out the **end** of a series, never a random slice.
+- `search` holds out the **end** of a series, never a random slice.
 
 Not promised: an indicator's output to the last bit (the recursive ones trade 2e-15 for a 33-fold speedup, and that trade may be made again), anything whose name starts with an underscore, the wording of an error, the chart's JSON spec, and the Rust crates, which are workspace members rather than a published API. The [fidelity limits](#scope-and-fidelity) are limits and not promises: they may become *more* faithful in a minor release, because a simulator getting closer to a real venue is a fix, and your results will move when it does.
 
@@ -411,11 +385,11 @@ The optional extras go in brackets before the `@`, and stack:
 | Extra | Pulls | For |
 | :--- | :--- | :--- |
 | `data` | pandas, pyarrow | DataFrame and parquet input |
-| `tune` | optuna, cloudpickle | the `probatum.tune` parameter search |
+| `search` | optuna, cloudpickle | `probatum.search`'s TPE sampler and its workers |
 | `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
 
 ```bash
-pip install "emsl[tune,sb3] @ <the URL for your platform, from above>"
+pip install "emsl[search,sb3] @ <the URL for your platform, from above>"
 ```
 
 Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you:

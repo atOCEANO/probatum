@@ -589,10 +589,6 @@ def test_a_function_s_strategy_is_a_prototype_each_trial_copies():
     assert not hasattr(returned, "calls")
 
 
-def tune_int():
-    return {"fast": probatum.tune.Int(2, 8)}
-
-
 REFUSED = [
     (dict(policy=Cross(), space=SPACE), PolicyError,
      "policy: an instance of Cross; pass the class, Cross, which each trial builds with "
@@ -695,12 +691,6 @@ def test_a_search_refuses_what_it_cannot_run_with_the_fix(given, kind, said):
         probatum.search(**given)
 
     assert type(caught.value) is kind and str(caught.value).startswith(said)
-
-
-def test_emsl_s_ranges_are_refused_as_no_range_of_probatum_s():
-    with pytest.raises(ProbatumTypeError, match="^space: fast is .*; give a probatum.Int, "
-                                                "probatum.Float or probatum.Categorical$"):
-        probatum.search(Cross, tune_int(), one(), VENUE, sampler="random", holdout=0.25)
 
 
 def test_a_universe_of_weights_searches_as_one_instrument_does():

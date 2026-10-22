@@ -1117,6 +1117,17 @@ def test_the_track_record_length_converts_bets_back_into_bars_exactly_once():
     assert adjusted["have_bars"] == 120 and adjusted["enough"]
 
 
+def test_the_bar_rises_with_the_spread_and_with_the_number_of_looks():
+    assert metrics.deflation_threshold(2.0, 20) > metrics.deflation_threshold(1.0, 20)
+    assert metrics.deflation_threshold(1.0, 200) > metrics.deflation_threshold(1.0, 20)
+    assert metrics.deflation_threshold(0.0, 200) == 0.0  # no scatter, nothing to beat
+    for looks in (2, 5, 50, 5_000):
+        assert metrics.deflation_threshold(1.0, looks) > 0.0
+
+    with pytest.raises(ValueError):
+        metrics.deflation_threshold(1.0, 1)
+
+
 def test_the_risk_measures_read_the_tail_they_name():
     values = np.array([-0.05, -0.04, -0.03, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.05])
     curve  = 100.0 * np.cumprod(1.0 + values)

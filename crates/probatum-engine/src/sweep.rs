@@ -5,7 +5,7 @@
 //!
 //! This is deliberately not exposed to Python: it can only run the strategies
 //! compiled in here, so as a public surface it would be one nobody could extend
-//! without writing Rust. Parameter search from Python goes through `probatum.tune`;
+//! without writing Rust. Parameter search from Python goes through `probatum.search`;
 //! this stays as the in-core path and the benchmark of the GIL-free sweep. See
 //! ADR 0003.
 

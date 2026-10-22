@@ -11,7 +11,6 @@ import pickle
 import numpy as np
 import pytest
 
-import probatum
 from probatum import (Categorical, Float, Int, ProbatumAttributeError, ProbatumTypeError,
                       ProbatumValueError)
 
@@ -132,7 +131,3 @@ def test_a_range_compares_hashes_and_pickles_by_what_it_holds():
     assert Int(1, 10) != Int(1, 10, step=3) and Int(1, 10) != Float(1.0, 10.0)
     assert Categorical([1, 2]) != Categorical([1.0, 2.0])
     assert len({Int(1, 10), Int(1, 10), Categorical([1, 2])}) == 2
-
-
-def test_probatum_s_ranges_are_its_own_and_not_emsl_s():
-    assert probatum.Int is not probatum.tune.Int

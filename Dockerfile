@@ -83,7 +83,7 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy \
     && python /benchmarks/throughput.py
 
 # Per-surface throughput (Engine, an array and a Strategy through backtest, Backtester,
-# tune, VectorEnv, Batch).
+# search, VectorEnv, Batch).
 # Needs the full deps, so it is its own stage; run it and read stdout:
 #   docker build --target bench-surfaces -t probatum-bench-surfaces .
 #   docker run --rm probatum-bench-surfaces

@@ -57,7 +57,7 @@ class Strategy:
     position it did not open. Its parameters are its constructor's arguments, kept as
     attributes of the same names.
 
-    `probatum.Backtester` and `tune` drive the class as emsl did:
+    `probatum.Backtester` drives the class as emsl did:
     ``init(engine)`` once after the reset and ``next(state, engine)`` on every bar but
     the last, with ``warmup`` read the same way and the orders placed through the
     engine's own methods (ADR 0025).
