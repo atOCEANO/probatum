@@ -22,11 +22,11 @@ from ._streams import stream
 
 __all__ = ["AlphaBeta", "BacktestLength", "Consistency", "Decay", "Deflated", "Difference",
            "EffectiveTrials", "Interval", "Overfitting", "Permutations", "Probability",
-           "Statistics", "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap",
-           "deflated_sharpe", "deflation_threshold", "effective_sample", "effective_trials",
-           "min_backtest_length", "min_track_record_length", "overfitting",
-           "probabilistic_sharpe", "sharpe", "sharpe_difference", "sharpe_interval",
-           "trade_order"]
+           "RealityCheck", "Statistics", "TrackRecord", "alpha_beta", "autocorrelation",
+           "bootstrap", "deflated_sharpe", "deflation_threshold", "effective_sample",
+           "effective_trials", "min_backtest_length", "min_track_record_length",
+           "overfitting", "probabilistic_sharpe", "reality_check", "sharpe",
+           "sharpe_difference", "sharpe_interval", "trade_order"]
 
 # the package's files, which a warning skips to name the caller's line
 PACKAGE = (os.path.dirname(__file__),)
@@ -513,6 +513,44 @@ class Overfitting(_Frozen):
             said += f"; it loses on {self.loss:.0%} of them"
 
         return said + (", descriptive" if self.descriptive else "")
+
+
+class RealityCheck(_Frozen):
+    """White's Reality Check and Hansen's SPA of whether any trial beats a benchmark:
+    ``p``, White's p-value, and ``spa``, Hansen's consistent one with each resample
+    studentized on its own variance; ``statistic`` and ``spa_statistic``, the two tests'
+    maxima; ``best``, the trial of the highest log growth over the ``benchmark``;
+    ``block``, the stationary bootstrap's mean block, over ``resamples``; ``trials``,
+    those read, and ``excluded``, those left out for a return at or below -100%; and
+    ``descriptive``, True where an adaptive search chose its trials on the bars they are
+    judged on."""
+
+    __slots__ = ("p", "spa", "statistic", "spa_statistic", "best", "block", "resamples",
+                 "trials", "excluded", "benchmark", "descriptive")
+
+
+    def __init__(self, p, spa, statistic, spa_statistic, best, block, resamples, trials,
+                 excluded, benchmark, descriptive):
+        self._set(
+            p             = float(p),
+            spa           = float(spa),
+            statistic     = float(statistic),
+            spa_statistic = float(spa_statistic),
+            best          = int(best),
+            block         = float(block),
+            resamples     = int(resamples),
+            trials        = int(trials),
+            excluded      = int(excluded),
+            benchmark     = benchmark,
+            descriptive   = bool(descriptive),
+        )
+
+
+    def __str__(self):
+        return (f"reality check p {self.p:.2f} and SPA p {self.spa:.2f} that no trial "
+                f"beats {self.benchmark}, {self.resamples:,} stationary resamples in "
+                f"blocks of {self.block:.1f}, {self.trials:,} trials"
+                + (", descriptive" if self.descriptive else ""))
 
 
 class BacktestLength(_Frozen):
@@ -1091,6 +1129,113 @@ def overfitting(trials, objective=None, periods_per_year=None, risk_free=None):
                        PARTS, x.shape[1] % PARTS, objective, direction, adaptive)
 
 
+def reality_check(trials, benchmark=None, periods_per_year=None, risk_free=None,
+                  resamples=1000, seed=None):
+    """White's Reality Check and Hansen's SPA of whether any of ``trials`` beats
+    ``benchmark``, as a RealityCheck: each trial's log growth over the benchmark's a bar,
+    resampled by one stationary bootstrap every trial shares, its mean block the median
+    of Politis and White's lengths on the trials; White's maximum mean, and Hansen's
+    maximum studentized mean, recentred by his consistent rule, each resample
+    studentized on its own stationary-bootstrap variance. ``trials`` is a search's
+    Study, whose trials that ran it reads, or a matrix of a row a trial's returns; the
+    benchmark is cash at the risk-free rate unless ``"buy_and_hold"``, a Study's
+    baseline, or a series of returns on the same bars. The resamples draw from a stream
+    seeded by what they resample, or by ``seed`` (ADR 0033; Specification, The Reality
+    Check and SPA)."""
+    from ._result import _returns
+    from ._search import Study
+
+    resamples, seed = _resamples(resamples), _seed(seed)
+    x, rate, numbers = _trials(trials, periods_per_year, risk_free, ("complete", "floored"))
+
+    if isinstance(trials, Study):
+        free     = trials.provenance["risk_free"]
+        adaptive = trials.provenance["sampler"]["name"] == "tpe"
+    else:
+        free, adaptive = risk_free or 0.0, False
+
+    r     = x + free / rate
+    count = r.shape[1]
+    if count < 3:
+        raise ProbatumValueError(f"trials: {count} returns; the Reality Check needs 3")
+
+    if isinstance(benchmark, str) and benchmark != "buy_and_hold":
+        raise ProbatumValueError(f"benchmark: {benchmark!r}; give \"buy_and_hold\", a "
+                                 f"series of returns, or None for cash")
+
+    if benchmark is None:
+        said, b = "cash", np.full(count, free / rate)
+    elif isinstance(benchmark, str):
+        if not isinstance(trials, Study):
+            raise ProbatumValueError("benchmark: \"buy_and_hold\" beside a matrix, which "
+                                     "holds no instruments to buy; pass a series of "
+                                     "returns")
+
+        held    = np.asarray(trials.best.baselines["buy_and_hold"], dtype=np.float64)
+        said, b = "buying and holding", _returns(held)[1:]
+    else:
+        start  = 1 if isinstance(trials, Study) else 0
+        values = _series(benchmark, "benchmark", first=start,
+                         fix="give \"buy_and_hold\", a series of returns, or None for cash")
+        ruined = np.flatnonzero(values[start:] <= -1.0) + start
+        if ruined.size:
+            raise ProbatumValueError(f"benchmark: position {ruined[0]} holds "
+                                     f"{values[ruined[0]]}, all of a bar lost, which leaves "
+                                     f"no log growth to measure the trials against")
+
+        values = values[start:]
+        if values.size != count:
+            raise ProbatumValueError(f"benchmark: {values.size} returns beside {count}; "
+                                     f"give a return a bar the trials cover")
+
+        said, b = "the benchmark", values
+
+    lost = (r <= -1.0).any(axis=1)
+    if lost.all():
+        raise ProbatumValueError("trials: each lost all of a bar, which leaves no log "
+                                 "growth to test")
+
+    f       = np.log1p(r[~lost]) - np.log1p(b)
+    fbar    = f.mean(axis=1)
+    root    = math.sqrt(count)
+    big_v   = root * float(fbar.max())
+    varies  = np.ptp(f, axis=1) > 0.0
+    lengths = [_block_lengths(row)[0] for row in f[varies]]
+    block   = float(np.median(lengths)) if lengths else 1.0
+    weights = _window(count, 1.0 / block)
+    omega   = np.sqrt(np.maximum(_spectral(f[varies], weights), 0.0))
+    live    = omega > 0.0
+    t       = root * fbar[varies][live] / omega[live]
+
+    if (~varies & (fbar > 0.0)).any():
+        big_t = math.inf
+    else:
+        big_t = max(0.0, float(t.max())) if t.size else 0.0
+
+    shift = np.where(t >= -math.sqrt(2.0 * math.log(math.log(count))), fbar[varies][live],
+                     0.0)
+    rows  = f[varies][live]
+    white = above = 0
+    rng   = _drawn(np.vstack([r[~lost], b]), "stats reality check", seed)
+
+    for chunk in _stationary(count, block, resamples, rng):
+        for drawn in chunk:
+            star   = f[:, drawn]
+            white += root * float((star.mean(axis=1) - fbar).max()) > big_v
+            if rows.size and 0.0 < big_t < math.inf:
+                taken = rows[:, drawn]
+                again = np.sqrt(np.maximum(_spectral(taken, weights), 0.0))
+                again = np.where((np.ptp(taken, axis=1) > 0.0) & (again > 0.0), again,
+                                 omega[live])
+                above += max(0.0, float((root * (taken.mean(axis=1) - shift)
+                                         / again).max())) > big_t
+
+    spa  = 0.0 if big_t == math.inf else 1.0 if big_t == 0.0 else above / resamples
+    best = int(np.asarray(numbers)[~lost][int(np.argmax(fbar))])
+    return RealityCheck(white / resamples, spa, big_v, big_t, best, block, resamples,
+                        int((~lost).sum()), int(lost.sum()), said, adaptive)
+
+
 def min_backtest_length(trials, sharpe=None):
     """The minimum backtest length, as a BacktestLength: the years over which the
     expected best of ``trials`` independent trials with no skill falls to the annual
@@ -1199,12 +1344,13 @@ def _values(returns):
             else _series(returns))
 
 
-def _series(returns, name="returns", first=0):
+def _series(returns, name="returns", first=0, fix=None):
     """A plain return series passed as ``name``: a 1-D array, a list or a pandas Series
-    read by position, finite from position ``first``."""
+    read by position, finite from position ``first``; ``fix`` is what its refusal of
+    another type asks for."""
     if isinstance(returns, (str, bytes, dict)) or not hasattr(returns, "__len__"):
-        raise ProbatumTypeError(f"{name}: {type(returns).__name__}; pass a Result, or a "
-                                f"1-D array, a list or a pandas Series of returns")
+        raise ProbatumTypeError(f"{name}: {type(returns).__name__}; " + (
+            fix or "pass a Result, or a 1-D array, a list or a pandas Series of returns"))
 
     try:
         values = np.asarray(returns, dtype=np.float64)
@@ -2320,6 +2466,25 @@ def _overfit(x, raw, rate, objective, maximize, blocks):
                     loss += (other[k] < 0.0) / winners.size
 
     return over / halvings, loss / halvings
+
+
+def _window(count, q):
+    """Hansen's kernel as a spectral window: weights on a series' periodogram that give
+    its stationary-bootstrap variance of ``sqrt(n)`` times a resample's mean at a
+    restart probability ``q``, the circular form of ``g_0 + 2 * sum_i kappa(n, i) *
+    g_i``."""
+    k    = np.arange(count)
+    w    = np.where(k == 0, 1.0, 2.0 * (1.0 - k / count) * (1.0 - q) ** k)
+    full = np.fft.fft(w).real
+    bins = full[:count // 2 + 1].copy()
+    bins[1:(count + 1) // 2] *= 2.0
+    return bins / count ** 2
+
+
+def _spectral(rows, weights):
+    """Each row's stationary-bootstrap variance through the window ``weights``."""
+    centred = rows - rows.mean(axis=1, keepdims=True)
+    return (np.abs(np.fft.rfft(centred, axis=1)) ** 2) @ weights
 
 
 def _combined(rows):

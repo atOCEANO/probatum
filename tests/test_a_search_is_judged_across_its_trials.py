@@ -271,6 +271,7 @@ def test_an_adaptive_search_is_deflated_and_called_descriptive(null):
     assert found.descriptive
     assert str(found).endswith(", descriptive")
     assert stats.overfitting(adaptive).descriptive
+    assert stats.reality_check(adaptive, resamples=20).descriptive
 
 
 def test_the_overfitting_probability_ranks_a_search_s_complete_trials(study):
@@ -356,3 +357,72 @@ def test_the_overfitting_probability_refuses_order_and_what_halves_cannot_read(s
         broken = rows.copy()
         broken[2, 5] = np.nan
         stats.overfitting(broken, periods_per_year=252)
+
+
+def test_the_reality_check_tests_every_trial_that_ran_against_cash(study):
+    found = stats.reality_check(study, resamples=200)
+    ran   = int((np.asarray(study.trials["state"]) != "failed").sum())
+
+    assert (found.trials, found.excluded, found.benchmark) == (ran, 0, "cash")
+    assert 0.0 <= found.p <= 1.0 and 0.0 <= found.spa <= 1.0
+    assert stats.reality_check(study, resamples=200) == found
+    assert str(found) == (f"reality check p {found.p:.2f} and SPA p {found.spa:.2f} that no "
+                          f"trial beats cash, 200 stationary resamples in blocks of "
+                          f"{found.block:.1f}, {ran} trials")
+
+    held = stats.reality_check(study, "buy_and_hold", resamples=50)
+
+    assert held.benchmark == "buying and holding"
+
+
+def test_spa_is_0_for_a_trial_ahead_on_every_bar_and_1_for_none_ahead_at_all():
+    rows = np.random.default_rng(4).normal(-0.002, 0.01, (6, 300))
+
+    assert stats.reality_check(rows, periods_per_year=252, resamples=50).spa == 1.0
+
+    rows[2] = 0.001
+    found = stats.reality_check(rows, periods_per_year=252, resamples=50)
+
+    assert (found.spa, found.spa_statistic, found.best) == (0.0, math.inf, 2)
+
+
+def test_a_trial_that_lost_a_whole_bar_is_left_out_and_the_benchmark_is_checked():
+    rows = np.random.default_rng(6).normal(0.0, 0.01, (4, 120))
+    rows[1, 30] = -1.0
+    given = np.random.default_rng(7).normal(0.0, 0.01, 120)
+    found = stats.reality_check(rows, given, periods_per_year=252, resamples=50)
+
+    assert (found.trials, found.excluded, found.benchmark) == (3, 1, "the benchmark")
+
+    with pytest.raises(ProbatumValueError, match="benchmark: \"buy_and_hold\" beside a "
+                       "matrix, which holds no instruments to buy"):
+        stats.reality_check(rows, "buy_and_hold", periods_per_year=252)
+    with pytest.raises(ProbatumValueError, match="benchmark: 'cash'; give "
+                       "\"buy_and_hold\", a series of returns, or None for cash"):
+        stats.reality_check(rows, "cash", periods_per_year=252)
+    with pytest.raises(ProbatumValueError, match="benchmark: 119 returns beside 120"):
+        stats.reality_check(rows, given[1:], periods_per_year=252)
+    with pytest.raises(ProbatumTypeError, match="^benchmark: float; give \"buy_and_hold\", "
+                       "a series of returns, or None for cash$"):
+        stats.reality_check(rows, 0.0, periods_per_year=252)
+
+    ruined = given.copy()
+    ruined[90] = -1.0
+
+    with pytest.raises(ProbatumValueError, match="^benchmark: position 90 holds -1.0, all "
+                       "of a bar lost, which leaves no log growth to measure the trials "
+                       "against$"):
+        stats.reality_check(rows, ruined, periods_per_year=252)
+
+    with pytest.raises(ProbatumValueError, match="trials: 2 returns; the Reality Check "
+                       "needs 3"):
+        stats.reality_check(rows[:, :2], periods_per_year=252)
+
+
+def test_cash_earns_the_risk_free_rate_a_bar():
+    rows   = np.random.default_rng(8).normal(0.0005, 0.01, (4, 120))
+    cash   = stats.reality_check(rows, periods_per_year=252, risk_free=0.05, resamples=50)
+    series = stats.reality_check(rows, np.full(120, 0.05 / 252), periods_per_year=252,
+                                 risk_free=0.05, resamples=50)
+
+    assert (cash.p, cash.spa, cash.statistic) == (series.p, series.spa, series.statistic)

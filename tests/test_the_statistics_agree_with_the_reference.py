@@ -662,6 +662,36 @@ def test_a_trial_that_never_trades_ranks_at_zero_on_every_halving_at_a_positive_
     assert found.loss        == pytest.approx(loss, rel=1e-12)
 
 
+@pytest.mark.parametrize("seed", range(5))
+def test_the_reality_check_and_spa_agree_on_the_module_s_own_resamples(seed):
+    # five trials over 40 bars against a benchmark, or against cash for seed 4, one
+    # autocorrelated so the blocks run long, one that trails the benchmark far enough to
+    # keep its mean, and one that never trades, constant against cash; the resamples
+    # drawn from the stream the page names, seeded by the trials' returns and the
+    # benchmark's
+    rng  = np.random.default_rng(seed)
+    rows = rng.normal(0.0005, 0.01, (5, 40))
+    for t in range(1, 40):
+        rows[0, t] += 0.6 * rows[0, t - 1]
+
+    rows[1] -= 0.02
+    rows[4]  = 0.0
+
+    given = rng.normal(0.0002, 0.008, 40) if seed < 4 else np.zeros(40)
+    found = stats.reality_check(rows, None if seed == 4 else given, periods_per_year=252,
+                                resamples=60)
+    drawn = [row for chunk in stats._stationary(
+        40, found.block, 60, stats._drawn(np.vstack([rows, given]), "stats reality check",
+                                          None)) for row in chunk.tolist()]
+
+    f     = statistics.relative(rows.tolist(), given.tolist())
+    block = statistics.mean_block(f)
+    white, spa = statistics.reality_check(f, drawn, 1.0 / block)
+
+    assert found.block == pytest.approx(block, rel=1e-12)
+    assert (found.p, found.spa) == (pytest.approx(white), pytest.approx(spa))
+
+
 @pytest.mark.parametrize("trials", [2, 3, 10, 46, 100, 1_000])
 def test_the_deflation_threshold_and_the_backtest_length_agree(trials):
     assert stats.deflation_threshold(0.7, trials) == pytest.approx(
