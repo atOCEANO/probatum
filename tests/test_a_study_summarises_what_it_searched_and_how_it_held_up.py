@@ -1,12 +1,14 @@
 """A Study says in a few lines what it searched and how the winner held up: a search's
-summary names its winner, a random null's mean and its holdout as it stands, and a
-validation's its paths, their median path's interval and the share of the gross edge
-its costs took; consistency scores the winner in stretches, or a validation's windows,
-against the objective's break-even, and decay sets what each fit scored against what its
-bars then earned (Specification, Summaries; Consistency and decay).
+summary names its winner, its deflated Sharpe beside a random null's mean, its
+overfitting probability and its holdout as it stands, and a validation's its paths,
+their median path's interval and the share of the gross edge its costs took;
+consistency scores the winner in stretches, or a validation's windows, against the
+objective's break-even, and decay sets what each fit scored against what its bars then
+earned (Specification, Summaries; Consistency and decay).
 """
 
 import math
+import textwrap
 
 import numpy as np
 import pytest
@@ -30,6 +32,12 @@ def bars(rows=800):
         market = "linear",
         time   = np.arange(rows, dtype=np.int64) * HOUR,
     )
+
+
+def line(label, said):
+    """A summary's line as a Study lays it out, wrapped at 88 columns beneath itself."""
+    return textwrap.fill(f"  {label:<18}{said}", width=88, subsequent_indent=" " * 20,
+                         break_long_words=False, break_on_hyphens=False).split("\n")
 
 
 def alternating(data, fast=5):
@@ -74,19 +82,88 @@ def validated():
 
 
 def test_a_search_s_summary_names_its_winner_its_null_and_its_holdout(study):
-    null   = searched(seed=2)
-    lines  = study.summary(null=null).split("\n")
-    trials = null.trials
-    done   = np.asarray(trials["state"]) == "complete"
-    mean   = np.asarray(trials["score"], dtype=np.float64)[done].mean()
+    null        = searched(seed=2)
+    lines       = study.summary(null=null).split("\n")
+    trials      = null.trials
+    done        = np.asarray(trials["state"]) == "complete"
+    mean        = np.asarray(trials["score"], dtype=np.float64)[done].mean()
+    deflated    = str(stats.deflated_sharpe(study, null)).removeprefix("deflated sharpe ")
+    overfitting = str(stats.overfitting(study)).removeprefix("overfitting ")
 
     assert lines == [
         "search: alternating, frictionless, BTCUSDT 1h, 12 random trials",
         "in sample 1970-01-01 to 1970-01-24, holdout the last 30% (240 bars)",
         f"  best              fast {study.best_params['fast']}: sharpe "
         f"{study.best_score:.2f}",
+        *line("deflated sharpe", deflated),
         f"  null              mean sharpe {mean:.2f} over {done.sum()} trials",
+        *line("overfitting", overfitting),
         "  holdout           not yet run; evaluate_holdout() spends a look"]
+
+
+def test_a_search_says_why_it_has_no_deflated_sharpe_or_overfitting_probability():
+    kept = searched(keep="none")
+
+    assert line("overfitting", "none: the search kept no returns")[0] in kept.summary()
+
+    ordered = searched(objective="calmar")
+    shown   = ordered.summary(null=searched(seed=2, objective="calmar"))
+
+    assert line("deflated sharpe", "none: the search ranked on calmar, and a deflation "
+                "is of a Sharpe a search maximised")[0] in shown
+    assert line("overfitting", "none: calmar is not a statistic the halves give whatever "
+                "the order of their returns")[0] in shown
+
+    lowest = searched(direction="minimize").summary(
+        null=searched(seed=2, direction="minimize"))
+
+    assert line("deflated sharpe", "none: the search minimised sharpe, and a deflation is "
+                "of a Sharpe a search maximised")[0] in lowest
+
+    alone = searched(trials=1).summary(null=searched(seed=2))
+
+    assert line("deflated sharpe", "none: study: 1 trial; a deflation corrects for more "
+                "than one, so search with trials=2 or more")[0] in alone
+    assert line("overfitting", "none: 1 complete trial")[0] in alone
+
+    short = searched(trials=2, holdout=800 - 16)
+
+    assert line("overfitting", "none: 15 returns, fewer than its 16 blocks")[0] in (
+        short.summary())
+
+
+LAG = [0]
+
+
+def lagging(data, fast=5):
+    return np.where((np.arange(len(data.close)) + LAG[0]) % (2 * fast) < fast, 1.0, 0.0)
+
+
+def test_a_winner_that_runs_otherwise_now_leaves_the_summary_saying_why():
+    # the deflation reruns the winner, and a policy whose global changed since its
+    # search is refused there; the summary names that refusal and prints the rest
+    moved = searched(policy=lagging)
+    null  = searched(policy=lagging, seed=2)
+
+    LAG[0] = 3
+    try:
+        shown = moved.summary(null=null)
+    finally:
+        LAG[0] = 0
+
+    assert "  deflated sharpe   none: best: trial " in shown
+    assert shown.split("\n")[-1].startswith("  holdout           not yet run")
+
+
+def test_a_search_s_shortcuts_are_the_statistics_of_its_trials(study):
+    null  = searched(seed=2)
+    given = dict(benchmark="buy_and_hold", resamples=40, seed=3)
+
+    assert study.deflated_sharpe(null)  == stats.deflated_sharpe(study, null)
+    assert study.effective_trials()     == stats.effective_trials(study)
+    assert study.overfitting()          == stats.overfitting(study)
+    assert study.reality_check(**given) == stats.reality_check(study, **given)
+    assert study.min_backtest_length()  == stats.min_backtest_length(study)
 
 
 def test_a_null_that_is_not_a_random_search_of_the_same_ground_is_refused(study,

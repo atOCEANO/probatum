@@ -33,8 +33,9 @@ from ._samplers import _Grid, _Random, _Tpe
 from ._space import Categorical, Float, Int, _whole
 from ._strategy import Strategy, _Run, _play
 from ._venue import _run
-from .stats import (BREAK_EVEN, GROWS, RETURNS, TRADES, Consistency, Decay, _percent,
-                    bootstrap, sharpe_interval)
+from .stats import (BREAK_EVEN, GROWS, HALVED, PARTS, RETURNS, TRADES, Consistency, Decay,
+                    _percent, bootstrap, deflated_sharpe, effective_trials,
+                    min_backtest_length, overfitting, reality_check, sharpe_interval)
 
 LOGGER     = logging.getLogger("probatum")
 SAMPLERS   = ("tpe", "random", "grid")
@@ -892,7 +893,10 @@ class Study:
     when first read; ``best_params`` and ``best_score``; ``evaluate_holdout()``, the
     winner run once on the held-out bars, and ``holdout``, the Result it gave;
     ``looks``, how many times the winner has been handed the held-out bars; and
-    ``provenance``, what the call was given and where it ran."""
+    ``provenance``, what the call was given and where it ran. A search's is judged
+    across its trials by ``deflated_sharpe(null)``, ``effective_trials()``,
+    ``overfitting()``, ``reality_check()`` and ``min_backtest_length()``, as
+    ``probatum.stats`` computes them (ADR 0033)."""
 
 
     def __init__(self, trials, returns, winner, ran, provenance, tables=None):
@@ -1037,11 +1041,12 @@ class Study:
         """The Study in a few lines of text. A search's: what it searched, at which
         venue and on what bars, its in-sample span and holdout, the winner's parameters
         and score, with ``null``, a random search of the same policy over the same space
-        on the same venue and in-sample bars scored alike, the mean of the null's
-        complete trials, and the holdout as it stands. A validation's: its paths and
-        how they were cut, each path's score, their median with the median path's
-        interval, its costs as a share of the gross edge, the reminder that paths are
-        stability evidence, and the holdout (Specification, Summaries)."""
+        on the same venue and in-sample bars scored alike, the winner's deflated Sharpe
+        and the mean of the null's complete trials, the overfitting probability, and the
+        holdout as it stands, each line that cannot be read saying why. A validation's:
+        its paths and how they were cut, each path's score, their median with the median
+        path's interval, its costs as a share of the gross edge, the reminder that paths
+        are stability evidence, and the holdout (Specification, Summaries)."""
         given = self.provenance
         data  = given["data"]
         names = [name.split(":", 1)[-1] for name in data["instruments"]]
@@ -1057,7 +1062,10 @@ class Study:
             best   = _signed(given["objective"]) * self.best_score + 0.0
             lines.append(_line("best", f"{chosen}: {given['objective']} {best:.2f}"))
             if null is not None:
+                lines.append(_line("deflated sharpe", self._deflated(null)))
                 lines.append(_line("null", self._null(null)))
+
+            lines.append(_line("overfitting", self._overfit()))
             lines.append(_line("holdout", self._held_out()))
             return "\n".join(lines)
 
@@ -1230,6 +1238,76 @@ class Study:
             said += f"; at {_percent(wider.level)}, {_bounds(wider, flip)}"
 
         return said
+
+
+    def deflated_sharpe(self, null):
+        """The winner's deflated Sharpe against every trial, and its cluster's against
+        the effective number, ``null`` a random search of the same policy over the same
+        space, venue and in-sample bars, scored alike
+        (``probatum.stats.deflated_sharpe``)."""
+        return deflated_sharpe(self, null)
+
+
+    def effective_trials(self):
+        """The effective number of the trials that ran
+        (``probatum.stats.effective_trials``)."""
+        return effective_trials(self)
+
+
+    def overfitting(self):
+        """The probability of backtest overfitting of the complete trials
+        (``probatum.stats.overfitting``)."""
+        return overfitting(self)
+
+
+    def reality_check(self, benchmark=None, resamples=1000, seed=None):
+        """White's Reality Check and Hansen's SPA of whether any trial that ran beats
+        ``benchmark``, cash unless given (``probatum.stats.reality_check``)."""
+        return reality_check(self, benchmark, resamples=resamples, seed=seed)
+
+
+    def min_backtest_length(self):
+        """The minimum backtest length of the trials at the winner's Sharpe
+        (``probatum.stats.min_backtest_length``)."""
+        return min_backtest_length(self)
+
+
+    def _deflated(self, null):
+        """The deflated Sharpe's line, or why it has none."""
+        self._vetted(null)
+
+        given = self.provenance
+        if (given["objective"], given["direction"]) != ("sharpe", "maximize"):
+            ranked = ("minimised sharpe" if given["objective"] == "sharpe" else
+                      f"ranked on {given['objective']}")
+            return (f"none: the search {ranked}, and a deflation is of a Sharpe a search "
+                    f"maximised")
+
+        try:
+            found = deflated_sharpe(self, null)
+        except (ProbatumRuntimeError, ProbatumValueError) as error:
+            return f"none: {error}"
+
+        return str(found).removeprefix("deflated sharpe ")
+
+
+    def _overfit(self):
+        """The overfitting probability's line, or why it has none."""
+        objective = self.provenance["objective"]
+        complete  = int((np.asarray(self._trials["state"]) == "complete").sum())
+
+        if self.returns is None:
+            return "none: the search kept no returns"
+        if objective not in HALVED:
+            return (f"none: {objective} is not a statistic the halves give whatever the "
+                    f"order of their returns")
+        if complete < 2:
+            return "none: 1 complete trial"
+        if self.returns.shape[1] - 1 < PARTS:
+            return (f"none: {self.returns.shape[1] - 1} returns, fewer than its {PARTS} "
+                    f"blocks")
+
+        return str(overfitting(self)).removeprefix("overfitting ")
 
 
     def _null(self, null):
