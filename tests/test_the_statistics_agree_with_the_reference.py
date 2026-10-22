@@ -496,3 +496,129 @@ def test_an_order_deeper_than_the_run_s_only_by_rounding_is_level():
     assert np.count_nonzero(falls > falls[0]) == 2
     assert stats._deeper(falls, falls[0])     == statistics.deeper(falls.tolist(), falls[0])
     assert stats._deeper(falls, falls[0])     == 0.0
+
+
+class Recording:
+    """A generator that keeps every draw it hands out, in order, and how it was asked."""
+
+
+    def __init__(self, seed):
+        self.generator = np.random.default_rng(seed)
+        self.drawn     = []
+        self.asked     = []
+
+
+    def integers(self, *given, **named):
+        self.asked.append(("integers", given, named))
+        self.drawn.append(self.generator.integers(*given, **named))
+        return self.drawn[-1]
+
+
+    def random(self, *given, **named):
+        self.asked.append(("random", given, named))
+        self.drawn.append(self.generator.random(*given, **named))
+        return self.drawn[-1]
+
+
+@pytest.mark.parametrize("points", [np.random.default_rng(5).normal(size=(40, 6)),
+                                    np.zeros((6, 2))])
+def test_a_start_is_the_greedy_sequence_its_draws_give(points):
+    # the module's draws handed to the reference, which reads them by the page's rule;
+    # trials all in one place leave every distance 0, so each is drawn evenly
+    squared = ((points[:, None] - points[None]) ** 2).sum(axis=2)
+    stream  = Recording(1)
+    found   = stats._sequence(squared, 5, stream)
+    draws   = iter(stream.drawn)
+
+    assert found == statistics.sequence(squared.tolist(), 5, draws)
+    assert next(draws, None) is None
+
+    # the first among every trial, and each step's 2 + floor(ln 5) = 3 candidates
+    count = len(points)
+
+    assert stream.asked[0] == ("integers", (count,), {})
+    assert all(asked in (("random", (3,), {}), ("integers", (count,), {"size": 3}))
+               for asked in stream.asked[1:])
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_the_effective_number_agrees_on_the_module_s_own_starts(seed, monkeypatch):
+    # blocks of trials that share a factor, of sizes and noise that vary by seed, the
+    # reference handed each start's sequence as the module drew it
+    rng    = np.random.default_rng(seed)
+    sizes  = rng.integers(1, 6, int(rng.integers(2, 6)))
+    noise  = float(rng.choice([0.3, 0.8, 1.5]))
+    factor = rng.normal(size=(sizes.size, 120))
+    rows   = np.array([factor[block] + rng.normal(scale=noise, size=120)
+                       for block, size in enumerate(sizes) for _ in range(size)]) * 0.01
+    drawn  = []
+    module = stats._sequence
+
+    def recording(squared, most, generator):
+        drawn.append(module(squared, most, generator))
+        return drawn[-1]
+
+    monkeypatch.setattr(stats, "_sequence", recording)
+
+    found = stats.effective_trials(rows, periods_per_year=252, risk_free=0.02)
+    queue = list(drawn)
+
+    def draw(far, most):
+        return [queue.pop(0) for _ in range(stats.STARTS)]
+
+    x = statistics.excess(rows.ravel().tolist(), 252, 0.02)
+    x = [x[i * rows.shape[1]:(i + 1) * rows.shape[1]] for i in range(rows.shape[0])]
+    count, spread = statistics.effective_trials(x, 252, draw)
+
+    assert (found.count, queue) == (count, [])
+    assert found.spread         == (None if spread is None else pytest.approx(spread, rel=1e-9))
+
+    if found.quality is not None:
+        far = statistics.distances(x)[1]
+        assert found.quality == pytest.approx(
+            statistics.quality(statistics.silhouettes(far, list(found.clusters))),
+            rel=1e-9)
+
+
+@pytest.mark.parametrize("seed, kept", [(191, False), (34, True)])
+def test_the_refinement_agrees_where_it_refuses_and_where_it_keeps_new_clusters(
+        seed, kept, monkeypatch):
+    # six or more blocks of mixed noise, so more than two clusters fall below the mean
+    # quality and are clustered again: new clusters refused for seed 191 and kept
+    # for seed 34
+    rng    = np.random.default_rng(seed)
+    sizes  = rng.integers(2, 7, int(rng.integers(6, 11)))
+    noise  = rng.choice([0.2, 0.6, 1.2, 2.0], sizes.size)
+    factor = rng.normal(size=(sizes.size, 120))
+    rows   = np.array([factor[block] + rng.normal(scale=noise[block], size=120)
+                       for block, size in enumerate(sizes) for _ in range(size)]) * 0.01
+    drawn, bases = [], []
+    module, base = stats._sequence, stats._base
+
+    def recording(squared, most, generator):
+        drawn.append(module(squared, most, generator))
+        return drawn[-1]
+
+    def based(points, far, generator):
+        bases.append(base(points, far, generator))
+        return bases[-1]
+
+    monkeypatch.setattr(stats, "_sequence", recording)
+    monkeypatch.setattr(stats, "_base", based)
+
+    labels, _ = stats._onc(rows, np.random.default_rng(seed))
+    queue = list(drawn)
+
+    def draw(far, most):
+        return [queue.pop(0) for _ in range(stats.STARTS)]
+
+    assert labels.tolist() == statistics.onc(rows.tolist(), draw)
+    assert (len(bases) > 1, not np.array_equal(labels, bases[0])) == (True, kept)
+
+
+@pytest.mark.parametrize("trials", [2, 3, 10, 46, 100, 1_000])
+def test_the_deflation_threshold_and_the_backtest_length_agree(trials):
+    assert stats.deflation_threshold(0.7, trials) == pytest.approx(
+        statistics.deflation_threshold(0.7, trials), rel=1e-12)
+    assert stats.min_backtest_length(trials, 1.3).years == pytest.approx(
+        statistics.min_backtest_length(trials, 1.3), rel=1e-12)

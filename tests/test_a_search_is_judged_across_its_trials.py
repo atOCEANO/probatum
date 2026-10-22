@@ -1,0 +1,268 @@
+"""A search is judged across all of its trials: its winner's Sharpe deflated by what the
+best of every trial it asked reaches by luck, against every trial and against the
+effective number its clusters make, and the backtest length that many trials need. Each
+reads a search's Study or a matrix of trials' returns, and refuses what it cannot read
+(ADR 0033; Specification, Across a search).
+"""
+
+import math
+import warnings
+
+import numpy as np
+import pytest
+
+import probatum
+from probatum import ProbatumTypeError, ProbatumValueError, ProbatumWarning, stats
+
+from reference import statistics
+
+HOUR  = 3_600_000_000_000
+SPACE = {"fast": probatum.Int(2, 30), "lag": probatum.Int(0, 9)}
+
+
+def bars(rows=800):
+    close  = 100.0 + np.random.default_rng(9).normal(0.0, 1.0, rows).cumsum()
+    shaped = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(rows, 1e3)])
+    return probatum.Data(
+        shaped,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(rows, dtype=np.int64) * HOUR,
+    )
+
+
+def alternating(data, fast=5, lag=0):
+    return np.where((np.arange(len(data.close)) + lag) % (2 * fast) < fast, 1.0, 0.0)
+
+
+def searched(seed=1, **given):
+    settings = dict(trials=24, sampler="random", holdout=0.3, seed=seed)
+    settings.update(given)
+    return probatum.search(alternating, SPACE, bars(), "frictionless", **settings)
+
+
+def blocks(seed=3, trials=12, bars=200):
+    """Three blocks of trials, each sharing a factor of its own."""
+    rng    = np.random.default_rng(seed)
+    factor = rng.normal(size=(3, bars))
+    return np.array([factor[i * 3 // trials] + rng.normal(scale=0.3, size=bars)
+                     for i in range(trials)]) * 0.01
+
+
+@pytest.fixture(scope="module")
+def study():
+    return searched()
+
+
+@pytest.fixture(scope="module")
+def null():
+    return searched(seed=2)
+
+
+def test_the_threshold_is_the_spread_times_the_expected_best_of_that_many_trials():
+    assert stats.deflation_threshold(0.5, 100) == pytest.approx(
+        0.5 * statistics.expected_maximum(100), rel=1e-12)
+    assert stats.deflation_threshold(0.0, 7) == 0.0
+
+
+def test_a_threshold_needs_two_trials_and_a_spread_of_0_or_more():
+    with pytest.raises(ProbatumValueError, match="trials: 1; a deflation corrects for more "
+                       "than one trial, so give 2 or more"):
+        stats.deflation_threshold(0.5, 1)
+    with pytest.raises(ProbatumTypeError, match="trials: 2.5; give a whole number"):
+        stats.deflation_threshold(0.5, 2.5)
+    with pytest.raises(ProbatumValueError, match="spread: -0.1; give the annual Sharpes' "
+                       "deviation, 0 or more"):
+        stats.deflation_threshold(-0.1, 10)
+
+
+def test_a_backtest_length_is_the_years_the_expected_best_takes_to_fall_to_a_sharpe():
+    held = stats.min_backtest_length(46, 1.0)
+
+    assert held.years == pytest.approx(statistics.min_backtest_length(46, 1.0), rel=1e-12)
+    assert (held.trials, held.sharpe, held.series_years) == (46, 1.0, None)
+    assert str(held) == ("minimum backtest length 5.0 years for the best of 46 trials to "
+                         "fall to a sharpe of 1.00")
+
+    with pytest.raises(ProbatumTypeError, match="sharpe: missing"):
+        stats.min_backtest_length(46)
+    with pytest.raises(ProbatumValueError, match="sharpe: 0.0; give an annual Sharpe above 0"):
+        stats.min_backtest_length(46, 0.0)
+
+
+def test_a_search_s_backtest_length_reads_its_trials_and_its_winner(study):
+    held   = stats.min_backtest_length(study)
+    trials = study.trials
+    winner = np.asarray(trials["number"]) == study._winner.number
+
+    assert held.trials == len(trials)
+    assert held.sharpe == float(np.asarray(trials["sharpe"])[winner][0])
+    assert held.series_years == pytest.approx(
+        (len(study.best.time) - 1) / study.provenance["periods_per_year"])
+    assert str(held).endswith(f"; this series has {held.series_years:.2f}")
+
+    with pytest.raises(ProbatumTypeError, match="sharpe: 1.0 beside a Study"):
+        stats.min_backtest_length(study, 1.0)
+
+
+def test_the_effective_number_clusters_the_trials_that_share_their_returns():
+    rows = blocks()
+    held = stats.effective_trials(rows, periods_per_year=252)
+
+    assert (held.count, held.trials, held.dropped) == (3, 12, 0)
+    assert held.clusters == (0,) * 4 + (1,) * 4 + (2,) * 4
+    assert held.numbers  == tuple(range(12))
+
+    series = [statistics.combined(rows[np.asarray(held.clusters) == label].tolist())
+              for label in range(3)]
+
+    assert held.spread == pytest.approx(
+        statistics.deviation([statistics.sharpe(s, 252) for s in series], 1), rel=1e-9)
+    assert str(held) == (f"3 effective trials of 12, quality {held.quality:.2f}, their "
+                         f"clusters' sharpes spread {held.spread:.2f} a year")
+
+
+def test_a_trial_that_never_varies_is_left_out_and_two_are_their_own_clusters():
+    rows = np.vstack([blocks(), np.full(200, 0.001)])
+    held = stats.effective_trials(rows, periods_per_year=252)
+
+    assert (held.trials, held.dropped, held.numbers) == (13, 1, tuple(range(12)))
+
+    pair = stats.effective_trials(blocks()[:2], periods_per_year=252)
+
+    assert (pair.count, pair.clusters, pair.quality) == (2, (0, 1), None)
+
+    one = stats.effective_trials(blocks()[:1], periods_per_year=252)
+
+    assert (one.count, one.spread) == (1, None)
+    assert str(one) == "1 effective trial of 1"
+
+
+def test_a_study_s_effective_number_reads_its_trials_that_ran_and_is_kept(study):
+    held = stats.effective_trials(study)
+
+    assert stats.effective_trials(study) is held
+
+    ran = np.asarray(study.trials["state"]) != "failed"
+
+    assert held.trials == int(ran.sum())
+    assert set(held.numbers) <= set(np.asarray(study.trials["number"])[ran].tolist())
+
+    with pytest.raises(ProbatumTypeError, match="periods_per_year: given beside a Study"):
+        stats.effective_trials(study, periods_per_year=252)
+
+
+def test_the_deflated_sharpe_is_the_winner_s_probabilistic_sharpe_against_luck(study,
+                                                                               null):
+    found   = stats.deflated_sharpe(study, null)
+    table   = null.trials
+    ran     = np.asarray(table["state"]) != "failed"
+    sharpes = np.asarray(table["sharpe"], dtype=np.float64)[ran]
+    spread  = float(np.std(sharpes[np.isfinite(sharpes)], ddof=1))
+
+    assert (found.trials, found.null_trials) == (len(study.trials), int(ran.sum()))
+    assert found.spread == pytest.approx(spread, rel=1e-12)
+    assert found.threshold == pytest.approx(stats.deflation_threshold(spread, 24),
+                                            rel=1e-12)
+
+    every = stats.probabilistic_sharpe(study.best, benchmark=found.threshold)
+
+    assert (found.value, found.lag, found.floored) == (every.value, every.lag,
+                                                       every.floored)
+
+    held = stats.effective_trials(study)
+    bar  = 0.0 if held.spread is None else stats.deflation_threshold(held.spread,
+                                                                     held.count)
+
+    assert (found.effective, found.effective_threshold) == (held.count,
+                                                            pytest.approx(bar))
+
+    # the winner's cluster is judged, its members combined, where the winner's own
+    # Sharpe beside the clusters' spread would leave out the choice inside its cluster
+    rate    = study.provenance["periods_per_year"]
+    excess  = np.asarray(study.returns)[:, 1:] - study.provenance["risk_free"] / rate
+    labels  = dict(zip(held.numbers, held.clusters))
+    done    = np.asarray(study.trials["state"]) == "complete"
+    scores  = np.asarray(study.trials["score"], dtype=np.float64)
+    winner  = int(np.asarray(study.trials["number"])[done][np.argmax(scores[done])])
+    members = [list(excess[n]) for n in held.numbers if labels[n] == labels[winner]]
+
+    assert len(members) > 1
+    assert found.effective_value == pytest.approx(statistics.deflated_sharpe(
+        statistics.combined(members), rate, held.spread, held.count), rel=1e-9)
+    assert str(found) == (f"deflated sharpe {found.value:.2f} against all 24 trials; "
+                          f"{found.effective_value:.2f} for the winner's cluster against "
+                          f"{held.count} effective trial{'s' * (held.count != 1)}")
+
+
+def test_a_floor_keeps_no_trial_out_of_the_count_or_out_of_the_null_s_spread():
+    # a slow alternation closes few round trips, so a floor of 20 binds over much of
+    # the space, in the search and in its null alike
+    floored = searched(min_trades=20)
+    null    = searched(seed=2, min_trades=20)
+    states  = np.asarray(null.trials["state"])
+
+    assert "floored" in set(states) and "floored" in set(np.asarray(floored.trials["state"]))
+
+    found   = stats.deflated_sharpe(floored, null)
+    sharpes = np.asarray(null.trials["sharpe"], dtype=np.float64)[states != "failed"]
+
+    assert (found.trials, found.null_trials) == (24, int((states != "failed").sum()))
+    assert found.spread == pytest.approx(float(np.std(sharpes, ddof=1)), rel=1e-12)
+
+
+def test_a_search_that_kept_no_returns_is_deflated_against_every_trial_alone(null):
+    kept  = searched(keep="none")
+    found = stats.deflated_sharpe(kept, null)
+
+    assert (found.effective, found.effective_value, found.effective_threshold) == (
+        None, None, None)
+    assert str(found) == f"deflated sharpe {found.value:.2f} against all 24 trials"
+
+    with pytest.raises(ProbatumValueError, match="trials: a Study kept with keep=\"none\""):
+        stats.effective_trials(kept)
+
+
+def test_the_deflated_sharpe_refuses_what_it_cannot_deflate(study, null):
+    with pytest.raises(ProbatumValueError, match="study: a search that ranked on sortino "
+                       "to maximize it; the deflation is of a Sharpe a search maximised"):
+        stats.deflated_sharpe(searched(objective="sortino"), null)
+    with pytest.raises(ProbatumValueError, match="null: its objective"):
+        stats.deflated_sharpe(study, searched(seed=2, objective="sortino"))
+    with pytest.raises(ProbatumTypeError, match="null: list; give the Study of a random "
+                       "search"):
+        stats.deflated_sharpe(study, [])
+    with pytest.raises(ProbatumTypeError, match="study: list; give the Study of a search"):
+        stats.deflated_sharpe([], null)
+    with pytest.raises(ProbatumValueError, match="study: a search that ranked on sharpe "
+                       "to minimize it; the deflation is of a Sharpe a search maximised, "
+                       "so search with direction=\"maximize\""):
+        stats.deflated_sharpe(searched(direction="minimize"), null)
+    with pytest.raises(ProbatumValueError, match="study: a search that ranked on "
+                       "max_drawdown_pct to minimize it; the deflation is of a Sharpe a "
+                       "search maximised, so search with objective=\"sharpe\" and "
+                       "direction=\"maximize\""):
+        stats.deflated_sharpe(searched(objective="max_drawdown_pct", direction="minimize"),
+                              null)
+
+
+def test_a_null_smaller_than_the_search_warns_that_its_spread_rests_on_fewer_draws(
+        study, null):
+    with pytest.warns(ProbatumWarning, match="^null: a search of 12 trials beside the 24 "
+                      "this one asked, so the spread that deflates it rests on fewer draws "
+                      "than the trials it corrects for; search the null with trials=24$"):
+        stats.deflated_sharpe(study, searched(seed=2, trials=12))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        stats.deflated_sharpe(study, null)
+
+
+def test_an_adaptive_search_is_deflated_and_called_descriptive(null):
+    pytest.importorskip("optuna")
+
+    adaptive = searched(sampler="tpe", trials=12)
+    found    = stats.deflated_sharpe(adaptive, null)
+
+    assert found.descriptive
+    assert str(found).endswith(", descriptive")

@@ -7,21 +7,27 @@ Inference)."""
 
 import hashlib
 import math
+import os
 import statistics
+import warnings
 from collections.abc import Mapping
 
 import numpy as np
 
 from ._errors import (DataError, ProbatumAttributeError, ProbatumKeyError,
-                      ProbatumTypeError, ProbatumValueError)
+                      ProbatumTypeError, ProbatumValueError, ProbatumWarning)
 from ._space import _flag, _number, _whole
 from ._streams import stream
 
-__all__ = ["AlphaBeta", "Consistency", "Decay", "Difference", "Interval", "Permutations",
-           "Probability", "Statistics", "TrackRecord", "alpha_beta", "autocorrelation",
-           "bootstrap", "effective_sample", "min_track_record_length",
-           "probabilistic_sharpe", "sharpe", "sharpe_difference", "sharpe_interval",
-           "trade_order"]
+__all__ = ["AlphaBeta", "BacktestLength", "Consistency", "Decay", "Deflated", "Difference",
+           "EffectiveTrials", "Interval", "Permutations", "Probability", "Statistics",
+           "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap", "deflated_sharpe",
+           "deflation_threshold", "effective_sample", "effective_trials",
+           "min_backtest_length", "min_track_record_length", "probabilistic_sharpe",
+           "sharpe", "sharpe_difference", "sharpe_interval", "trade_order"]
+
+# the package's files, which a warning skips to name the caller's line
+PACKAGE = (os.path.dirname(__file__),)
 
 NORMAL   = statistics.NormalDist()
 ROUNDING = 1e-20     # a standardised influence's variance below this is rounding
@@ -30,6 +36,11 @@ CEILING  = 1e12      # what a CAGR saturates at, as the record's does
 FLOOR    = 60        # the closed round trips a trade statistic's interval needs
 SPAN     = 500       # the returns a bootstrap of them needs
 BLOCKS   = 100       # the mean blocks those returns need to hold
+STARTS   = 10        # the clustering of trials' starts
+MOST     = 100       # the most clusters a start tries
+LLOYD    = 300       # Lloyd's iterations at most
+# the Euler-Mascheroni constant of the expected maximum of normal draws
+EULER = 0.5772156649015329
 
 # the statistics a stationary bootstrap of the returns serves: each one's words in a
 # text, its unit, whether a text prints it as a loss, and how the resamples are read,
@@ -381,6 +392,109 @@ class Decay(_Frozen):
         counted = f"{len(self.gaps)} gap{'s' * (len(self.gaps) != 1)}"
         return (f"decay {self.mean:.2f} in {self.objective}, the mean of {counted} "
                 f"between what a fit scored and what its bars then earned: {listed}")
+
+
+class Deflated(_Frozen):
+    """The deflated Sharpe of a search's winner: ``value``, the probabilistic Sharpe of
+    its annual ``sharpe`` against ``threshold``, the annual Sharpe the best of
+    ``trials`` trials reaches by luck when their annual Sharpes spread ``spread``, the
+    deviation across the ``null_trials`` of the null that ran; ``effective``,
+    ``effective_value`` and ``effective_threshold``, the same of the winner's cluster at
+    the effective number of trials, None where the search kept no returns; ``lag``, ``floored`` and ``count`` as
+    a Probability's; and ``descriptive``, True where an adaptive search chose its trials
+    on the bars they are judged on."""
+
+    __slots__ = ("value", "threshold", "trials", "spread", "null_trials", "sharpe",
+                 "effective", "effective_value", "effective_threshold", "lag", "floored",
+                 "count", "descriptive")
+
+
+    def __init__(self, value, threshold, trials, spread, null_trials, sharpe, effective,
+                 effective_value, effective_threshold, lag, floored, count, descriptive):
+        self._set(
+            value               = float(value),
+            threshold           = float(threshold),
+            trials              = int(trials),
+            spread              = float(spread),
+            null_trials         = int(null_trials),
+            sharpe              = float(sharpe),
+            effective           = None if effective is None else int(effective),
+            effective_value     = _maybe(effective_value),
+            effective_threshold = _maybe(effective_threshold),
+            lag                 = int(lag),
+            floored             = bool(floored),
+            count               = int(count),
+            descriptive         = bool(descriptive),
+        )
+
+
+    def __str__(self):
+        said = f"deflated sharpe {self.value:.2f} against all {self.trials:,} trials"
+        if self.effective is not None:
+            said += (f"; {self.effective_value:.2f} for the winner's cluster against "
+                     f"{self.effective:,} effective trial{'s' * (self.effective != 1)}")
+
+        return said + (", descriptive" if self.descriptive else "")
+
+
+class EffectiveTrials(_Frozen):
+    """The effective number of trials: ``count``, the clusters Lopez de Prado and
+    Lewis's clustering finds among the ``trials`` it read, ``numbers``, those whose
+    returns vary, which it clustered, and ``clusters``, each one's cluster, numbered by
+    its first trial; ``quality``, the clustering's, None below 3 trials; ``spread``, the
+    annual Sharpes' sample deviation across the clusters' series, None at one cluster;
+    and ``dropped``, the trials left out because their returns never vary."""
+
+    __slots__ = ("count", "trials", "numbers", "clusters", "quality", "spread", "dropped")
+
+
+    def __init__(self, count, trials, numbers, clusters, quality, spread, dropped):
+        self._set(
+            count    = int(count),
+            trials   = int(trials),
+            numbers  = tuple(int(number) for number in numbers),
+            clusters = tuple(int(cluster) for cluster in clusters),
+            quality  = _maybe(quality),
+            spread   = _maybe(spread),
+            dropped  = int(dropped),
+        )
+
+
+    def __str__(self):
+        said = (f"{self.count:,} effective trial{'s' * (self.count != 1)} of "
+                f"{self.trials:,}")
+        if self.quality is not None:
+            said += f", quality {self.quality:.2f}"
+        if self.spread is not None:
+            said += f", their clusters' sharpes spread {self.spread:.2f} a year"
+
+        return said
+
+
+class BacktestLength(_Frozen):
+    """The minimum backtest length: the ``years`` over which the expected best of
+    ``trials`` trials with no skill falls to the annual ``sharpe``, and
+    ``series_years``, the years a Study's in-sample bars hold, None for numbers given."""
+
+    __slots__ = ("years", "trials", "sharpe", "series_years")
+
+
+    def __init__(self, years, trials, sharpe, series_years):
+        self._set(
+            years        = float(years),
+            trials       = int(trials),
+            sharpe       = float(sharpe),
+            series_years = _maybe(series_years),
+        )
+
+
+    def __str__(self):
+        said = (f"minimum backtest length {_years(self.years)} years for the best of "
+                f"{self.trials:,} trials to fall to a sharpe of {self.sharpe:.2f}")
+        if self.series_years is not None:
+            said += f"; this series has {_years(self.series_years)}"
+
+        return said
 
 
 class Statistics(Mapping):
@@ -773,6 +887,159 @@ def trade_order(result, n=2000, seed=None):
                         _ordered(runs, 0.025), _ordered(runs, 0.975), pnl.size, n)
 
 
+def deflation_threshold(spread, trials):
+    """The annual Sharpe the best of ``trials`` independent trials reaches by luck when
+    their annual Sharpes spread ``spread`` about zero: ``spread`` times Bailey and Lopez
+    de Prado's approximation of the expected maximum of that many standard normal
+    draws (Specification, The deflated Sharpe)."""
+    spread = _finite("spread", spread, "the annual Sharpes' deviation, such as 0.5")
+    if spread < 0.0:
+        raise ProbatumValueError(f"spread: {spread!r}; give the annual Sharpes' deviation, "
+                                 f"0 or more")
+
+    return spread * _most(_looks("trials", trials))
+
+
+def deflated_sharpe(study, null):
+    """The deflated Sharpe of the winner of ``study``, a search that maximised the
+    Sharpe, as a Deflated: its probabilistic Sharpe, on the variance
+    ``sharpe_interval`` reads, against what the best of every trial the search asked
+    reaches by luck, their Sharpes spread as those of every trial that ran of ``null``,
+    a random search of the same policy over the same space, venue and in-sample bars,
+    scored alike; and the same of the winner's cluster, its members combined, against
+    the effective number of trials, the search's own clustered, where it kept their
+    returns (ADR 0033; Specification, The deflated Sharpe)."""
+    study = _searched(study, "study")
+    given = study.provenance
+
+    if (given["objective"], given["direction"]) != ("sharpe", "maximize"):
+        fix = ("direction=\"maximize\"" if given["objective"] == "sharpe" else
+               "objective=\"sharpe\"" if given["direction"] == "maximize" else
+               "objective=\"sharpe\" and direction=\"maximize\"")
+        raise ProbatumValueError(f"study: a search that ranked on {given['objective']} "
+                                 f"to {given['direction']} it; the deflation is of a "
+                                 f"Sharpe a search maximised, so search with {fix}")
+
+    study._vetted(null)
+    trials = len(study.trials)
+    if trials < 2:
+        raise ProbatumValueError("study: 1 trial; a deflation corrects for more than one, "
+                                 "so search with trials=2 or more")
+
+    if len(null.trials) < trials:
+        warnings.warn(f"null: a search of {len(null.trials):,} trials beside the "
+                      f"{trials:,} this one asked, so the spread that deflates it rests on "
+                      f"fewer draws than the trials it corrects for; search the null with "
+                      f"trials={trials}", ProbatumWarning, skip_file_prefixes=PACKAGE)
+
+    table   = null.trials
+    ran     = np.isin(np.asarray(table["state"]), ("complete", "floored"))
+    sharpes = np.asarray(table["sharpe"], dtype=np.float64)[ran]
+    sharpes = sharpes[np.isfinite(sharpes)]
+    if sharpes.size < 2:
+        raise ProbatumValueError(f"null: {sharpes.size} of its trials ran to a finite "
+                                 f"sharpe; their spread needs 2")
+
+    spread    = float(sharpes.std(ddof=1))
+    threshold = spread * _most(trials)
+    best      = study.best
+    found     = probabilistic_sharpe(best, benchmark=threshold)
+    effective = value = bar = None
+    if study.returns is not None:
+        held      = effective_trials(study)
+        effective = held.count
+        bar       = 0.0 if held.spread is None else held.spread * _most(held.count)
+        value     = _family(study, held, bar).value
+
+    return Deflated(found.value, threshold, trials, spread, sharpes.size,
+                    best.stats["sharpe"], effective, value, bar, found.lag, found.floored,
+                    found.count, given["sampler"]["name"] == "tpe")
+
+
+def effective_trials(trials, periods_per_year=None, risk_free=None, seed=None):
+    """The effective number of ``trials``, as an EffectiveTrials: the clusters Lopez de
+    Prado and Lewis's clustering finds among the trials whose returns vary, by k-means
+    on the distances of their correlations, keeping the clustering whose silhouettes
+    are most consistent and refining its weakest clusters, and the annual Sharpes'
+    spread across the clusters' series, each its members combined at minimum variance.
+    ``trials`` is a search's Study, whose trials that ran it reads, or a matrix of a row
+    a trial's returns on the same bars. The starts draw from a stream seeded by the
+    returns, or by ``seed`` (Specification, The effective number of trials)."""
+    x, rate, numbers = _trials(trials, periods_per_year, risk_free,
+                               ("complete", "floored"))
+    seed = _seed(seed)
+
+    from ._search import Study
+    kept = isinstance(trials, Study) and seed is None
+    if kept and trials._effective is not None:
+        return trials._effective
+
+    varies = np.ptp(x, axis=1) > 0.0
+    rows   = x[varies]
+
+    if rows.shape[0] < 3:
+        labels, quality = np.arange(rows.shape[0]), None
+    else:
+        labels, quality = _onc(rows, _drawn(rows, "stats onc", seed))
+
+    count  = int(labels.max()) + 1 if labels.size else 0
+    series = [_combined(rows[labels == label]) for label in range(count)]
+
+    if len(series) > 1:
+        shapes = [_ranked(s.mean(), s.std(ddof=1), math.sqrt(rate)) for s in series]
+        spread = float(np.std(shapes, ddof=1))
+    else:
+        spread = None
+
+    held = EffectiveTrials(len(series), x.shape[0], np.asarray(numbers)[varies], labels,
+                           quality, spread, int((~varies).sum()))
+    if kept:
+        trials._effective = held
+
+    return held
+
+
+def min_backtest_length(trials, sharpe=None):
+    """The minimum backtest length, as a BacktestLength: the years over which the
+    expected best of ``trials`` independent trials with no skill falls to the annual
+    ``sharpe`` (Bailey, Borwein, Lopez de Prado and Zhu 2014). A search's Study gives its
+    trials' count and its winner's Sharpe on the in-sample bars, beside the years those
+    bars hold (Specification, The minimum backtest length)."""
+    from ._search import Study
+    years = None
+
+    if isinstance(trials, Study):
+        study = _searched(trials, "trials")
+        if sharpe is not None:
+            raise ProbatumTypeError(f"sharpe: {sharpe!r} beside a Study, whose winner's "
+                                    f"it reads; leave it out")
+
+        count  = len(study.trials)
+        sharpe = float(study._winner.stats["sharpe"])
+        years  = (len(study._ran.inside.time) - 1) / study.provenance["periods_per_year"]
+
+        if count < 2:
+            raise ProbatumValueError("trials: a Study of 1 trial; a backtest length is "
+                                     "for the best of more than one, so search with "
+                                     "trials=2 or more")
+        if not sharpe > 0.0:
+            raise ProbatumValueError(f"trials: a Study whose winner's sharpe is "
+                                     f"{sharpe:.2f}; a backtest length is for a Sharpe "
+                                     f"above 0")
+    else:
+        count = _looks("trials", trials)
+        if sharpe is None:
+            raise ProbatumTypeError("sharpe: missing; give the annual Sharpe the best "
+                                    "trial is to fall to, such as 1.0")
+
+        sharpe = _finite("sharpe", sharpe, "an annual Sharpe above 0, such as 1.0")
+        if sharpe <= 0.0:
+            raise ProbatumValueError(f"sharpe: {sharpe!r}; give an annual Sharpe above 0, "
+                                     f"such as 1.0")
+
+    return BacktestLength((_most(count) / sharpe) ** 2, count, sharpe, years)
+
+
 def autocorrelation(returns, lag=1):
     """The autocorrelation of ``returns``, a Result's or a plain series, at ``lag``: 1
     at lag 0, and 0 where the returns never vary or number no more than ``lag + 1``. No
@@ -829,18 +1096,8 @@ def _read(returns, periods_per_year, risk_free, name="returns"):
                                      f"annualise; run it over more than one row")
         return np.asarray(returns.returns[1:]) - given["risk_free"] / rate, rate
 
-    if periods_per_year is None:
-        raise ProbatumTypeError("periods_per_year: missing for a plain return series; "
-                                "pass 365 for daily crypto returns")
-
-    rate = _finite("periods_per_year", periods_per_year, "the bars a year, such as 365")
-    if rate <= 0.0:
-        raise ProbatumValueError(f"periods_per_year: {periods_per_year!r}; give the bars "
-                                 f"a year, such as 365")
-
-    rate_free = 0.0 if risk_free is None else _finite(
-        "risk_free", risk_free, "the annual rate as a finite number, such as 0.04")
-    return _series(returns, name) - rate_free / rate, rate
+    rate, free = _annual(periods_per_year, risk_free, "a plain return series")
+    return _series(returns, name) - free / rate, rate
 
 
 def _values(returns):
@@ -1621,3 +1878,321 @@ def _paths(returned, pnl, orders):
         longest = np.maximum(longest, run)
 
     return falls, longest
+
+
+def _maybe(value):
+    return None if value is None else float(value)
+
+
+def _most(trials):
+    """Bailey and Lopez de Prado's approximation of the expected maximum of ``trials``
+    standard normal draws (Specification, The deflated Sharpe)."""
+    return ((1.0 - EULER) * NORMAL.inv_cdf(1.0 - 1.0 / trials)
+            + EULER * NORMAL.inv_cdf(1.0 - 1.0 / (trials * math.e)))
+
+
+def _looks(name, value):
+    """A count of trials passed as ``name``, a whole number from 2."""
+    if not _whole(value):
+        raise ProbatumTypeError(f"{name}: {value!r}; give a whole number of trials from 2")
+    if value < 2:
+        raise ProbatumValueError(f"{name}: {value}; a deflation corrects for more than "
+                                 f"one trial, so give 2 or more")
+
+    return int(value)
+
+
+def _searched(study, name):
+    """``study``, passed as ``name``, refused unless it is a search's Study."""
+    from ._search import Study
+    if not isinstance(study, Study):
+        raise ProbatumTypeError(f"{name}: {type(study).__name__}; give the Study of a "
+                                f"search")
+
+    if study.kind != "trials":
+        raise ProbatumValueError(f"{name}: a validation's Study, whose paths are no "
+                                 f"competing configurations; give the Study of a search")
+
+    return study
+
+
+def _trials(trials, periods_per_year, risk_free, states):
+    """The excess returns a statistic of trials reads, a row a trial, the bars a year it
+    annualises by and each row's trial: a search's trials in ``states`` after the
+    in-sample bars' first row, at the Study's annualisation and risk-free rate, or a
+    matrix's rows at the rate it is given (Specification, What a statistic of trials
+    reads)."""
+    from ._search import Study
+    if isinstance(trials, Study):
+        study = _searched(trials, "trials")
+        given = study.provenance
+        if periods_per_year is not None:
+            raise ProbatumTypeError(f"periods_per_year: given beside a Study, which ran "
+                                    f"at {given['periods_per_year']}; leave it out")
+        if risk_free is not None:
+            raise ProbatumTypeError(f"risk_free: given beside a Study, which ran at "
+                                    f"{given['risk_free']}; leave it out")
+        if study.returns is None:
+            raise ProbatumValueError("trials: a Study kept with keep=\"none\", which "
+                                     "holds no returns; search with keep=\"all\"")
+
+        table = study.trials
+        rows  = np.isin(np.asarray(table["state"]), states)
+        rate  = given["periods_per_year"]
+        return (np.asarray(study.returns)[rows, 1:] - given["risk_free"] / rate, rate,
+                np.asarray(table["number"])[rows])
+
+    rate, free = _annual(periods_per_year, risk_free, "a matrix of returns")
+    values = _matrix(trials)
+    return values - free / rate, rate, np.arange(values.shape[0])
+
+
+def _annual(periods_per_year, risk_free, what):
+    """The bars a year and the annual risk-free rate given beside ``what``."""
+    if periods_per_year is None:
+        raise ProbatumTypeError(f"periods_per_year: missing for {what}; pass 365 for "
+                                f"daily crypto returns")
+
+    rate = _finite("periods_per_year", periods_per_year, "the bars a year, such as 365")
+    if rate <= 0.0:
+        raise ProbatumValueError(f"periods_per_year: {periods_per_year!r}; give the bars "
+                                 f"a year, such as 365")
+
+    free = 0.0 if risk_free is None else _finite(
+        "risk_free", risk_free, "the annual rate as a finite number, such as 0.04")
+    return rate, free
+
+
+def _matrix(trials):
+    """A matrix of trials' returns, a 2-D array of a row a trial, finite."""
+    if isinstance(trials, (str, bytes, dict)) or not hasattr(trials, "__len__"):
+        raise ProbatumTypeError(f"trials: {type(trials).__name__}; pass a search's Study, "
+                                f"or a 2-D array of a row a trial's returns")
+
+    try:
+        values = np.asarray(trials, dtype=np.float64)
+    except (TypeError, ValueError):
+        raise ProbatumTypeError(f"trials: a {type(trials).__name__} that holds no "
+                                f"numbers; pass a 2-D array of a row a trial's "
+                                f"returns") from None
+
+    if values.ndim != 2 or not values.size:
+        raise ProbatumValueError(f"trials: an array of shape {values.shape}; pass a row "
+                                 f"a trial's returns, 2-D")
+
+    bad = np.argwhere(~np.isfinite(values))
+    if bad.size:
+        trial, at = bad[0]
+        raise ProbatumValueError(f"trials: trial {trial} holds {values[trial, at]} at "
+                                 f"position {at}; a matrix of returns holds finite "
+                                 f"numbers")
+
+    return values
+
+
+def _onc(rows, rng):
+    """Lopez de Prado and Lewis's clustering of ``rows``, the returns of three or more
+    trials that vary, its starts drawn from ``rng``: each trial's cluster, numbered by
+    its first trial, and the clustering's quality (Specification, The effective number
+    of trials)."""
+    labels = _clustered(rows, rng)
+    return labels, _quality(_silhouettes(_distances(rows)[1], labels))
+
+
+def _clustered(rows, rng):
+    """The base clustering of ``rows`` and its refinement: where more than 2 clusters
+    fall below the clusters' mean quality, their trials clustered again on their own,
+    the new clusters kept where their mean quality is above that of those they
+    replace."""
+    count = rows.shape[0]
+    if count < 3:
+        return np.arange(count)
+
+    points, far = _distances(rows)
+    labels = _base(points, far, rng)
+    scores = _silhouettes(far, labels)
+    each   = {label: _quality(scores[labels == label])
+              for label in range(int(labels.max()) + 1) if (labels == label).sum() > 1}
+    if not each:
+        return labels
+
+    middle = np.mean(list(each.values()))
+    redo   = sorted(label for label, value in each.items() if value < middle)
+    if len(redo) <= 2:
+        return labels
+
+    items  = np.flatnonzero(np.isin(labels, redo))
+    merged = labels.copy()
+    merged[items] = labels.max() + 1 + _clustered(rows[items], rng)
+
+    merged  = _numbered(merged)
+    renewed = _silhouettes(far, merged)
+    after   = [_quality(renewed[merged == label]) for label in np.unique(merged[items])
+               if (merged == label).sum() > 1]
+    if after and np.mean(after) > np.mean([each[label] for label in redo]):
+        return merged
+    return labels
+
+
+def _distances(rows):
+    """Each trial's row of ``D = sqrt((1 - rho) / 2)`` and the Euclidean distances
+    between those rows."""
+    d = np.sqrt(np.clip((1.0 - np.corrcoef(rows)) / 2.0, 0.0, None))
+    np.fill_diagonal(d, 0.0)
+
+    sq  = (d * d).sum(axis=1)
+    far = np.sqrt(np.maximum(sq[:, None] + sq[None, :] - 2.0 * d @ d.T, 0.0))
+    np.fill_diagonal(far, 0.0)
+    return d, far
+
+
+def _base(points, far, rng):
+    """The clustering of the highest quality over the starts and each ``k``, the first
+    on ties."""
+    squared = far * far
+    most    = min(points.shape[0] - 1, MOST)
+    best    = None
+
+    for _ in range(STARTS):
+        order = _sequence(squared, most, rng)
+        for k in range(2, most + 1):
+            labels = _numbered(_lloyd(points, order[:k]))
+            score  = _quality(_silhouettes(far, labels))
+            if best is None or score > best[0]:
+                best = (score, labels)
+
+    return best[1]
+
+
+def _sequence(squared, most, rng):
+    """One greedy k-means++ sequence of ``most`` trials, at ``squared`` distances: the
+    first drawn evenly, and each next the best of ``2 + floor(ln most)`` drawn in
+    proportion to their squared distance from the sequence so far."""
+    count = squared.shape[0]
+    tries = 2 + int(math.log(most))
+    order = [int(rng.integers(count))]
+    near  = squared[order[0]].copy()
+
+    for _ in range(1, most):
+        cumulative = np.cumsum(near)
+        if cumulative[-1] > 0.0:
+            picks = np.minimum(np.searchsorted(cumulative,
+                                               rng.random(tries) * cumulative[-1],
+                                               side="right"), count - 1)
+        else:
+            picks = rng.integers(count, size=tries)
+
+        found = squared[picks]
+        best  = int(np.argmin(np.minimum(near, found).sum(axis=1)))
+        order.append(int(picks[best]))
+        near = np.minimum(near, found[best])
+
+    return order
+
+
+def _lloyd(points, centres):
+    """Lloyd's iterations from the trials ``centres``: each trial to its nearest centre,
+    the lowest-numbered on ties, each cluster left empty taking in turn the trial
+    farthest from its own centre, and one emptied by that keeping its centre, until no
+    trial moves."""
+    count, k = points.shape[0], len(centres)
+    rows   = np.arange(count)
+    norms  = (points * points).sum(axis=1)
+    middle = points[centres]
+    labels = None
+
+    for _ in range(LLOYD):
+        near = norms[:, None] + (middle * middle).sum(axis=1) - 2.0 * points @ middle.T
+        new  = np.argmin(near, axis=1)
+        if labels is not None and np.array_equal(new, labels):
+            break
+
+        labels = new
+        moved  = np.zeros(count, dtype=bool)
+        for j in range(k):
+            if (labels == j).any():
+                continue
+            worst = int(np.argmax(np.where(moved, -np.inf, near[rows, labels])))
+            labels[worst] = j
+            moved[worst]  = True
+
+        onehot = np.zeros((count, k))
+        onehot[rows, labels] = 1.0
+        sizes  = onehot.sum(axis=0)
+        middle = np.where(sizes[:, None] > 0.0,
+                          (onehot.T @ points) / np.maximum(sizes, 1.0)[:, None], middle)
+
+    return labels
+
+
+def _numbered(labels):
+    """``labels`` with each cluster numbered by its first trial."""
+    _, first, inverse = np.unique(labels, return_index=True, return_inverse=True)
+    rank = np.empty(first.size, dtype=np.int64)
+    rank[np.argsort(first)] = np.arange(first.size)
+    return rank[inverse]
+
+
+def _silhouettes(far, labels):
+    """Each trial's silhouette, ``(b - a) / max(a, b)``, 0 for a trial alone in its
+    cluster."""
+    count  = labels.size
+    rows   = np.arange(count)
+    onehot = np.zeros((count, int(labels.max()) + 1))
+    onehot[rows, labels] = 1.0
+
+    sizes = onehot.sum(axis=0)
+    sums  = far @ onehot
+    mates = sizes[labels] - 1.0
+    a     = np.where(mates > 0.0, sums[rows, labels] / np.maximum(mates, 1.0), 0.0)
+    means = sums / sizes
+    means[rows, labels] = np.inf
+
+    b   = means.min(axis=1)
+    top = np.maximum(a, b)
+    return np.where((mates > 0.0) & (top > 0.0), (b - a) / np.where(top > 0.0, top, 1.0),
+                    0.0)
+
+
+def _quality(scores):
+    """Silhouettes' mean over their deviation, ``n`` in its divisor, infinite at no
+    deviation and a mean above 0, and 0 at no deviation otherwise."""
+    spread = float(scores.std())
+    if spread == 0.0:
+        return math.inf if scores.mean() > 0.0 else 0.0
+    return float(scores.mean()) / spread
+
+
+def _combined(rows):
+    """A cluster's series: its members' returns at minimum variance under one
+    correlation, inverse variance where that correlation is out of its range, or a lone
+    member's own."""
+    if rows.shape[0] == 1:
+        return rows[0]
+
+    m    = rows.shape[0]
+    sd   = rows.std(axis=1, ddof=1)
+    rbar = float(np.corrcoef(rows)[np.triu_indices(m, 1)].mean())
+
+    if -1.0 / (m - 1) < rbar < 1.0:
+        raw = 1.0 / sd ** 2 - rbar * (1.0 / sd).sum() / ((1.0 + (m - 1) * rbar) * sd)
+    else:
+        raw = 1.0 / sd ** 2
+
+    return (raw / raw.sum()) @ rows
+
+
+def _family(study, held, bar):
+    """The probabilistic Sharpe against ``bar`` of the series the winner's cluster
+    combines into, or of the winner's run where its returns never vary, so that it is
+    in no cluster."""
+    winner = study._winner.number
+    if winner not in held.numbers:
+        return probabilistic_sharpe(study.best, benchmark=bar)
+
+    x, rate, _ = _trials(study, None, None, ("complete", "floored"))
+    rows   = x[np.ptp(x, axis=1) > 0.0]
+    labels = np.asarray(held.clusters)
+    member = labels == labels[held.numbers.index(winner)]
+    return probabilistic_sharpe(_combined(rows[member]), benchmark=bar,
+                                periods_per_year=rate)

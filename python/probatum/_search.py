@@ -901,7 +901,7 @@ class Study:
         self._tables = tables
         self._looks  = 0
         self._winner, self._ran = winner, ran
-        self._best = self._holdout = None
+        self._best = self._holdout = self._effective = None
 
 
     @property
@@ -1233,9 +1233,24 @@ class Study:
 
 
     def _null(self, null):
-        """The line a null gives: the mean score of its complete trials, refused unless
-        it is a random search of the same policy over the same space on the same venue
-        and in-sample bars, scored alike."""
+        """The line a null gives: the mean score of its complete trials."""
+        self._vetted(null)
+
+        mine   = self.provenance
+        trials = null.trials
+        scores = np.asarray(trials["score"], dtype=np.float64)[
+            np.asarray(trials["state"]) == "complete"]
+        if not scores.size:
+            raise ProbatumValueError("null: none of its trials completed, so it has no "
+                                     "mean to give")
+
+        mean = _signed(mine["objective"]) * scores.mean() + 0.0
+        return f"mean {mine['objective']} {mean:.2f} over {scores.size:,} trials"
+
+
+    def _vetted(self, null):
+        """``null`` refused unless it is a random search of the same policy over the same
+        space on the same venue and in-sample bars, scored alike."""
         if not isinstance(null, Study):
             raise ProbatumTypeError(f"null: {type(null).__name__}; give the Study of a "
                                     f"random search")
@@ -1259,16 +1274,6 @@ class Study:
                     f"null: its {said}, {theirs[key]!r}, is not the search's, "
                     f"{mine[key]!r}; give a random search of the same policy over the "
                     f"same space, venue and in-sample bars, scored alike")
-
-        trials = null.trials
-        scores = np.asarray(trials["score"], dtype=np.float64)[
-            np.asarray(trials["state"]) == "complete"]
-        if not scores.size:
-            raise ProbatumValueError("null: none of its trials completed, so it has no "
-                                     "mean to give")
-
-        mean = _signed(mine["objective"]) * scores.mean() + 0.0
-        return f"mean {mine['objective']} {mean:.2f} over {scores.size:,} trials"
 
 
     def _median_path(self, scores, done):
