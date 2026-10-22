@@ -616,6 +616,52 @@ def test_the_refinement_agrees_where_it_refuses_and_where_it_keeps_new_clusters(
     assert (len(bases) > 1, not np.array_equal(labels, bases[0])) == (True, kept)
 
 
+@pytest.mark.parametrize("objective", ["sharpe", "sortino", "total_return_pct",
+                                       "cagr_pct", "volatility_pct"])
+def test_the_overfitting_probability_agrees_on_every_halving(objective):
+    # trials over 37 returns, the oldest 5 left out, one a copy of another so ranks tie,
+    # one that never falls so its Sortino ranks at infinity, one that lost a whole bar,
+    # and one that never trades, whose Sharpe at a positive rate the record ranks at zero
+    rng  = np.random.default_rng(len(objective))
+    rows = np.vstack([rng.normal(0.001, 0.01, (5, 37)), np.zeros((1, 37))])
+    rows[3]     = rows[1]
+    rows[4]     = np.abs(rows[4])
+    rows[2, 20] = -1.0
+
+    found = stats.overfitting(rows, objective, periods_per_year=252, risk_free=0.03)
+    x     = [statistics.excess(row, 252, 0.03) for row in rows.tolist()]
+    read  = {
+        "sharpe":           (rows.tolist(), lambda r: statistics.recorded(r, 252, 0.03)),
+        "sortino":          (x, lambda r: statistics.sortino(r, 252)),
+        "total_return_pct": (rows.tolist(), statistics.total_return),
+        "cagr_pct":         (rows.tolist(), lambda r: statistics.cagr(r, 252)),
+        "volatility_pct":   (rows.tolist(), lambda r: statistics.volatility(r, 252)),
+    }
+    given, statistic = read[objective]
+    probability, loss = statistics.overfitting(given, statistic,
+                                               maximize=objective != "volatility_pct")
+
+    assert found.probability == pytest.approx(probability, rel=1e-12)
+    assert found.loss == (None if objective == "volatility_pct" else
+                          pytest.approx(loss, rel=1e-12))
+    assert found.dropped == 5
+
+
+def test_a_trial_that_never_trades_ranks_at_zero_on_every_halving_at_a_positive_rate():
+    # its excess returns are a constant below zero whose mean over a block of three
+    # rounds at this rate, so their merged deviation is not 0 where the record reads the
+    # returns' own, 0; beside trials that drift down, the rank it takes moves the
+    # probability
+    rows  = np.vstack([np.zeros(48),
+                       np.random.default_rng(0).normal(-0.001, 0.01, (3, 48))])
+    found = stats.overfitting(rows, periods_per_year=252, risk_free=0.05)
+    probability, loss = statistics.overfitting(
+        rows.tolist(), lambda r: statistics.recorded(r, 252, 0.05))
+
+    assert found.probability == pytest.approx(probability, rel=1e-12)
+    assert found.loss        == pytest.approx(loss, rel=1e-12)
+
+
 @pytest.mark.parametrize("trials", [2, 3, 10, 46, 100, 1_000])
 def test_the_deflation_threshold_and_the_backtest_length_agree(trials):
     assert stats.deflation_threshold(0.7, trials) == pytest.approx(

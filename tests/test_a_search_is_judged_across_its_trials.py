@@ -210,6 +210,10 @@ def test_a_floor_keeps_no_trial_out_of_the_count_or_out_of_the_null_s_spread():
     assert (found.trials, found.null_trials) == (24, int((states != "failed").sum()))
     assert found.spread == pytest.approx(float(np.std(sharpes, ddof=1)), rel=1e-12)
 
+    complete = int((np.asarray(floored.trials["state"]) == "complete").sum())
+
+    assert stats.overfitting(floored).trials == complete < 24
+
 
 def test_a_search_that_kept_no_returns_is_deflated_against_every_trial_alone(null):
     kept  = searched(keep="none")
@@ -266,3 +270,89 @@ def test_an_adaptive_search_is_deflated_and_called_descriptive(null):
 
     assert found.descriptive
     assert str(found).endswith(", descriptive")
+    assert stats.overfitting(adaptive).descriptive
+
+
+def test_the_overfitting_probability_ranks_a_search_s_complete_trials(study):
+    found    = stats.overfitting(study)
+    count    = len(study.best.time) - 1
+    complete = int((np.asarray(study.trials["state"]) == "complete").sum())
+
+    assert (found.trials, found.blocks, found.dropped) == (complete, 16, count % 16)
+    assert (found.objective, found.direction, found.descriptive) == ("sharpe", "maximize",
+                                                                     False)
+    assert 0.0 <= found.probability <= 1.0 and 0.0 <= found.loss <= 1.0
+    assert str(found) == (f"overfitting {found.probability:.2f} probability the in-sample "
+                          f"best ranks below the median on the held-back blocks (16 "
+                          f"blocks, {complete} trials); it loses on {found.loss:.0%} of "
+                          f"them")
+
+
+def test_trials_with_no_skill_overfit_about_half_the_halvings_and_skill_none():
+    # one set of trials varies widely about a half, its halvings sharing every bar, so
+    # ten are averaged
+    found = [stats.overfitting(np.random.default_rng(seed).normal(0.0, 0.01, (20, 320)),
+                               periods_per_year=252).probability for seed in range(10)]
+
+    assert 0.35 < np.mean(found) < 0.65
+
+    noise = np.random.default_rng(10).normal(0.0, 0.01, (20, 320))
+    noise[7] += 0.004
+    skilled = stats.overfitting(noise, periods_per_year=252)
+
+    assert (skilled.probability, skilled.loss) == (0.0, 0.0)
+
+    calm = stats.overfitting(noise, "volatility_pct", periods_per_year=252)
+
+    assert (calm.direction, calm.loss) == ("minimize", None)
+    assert str(calm).endswith("(16 blocks, 20 trials)")
+
+
+def test_a_winner_that_breaks_even_out_of_sample_neither_loses_nor_overfits():
+    # a trial that never trades beside three that lose: it wins every half at a Sharpe
+    # of 0 and ranks first on the other
+    rows    = np.random.default_rng(2).normal(-0.01, 0.01, (4, 64))
+    rows[0] = 0.0
+    found   = stats.overfitting(rows, periods_per_year=252)
+
+    assert (found.probability, found.loss) == (0.0, 0.0)
+
+
+def test_the_halvings_read_a_chunk_at_a_time_give_what_one_pass_gives(monkeypatch):
+    # 20 trials read their 6,435 halvings and complements in one chunk; a cap of 100
+    # statistics reads them 5 at a time, in 1,287 chunks
+    rows  = np.random.default_rng(11).normal(0.0002, 0.01, (20, 160))
+    whole = stats.overfitting(rows, periods_per_year=252)
+
+    monkeypatch.setattr(stats, "AT_ONCE", 100)
+    parts = stats.overfitting(rows, periods_per_year=252)
+
+    assert (parts.probability, parts.loss) == (whole.probability, whole.loss)
+
+
+def test_the_overfitting_probability_refuses_order_and_what_halves_cannot_read(study):
+    rows = np.random.default_rng(1).normal(0.0, 0.01, (4, 64))
+
+    for objective in ("max_drawdown_pct", "calmar", "value_at_risk", "win_rate"):
+        with pytest.raises(ProbatumValueError, match=f"objective: '{objective}'; the "
+                           f"overfitting probability ranks on a statistic the halves "
+                           f"give whatever the order of their returns"):
+            stats.overfitting(rows, objective, periods_per_year=252)
+
+    with pytest.raises(ProbatumValueError, match="trials: 15 returns; the overfitting "
+                       "probability cuts them into 16 blocks, so give at least 16"):
+        stats.overfitting(rows[:, :15], periods_per_year=252)
+    with pytest.raises(ProbatumValueError, match="trials: 1 complete; the overfitting "
+                       "probability ranks a winner among 2 or more"):
+        stats.overfitting(rows[:1], periods_per_year=252)
+    with pytest.raises(ProbatumTypeError, match="objective: 'sortino' beside a Study"):
+        stats.overfitting(study, "sortino")
+    with pytest.raises(ProbatumValueError, match="trials: a Study kept with keep=\"none\""):
+        stats.overfitting(searched(keep="none"))
+    with pytest.raises(ProbatumTypeError, match="periods_per_year: missing for a matrix "
+                       "of returns"):
+        stats.overfitting(rows)
+    with pytest.raises(ProbatumValueError, match="trials: trial 2 holds nan at position 5"):
+        broken = rows.copy()
+        broken[2, 5] = np.nan
+        stats.overfitting(broken, periods_per_year=252)

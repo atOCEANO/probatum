@@ -6,6 +6,7 @@ interval by a bootstrap of the returns or of the round trips (ADR 0031; Specific
 Inference)."""
 
 import hashlib
+import itertools
 import math
 import os
 import statistics
@@ -20,11 +21,12 @@ from ._space import _flag, _number, _whole
 from ._streams import stream
 
 __all__ = ["AlphaBeta", "BacktestLength", "Consistency", "Decay", "Deflated", "Difference",
-           "EffectiveTrials", "Interval", "Permutations", "Probability", "Statistics",
-           "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap", "deflated_sharpe",
-           "deflation_threshold", "effective_sample", "effective_trials",
-           "min_backtest_length", "min_track_record_length", "probabilistic_sharpe",
-           "sharpe", "sharpe_difference", "sharpe_interval", "trade_order"]
+           "EffectiveTrials", "Interval", "Overfitting", "Permutations", "Probability",
+           "Statistics", "TrackRecord", "alpha_beta", "autocorrelation", "bootstrap",
+           "deflated_sharpe", "deflation_threshold", "effective_sample", "effective_trials",
+           "min_backtest_length", "min_track_record_length", "overfitting",
+           "probabilistic_sharpe", "sharpe", "sharpe_difference", "sharpe_interval",
+           "trade_order"]
 
 # the package's files, which a warning skips to name the caller's line
 PACKAGE = (os.path.dirname(__file__),)
@@ -39,6 +41,11 @@ BLOCKS   = 100       # the mean blocks those returns need to hold
 STARTS   = 10        # the clustering of trials' starts
 MOST     = 100       # the most clusters a start tries
 LLOYD    = 300       # Lloyd's iterations at most
+PARTS    = 16        # the blocks the overfitting probability cuts a run into
+AT_ONCE  = 1 << 21   # the halves' statistics a chunk reads, beside its complements'
+# the objectives the overfitting probability reads from halves joined out of order
+HALVED = ("sharpe", "sortino", "total_return_pct", "net_profit_pct", "cagr_pct",
+          "volatility_pct")
 # the Euler-Mascheroni constant of the expected maximum of normal draws
 EULER = 0.5772156649015329
 
@@ -469,6 +476,43 @@ class EffectiveTrials(_Frozen):
             said += f", their clusters' sharpes spread {self.spread:.2f} a year"
 
         return said
+
+
+class Overfitting(_Frozen):
+    """The probability of backtest overfitting: ``probability``, the share of the
+    halvings of ``blocks`` blocks whose in-sample winner ranks below the median out of
+    sample among ``trials`` trials, and ``loss``, the share whose winner's statistic is
+    below 0 out of sample, None for volatility; ``dropped``, the oldest returns left
+    out so the blocks are even; ``objective`` and ``direction``, what was ranked; and
+    ``descriptive``, True where an adaptive search chose its trials on the bars they are
+    judged on."""
+
+    __slots__ = ("probability", "loss", "trials", "blocks", "dropped", "objective",
+                 "direction", "descriptive")
+
+
+    def __init__(self, probability, loss, trials, blocks, dropped, objective, direction,
+                 descriptive):
+        self._set(
+            probability = float(probability),
+            loss        = _maybe(loss),
+            trials      = int(trials),
+            blocks      = int(blocks),
+            dropped     = int(dropped),
+            objective   = objective,
+            direction   = direction,
+            descriptive = bool(descriptive),
+        )
+
+
+    def __str__(self):
+        said = (f"overfitting {self.probability:.2f} probability the in-sample best ranks "
+                f"below the median on the held-back blocks ({self.blocks} blocks, "
+                f"{self.trials:,} trials)")
+        if self.loss is not None:
+            said += f"; it loses on {self.loss:.0%} of them"
+
+        return said + (", descriptive" if self.descriptive else "")
 
 
 class BacktestLength(_Frozen):
@@ -997,6 +1041,54 @@ def effective_trials(trials, periods_per_year=None, risk_free=None, seed=None):
         trials._effective = held
 
     return held
+
+
+def overfitting(trials, objective=None, periods_per_year=None, risk_free=None):
+    """The probability of backtest overfitting of ``trials``, as an Overfitting, by
+    combinatorially symmetric cross-validation: the returns cut into 16 contiguous
+    blocks, and in each of the 12,870 ways of holding half of them out, the trial best
+    on the other half ranked on the held-out one, overfit where it ranks below the
+    median (Bailey, Borwein, Lopez de Prado and Zhu 2017). It ranks on a statistic the
+    halves give whatever the order of their returns: a search's objective, in its
+    direction, reading its complete trials, or ``objective`` for a matrix of a row a
+    trial's returns, the Sharpe unless given, volatility minimised and the rest
+    maximised (ADR 0033; Specification, The probability of backtest overfitting)."""
+    from ._search import Study
+    if isinstance(trials, Study):
+        if objective is not None:
+            raise ProbatumTypeError(f"objective: {objective!r} beside a Study, which "
+                                    f"ranks on its own; leave it out")
+
+        given     = _searched(trials, "trials").provenance
+        objective = given["objective"]
+        direction = given["direction"]
+        adaptive  = given["sampler"]["name"] == "tpe"
+        free      = given["risk_free"]
+    else:
+        objective = "sharpe" if objective is None else objective
+        direction = "minimize" if objective == "volatility_pct" else "maximize"
+        adaptive  = False
+        free      = risk_free
+
+    if objective not in HALVED:
+        raise ProbatumValueError(f"objective: {objective!r}; the overfitting probability "
+                                 f"ranks on a statistic the halves give whatever the "
+                                 f"order of their returns: {', '.join(HALVED)}")
+
+    x, rate, _ = _trials(trials, periods_per_year, risk_free, ("complete",))
+    count = x.shape[0]
+    if count < 2:
+        raise ProbatumValueError(f"trials: {count} complete; the overfitting probability "
+                                 f"ranks a winner among 2 or more")
+    if x.shape[1] < PARTS:
+        raise ProbatumValueError(f"trials: {x.shape[1]} returns; the overfitting "
+                                 f"probability cuts them into {PARTS} blocks, so give at "
+                                 f"least {PARTS}")
+
+    raw = x + (free or 0.0) / rate
+    probability, loss = _overfit(x, raw, rate, objective, direction == "maximize", PARTS)
+    return Overfitting(probability, None if objective == "volatility_pct" else loss, count,
+                       PARTS, x.shape[1] % PARTS, objective, direction, adaptive)
 
 
 def min_backtest_length(trials, sharpe=None):
@@ -2161,6 +2253,73 @@ def _quality(scores):
     if spread == 0.0:
         return math.inf if scores.mean() > 0.0 else 0.0
     return float(scores.mean()) / spread
+
+
+def _overfit(x, raw, rate, objective, maximize, blocks):
+    """The share of the halvings of ``blocks`` contiguous blocks whose in-sample winner
+    ranks below the median out of sample, tied winners weighted alike, and the share
+    whose winner's statistic is below 0 there, each half's statistic merged from its
+    blocks' sums as the record computes it: the Sharpe the excess returns' ``x`` mean
+    over the returns' ``raw`` deviation, Sortino of the excess returns, and the rest of
+    the returns. A halving is read with its complement, a chunk of them at a time
+    (Specification, The probability of backtest overfitting)."""
+    trials, count = x.shape
+    size   = count // blocks
+    first  = count - size * blocks
+    excess = x[:, first:].reshape(trials, blocks, size)
+    plain  = raw[:, first:].reshape(trials, blocks, size)
+    picks  = np.array(list(itertools.combinations(range(blocks), blocks // 2)))
+    mask   = np.zeros((len(picks), blocks))
+    mask[np.arange(len(picks))[:, None], picks] = 1.0
+
+    n      = size * (blocks // 2)
+    sums   = plain.sum(axis=2)
+    means  = sums / size
+    within = ((plain - means[:, :, None]) ** 2).sum(axis=2)
+    ahead  = excess.sum(axis=2)
+    below  = (np.minimum(excess, 0.0) ** 2).sum(axis=2)
+    grown  = np.prod(1.0 + plain, axis=2)
+
+    def halves(chosen):
+        if objective in ("sharpe", "sortino", "volatility_pct"):
+            mean    = (chosen @ sums.T) / n
+            between = chosen @ (size * means.T ** 2) - n * mean ** 2
+            sd      = np.sqrt(np.maximum(chosen @ within.T + between, 0.0) / (n - 1))
+            if objective == "volatility_pct":
+                return sd * math.sqrt(rate) * 100.0
+            risk = sd if objective == "sharpe" else np.sqrt((chosen @ below.T) / n)
+            return _ranked_all((chosen @ ahead.T) / n, risk, math.sqrt(rate))
+
+        growth = np.ones((len(chosen), trials))
+        for b in range(blocks):
+            growth *= np.where(chosen[:, b:b + 1] > 0.0, grown[:, b], 1.0)
+
+        if objective != "cagr_pct":
+            return (growth - 1.0) * 100.0
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            return np.where(growth > 0.0, np.minimum(
+                np.power(np.where(growth > 0.0, growth, 1.0), rate / n) - 1.0, CEILING),
+                -1.0) * 100.0
+
+    halvings = len(picks)
+    step     = max(1, AT_ONCE // trials)
+    over = loss = 0.0
+    for start in range(0, halvings // 2, step):
+        these = np.arange(start, min(start + step, halvings // 2))
+        value = halves(mask[np.concatenate([these, halvings - 1 - these])])
+        for inside, outside in ((value[:these.size], value[these.size:]),
+                                (value[these.size:], value[:these.size])):
+            for held, other in zip(inside, outside):
+                winners = np.flatnonzero(held == (held.max() if maximize else held.min()))
+                for k in winners:
+                    worse = np.count_nonzero(other < other[k] if maximize else
+                                             other > other[k])
+                    rank  = worse + (np.count_nonzero(other == other[k]) + 1) / 2.0
+                    over += (rank / (trials + 1) < 0.5) / winners.size
+                    loss += (other[k] < 0.0) / winners.size
+
+    return over / halvings, loss / halvings
 
 
 def _combined(rows):
