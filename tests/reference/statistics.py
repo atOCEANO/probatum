@@ -8,6 +8,7 @@ drew, so a test can hand it the module's own draws and compare what the two comp
 from them.
 """
 
+import itertools
 import math
 import statistics
 
@@ -18,6 +19,11 @@ FLOOR    = 60        # Samples with no interval: the round trips a trade interva
 SPAN     = 500       # Samples with no interval: the returns a bootstrap of them needs
 BLOCKS   = 100       # Samples with no interval: the mean blocks those returns hold
 ROUNDING = 1e-20     # Two Sharpes on the same bars: a variance below it counts as zero
+MOST     = 100       # The effective number of trials: the most clusters a start tries
+LLOYD    = 300       # The effective number of trials: Lloyd's iterations at most
+PARTS    = 16        # The probability of backtest overfitting: the blocks of a run
+# The deflated Sharpe: the Euler-Mascheroni constant
+EULER = 0.5772156649015329
 # Intervals of the returns: the statistics read on the growth a bar, and every one
 # studentized on a pivot
 GROWTH      = ("total_return_pct", "net_profit_pct", "cagr_pct")
@@ -70,6 +76,14 @@ def per_bar(x):
 def sharpe(x, periods_per_year):
     """What a statistic reads: the record's Sharpe."""
     return ranked(mean(x), deviation(x, 1), math.sqrt(periods_per_year))
+
+
+def recorded(returns, periods_per_year, risk_free):
+    """The probability of backtest overfitting: the Sharpe as the record computes it, the
+    excess mean over the deviation of the returns themselves, so returns that never
+    vary rank at zero whatever the rate."""
+    excess = mean(returns) - risk_free / periods_per_year
+    return ranked(excess, deviation(returns, 1), math.sqrt(periods_per_year))
 
 
 def autocorrelation(x, k):
@@ -746,3 +760,318 @@ def decay(fitted, earned, direction):
     sample, and their mean."""
     gaps = [f - e if direction == "maximize" else e - f for f, e in zip(fitted, earned)]
     return gaps, mean(gaps)
+
+
+def expected_maximum(trials):
+    """The deflated Sharpe: `f(N) = (1 - gamma) * Phi^-1(1 - 1/N) + gamma * Phi^-1(1 -
+    1/(N * e))`, the expected best of `N` standard normal draws."""
+    return ((1.0 - EULER) * NORMAL.inv_cdf(1.0 - 1.0 / trials)
+            + EULER * NORMAL.inv_cdf(1.0 - 1.0 / (trials * math.e)))
+
+
+def deflation_threshold(spread, trials):
+    """The deflated Sharpe: the annual Sharpe the best of `trials` reaches by luck when
+    their annual Sharpes spread `spread`."""
+    return spread * expected_maximum(trials)
+
+
+def deflated_sharpe(x, periods_per_year, spread, trials):
+    """The deflated Sharpe: the winner's probabilistic Sharpe against the threshold of
+    `trials` whose annual Sharpes spread `spread`, 0 at one trial."""
+    threshold = 0.0 if trials == 1 else deflation_threshold(spread, trials)
+    return probabilistic_sharpe(x, periods_per_year, threshold)
+
+
+def min_backtest_length(trials, sharpe):
+    """The minimum backtest length: `(f(N) / S)^2` years at an annual Sharpe `S`."""
+    return (expected_maximum(trials) / sharpe) ** 2
+
+
+def distances(rows):
+    """The effective number of trials: each trial's row of `D = sqrt((1 - rho) / 2)`,
+    and the Euclidean distances between those rows."""
+    count = len(rows)
+    d     = [[0.0 if i == j else
+              math.sqrt(max(0.0, (1.0 - correlation(rows[i], rows[j])) / 2.0))
+              for j in range(count)] for i in range(count)]
+
+    far = [[math.sqrt(sum((d[i][k] - d[j][k]) ** 2 for k in range(count)))
+            for j in range(count)] for i in range(count)]
+    return d, far
+
+
+def silhouettes(far, labels):
+    """The effective number of trials: `s_i = (b_i - a_i) / max(a_i, b_i)`, 0 for a
+    trial alone in its cluster."""
+    out = []
+    for i, own in enumerate(labels):
+        mates = [j for j, label in enumerate(labels) if label == own and j != i]
+        if not mates:
+            out.append(0.0)
+            continue
+
+        a = mean([far[i][j] for j in mates])
+        b = min(mean([far[i][j] for j, label in enumerate(labels) if label == other])
+                for other in set(labels) if other != own)
+        out.append((b - a) / max(a, b) if max(a, b) > 0.0 else 0.0)
+
+    return out
+
+
+def quality(values):
+    """The effective number of trials: the mean over the deviation, `n` in its
+    divisor, infinite at no deviation and a mean above 0, and 0 at no deviation
+    otherwise."""
+    spread = deviation(values, 0)
+    if spread == 0.0:
+        return math.inf if mean(values) > 0.0 else 0.0
+
+    return mean(values) / spread
+
+
+def sequence(squared, most, draws):
+    """The effective number of trials: one greedy k-means++ sequence of `most` trials at
+    `squared` distances, read off `draws`, the stream's draws in order: the first trial,
+    then each step's `2 + floor(ln most)` even draws `u`, each taking the first trial
+    whose running sum of squared distances from the sequence so far is above `u` times
+    their total, or the trials drawn evenly where every distance is 0; the step keeps
+    the one leaving the least sum of every trial's squared distance to its nearest, the
+    first of equal ones."""
+    count = len(squared)
+    order = [int(next(draws))]
+    near  = list(squared[order[0]])
+
+    for _ in range(1, most):
+        running = list(itertools.accumulate(near))
+        given   = [float(v) for v in next(draws)]
+        if running[-1] > 0.0:
+            picks = [next((i for i, v in enumerate(running) if v > u * running[-1]),
+                          count - 1) for u in given]
+        else:
+            picks = [int(v) for v in given]
+
+        sums = [sum(min(a, b) for a, b in zip(near, squared[p])) for p in picks]
+        best = picks[sums.index(min(sums))]
+        order.append(best)
+        near = [min(a, b) for a, b in zip(near, squared[best])]
+
+    return order
+
+
+def lloyd(points, centres):
+    """The effective number of trials: Lloyd's iterations from the trials `centres`,
+    each trial to its nearest centre, the lowest-numbered on ties, each cluster left
+    empty taking in turn the trial farthest from its own centre, and one emptied by
+    that keeping its centre, until no trial moves."""
+    count, k = len(points), len(centres)
+    middle = [list(points[c]) for c in centres]
+    labels = None
+
+    for _ in range(LLOYD):
+        near = [[sum((p - c) ** 2 for p, c in zip(points[i], middle[j]))
+                 for j in range(k)] for i in range(count)]
+        new = [min(range(k), key=lambda j: (near[i][j], j)) for i in range(count)]
+        if new == labels:
+            break
+
+        labels = new
+        moved  = set()
+        for j in range(k):
+            if j in labels:
+                continue
+            worst = max((i for i in range(count) if i not in moved),
+                        key=lambda i: (near[i][labels[i]], -i))
+            labels[worst] = j
+            moved.add(worst)
+
+        for j in range(k):
+            members = [points[i] for i in range(count) if labels[i] == j]
+            if members:
+                middle[j] = [mean(column) for column in zip(*members)]
+
+    return labels
+
+
+def numbered(labels):
+    """The effective number of trials: the clusters numbered by their first trial."""
+    order = {}
+    for label in labels:
+        order.setdefault(label, len(order))
+    return [order[label] for label in labels]
+
+
+def base_clustering(points, far, sequences):
+    """The effective number of trials: the clustering of the highest quality over each
+    start's sequence and each `k`, the first on ties."""
+    best = None
+    for sequence in sequences:
+        for k in range(2, len(sequence) + 1):
+            labels = numbered(lloyd(points, sequence[:k]))
+            score  = quality(silhouettes(far, labels))
+            if best is None or score > best[0]:
+                best = (score, labels)
+
+    return best[1]
+
+
+def onc(rows, draw):
+    """The effective number of trials: the base clustering and its refinement,
+    `draw(far, k_max)` giving the starts' sequences the module drew for each
+    clustering."""
+    count = len(rows)
+    if count < 3:
+        return list(range(count))
+
+    points, far = distances(rows)
+    labels = base_clustering(points, far, draw(far, min(count - 1, MOST)))
+    scores = silhouettes(far, labels)
+    groups = {label: [i for i in range(count) if labels[i] == label]
+              for label in set(labels)}
+    each   = {label: quality([scores[i] for i in members])
+              for label, members in groups.items() if len(members) > 1}
+    if not each:
+        return labels
+
+    middle = mean(list(each.values()))
+    redo   = sorted(label for label, value in each.items() if value < middle)
+    if len(redo) <= 2:
+        return labels
+
+    items  = [i for i in range(count) if labels[i] in redo]
+    inner  = onc([rows[i] for i in items], draw)
+    merged = list(labels)
+    for i, label in zip(items, inner):
+        merged[i] = ("new", label)
+
+    merged  = numbered(merged)
+    renewed = silhouettes(far, merged)
+    after   = [quality([renewed[i] for i in range(count) if merged[i] == label])
+               for label in sorted({merged[i] for i in items})
+               if sum(1 for i in range(count) if merged[i] == label) > 1]
+    before  = [each[label] for label in redo]
+    if after and mean(after) > mean(before):
+        return merged
+    return labels
+
+
+def combined(rows):
+    """The effective number of trials: a cluster's series at minimum variance under one
+    correlation, or inverse variance where that correlation is out of its range."""
+    if len(rows) == 1:
+        return list(rows[0])
+
+    m    = len(rows)
+    sd   = [deviation(row, 1) for row in rows]
+    rbar = mean([correlation(rows[i], rows[j])
+                 for i in range(m) for j in range(i + 1, m)])
+
+    if -1.0 / (m - 1) < rbar < 1.0:
+        inverse = sum(1.0 / s for s in sd)
+        raw     = [1.0 / s ** 2 - rbar * inverse / ((1.0 + (m - 1) * rbar) * s)
+                   for s in sd]
+    else:
+        raw = [1.0 / s ** 2 for s in sd]
+
+    total = sum(raw)
+    return [sum(raw[i] / total * rows[i][t] for i in range(m))
+            for t in range(len(rows[0]))]
+
+
+def effective_trials(x, periods_per_year, draw):
+    """The effective number of trials: `K`, and the sample deviation of the K series'
+    annual Sharpes, None at one cluster, from the excess returns `x` of the trials."""
+    labels = onc(x, draw)
+    series = [combined([x[i] for i in range(len(x)) if labels[i] == label])
+              for label in sorted(set(labels))]
+    if len(series) == 1:
+        return 1, None
+
+    return len(series), deviation([sharpe(s, periods_per_year) for s in series], 1)
+
+
+def overfitting(rows, statistic, maximize=True, blocks=PARTS):
+    """The probability of backtest overfitting: the share of halvings whose in-sample
+    winner ranks below the median out of sample, and the share whose winner loses out
+    of sample, tied winners weighted alike, each half's statistic computed on its joined
+    returns."""
+    size  = len(rows[0]) // blocks
+    drop  = len(rows[0]) - size * blocks
+    parts = [[row[drop + b * size:drop + (b + 1) * size] for b in range(blocks)]
+             for row in rows]
+
+    chosen = list(itertools.combinations(range(blocks), blocks // 2))
+    over = loss = 0.0
+    for picked in chosen:
+        left    = [b for b in range(blocks) if b not in picked]
+        inside  = [statistic([v for b in picked for v in trial[b]]) for trial in parts]
+        outside = [statistic([v for b in left for v in trial[b]]) for trial in parts]
+        best    = max(inside) if maximize else min(inside)
+        winners = [k for k, v in enumerate(inside) if v == best]
+        for k in winners:
+            worse = sum(1 for v in outside
+                        if (v < outside[k] if maximize else v > outside[k]))
+            equal = sum(1 for v in outside if v == outside[k])
+            omega = (worse + (equal + 1) / 2.0) / (len(rows) + 1)
+            over += (math.log(omega / (1.0 - omega)) < 0.0) / len(winners)
+            loss += (outside[k] < 0.0) / len(winners)
+
+    return over / len(chosen), loss / len(chosen)
+
+
+def relative(rows, benchmark):
+    """The Reality Check and SPA: `f_k,t = ln(1 + r_k,t) - ln(1 + b_t)`."""
+    return [[math.log1p(r) - math.log1p(b) for r, b in zip(row, benchmark)]
+            for row in rows]
+
+
+def kernel_variance(f, q):
+    """The Reality Check and SPA: `g_0 + 2 * sum_i kappa(n, i) * g_i`, the stationary
+    bootstrap's variance of `sqrt(n)` times a resample's mean."""
+    n, centre = len(f), mean(f)
+    g = [sum((f[t] - centre) * (f[t + i] - centre) for t in range(n - i)) / n
+         for i in range(n)]
+    kappa = [(n - i) / n * (1.0 - q) ** i + i / n * (1.0 - q) ** (n - i)
+             for i in range(n)]
+    return g[0] + 2.0 * sum(kappa[i] * g[i] for i in range(1, n))
+
+
+def mean_block(f):
+    """The Reality Check and SPA: the median of the stationary lengths of the trials
+    whose relative series varies, 1 where none does."""
+    lengths = [block_lengths(row)[0] for row in f if any(v != row[0] for v in row)]
+    return statistics.median(lengths) if lengths else 1.0
+
+
+def reality_check(f, drawn, q):
+    """The Reality Check and SPA: White's p-value, and Hansen's consistent SPA with each
+    resample studentized on its own variance, over the resamples `drawn`."""
+    n     = len(f[0])
+    fbar  = [mean(row) for row in f]
+    big_v = max(math.sqrt(n) * v for v in fbar)
+    white = sum(1 for rows in drawn
+                if max(math.sqrt(n) * (mean([row[i] for i in rows]) - fbar[k])
+                       for k, row in enumerate(f)) > big_v) / len(drawn)
+    if any(all(v == row[0] for v in row) and row[0] > 0.0 for row in f):
+        return white, 0.0
+
+    live  = [k for k, row in enumerate(f) if any(v != row[0] for v in row)]
+    omega = {k: math.sqrt(kernel_variance(f[k], q)) for k in live}
+    t     = {k: math.sqrt(n) * fbar[k] / omega[k] for k in live}
+    big_t = max([0.0] + list(t.values()))
+    if big_t == 0.0:
+        return white, 1.0
+
+    cut   = -math.sqrt(2.0 * math.log(math.log(n)))
+    shift = {k: fbar[k] if t[k] >= cut else 0.0 for k in live}
+    above = 0
+
+    for rows in drawn:
+        top = 0.0
+        for k in live:
+            star  = [f[k][i] for i in rows]
+            again = (math.sqrt(kernel_variance(star, q))
+                     if any(v != star[0] for v in star) else omega[k])
+            top   = max(top, math.sqrt(n) * (mean(star) - shift[k]) / again)
+        above += top > big_t
+
+    return white, above / len(drawn)

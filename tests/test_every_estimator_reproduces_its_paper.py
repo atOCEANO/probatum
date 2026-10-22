@@ -1,10 +1,13 @@
-"""Every estimator the Inference section takes from a paper gives that paper's numbers.
+"""Every estimator the Inference and Across a search sections take from a paper gives
+that paper's numbers.
 
 Each test hands the reference statistics what a paper tabulates and reads back what it
 prints: Lo's standard errors and his Sharpe ratios of summed returns, Bailey and Lopez
-de Prado's probabilistic Sharpe and minimum track records, the stationary block lengths
-of Patton, Politis and White's correction, Memmel's variance of a difference of two
-Sharpe ratios, and sandwich's Newey-West covariance on its Investment data.
+de Prado's probabilistic Sharpe, minimum track records and deflated Sharpe, the
+stationary block lengths of Patton, Politis and White's correction, Memmel's variance
+of a difference of two Sharpe ratios, sandwich's Newey-West covariance on its
+Investment data, Harter's expected maxima, the minimum backtest length, Lopez de
+Prado's clusters of trials, and the overfitting probability's ranking example.
 `probatum.stats` is held to the reference by its own agreement test.
 """
 
@@ -140,3 +143,82 @@ def test_sandwich_s_newey_west_covariance_of_the_investment_regression_at_lag_4(
     }
     for (i, j), (value, places) in printed.items():
         assert covariance[i][j] == pytest.approx(value, abs=0.5 * 10.0 ** -places)
+
+
+def test_bailey_and_lopez_de_prado_s_deflated_sharpe_is_0_9004_after_100_trials():
+    # their example, at lag zero: an annual Sharpe of 2.5 over 1,250 days at 250 a year,
+    # a skew of -3, a kurtosis of 10, and trials whose Sharpes vary by 1/2 a year
+    shape = 2.5 / math.sqrt(250.0)
+
+    def deflated(trials, k3, k4):
+        bar      = statistics.deflation_threshold(math.sqrt(0.5), trials)
+        variance = statistics.lag_zero(shape, k3, k4)
+        return statistics.probability(shape, bar / math.sqrt(250.0), variance, 1_250)
+
+    assert round(deflated(100, -3.0, 10.0), 4) == 0.9004
+    assert round(deflated(46, -3.0, 10.0), 4)  == 0.9505
+    assert round(deflated(88, 0.0, 3.0), 4)    == 0.9505
+    # Lopez de Prado and Bailey (2021): with normal returns, below 0.95 after 89 trials
+    assert deflated(89, 0.0, 3.0) < 0.95
+
+
+@pytest.mark.parametrize("trials, exact", [
+    (2, 0.56419), (3, 0.84628), (4, 1.02938), (5, 1.16296), (10, 1.53875),
+    (20, 1.86748), (50, 2.24907), (100, 2.50759), (400, 2.96818)])
+def test_the_expected_maximum_is_within_0_045_of_harter_s_exact_one(trials, exact):
+    # Harter (1961) table 1, the largest of N standard normals
+    found = statistics.expected_maximum(trials)
+
+    assert abs(found - exact) < 0.045
+    assert (found < exact) == (trials == 2)
+
+
+def test_five_years_hold_no_more_than_45_configurations_at_a_sharpe_of_1():
+    # Bailey, Borwein, Lopez de Prado and Zhu (2014), figure 2, and ten configurations
+    # tried on a year expecting a best of 1.57
+    assert statistics.min_backtest_length(45, 1.0) <= 5.0
+    assert statistics.min_backtest_length(46, 1.0) > 5.0
+    assert round(statistics.expected_maximum(10), 2) == 1.57
+
+
+def test_lopez_de_prado_s_four_clusters_set_a_threshold_of_0_027_a_bar():
+    # Lopez de Prado (2019) exhibit 6: the clusters' annual Sharpes at the selected
+    # cluster's 261.1159 bars a year
+    spread = statistics.deviation([1.5733, 1.4907, 2.0275, 1.0158], 1)
+    spread /= math.sqrt(261.1159)
+
+    assert round(spread, 4) == 0.0256
+    assert round(spread * statistics.expected_maximum(4), 4) == 0.0270
+
+
+def test_lopez_de_prado_and_lewis_s_clustering_finds_the_blocks_its_trials_share():
+    # three blocks of four trials, each a factor of its own and a little noise, as their
+    # simulations build them
+    rng    = np.random.default_rng(3)
+    factor = rng.normal(size=(3, 80))
+    rows   = [list(factor[i // 4] + rng.normal(scale=0.3, size=80)) for i in range(12)]
+
+    def draw(far, most):
+        # each start farthest-first from a trial of its own
+        starts = []
+        for first in range(10):
+            sequence = [first]
+            while len(sequence) < most:
+                gap = {i: min(far[i][j] for j in sequence)
+                       for i in range(len(far)) if i not in sequence}
+                sequence.append(max(gap, key=lambda i: (gap[i], -i)))
+            starts.append(sequence)
+
+        return starts
+
+    labels = statistics.onc(rows, draw)
+
+    assert labels == [0] * 4 + [1] * 4 + [2] * 4
+
+
+def test_bailey_borwein_lopez_de_prado_and_zhu_s_ranking_example_is_not_overfit():
+    # the in-sample (0.5, 1.1, 0.7) and out-of-sample (0.6, 0.7, 1.3) of section 2.1:
+    # the winner lands on the median, which the definition does not count as overfit
+    rows = [[0.5, 0.6], [1.1, 0.7], [0.7, 1.3]]
+
+    assert statistics.overfitting(rows, statistics.mean, blocks=2) == (0.0, 0.0)

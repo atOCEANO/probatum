@@ -1540,3 +1540,25 @@ def test_three_of_four_stretches_score_above_0_and_three_windows_decay_by_1_07()
 
     gaps, mean = statistics.decay([1.8, 1.2, 2.0], [0.6, 1.4, -0.2], "maximize")
     assert ([round(gap, 9) for gap in gaps], round(mean, 2)) == ([1.2, -0.2, 2.2], 1.07)
+
+
+def test_four_trials_on_four_blocks_overfit_and_lose_in_four_of_six_halvings():
+    blocks = [(0.4, 0.1, -0.2, 0.3), (-0.1, 0.5, 0.2, -0.3), (0.2, -0.4, 0.6, 0.1),
+              (0.35, 0.45, 0.05, 0.15)]
+    rows   = [[value for value in trial for _ in range(2)] for trial in blocks]
+
+    assert round(math.log(3 / 5 / (2 / 5)), 2) == 0.41
+    assert round(math.log(1 / 4), 2)           == -1.39
+    assert statistics.overfitting(rows, statistics.mean, blocks=4) == pytest.approx(
+        (4 / 6, 4 / 6))
+
+
+def test_four_trials_on_four_bars_give_white_0_2_and_spa_0_6_on_five_resamples():
+    f = [[1.875, -1.125, 2.875, -0.125], [1.0, 1.0, -2.0, 2.0],
+         [-3.0, -2.0, -4.0, -3.0], [1.0, -1.0, 1.0, -2.0]]
+    drawn = [[1, 2, 3, 0], [0, 0, 1, 2], [3, 0, 1, 1], [2, 2, 2, 3], [0, 1, 0, 1]]
+
+    assert [statistics.kernel_variance(row, 0.5) for row in f] == [75 / 64, 11 / 8,
+                                                                   19 / 64, 199 / 256]
+    assert round(math.sqrt(2.0 * math.log(math.log(4.0))), 4) == 0.8083
+    assert statistics.reality_check(f, drawn, 0.5) == pytest.approx((0.2, 0.6))
