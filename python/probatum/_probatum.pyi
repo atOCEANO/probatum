@@ -296,5 +296,15 @@ def run_arrays(
     periods_per_year: float,
     risk_free: float = ...,
 ) -> list[tuple[dict[str, Any], np.ndarray]]: ...
+def run_labels(
+    engine: Engine,
+    instruments: np.ndarray,
+    starts: np.ndarray,
+    lasts: np.ndarray,
+    notional: float,
+    side: str,
+    stop: Optional[float | np.ndarray] = ...,
+    take_profit: Optional[float | np.ndarray] = ...,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: ...
 def threads() -> int: ...
 def arrow_columns(data: Any) -> list[tuple[str, str, Optional[np.ndarray], str]]: ...

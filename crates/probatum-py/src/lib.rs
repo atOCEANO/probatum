@@ -36,9 +36,10 @@ use probatum_engine::reporter::{
 };
 use probatum_engine::schedule::every;
 use probatum_engine::{
-    run_from, Action, Array, Barrier, BatchSnapshot, Candles, Clock, Engine as BarEngine,
-    EngineConfig, EnvBatch, Impact, Instrument, Intrabar, Limit, Liquidation, OrderRef, PriceRule,
-    RoundTrip, Schedule, Script, Sizes, Sizing, Spread, Stats, TargetError, Units,
+    labels, run_from, Action, Array, Barrier, BatchSnapshot, Candles, Clock, Engine as BarEngine,
+    EngineConfig, EnvBatch, Exit, Impact, Instrument, Intrabar, Label, Limit, Liquidation,
+    OrderRef, PriceRule, RoundTrip, Schedule, Script, Sizes, Sizing, Spread, Stats, TargetError,
+    Trade, Units,
 };
 
 /// The classes the binding raises, defined in `probatum._errors` beside the rest of the
@@ -4478,15 +4479,16 @@ fn barrier_of(
         return Ok(Barrier::None);
     };
     let above = |value: f64| value.is_finite() && value > 0.0;
-    if let Ok(value) = given.extract::<f64>() {
+    // an array is read before a number, as numpy reads an array of one value as one
+    let Ok(values) = given.extract::<PyReadonlyArray2<'_, f64>>() else {
+        let value: f64 = given.extract()?;
         if !above(value) {
             return Err(ProbatumValueError::new_err(format!(
                 "{name}: {value}; give a return from the entry above 0"
             )));
         }
         return Ok(Barrier::Every(value));
-    }
-    let values: PyReadonlyArray2<'_, f64> = given.extract()?;
+    };
     let values = values.as_array();
     if values.dim() != (rows, width) {
         return Err(ProbatumValueError::new_err(format!(
@@ -4606,6 +4608,143 @@ fn run_arrays<'py>(
     ran.into_iter()
         .map(|(stats, curve)| Ok((stats_to_dict(py, &stats)?, PyArray1::from_vec(py, curve))))
         .collect()
+}
+
+/// Each label's return, exit, entry bar and end, as `run_labels` hands them back.
+type Labelled<'py> = (
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<u8>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+);
+
+/// A barrier `barrier_of` read for `count` labels, as each label's return or None.
+fn per_label(barrier: Barrier, count: usize) -> Vec<Option<f64>> {
+    match barrier {
+        Barrier::None => vec![None; count],
+        Barrier::Every(value) => vec![Some(value); count],
+        Barrier::Rows(values) => values
+            .into_iter()
+            .map(|value| (!value.is_nan()).then_some(value))
+            .collect(),
+    }
+}
+
+/// The labels of one call, run in parallel with the GIL released, each on an engine of
+/// `engine`'s bars and settings that records its fills: label `k` is the trade of
+/// `notional` on `side`, "buy" or "sell", on instrument `instruments[k]`, decided at
+/// the close of bar `starts[k]` and closed at the close of bar `lasts[k]` where it is
+/// still open, and again at each close after while some is left, with `stop` and
+/// `take_profit` each a return from the average entry or `(K, 1)` of them, NaN for
+/// none (Specification, Labels). Each comes back as its return, NaN where it has none;
+/// its exit, 0 for no label, 1 to 5 for a stop, a take-profit, the horizon, a
+/// delisting and a liquidation, and 6 where it is censored; and the bars its entry
+/// filled on and that closed it, -1 where it has none.
+#[pyfunction]
+#[pyo3(signature = (
+    engine, instruments, starts, lasts, notional, side, stop = None, take_profit = None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_labels<'py>(
+    py: Python<'py>,
+    engine: &Bound<'py, Engine>,
+    instruments: PyReadonlyArray1<'py, i64>,
+    starts: PyReadonlyArray1<'py, i64>,
+    lasts: PyReadonlyArray1<'py, i64>,
+    notional: f64,
+    side: &str,
+    stop: Option<Bound<'py, PyAny>>,
+    take_profit: Option<Bound<'py, PyAny>>,
+) -> PyResult<Labelled<'py>> {
+    let engine = engine.try_borrow()?;
+    if engine.inner.reporter().is_none() {
+        return Err(ProbatumValueError::new_err(
+            "engine: built with report=False, which records no fills; build it with \
+             report=True",
+        ));
+    }
+    if !(notional.is_finite() && notional > 0.0) {
+        return Err(ProbatumValueError::new_err(format!(
+            "notional: {notional}; give a positive amount"
+        )));
+    }
+    let side = parse_side(side)?;
+    let (instruments, starts, lasts) =
+        (instruments.as_array(), starts.as_array(), lasts.as_array());
+    let count = instruments.len();
+    if starts.len() != count || lasts.len() != count {
+        return Err(ProbatumValueError::new_err(format!(
+            "starts: {} and lasts: {} beside {count} instruments; give one of each for \
+             every label",
+            starts.len(),
+            lasts.len()
+        )));
+    }
+    let stop = per_label(barrier_of("stop", stop, count, 1)?, count);
+    let take_profit = per_label(barrier_of("take_profit", take_profit, count, 1)?, count);
+    let (bars, width) = (engine.inner.num_bars(), engine.inner.width());
+    let mut trades = Vec::with_capacity(count);
+    for k in 0..count {
+        let (i, start, last) = (instruments[k], starts[k], lasts[k]);
+        if !(0..width as i64).contains(&i) {
+            return Err(ProbatumValueError::new_err(format!(
+                "instruments: {i} at label {k} is not one the engine holds; name one \
+                 counted from 0, of the {width}"
+            )));
+        }
+        if start < 0 || last < start || last >= bars as i64 {
+            return Err(ProbatumValueError::new_err(format!(
+                "starts: bar {start} to bar {last} at label {k}; give a last bar from the \
+                 start on, before bar {bars}"
+            )));
+        }
+        trades.push(Trade {
+            instrument: i as usize,
+            start: start as usize,
+            last: last as usize,
+            stop: stop[k],
+            take_profit: take_profit[k],
+        });
+    }
+    let (inner, units) = (&engine.inner, engine.units);
+    let made = py.detach(|| labels(inner, &trades, notional, side, units));
+    let mut out = (
+        Vec::with_capacity(count),
+        Vec::with_capacity(count),
+        Vec::with_capacity(count),
+        Vec::with_capacity(count),
+    );
+    for label in made {
+        let (ret, exit, entered, end) = match label {
+            Label::None => (f64::NAN, 0, -1, -1),
+            Label::Censored => (f64::NAN, 6, -1, -1),
+            Label::Closed {
+                ret,
+                exit,
+                entered,
+                end,
+            } => {
+                let code = match exit {
+                    Exit::Stop => 1,
+                    Exit::TakeProfit => 2,
+                    Exit::Horizon => 3,
+                    Exit::Delist => 4,
+                    Exit::Liquidation => 5,
+                };
+                (ret, code, entered as i64, end as i64)
+            }
+        };
+        out.0.push(ret);
+        out.1.push(exit);
+        out.2.push(entered);
+        out.3.push(end);
+    }
+    Ok((
+        PyArray1::from_vec(py, out.0),
+        PyArray1::from_vec(py, out.1),
+        PyArray1::from_vec(py, out.2),
+        PyArray1::from_vec(py, out.3),
+    ))
 }
 
 /// How many threads `run_arrays` runs its trials on at once: rayon's, which follow
@@ -4731,6 +4870,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_script, m)?)?;
     m.add_function(wrap_pyfunction!(run_array, m)?)?;
     m.add_function(wrap_pyfunction!(run_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(run_labels, m)?)?;
     m.add_function(wrap_pyfunction!(threads, m)?)?;
     m.add_function(wrap_pyfunction!(arrow::arrow_columns, m)?)?;
     Ok(())
