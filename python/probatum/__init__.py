@@ -13,9 +13,10 @@ Results from accounts at different venues into one book. ``search`` searches a
 policy's parameters over ``Int``, ``Float`` and ``Categorical`` ranges on the bars
 before a holdout, and returns the ``Study`` of every trial. ``labels`` gives, as
 ``Labels``, what one trade of a notional decided at each row's close makes through the
-same fill model, for a model to fit on. ``validate`` runs that
-search on the training bars of each split a splitter of ``cv`` gives, trades each
-split's winner on its test span and returns the ``Study`` of the out-of-sample paths.
+same fill model, for a model to fit on. ``validate`` runs that search, or fits a model
+to its labels, on the training bars of each split a splitter of ``cv`` gives, trades
+each split's winner on its test span and returns the ``Study`` of the out-of-sample
+paths.
 ``stats`` says how far a run's statistics can be trusted, read from a Result or any
 series of returns: the Sharpe's interval, its probability of beating a benchmark and
 the track record that would show it; and how far a search's winner can, judged across

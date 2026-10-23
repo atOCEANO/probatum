@@ -41,6 +41,7 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/probatum-py` |
 | A convenience over the bindings (a new runner, a wrapper) | `python/probatum` |
 | A statistic or an interval read off a finished run, or a test across a search's trials | `python/probatum/stats.py`, and the same rule in plain loops in `tests/reference/statistics.py` |
+| A label's trade, or how a function or a model is validated | `crates/probatum-engine/src/labels.rs` for the trade, `python/probatum/_labels.py` and `_validate.py` for the rest, and the reference's labels in `tests/reference/simulator.py` |
 | One of emsl's statistics of a `BacktestResult` | `python/probatum/metrics.py` |
 | An indicator, which is a function of arrays and never sees the engine | `python/probatum/ta.py` |
 | Anything a chart draws (a mark, a guard, a panel rule) | `python/probatum/_chart.py` and `plot.py` |
