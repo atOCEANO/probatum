@@ -189,7 +189,9 @@ def _asked(runner, draws, sampler, keep, resolved, checked, pooled, check):
     made, pool = [], None
     while len(made) < draws.count and (pool is None or pool.broken is None):
         number = len(made)
-        if checked is not None and sampler != "tpe" and runner.made == "weights":
+        # a validation's fit runs its trials on pieces of its own
+        if (checked is not None and sampler != "tpe" and runner.made == "weights"
+                and runner.pieces is None):
             arrived = runner.together(number, draws)
         elif checked is not None and resolved > 1:
             if pool is None:
@@ -497,21 +499,23 @@ class _Runner:
         return engine
 
 
-    def decided(self, params):
+    def decided(self, params, data=None, run=None):
         """What the policy decides with ``params``: a Strategy to play, or the arguments
-        of an array run."""
+        of an array run, on ``data`` and its ``run``, the in-sample bars where they are
+        None."""
         if self.kind == "class":
             # copied as backtest copies it, so an instance that cannot be copied fails
             # its trial rather than the winner's run (ADR 0024)
             return "strategy", copy.deepcopy(self.policy(**params))
 
-        given = self.policy(self.data, **params)
+        data, run = (self.data, self.run) if data is None else (data, run)
+        given = self.policy(data, **params)
         if isinstance(given, Strategy):
             # what a function returns is a prototype, copied once before it runs
             # (ADR 0024)
             return "strategy", copy.deepcopy(given)
 
-        return "weights", _given(given, self.data, self.run)
+        return "weights", _given(given, data, run)
 
 
     def played(self, made, decided):
@@ -530,16 +534,18 @@ class _Runner:
         return stats, _returns(equity)
 
 
-    def kind_of(self, params):
+    def kind_of(self, params, data=None, run=None):
         """What the policy decides with ``params``, refused where it is of another kind
         than the trials before decided."""
-        made, decided = self.decided(params)
-
+        made, decided = self.decided(params, data, run)
         if self.made is not None and made != self.made:
             given  = "a Strategy" if made == "strategy" else "weights"
             before = "a Strategy" if self.made == "strategy" else "weights"
-            raise PolicyError(f"policy: returned {given}, where the trials before it "
-                              f"returned {before}; return one kind for every parameter")
+            # a validation's fit decides in the kind its first search's winner did
+            those  = ("the trials before it" if self.pieces is None
+                      else "the first search's winner")
+            raise PolicyError(f"policy: returned {given}, where {those} returned "
+                              f"{before}; return one kind for every parameter")
 
         return made, decided
 
@@ -551,7 +557,7 @@ class _Runner:
                 made, decided = self.kind_of(params)
                 stats, returns = self.played(made, decided)
             else:
-                made, (stats, returns) = "strategy", self.pieced(params)
+                made, (stats, returns) = self.pieced(params)
         except Exception as error:
             # a search raises from its last failure alone, and each one's traceback
             # holds the frames that ran it
@@ -571,10 +577,13 @@ class _Runner:
 
 
     def pieced(self, params):
-        """A trial on each piece of a validation's fit, its own copy of the Strategy on
-        its own engine, scored as a search's trial where one piece ran and otherwise
-        on the pieces' returns joined end to end (Specification, Fits)."""
-        parts = []
+        """A trial on each piece of a validation's fit, a Strategy's own copy or a
+        function called with the piece's Data on the piece's own engine, weights run as
+        an array that opens where the piece's account opens; scored as a search's trial
+        where one piece ran and otherwise on the pieces' returns joined end to end
+        (Specification, Fits; A function). Returns what the trial decided, and its
+        statistics and returns."""
+        parts, made = [], None
         for k, (data, run, later) in enumerate(self.pieces):
             engine = self.engines.get(k)
             if engine is None:
@@ -585,10 +594,19 @@ class _Runner:
                     **run.settings,
                 )
 
-            played       = _Run(engine, data, run.start, self.markets)
-            played.later = later
-            _play(copy.deepcopy(self.policy(**params)), played)
-            if len(played.rows) >= 2:
+            made, decided = self.kind_of(params, data, run)
+            if made == "strategy":
+                played       = _Run(engine, data, run.start, self.markets)
+                played.later = later
+                _play(decided, played)
+                if len(played.rows) >= 2:
+                    parts.append(engine)
+                continue
+
+            # the rows the account sees from the first printed row at or after later
+            skip = int(data.available[:later].any(axis=1).sum()) if later else 0
+            if len(decided[0]) - skip >= 2:
+                run_array(engine, *_skipped(decided, skip), start=run.start + skip)
                 parts.append(engine)
 
         if not parts:
@@ -598,10 +616,10 @@ class _Runner:
 
         if len(parts) == 1:
             stats = parts[0].stats(self.rate, self.risk_free)
-            return stats, _returns(np.concatenate([[self.opening],
-                                                   parts[0].equity_curve()]))
+            return made, (stats, _returns(np.concatenate([[self.opening],
+                                                          parts[0].equity_curve()])))
 
-        return _joined(parts, self.opening, self.rate, self.risk_free), None
+        return made, (_joined(parts, self.opening, self.rate, self.risk_free), None)
 
 
     def together(self, first, draws):
@@ -686,6 +704,14 @@ def _given(given, data, run):
     """What a function returned, weights, as the arguments of an array run on ``run``,
     read as backtest reads them."""
     return _played(*_read(given, data), data, run)
+
+
+def _skipped(decided, skip):
+    """An array run's arguments ``decided`` without its first ``skip`` rows."""
+    values, sizing, tolerance, *barriers = decided
+    return (values[skip:], sizing, tolerance,
+            *[barrier if barrier is None or isinstance(barrier, float) else barrier[skip:]
+              for barrier in barriers])
 
 
 def _winner(made, direction, min_trades, pieces=False):

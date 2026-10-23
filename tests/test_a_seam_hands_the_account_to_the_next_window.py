@@ -74,8 +74,8 @@ class Handover(probatum.Strategy):
 
 def walked(seam):
     """The path of window 1, deciding at rows 0 to 9, and window 2, from row 10 on."""
-    return _decided(_Path(Handover, [(0, 9, {}), (10, 18, {})], seam), handed(), VENUE,
-                    "weight", None, None, 0.0, 0.0, "full")
+    path = _Path(Handover, "class", [(0, 9, {}), (10, 18, {})], seam)
+    return _decided(path, handed(), VENUE, "weight", None, None, 0.0, 0.0, "full")
 
 
 def test_a_seam_cancels_what_the_outgoing_window_left_and_hands_over_the_position():
@@ -158,8 +158,8 @@ def test_each_window_decides_at_its_own_closes_from_its_own_warm_up(seam):
             seen.append((self.warmup, bar.i))
 
     windows = [(4, 9, {"warmup": 0}), (10, 14, {"warmup": 12}), (15, 18, {"warmup": 0})]
-    result  = _decided(_Path(Counted, windows, seam), handed(), VENUE, "weight", None,
-                       None, 0.0, 0.0, "full")
+    result  = _decided(_Path(Counted, "class", windows, seam), handed(), VENUE, "weight",
+                       None, None, 0.0, 0.0, "full")
 
     # nothing decides before the first window, each window from its warm-up, and under
     # flatten no window but the last at its last row

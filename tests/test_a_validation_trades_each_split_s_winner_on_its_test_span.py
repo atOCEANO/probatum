@@ -446,8 +446,8 @@ def test_each_window_of_a_path_trades_its_own_fit_s_winner(waits, decided):
 
     walk = _Walk(0, [(0, 239, 0), (240, 478, 1)], np.arange(480))
 
-    walk.ran(Waiting, fits, "cancel", inside, VENUE, _annualised(inside), 0.0,
-             "total_return_pct")
+    walk.ran(Waiting, "class", "strategy", fits, "cancel", inside, VENUE,
+             _annualised(inside), 0.0, "total_return_pct")
 
     assert walk.decided == decided
 
@@ -460,8 +460,8 @@ def test_a_path_counts_the_rows_it_ends_holding_a_short_on():
     fit.winner = _Trial(0, {"wait": 100, "weight": -0.5}, "complete", 0.0, {})
     walk       = _Walk(0, [(0, 478, 0)], np.arange(480))
 
-    walk.ran(Waiting, [fit], "cancel", inside, VENUE, _annualised(inside), 0.0,
-             "total_return_pct")
+    walk.ran(Waiting, "class", "strategy", [fit], "cancel", inside, VENUE,
+             _annualised(inside), 0.0, "total_return_pct")
 
     assert walk.stats["exposure_pct"]       == pytest.approx(100.0 * 379 / 479)
     assert walk.parts[0][0]["exposure_pct"] == walk.stats["exposure_pct"]
@@ -832,8 +832,6 @@ REFUSED = [
     (dict(policy=Model), ProbatumNotImplementedError,
      "policy: the class Model, a model that fits, which validate does not fit yet; "
      "pass a Strategy subclass"),
-    (dict(policy=lambda data, fast: None), ProbatumNotImplementedError,
-     "policy: a function, which validate does not run yet; pass a Strategy subclass"),
     (dict(features=np.zeros((480, 1, 3))), ProbatumValueError,
      "features: an object of type ndarray beside a Strategy, which reads its own Data; "
      "leave it out"),

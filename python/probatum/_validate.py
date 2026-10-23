@@ -1,10 +1,11 @@
-"""``validate``: a search over a Strategy's parameters on the training bars of each
-split a splitter gives, each split's winner traded on its test span and the test spans
-joined into out-of-sample paths, each one run of the engine across explicit seams,
-beside a search over every bar before the holdout, whose winner the holdout runs (ADRs
-0034, 0035; Specification, Validation)."""
+"""``validate``: a search over a Strategy's or a function's parameters on the training
+bars of each split a splitter gives, each split's winner traded on its test span and
+the test spans joined into out-of-sample paths, each one run of the engine across
+explicit seams, beside a search over every bar before the holdout, whose winner the
+holdout runs (ADRs 0034, 0035; Specification, Validation)."""
 
 import collections.abc
+import copy
 import inspect
 import math
 import multiprocessing
@@ -13,8 +14,9 @@ import shutil
 import numpy as np
 
 from . import _search, venues
-from ._backtest import _agent, _annualised, _decided, _kind, _rate, _repeatable
-from ._causality import _check
+from ._backtest import (_agent, _annualised, _arrayed, _decided, _kind, _rate,
+                        _repeatable, _seen)
+from ._causality import _check, _read
 from ._data import Data, _before, _chosen, _when
 from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
                       ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError)
@@ -43,10 +45,10 @@ FITTED = ("number", "test", "train", "purged", "embargoed", "pieces", "fitted",
 def validate(policy, data, venue, cv, space=None, search=None, features=None,
              labels=None, to_weights=None, holdout=None, fill=None, keep="all",
              seam="cancel", seed=None, risk_free=0.0):
-    """Validate ``policy``, a Strategy subclass searched over ``space``, on ``data``'s
-    bars before a holdout at ``venue``, a Venue or a preset's name, across the splits
-    of ``cv``, a `probatum.cv` splitter, and return the `Study` of its paths (ADRs
-    0034, 0035; Specification, Validation).
+    """Validate ``policy``, a Strategy subclass or a function ``policy(data, **params)``
+    searched over ``space``, on ``data``'s bars before a holdout at ``venue``, a Venue
+    or a preset's name, across the splits of ``cv``, a `probatum.cv` splitter, and
+    return the `Study` of its paths (ADRs 0034, 0035; Specification, Validation).
 
     ``search`` is a dict of `probatum.search`'s ``objective``, ``direction``,
     ``trials``, ``sampler``, ``min_trades`` and ``n_jobs``, which every search of the
@@ -54,10 +56,13 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
     holdout as its test span, and its winner is the Study's, which
     ``evaluate_holdout`` runs. Then each split's search runs on its training bars,
     each run of them a piece of its own that holds no test bar, and its winner trades
-    the split's test span. A path is one run over the bars before the holdout of its
-    windows' winners in turn, the account carried across each seam, where every order
-    not yet filled is cancelled, the targets are forgotten and the incoming window's
-    ``on_inherit(bar, account)`` is called before its first decision; with
+    the split's test span, a function called with each piece's Data. A path is one run
+    over the bars before the holdout of its windows' winners in turn, the account
+    carried across each seam, where every order not yet filled is cancelled, the
+    targets are forgotten and the incoming window's ``on_inherit(bar, account)`` is
+    called before its first decision; a path of a function's weights is one array run
+    of each window's rows of its winner's weights, called with those bars, whose seams
+    place again the legs of each inherited bracket still resting. With
     ``seam="flatten"`` the outgoing window's last close closes every position instead
     of deciding. ``holdout`` holds out the last rows as search's does, ``keep="all"``
     keeps every path's returns and ``"none"`` none, ``seed`` seeds each search from a
@@ -70,21 +75,21 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
                                    f"starts, as spawn runs the script's top level "
                                    f"again in each; {GUARD}")
 
-    _strategy(policy)
-
+    kind = _validated(policy)
+    noun = "a Strategy" if kind == "class" else "a function"
     for name, given in (("features", features), ("labels", labels),
                         ("to_weights", to_weights), ("fill", fill)):
         if given is not None:
-            raise ProbatumValueError(f"{name}: {_kind(given)} beside a Strategy, which "
+            raise ProbatumValueError(f"{name}: {_kind(given)} beside {noun}, which "
                                      f"reads its own Data; leave it out")
 
     if space is None:
-        raise ProbatumValueError("space: none, and a fixed parameter set fits nothing, "
-                                 "so a Strategy is validated by a search; give each "
-                                 "parameter a range, such as {\"fast\": "
-                                 "probatum.Int(5, 40)}")
+        raise ProbatumValueError(f"space: none, and a fixed parameter set fits nothing, "
+                                 f"so {noun} is validated by a search; give each "
+                                 f"parameter a range, such as {{\"fast\": "
+                                 f"probatum.Int(5, 40)}}")
 
-    space = _spaced(space, policy, "class")
+    space = _spaced(space, policy, kind)
     for name in space:
         if name in FITTED:
             raise ProbatumValueError(f"space: {name}, a column the fits table has of "
@@ -95,8 +100,8 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
                                 f"probatum.cv.PurgedKFold(5)")
 
     if cv.end is not None:
-        raise ProbatumValueError(f"cv: {cv!r}, built with the labels' end, which a "
-                                 f"Strategy has none of; build it without end")
+        raise ProbatumValueError(f"cv: {cv!r}, built with the labels' end, which "
+                                 f"{noun} has none of; build it without end")
 
     controls = _searched(search)
     objective, direction = controls["objective"], controls["direction"]
@@ -158,18 +163,23 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
         min_trades=min_trades, holdout=len(data) - cut, keep="none", n_jobs=n_jobs,
         seed=final_seed, risk_free=risk_free)
 
-    settings = dict(kind="class", made="strategy", objective=objective,
-                    min_trades=min_trades, rate=rate, risk_free=float(risk_free),
-                    keep="none", fits=[fit.specs for fit in fits])
+    # what every trial decides, as the first search's winner decides on these bars
+    made = ("strategy" if kind == "class"
+            or isinstance(policy(inside, **final.best_params), Strategy) else "weights")
+    settings = dict(kind=kind, made=made, objective=objective, min_trades=min_trades,
+                    rate=rate, risk_free=float(risk_free), keep="none",
+                    fits=[fit.specs for fit in fits])
     shared = _Shared(policy, held, inside, settings, n_jobs)
 
     try:
         for fit in fits:
             fit.seed = _seeded(seed, f"validate fit {fit.number}")
-            runner   = _Runner(policy, "class", inside, run, rate, float(risk_free),
+            runner   = _Runner(policy, kind, inside, run, rate, float(risk_free),
                                objective, min_trades,
                                pieces=_pieces(inside, held, fit.specs))
-            shared.fit = fit.number
+            # what the first search's winner decides, which every fit's trials decide
+            runner.made = made
+            shared.fit  = fit.number
 
             # every winner is checked once the fits are done (Specification, Fits)
             fit.made, _, pool = _asked(runner, _draws(sampler, space, trials, fit.seed,
@@ -197,7 +207,7 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
     seen = list(checked)
     for fit in fits:
         if fit.winner is not None and fit.winner.params not in seen:
-            if _check(policy, "class", fit.winner.params, inside, held, run):
+            if _check(policy, kind, fit.winner.params, inside, held, run):
                 LOGGER.info("validate: fit %s's winner's decisions are causal",
                             fit.number)
                 checked.append(fit.winner.params)
@@ -212,20 +222,20 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
             raised     = lost[0].raised
         else:
             try:
-                walk.ran(policy, fits, seam, inside, held, rate, float(risk_free),
-                         objective)
+                walk.ran(policy, kind, made, fits, seam, inside, held, rate,
+                         float(risk_free), objective)
             except Exception as error:
                 walk.error, raised = _told(error), error
 
         walks.append(walk)
         LOGGER.info("validate: path %s %s", number, walk.state)
 
-    # each path that ran cut at its seams, so what on_inherit decides there is checked
-    # as next's decisions are (Specification, Fits)
+    # each path of Strategies that ran cut at its seams, so what on_inherit decides
+    # there is checked as next's decisions are (Specification, Fits)
     for walk in walks:
-        if walk.state == "complete" and len(walk.windows) > 1:
-            composed = dict(policy=policy, windows=_composed(walk.windows, fits),
-                            seam=seam)
+        if made == "strategy" and walk.state == "complete" and len(walk.windows) > 1:
+            composed = dict(policy=policy, kind=kind,
+                            windows=_composed(walk.windows, fits), seam=seam)
             if _check(_Path, "class", composed, inside, held, run,
                       cuts=[first for first, _, _ in walk.windows[1:]]):
                 LOGGER.info("validate: path %s's seams are causal", walk.number)
@@ -271,13 +281,13 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
     return Study(None, returns, final._winner, final._ran, provenance, tables)
 
 
-def _strategy(policy):
-    """Refuse ``policy`` unless it is a Strategy subclass: a model that fits and a
-    function, which validate does not run yet, and anything else as no policy it
-    takes."""
+def _validated(policy):
+    """Whether ``policy`` is a Strategy subclass each fit builds or a function of the
+    data, refusing a model that fits, which validate does not fit yet, and anything
+    else as no policy it takes."""
     if isinstance(policy, type):
         if issubclass(policy, Strategy):
-            return
+            return "class"
         named = f"the class {policy.__name__}"
     elif isinstance(policy, Strategy):
         name = type(policy).__name__
@@ -289,14 +299,13 @@ def _strategy(policy):
     if hasattr(policy, "fit"):
         raise ProbatumNotImplementedError(f"policy: {named}, a model that fits, which "
                                           f"validate does not fit yet; pass a Strategy "
-                                          f"subclass")
+                                          f"subclass, or a function of the data")
 
     if callable(policy) and not isinstance(policy, type) and not _agent(policy):
-        raise ProbatumNotImplementedError(f"policy: {named}, which validate does not "
-                                          f"run yet; pass a Strategy subclass")
+        return "function"
 
     raise PolicyError(f"policy: {named}, which is no Strategy; pass a Strategy "
-                      f"subclass")
+                      f"subclass, or a function of the data that returns a policy")
 
 
 def _searched(given):
@@ -511,17 +520,21 @@ class _Shared:
 
 class _Path(Strategy):
     """A validation's path as one Strategy: each window's own Strategy, built with its
-    fit's winner, deciding at its window's closes from its own warm-up, and a seam
-    where one window hands the account to the next (Specification, Paths and seams).
+    fit's winner or, for ``kind`` "function", the one the function returns on the
+    Data, deciding at its window's closes from its own warm-up, and a seam where one
+    window hands the account to the next (Specification, Paths and seams).
     ``windows`` holds each window's first and last row and its parameters."""
 
 
-    def __init__(self, policy, windows, seam):
-        self.policy, self.windows, self.seam = policy, windows, seam
+    def __init__(self, policy, kind, windows, seam):
+        self.policy, self.kind, self.windows, self.seam = policy, kind, windows, seam
 
 
     def init(self, data):
-        self.parts   = [self.policy(**params) for _, _, params in self.windows]
+        # what a function returns is a prototype, copied once before it runs (ADR 0024)
+        self.parts = [self.policy(**params) if self.kind == "class"
+                      else copy.deepcopy(self.policy(data, **params))
+                      for _, _, params in self.windows]
         self.warmups = []
         for part in self.parts:
             part.init(data)
@@ -576,10 +589,18 @@ class _Walk:
         return "failed" if self.stats is None else "complete"
 
 
-    def ran(self, policy, fits, seam, inside, venue, rate, risk_free, objective):
-        """The path run once over ``inside``, and what its records give."""
-        result = _decided(_Path(policy, _composed(self.windows, fits), seam), inside,
-                          venue, "weight", None, None, 0.0, risk_free, "full")
+    def ran(self, policy, kind, made, fits, seam, inside, venue, rate, risk_free,
+            objective):
+        """The path run once over ``inside``, a Strategy's or, where the policy ``made``
+        weights, one array run, and what its records give."""
+        if made == "strategy":
+            path   = _Path(policy, kind, _composed(self.windows, fits), seam)
+            result = _decided(path, inside, venue, "weight", None, None, 0.0, risk_free,
+                              "full")
+            decided = list(result.policy.decided)
+        else:
+            result, decided = _weighed(policy, self.windows, fits, seam, inside, venue,
+                                       risk_free)
 
         rows      = len(result.time)
         positions = result.holdings["position"].reshape(rows, len(inside.names))
@@ -592,9 +613,61 @@ class _Walk:
         self.stats, self.costs = _owned(result, holding, start, rows - 1, rate,
                                         risk_free)
         self.score   = float(self.stats[objective])
-        self.decided = list(result.policy.decided)
+        self.decided = decided
         self.returns = np.full(rows, np.nan)
         self.returns[start:] = result.returns[start:]
+
+
+def _weighed(policy, windows, fits, seam, inside, venue, risk_free):
+    """A path of a function's weights run over ``inside`` as one array, and the rows
+    each window decided at: each window's rows, from its first decision row to the
+    next window's, and their barriers are its fit's winner's, the function called with
+    ``inside``, and the rows before the first window hold; a seam opens each window
+    but the first, and with ``seam="flatten"`` each window's last decision row but the
+    last's closes every position instead. Refused where two windows' winners return
+    another sizing or tolerance (Specification, A function; Paths and seams)."""
+    shape    = (len(inside), len(inside.names))
+    rows     = np.full(shape, np.nan)
+    barriers = {"stop": np.full(shape, np.nan), "take_profit": np.full(shape, np.nan)}
+    given, sizing, tolerance, opening = set(), None, None, None
+    ends = [first for first, _, _ in windows[1:]] + [shape[0]]
+
+    for (first, _, split), end in zip(windows, ends):
+        read, held, own_sizing, own_tolerance = _read(
+            policy(inside, **fits[split].winner.params), inside)
+        if sizing is None:
+            sizing, tolerance, opening = own_sizing, own_tolerance, first
+        elif (own_sizing, own_tolerance) != (sizing, tolerance):
+            raise ProbatumValueError(
+                f"policy: the windows from bars {opening:,} and {first:,} return "
+                f"sizing {sizing!r} at a tolerance of {tolerance!r} and sizing "
+                f"{own_sizing!r} at {own_tolerance!r}; return one sizing and one "
+                f"tolerance for every parameter")
+
+        rows[first:end] = read[first:end]
+        for name, barrier in held.items():
+            if barrier is not None:
+                given.add(name)
+                barriers[name][first:end] = (barrier if isinstance(barrier, float)
+                                             else barrier[first:end])
+
+    printed  = inside.available.any(axis=1)
+    kept     = np.flatnonzero(printed)
+    seams    = [int(np.searchsorted(kept, first)) for first, _, _ in windows[1:]]
+    flattens = ([int(np.searchsorted(kept, last)) for _, last, _ in windows[:-1]]
+                if seam == "flatten" else [])
+    seen, _  = _seen(rows, printed)
+    decided  = []
+
+    for k, (first, last, _) in enumerate(windows):
+        lo, hi = np.searchsorted(kept, (first, last + 1))
+        hi    -= seam == "flatten" and k < len(windows) - 1
+        decided.append(int((~np.isnan(seen[lo:hi])).any(axis=1).sum()))
+
+    result = _arrayed(rows, {name: barriers[name] if name in given else None
+                             for name in barriers}, sizing, tolerance, inside, venue,
+                      risk_free, "full", seams=seams, flattens=flattens)
+    return result, decided
 
 
 def _owned(result, holding, first, last, rate, risk_free):

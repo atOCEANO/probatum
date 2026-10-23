@@ -79,13 +79,24 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     barriers = {name: _barrier(name, given, data)
                 for name, given in (("stop", stop), ("take_profit", take_profit))}
 
-    held = _repeatable(venue)
-    run  = _run(held, data)
+    return _arrayed(rows, barriers, sizing, tolerance, data, _repeatable(venue), risk_free,
+                    record)
+
+
+def _arrayed(rows, barriers, sizing, tolerance, data, held, risk_free, record, seams=None,
+             flattens=None):
+    """``rows`` run on ``data`` at the Venue ``held`` as one array with ``barriers``,
+    ``sizing`` and ``tolerance``, and the `Result` it recorded; ``seams`` and
+    ``flattens`` are a validation's, the rows the account sees, counted from its first,
+    that a window starts on and that close every position (Specification, Paths and
+    seams)."""
+    run = _run(held, data)
 
     # what the run is played with, which its Result keeps to play again without costs
     played = _played(rows, barriers, sizing, tolerance, data, run)
     engine = Engine(run.candles, report=True, record=record, **run.settings)
-    run_array(engine, *played, start=run.start)
+
+    run_array(engine, *played, start=run.start, seams=seams, flattens=flattens)
 
     rate       = _annualised(data)
     stats      = None if rate is None else engine.stats(rate, float(risk_free))
