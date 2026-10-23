@@ -129,15 +129,17 @@ RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
 
 # The coverage cells simulate every interval probatum.stats gives on the shapes a
 # strategy's returns and round trips take, and hold each to cover between 93% and 97%
-# of the time at 95% (ADR 0031). They run at length and outside the gate, at each stage
-# that changes a statistic, and print every cell's coverage:
+# of the time at 95% (ADR 0031), and a search's tests to reject a search with no skill as
+# rarely as they claim (ADR 0033). They run at length and outside the gate, at each stage
+# that changes a statistic, and print every cell's coverage and rate:
 #   docker build --progress=plain --target coverage .
 FROM python:3.13-slim AS coverage
 COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl numpy scipy pytest \
-    && pytest -q -s --coverage -m coverage /tests/test_intervals_cover_as_often_as_they_claim.py
+    && pytest -q -s --coverage -m coverage /tests/test_intervals_cover_as_often_as_they_claim.py \
+       /tests/test_a_search_s_tests_reject_as_rarely_as_they_claim.py
 
 # The chart layer's other half. Every assertion in the correctness gate reads the
 # JSON spec, because the gate has no browser and a spec assertion is the sharper
