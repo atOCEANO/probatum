@@ -45,6 +45,8 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Int` | A whole number a search draws, on a lattice. [Below](#the-space). |
 | `probatum.Float` | A number a search draws, from an interval or a lattice. [Below](#the-space). |
 | `probatum.Categorical` | One of the choices a search draws among. [Below](#the-space). |
+| `probatum.labels` | What one trade of a notional decided at each row's close makes through the fill model a backtest runs, for a model to fit on. [Below](#labels). |
+| `probatum.Labels` | What `labels` found: each label's return, exit, bars, end and uniqueness, `(T, N)`, beside what they were made with. [Below](#labels). |
 | `probatum.cv` | The splitters, `Holdout`, `WalkForward`, `PurgedKFold` and `CombinatorialPurged`, which scikit-learn's tools take, each leaving out of training every row whose label reaches a test span. [Below](#splitters). |
 | `probatum.validate` | Run a search on the training bars of each split a splitter gives and trade each split's winner on its test span, every out-of-sample path one run across explicit seams. [Below](#validation). |
 | `probatum.stats` | How far a run's statistics can be trusted, read from a Result or any series of returns: the Sharpe's interval, its probability of beating a benchmark and the track record that would show it; and how far a search's winner can, judged across all its trials. [Below](#inference). |
@@ -948,6 +950,24 @@ space = {"fast": probatum.Int(5, 40), "slow": probatum.Int(40, 200, step=10),
          "stop": probatum.Float(0.01, 0.05, step=0.01),
          "kind": probatum.Categorical(["ema", "sma"])}
 print(space["slow"], space["stop"])      # Int(40, 200, step=10) Float(0.01, 0.05, step=0.01)
+```
+
+<br>
+
+## Labels
+
+`probatum.labels(data, venue, horizon, notional, stop=None, take_profit=None, side="long")` gives, for each row of a Data and each of its instruments, what one trade of `notional` decided at that row's close makes through the fill model a backtest runs, as a `probatum.Labels` ([ADR 0036](Decisions.md), [Specification](Specification.md#labels)).
+
+- **A trade.** Each label is a fresh account on the Data's clock trading its instrument alone, its balance the notional in the currency the instrument settles in, an inverse contract's coin. It buys the notional at the next open, or sells it with `side="short"`, which a spot instrument refuses; places a bracket at `stop` and `take_profit`, returns from its average entry, each None, a number or a `(T, N)` array of them read on the label's row, at the close of the bar its entry filled on, as an array run places one; and closes what is left at the close of the row `horizon` bars on, or of its instrument's last printed row before it, that close filling at the next open and placed again at each close after while some is left. Its return is net of fees, funding, spread, slippage and impact, and a short label is a trade of its own rather than the long one's negative. A venue whose `intrabar` is `"random"` is refused, as `backtest` refuses one.
+- **The record.** `ret`, `exit`, `bars`, `end` and `weight` are `(T, N)` and read-only. `exit` names what left the account flat, `"stop"`, `"take_profit"`, `"horizon"`, `"delist"` or `"liquidation"`; it is `"censored"` where the horizon runs past the last bar, even where a barrier would have filled first, so censoring never depends on the outcome, or where the trade is still open at the last bar; and it is `""` where the row has no label, its instrument not printing there, the row being its last printed one, or the entry filling nothing by the horizon. `end` is the bar whose price closed the trade, at `T` or later where it is censored and the least int64 where it has none, as the [splitters](#splitters) read it; `bars` counts from the entry's fill to `end`; `ret` is NaN where the label is censored or has none; and `weight` is its average uniqueness among its instrument's labels that have a return (Lopez de Prado 2018, chapter 4), a fit's `sample_weight`. A Labels keeps `horizon`, `notional`, `side`, `stop`, `take_profit`, `venue`, the Data's `names` and its `fingerprint`, never changes, and pickles.
+- **Speed.** The labels run in Rust in one call, in parallel with the GIL released, each on an engine of its own over the Data's bars.
+
+```python
+labels = probatum.labels(data, "frictionless", horizon=24, notional=10_000.0,
+                         stop=0.03, take_profit=0.03)
+print(labels)                   # what was labelled, on which side, notional and horizon
+print((labels.exit == "stop").mean(), numpy.nanmean(labels.ret))
+splitter = probatum.cv.PurgedKFold(5, end=labels.end)    # purged where each trade closed
 ```
 
 <br>

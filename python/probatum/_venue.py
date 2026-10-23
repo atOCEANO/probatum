@@ -304,10 +304,11 @@ class Venue:
         return self
 
 
-def _run(venue, data, seed=None):
+def _run(venue, data, seed=None, balance=None):
     """What the Engine is built from to run ``data`` on ``venue``, a Venue or a preset's
     name, as a `Run`, with ``seed`` the stream a venue deciding what a bar cannot show
-    at random draws from. Each instrument takes its tables from the venue, keyed by its
+    at random draws from, and ``balance``, where given, opening the account in place of
+    the venue's. Each instrument takes its tables from the venue, keyed by its
     symbol, or as kind:SYMBOL on a venue of several kinds, and each order limit the
     router gave it where no table of the venue gives one; the rows none of the
     instruments printed are left out. Refused are an empty Data; an unnamed instrument
@@ -384,7 +385,7 @@ def _run(venue, data, seed=None):
                         funding_rates=np.ascontiguousarray(events["rate"]),
                         funding_instruments=events["instrument"].tolist())
 
-    balance = venue._balance
+    balance = venue._balance if balance is None else balance
     if not isinstance(balance, dict) and "spot" in markets and perps:
         raise VenueError(f"balance: {balance}, one wallet's, and the data's spot and "
                          f"perpetual instruments use both; replace(balance="

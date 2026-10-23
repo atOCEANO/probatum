@@ -11,7 +11,9 @@ self-contained HTML document for a notebook cell or a file, computing nothing it
 recorded, ``Strategy`` is a policy that decides at each close, and ``combine`` adds
 Results from accounts at different venues into one book. ``search`` searches a
 policy's parameters over ``Int``, ``Float`` and ``Categorical`` ranges on the bars
-before a holdout, and returns the ``Study`` of every trial. ``validate`` runs that
+before a holdout, and returns the ``Study`` of every trial. ``labels`` gives, as
+``Labels``, what one trade of a notional decided at each row's close makes through the
+same fill model, for a model to fit on. ``validate`` runs that
 search on the training bars of each split a splitter of ``cv`` gives, trades each
 split's winner on its test span and returns the ``Study`` of the out-of-sample paths.
 ``stats`` says how far a run's statistics can be trusted, read from a Result or any
@@ -38,6 +40,7 @@ from ._strategy import Strategy
 from ._engine import Engine
 from ._result import Result, combine
 from ._backtest import backtest
+from ._labels import Labels, labels
 from ._search import Study, search
 from ._validate import validate
 from .market import Market
@@ -45,8 +48,9 @@ from ._chart import chart, chart_defaults
 
 __all__ = [
     "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
-    "Instrument", "Int", "Market", "Result", "Strategy", "Study", "Venue", "backtest",
-    "chart", "chart_defaults", "combine", "search", "to_ohlcv", "validate",
+    "Instrument", "Int", "Labels", "Market", "Result", "Strategy", "Study", "Venue",
+    "backtest", "chart", "chart_defaults", "combine", "labels", "search", "to_ohlcv",
+    "validate",
     "cv", "metrics", "plot", "rl", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
