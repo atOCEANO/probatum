@@ -3465,14 +3465,20 @@ def levels(sim, entry, long, stop, take_profit):
     return out
 
 
-def play_array(sim, rows, sizing="weight", tolerance=0.0, stop=None, take_profit=None):
+def play_array(sim, rows, sizing="weight", tolerance=0.0, stop=None, take_profit=None,
+               seams=(), flattens=()):
     """Orders, An array and Barriers on an array: `rows` through `sim` from the row its
     account opened at, row k of them the values it asks of its instruments at its kth
     close in the unit `sizing` names, a NaN holding and the last row never read.
     `stop` and `take_profit` are each None, a number or rows like `rows`, returns from
     the average entry that give every round trip its bracket at the close of the bar
     it opened on, and a barrier's fill holds its instrument flat until a row asks for
-    zero or for the other side. Returns `sim`."""
+    zero or for the other side. Validation, Paths and seams: at each of `seams`, the
+    rows a path's windows after its first start on, every order not yet filled is
+    cancelled and the targets forgotten, each round trip held places again at its
+    average entry the legs of its bracket still resting, or after a flattening row
+    those resting at its close, and the latches hold, before the row is read; each of
+    `flattens` closes every position instead of being read. Returns `sim`."""
     n       = len(sim.instruments)
     barred  = stop is not None or take_profit is not None
     held    = list(sim.position)      # each position at the last close
@@ -3481,6 +3487,12 @@ def play_array(sim, rows, sizing="weight", tolerance=0.0, stop=None, take_profit
     legs    = [{} for _ in range(n)]  # its bracket's legs, by name
     priced  = [None] * n              # the average entry they were priced at
     latched = [0.0] * n               # the side a barrier filled on, 0.0 for none
+    carried = None                    # the legs resting at a flattening row's close
+
+    def resting():
+        ids = {order["id"] for order in sim.resting()}
+        return [{name for name, order in held_legs.items() if order in ids}
+                for held_legs in legs]
 
     for k, row in enumerate(rows[:-1]):
         t = sim.t
@@ -3516,6 +3528,38 @@ def play_array(sim, rows, sizing="weight", tolerance=0.0, stop=None, take_profit
                     sim.replace(legs[i]["take_profit"], price=at["take_profit"])
             held[i] = q
 
+        if k in flattens:
+            sim.hit("an array's window closing every position at its seam")
+            carried = resting()
+            sim.seam(flatten=True)
+            legs = [{} for _ in range(n)]
+            sim.step()
+            continue
+
+        if k in seams:
+            sim.hit("an array's seam")
+            # the legs still resting are placed again alone
+            after   = carried is not None
+            kept    = carried if after else resting()
+            carried = None
+            sim.seam()
+            for i in range(n if barred else 0):
+                q = sim.position[i]
+                legs[i] = {}
+                if q == 0.0:
+                    continue
+                priced[i] = sim.entry[i]
+                at = levels(sim, priced[i], q > 0.0, returns(stop, opened[i], i),
+                            returns(take_profit, opened[i], i))
+                at = {name: price for name, price in at.items() if name in kept[i]}
+                if at:
+                    sim.hit("an array's bracket placed again at a seam")
+                    if after:
+                        sim.hit("an array's legs placed again after a flattening close")
+                    placed = sim.bracket(i, stop=at.get("stop"),
+                                         take_profit=at.get("take_profit"))
+                    legs[i] = {sim.orders[order]["leg"]: order for order in placed}
+
         named = {}
         for i, value in enumerate(row):
             if math.isnan(value):
@@ -3534,3 +3578,135 @@ def play_array(sim, rows, sizing="weight", tolerance=0.0, stop=None, take_profit
         sim.step()
 
     return sim
+
+
+LEAST = -2 ** 63   # Labels: the end of a row with no label
+# Labels: the exit each closing fill's reason names
+EXITS = {
+    "stop":        "stop",
+    "take_profit": "take_profit",
+    "market":      "horizon",
+    "delist":      "delist",
+    "liquidation": "liquidation",
+}
+
+
+def labels(times, bars, instruments, venue, horizon, notional, stop=None,
+           take_profit=None, side="long", funding=None, interval=None):
+    """Labels: for each row t and instrument i, one trade of `notional` decided at row
+    t's close by a fresh account on instrument i alone holding the notional, its
+    bracket placed at the close of the bar its entry filled on, and closed at the
+    close of row t + horizon or the instrument's last printed row before it and at
+    each close after while some is left; and each
+    label's average uniqueness among its instrument's labels with a return. `stop`
+    and `take_profit` are None, a number or rows of returns like `bars`. Returns a
+    dict of `ret`, `exit`, `bars`, `end` and `weight`, each rows like `bars`."""
+    count, n = len(times), len(instruments)
+
+    out = {
+        "ret":    [[math.nan] * n for _ in range(count)],
+        "exit":   [[""] * n for _ in range(count)],
+        "bars":   [[0] * n for _ in range(count)],
+        "end":    [[LEAST] * n for _ in range(count)],
+        "weight": [[math.nan] * n for _ in range(count)],
+    }
+    entered = [[None] * n for _ in range(count)]
+
+    for i, inst in enumerate(instruments):
+        printed = [t for t in range(count) if bars[t][i] is not None]
+        own     = [[row[i]] for row in bars]
+        events  = None if funding is None else [(time, 0, rate) for time, k, rate
+                                                 in funding if k == i]
+
+        alone         = copy.copy(venue or Venue())
+        alone.balance = notional
+        if inst.kind == "spot":
+            # a spot account is never liquidated, whatever the venue's rule
+            alone.liquidation = "takeover"
+
+        for t in printed[:-1]:
+            if inst.delist is not None and times[t] >= inst.delist:
+                continue
+            if t + horizon + 1 > count - 1:
+                out["exit"][t][i] = "censored"
+                out["end"][t][i]  = t + horizon + 1
+                continue
+
+            sim  = Simulator(times, own, [inst], alone, interval, events, start=t)
+            made = trade(sim, t, horizon, notional, side, returns(stop, t, i),
+                         returns(take_profit, t, i))
+            if made is None:
+                continue
+            if made == "censored":
+                out["exit"][t][i] = "censored"
+                out["end"][t][i]  = max(t + horizon + 1, count)
+                continue
+
+            ret, kind, first, end = made
+            out["ret"][t][i], out["exit"][t][i] = ret, kind
+            out["bars"][t][i], out["end"][t][i] = end - first, end
+            entered[t][i] = first
+
+        spans = [(t, entered[t][i], out["end"][t][i]) for t in range(count)
+                 if entered[t][i] is not None]
+        for t, weight in uniqueness(spans).items():
+            out["weight"][t][i] = weight
+
+    return out
+
+
+def trade(sim, t, horizon, notional, side, stop, take_profit):
+    """Labels: one label's trade from the account `sim` opened at row t: its return,
+    exit, the row its entry filled on and its end, None where its entry filled nothing
+    by row t + horizon, and "censored" where it is still open at the last row."""
+    # an inverse contract's notional is in its coin, and buys what it is worth in dollars
+    # at row t's close
+    inverse = sim.instruments[0].kind == "inverse"
+    amount  = notional * sim.bars[t][0].close if inverse else notional
+    (sim.sell_value if side == "short" else sim.buy_value)(0, amount)
+
+    last  = max(r for r in range(t, t + horizon + 1) if sim.bars[r][0] is not None)
+    first = None
+    while sim.step():
+        r = sim.t
+        if first is None:
+            if not any(fill["bar"] == r for fill in sim.fills):
+                if r >= t + horizon:
+                    return None
+                continue
+            first = r
+
+        q = sim.position[0]
+        if q == 0.0:
+            reason = [fill for fill in sim.fills if fill["bar"] == r][-1]["reason"]
+            if reason == "dust":
+                # a position swept as dust takes the exit of the fill that left it
+                reason = [fill for fill in sim.fills if fill["reason"] != "dust"][-1][
+                    "reason"]
+            return (sim.equity() - notional) / notional, EXITS[reason], first, r
+
+        if r == first:
+            sim.hit("a label's bracket placed at its entry")
+            at = levels(sim, sim.entry[0], q > 0.0, stop, take_profit)
+            if at:
+                sim.bracket(0, stop=at.get("stop"), take_profit=at.get("take_profit"))
+
+        # a close that leaves some open is placed again at each close after
+        if r >= last and not sim.pending:
+            sim.hit("a label closed at its horizon")
+            sim.close(0)
+
+    return "censored"
+
+
+def uniqueness(spans):
+    """Labels: each label's average uniqueness among `spans`, each `(t, first, end)`,
+    one instrument's labels with a return, as the mean of 1 / c over the rows from its
+    entry's fill to its end, c counting the labels spanning each row."""
+    count = collections.Counter()
+    for _, first, end in spans:
+        for s in range(first, end + 1):
+            count[s] += 1
+
+    return {t: mean([1.0 / count[s] for s in range(first, end + 1)])
+            for t, first, end in spans}

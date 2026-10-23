@@ -1075,3 +1075,46 @@ def reality_check(f, drawn, q):
         above += top > big_t
 
     return white, above / len(drawn)
+
+
+def mid_ranks(values):
+    """A model's forecast: each value's mid-rank, 1 for the least, equal values sharing
+    the mean of the ranks they span."""
+    order = sorted(range(len(values)), key=lambda k: values[k])
+    ranks = [0.0] * len(values)
+    k     = 0
+
+    while k < len(order):
+        j = k
+        while j + 1 < len(order) and values[order[j + 1]] == values[order[k]]:
+            j += 1
+        for m in range(k, j + 1):
+            ranks[order[m]] = (k + j) / 2.0 + 1.0
+        k = j + 1
+
+    return ranks
+
+
+def forecast(predicted, returned, bars, lag):
+    """A model's forecast: Spearman's correlation of `predicted` with `returned`, each
+    row's bar in `bars`; its standard error, the square root of the Newey-West variance
+    at `lag`, Bartlett's weights, of each bar's sum of the rows' influence, the bars
+    between holding none adding 0, over the rows' count squared; and the R squared
+    against a forecast of zero."""
+    n    = len(predicted)
+    u, v = ([(rank - mean(ranks)) / deviation(ranks, 0) for rank in ranks]
+            for ranks in (mid_ranks(predicted), mid_ranks(returned)))
+    rho  = sum(x * y for x, y in zip(u, v)) / n
+    sums = {}
+    for x, y, bar in zip(u, v, bars):
+        sums[bar] = sums.get(bar, 0.0) + x * y - rho * (x * x + y * y) / 2.0
+
+    series   = [sums.get(s, 0.0) for s in range(min(bars), max(bars) + 1)]
+    variance = sum(s * s for s in series)
+    for j in range(1, lag + 1):
+        variance += 2.0 * (1.0 - j / (lag + 1.0)) * sum(
+            series[k] * series[k + j] for k in range(len(series) - j))
+
+    r_squared = 1.0 - (sum((y - p) ** 2 for p, y in zip(predicted, returned))
+                       / sum(y * y for y in returned))
+    return rho, math.sqrt(variance) / n, r_squared

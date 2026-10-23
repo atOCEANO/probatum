@@ -17,8 +17,8 @@ import probatum
 from probatum import ProbatumKeyError
 
 from reference import statistics
-from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, periods_per_year,
-                                 play_array, run)
+from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, labels,
+                                 periods_per_year, play_array, run, uniqueness)
 
 HOUR = 3_600 * 10**9
 DAY  = 24 * HOUR
@@ -1562,3 +1562,66 @@ def test_four_trials_on_four_bars_give_white_0_2_and_spa_0_6_on_five_resamples()
                                                                    19 / 64, 199 / 256]
     assert round(math.sqrt(2.0 * math.log(math.log(4.0))), 4) == 0.8083
     assert statistics.reality_check(f, drawn, 0.5) == pytest.approx((0.2, 0.6))
+
+
+def test_a_label_closes_at_its_horizon_or_at_its_stop_and_the_last_rows_are_censored():
+    # 10,000 buys 100 at row 1's open of 100.0; row 2 opens at 99.0 and trades down to
+    # 94.0, and row 3 opens at 103.0
+    bars  = [[flat(100.0)], [flat(100.0)], [Bar(99.0, 99.0, 94.0, 98.0, 1_000.0)]]
+    bars += [[flat(103.0)] for _ in range(7)]
+    times = hourly(len(bars))
+    plain = Venue(maker=0.0, taker=0.0)
+    held  = labels(times, bars, [Instrument("BTCUSDT")], plain, 2, 10_000.0)
+
+    assert (held["ret"][0][0], held["exit"][0][0], held["end"][0][0],
+            held["bars"][0][0]) == (pytest.approx(0.03), "horizon", 3, 2)
+
+    stopped = labels(times, bars, [Instrument("BTCUSDT")], plain, 2, 10_000.0,
+                     stop=0.05)
+    assert (stopped["ret"][0][0], stopped["exit"][0][0], stopped["end"][0][0],
+            stopped["bars"][0][0]) == (pytest.approx(-0.05), "stop", 2, 1)
+    assert [held["exit"][t][0] for t in (7, 8, 9)] == ["censored", "censored", ""]
+    assert [held["end"][t][0] for t in (7, 8)]     == [10, 11]
+    assert math.isnan(held["ret"][7][0]) and held["end"][9][0] == -2 ** 63
+
+
+def test_three_overlapping_labels_weigh_0_6111_0_4444_and_0_6111():
+    weights = uniqueness([(0, 1, 3), (1, 2, 4), (2, 3, 5)])
+
+    assert [weights[t] for t in range(3)] == pytest.approx([11 / 18, 4 / 9, 11 / 18])
+    assert round(weights[1], 4) == 0.4444
+
+
+def test_four_predictions_correlate_at_0_6_in_rank_with_an_r_squared_of_0_4():
+    rho, _, r_squared = statistics.forecast([0.01, -0.01, 0.02, 0.0],
+                                            [0.02, -0.01, 0.01, -0.02], [0, 1, 2, 3], 1)
+
+    assert (rho, r_squared) == (pytest.approx(0.6), pytest.approx(0.4))
+    assert statistics.mid_ranks([0.01, -0.01, 0.02, 0.0]) == [3.0, 1.0, 4.0, 2.0]
+
+
+def test_an_array_s_seam_places_the_inherited_stop_again_and_a_latch_holds():
+    # window 1's weight of 1.0 at row 2 fills at row 3's open, its stop resting at
+    # 95.0 from row 3's close; window 2 starts at row 6
+    bars = [[flat(100.0)] for _ in range(10)]
+    rows = [[math.nan]] * 2 + [[1.0]] + [[math.nan]] * 3 + [[1.0]] * 4
+    sim  = play_array(Simulator(hourly(10), bars, [Instrument("BTCUSDT")],
+                                Venue(maker=0.0, taker=0.0)), rows, stop=0.05,
+                      seams={6})
+
+    seam = [event for event in sim.events if event["reason"] == "seam"]
+    assert [(event["bar"], event["kind"]) for event in seam] == [(6, "cancelled")]
+    stops = [order for order in sim.orders.values() if order["leg"] == "stop"]
+    assert [(order["trigger"], order["status"]) for order in stops] == [
+        (95.0, "cancelled"), (95.0, "resting")]
+
+    # a stop that fills on row 5 holds window 2's longs off until a row asks for zero
+    falling = [[flat(100.0)] for _ in range(5)] + [[Bar(100.0, 100.0, 90.0, 92.0,
+                                                        1_000.0)]]
+    falling += [[flat(92.0)] for _ in range(4)]
+
+    sim = play_array(Simulator(hourly(10), falling, [Instrument("BTCUSDT")],
+                               Venue(maker=0.0, taker=0.0)), rows, stop=0.05, seams={6})
+
+    assert sim.position[0] == 0.0
+    assert [fill["reason"] for fill in sim.fills] == ["rebalance", "stop"]
