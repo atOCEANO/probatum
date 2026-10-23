@@ -18,9 +18,8 @@ import pytest
 
 import probatum
 from probatum import (Categorical, DataError, Int, LookaheadError, PolicyError,
-                      ProbatumAttributeError, ProbatumNotImplementedError,
-                      ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
-                      ProbatumWarning, VenueError)
+                      ProbatumAttributeError, ProbatumRuntimeError, ProbatumTypeError,
+                      ProbatumValueError, ProbatumWarning, VenueError)
 from probatum._backtest import _annualised, _markets
 from probatum._data import _before
 from probatum._probatum import Engine
@@ -826,12 +825,12 @@ REFUSED = [
     (dict(policy=np.zeros(3)), PolicyError,
      "policy: an object of type ndarray, which is no Strategy; pass a Strategy "
      "subclass"),
-    (dict(policy=Model()), ProbatumNotImplementedError,
-     "policy: an object of type Model, a model that fits, which validate does not fit "
-     "yet; pass a Strategy subclass"),
-    (dict(policy=Model), ProbatumNotImplementedError,
-     "policy: the class Model, a model that fits, which validate does not fit yet; "
-     "pass a Strategy subclass"),
+    (dict(policy=Model()), ProbatumValueError,
+     "space: {'fast': Int(3, 8), 'slow': Int(10, 30)} beside a model, which is fitted "
+     "rather than searched; leave it out"),
+    (dict(policy=Model), PolicyError,
+     "policy: the class Model, a model's class; give a model, or the class beside its "
+     "features, labels and to_weights, which builds one for each fit"),
     (dict(features=np.zeros((480, 1, 3))), ProbatumValueError,
      "features: an object of type ndarray beside a Strategy, which reads its own Data; "
      "leave it out"),

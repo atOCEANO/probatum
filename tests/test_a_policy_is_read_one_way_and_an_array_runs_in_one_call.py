@@ -323,7 +323,8 @@ def test_what_backtest_does_not_run_is_answered_with_what_to_do_instead():
         probatum.backtest(Cross, data, VENUE)
     with pytest.raises(PolicyError, match="an object of type Fitted, a model that "
                                           "fits, which backtest does not fit; pass its "
-                                          "predictions as an array"):
+                                          "predictions as an array, or fit it with "
+                                          "probatum.validate"):
         probatum.backtest(Fitted(), data, VENUE)
     with pytest.raises(ProbatumNotImplementedError, match="a function, which backtest "
                                                           "does not run as an agent "

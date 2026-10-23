@@ -45,9 +45,8 @@ class ProbatumRuntimeError(ProbatumError, RuntimeError):
 class ProbatumNotImplementedError(ProbatumRuntimeError, NotImplementedError):
     """What is not done yet: a Strategy that writes no ``next``, an agent, which
     ``backtest`` does not run yet, the transitions level, which it does not record yet,
-    a search's ``storage``, which it does not save to yet, and a model, which
-    ``validate`` does not fit yet. It is a ProbatumRuntimeError as
-    NotImplementedError is a RuntimeError."""
+    and a search's ``storage``, which it does not save to yet. It is a
+    ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
 
 
 class DataError(ProbatumValueError):
@@ -64,8 +63,8 @@ class SpecError(ProbatumValueError):
 
 
 class LookaheadError(ProbatumValueError):
-    """A policy or a feature the causality check finds reading a bar that has not
-    closed."""
+    """A policy, or a model's features, predictions or weights, the causality check
+    finds reading a bar that has not closed."""
 
 
 class PolicyError(ProbatumTypeError):

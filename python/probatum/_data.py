@@ -1986,18 +1986,9 @@ def features(data, values, fill=None):
         error = DataError if number or isinstance(fill, str) else ProbatumTypeError
         raise error(f"fill: {fill!r}; give a finite number or \"previous\"")
 
-    start = 0
-    if callable(values):
-        start, stop = data._rows
-        data   = Data._of(data._root, (0, stop), data._cols)
-        values = values(data)
+    values, data, start = _computed(data, values)
 
-    values = np.asarray(values, dtype=np.float64)
-    shape  = (len(data), len(data._cols))
-    if values.ndim != 3 or values.shape[:2] != shape:
-        raise DataError(f"features: shape {values.shape} for {shape[0]} bars of "
-                        f"{shape[1]} instruments; give ({shape[0]}, {shape[1]}, F)")
-
+    shape     = values.shape[:2]
     out       = values.copy()
     available = data.available
 
@@ -2029,6 +2020,26 @@ def features(data, values, fill=None):
             out[rows, instrument, feature] = series
 
     return _frozen(out[start:])
+
+
+def _computed(data, values):
+    """The features ``values`` as float64: the ``(T, N, F)`` array itself, over
+    ``data``'s rows, or what a function of a Data returns given the bars before a slice
+    as well, over those rows and the slice's; beside the Data its rows are and the row
+    ``data`` starts at among them."""
+    start = 0
+    if callable(values):
+        start, stop = data._rows
+        data   = Data._of(data._root, (0, stop), data._cols)
+        values = values(data)
+
+    values = np.asarray(values, dtype=np.float64)
+    shape  = (len(data), len(data._cols))
+    if values.ndim != 3 or values.shape[:2] != shape:
+        raise DataError(f"features: shape {values.shape} for {shape[0]} bars of "
+                        f"{shape[1]} instruments; give ({shape[0]}, {shape[1]}, F)")
+
+    return values, data, start
 
 
 def _now():

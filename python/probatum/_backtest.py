@@ -65,7 +65,8 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
                         risk_free, record)
     elif hasattr(policy, "fit") and not callable(policy):
         raise PolicyError(f"policy: {_kind(policy)}, a model that fits, which backtest "
-                          f"does not fit; pass its predictions as an array")
+                          f"does not fit; pass its predictions as an array, or fit "
+                          f"it with probatum.validate")
     elif _agent(policy) or callable(policy):
         raise ProbatumNotImplementedError(f"policy: {_kind(policy)}, which backtest "
                                           f"does not run as an agent yet; pass its "

@@ -21,8 +21,9 @@ from ._space import _flag, _number, _whole
 from ._streams import stream
 
 __all__ = ["AlphaBeta", "BacktestLength", "Consistency", "Decay", "Deflated", "Difference",
-           "EffectiveTrials", "Interval", "Overfitting", "Permutations", "Probability",
-           "RealityCheck", "Statistics", "TrackRecord", "alpha_beta", "autocorrelation",
+           "EffectiveTrials", "Forecast", "Interval", "Overfitting", "Permutations",
+           "Probability", "RealityCheck", "Statistics", "TrackRecord", "alpha_beta",
+           "autocorrelation",
            "bootstrap", "deflated_sharpe", "deflation_threshold", "effective_sample",
            "effective_trials", "min_backtest_length", "min_track_record_length",
            "overfitting", "probabilistic_sharpe", "reality_check", "sharpe",
@@ -577,6 +578,33 @@ class BacktestLength(_Frozen):
             said += f"; this series has {_years(self.series_years)}"
 
         return said
+
+
+class Forecast(_Frozen):
+    """A model's skill out of sample, apart from its weights and its costs:
+    ``rank_ic``, Spearman's correlation of its predictions with its labels' returns
+    over ``rows`` rows of ``paths`` paths; ``error``, its standard error, Newey-West
+    over the bars at ``lag``, the longest label; ``t``, the correlation over its error;
+    and ``r_squared``, against a forecast of zero (Specification, A model)."""
+
+    __slots__ = ("rank_ic", "error", "t", "lag", "r_squared", "rows", "paths")
+
+
+    def __init__(self, rank_ic, error, t, lag, r_squared, rows, paths):
+        self._set(
+            rank_ic   = float(rank_ic),
+            error     = float(error),
+            t         = float(t),
+            lag       = int(lag),
+            r_squared = float(r_squared),
+            rows      = int(rows),
+            paths     = int(paths),
+        )
+
+
+    def __str__(self):
+        return (f"forecast rank IC {self.rank_ic:.3f}, t = {self.t:.1f} (Newey-West, lag "
+                f"{self.lag}); R squared {self.r_squared:.1%}")
 
 
 class Statistics(Mapping):
@@ -1824,6 +1852,45 @@ def _long_run(psi, m):
     sums   = prefix[:, np.minimum(starts + m + 1, count)] - prefix[:, np.maximum(starts, 0)]
     summed = (sums * sums).sum(axis=1) / (count * (m + 1.0))
     return np.maximum(summed, (psi * psi).sum(axis=1) / count)
+
+
+def _mid_ranks(values):
+    """Each value's mid-rank, 1 for the least, equal values sharing the mean of the
+    ranks they span."""
+    order  = np.argsort(values, kind="stable")
+    held   = values[order]
+    starts = np.flatnonzero(np.concatenate([[True], held[1:] != held[:-1]]))
+    ends   = np.append(starts[1:], len(values))
+    out    = np.empty(len(values))
+    out[order] = np.repeat((starts + ends - 1) / 2.0 + 1.0, ends - starts)
+    return out
+
+
+def _forecast(predicted, returned, bars, lag, paths):
+    """The Forecast of ``predicted`` against ``returned``, ``bars`` each row's bar, at
+    ``lag``: the influence of each row on the correlation, summed over its bar, the
+    bars between holding none adding 0, gives the Newey-West variance over the rows'
+    count squared; or why there is none, fewer than 3 rows or a side that never varies
+    (Specification, A model)."""
+    count = len(predicted)
+    if count < 3:
+        return f"{count} row{'s' * (count != 1)} with a return, fewer than 3"
+
+    for values, said in ((predicted, "predictions"), (returned, "returns")):
+        if np.all(values == values[0]):
+            return f"the {said} never vary"
+
+    u, v = ((ranks - ranks.mean()) / ranks.std()
+            for ranks in (_mid_ranks(predicted), _mid_ranks(returned)))
+    rho     = float(u @ v) / count
+    summed  = np.bincount(bars - bars.min(), weights=u * v - rho * (u * u + v * v) / 2.0)
+    covered = np.array([float(summed[j:] @ summed[:len(summed) - j])
+                        if j < len(summed) else 0.0 for j in range(lag + 1)])
+    error   = math.sqrt(max(_bartlett(covered, lag), 0.0)) / count
+    squared = 1.0 - float(((returned - predicted) ** 2).sum()) / float(
+        (returned * returned).sum())
+    return Forecast(rho, error, rho / error if error > 0.0 else math.nan, lag, squared,
+                    count, paths)
 
 
 def _trips_core(pnl, opening, statistic, level, resamples, seed):

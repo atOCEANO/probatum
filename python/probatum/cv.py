@@ -220,8 +220,9 @@ def _given(layout, ends, labelled, embargo):
 def _rows(tests, trains, ends, labelled, embargo):
     """The rows a split trains and tests on, as ``(bars, width)`` masks: a test span's
     rows with a label, and its training ranges' rows with one, but those whose label
-    reaches a span from before it and those from the bar after a span to its reach and
-    the ``embargo`` after it (Specification, The purge and the embargo)."""
+    reaches a span from before it and those from the bar after a span to its reach, the
+    latest end of a label that tests in it, and the ``embargo`` after it
+    (Specification, The purge and the embargo)."""
     t     = np.arange(ends.shape[0], dtype=np.int64)[:, None]
     train = np.zeros(ends.shape, dtype=bool)
     test  = np.zeros(ends.shape, dtype=bool)
@@ -232,8 +233,9 @@ def _rows(tests, trains, ends, labelled, embargo):
 
     for a, b in tests:
         test[a:b + 1] = True
-        span   = ends[a:b + 1]
-        marked = span[span != NONE]
+
+        # a label censored or running past the bars tests nothing, so reaches nothing
+        marked = ends[a:b + 1][labelled[a:b + 1]]
         reach  = max(b, int(marked.max())) if marked.size else b
         gone |= (t < a) & (ends >= a)
         gone[b + 1:reach + embargo + 1] = True

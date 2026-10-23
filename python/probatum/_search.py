@@ -34,7 +34,7 @@ from ._space import Categorical, Float, Int, _whole
 from ._strategy import Strategy, _Run, _play
 from ._venue import _run
 from .stats import (BREAK_EVEN, GROWS, HALVED, PARTS, RETURNS, TRADES, Consistency, Decay,
-                    _percent, bootstrap, deflated_sharpe, effective_trials,
+                    Forecast, _percent, bootstrap, deflated_sharpe, effective_trials,
                     min_backtest_length, overfitting, reality_check, sharpe_interval)
 
 LOGGER     = logging.getLogger("probatum")
@@ -912,12 +912,16 @@ class Study:
     last account rows it owns and their times, the rows it decided on, its score, its
     statistics and its costs; and ``returns``, each path's returns on the in-sample
     account rows, ``(paths, T)`` and read-only, NaN where it owns no row and on a
-    failed path. ``returns`` is None where the call kept none.
+    failed path. ``returns`` is None where the call kept none. A model's validation
+    scores its paths and windows on the Sharpe, adds each path's forecast to its row,
+    counts each fit's rows and those a NaN feature left out in place of its search, and
+    keeps the pooled ``forecast``, None for a searched policy.
 
     Both hold a winner, a validation's the one of the search it runs over the bars
-    before the holdout first: ``best``, its Result on the in-sample bars, run again
-    when first read; ``best_params`` and ``best_score``; ``evaluate_holdout()``, the
-    winner run once on the held-out bars, and ``holdout``, the Result it gave;
+    before the holdout first, or a model's final fit: ``best``, its Result on the
+    in-sample bars, run again when first read; ``best_params`` and ``best_score``;
+    ``evaluate_holdout()``, the winner run once on the held-out bars, and ``holdout``,
+    the Result it gave;
     ``looks``, how many times the winner has been handed the held-out bars; and
     ``provenance``, what the call was given and where it ran. A search's is judged
     across its trials by ``deflated_sharpe(null)``, ``effective_trials()``,
@@ -925,11 +929,14 @@ class Study:
     ``probatum.stats`` computes them (ADR 0033)."""
 
 
-    def __init__(self, trials, returns, winner, ran, provenance, tables=None):
+    def __init__(self, trials, returns, winner, ran, provenance, tables=None,
+                 forecast=None):
         self._trials, self.returns, self.provenance = trials, returns, provenance
         # a validation's paths, fits and windows, None for a search's Study
         self._tables = tables
-        self._looks  = 0
+        # a model's pooled Forecast, or why it has none
+        self._forecast = forecast
+        self._looks    = 0
         self._winner, self._ran = winner, ran
         self._best = self._holdout = self._effective = None
 
@@ -983,6 +990,13 @@ class Study:
         if self._tables is None:
             return "search", "search"
         return "validation", "validate"
+
+
+    @property
+    def forecast(self):
+        """A model's pooled Forecast over every complete path's rows, None where it has
+        none and for a searched policy."""
+        return self._forecast if isinstance(self._forecast, Forecast) else None
 
 
     @property
@@ -1121,6 +1135,10 @@ class Study:
             median = flip * float(np.median(scores[done])) + 0.0
             lines.append(_line("median", f"{median:.2f}; "
                                          f"{self._median_path(scores, done)}"))
+            if self._forecast is not None:
+                said = (f"none: {self._forecast}" if isinstance(self._forecast, str)
+                        else str(self._forecast).removeprefix("forecast "))
+                lines.append(_line("forecast", said))
             lines.append(_line("costs", self._costs(paths, done)))
 
         lines.append(_line("evidence", "the paths are stability evidence; the verdict "
@@ -1186,6 +1204,11 @@ class Study:
             raise ProbatumValueError(f"decay: {objective} grows with the span it is scored "
                                      f"on, so a gap would measure the spans' lengths; "
                                      f"decay reads a rate or a ratio, such as sharpe")
+
+        if self._forecast is not None:
+            raise ProbatumValueError("decay: a model's fits score no bars of their own, "
+                                     "so no window has a fitted score to fall from; read "
+                                     "its forecast")
 
         if self._tables is not None:
             windows, fits = self._tables["windows"], self._tables["fits"]

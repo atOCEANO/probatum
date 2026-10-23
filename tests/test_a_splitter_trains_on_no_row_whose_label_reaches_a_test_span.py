@@ -70,7 +70,7 @@ def by_rule(splitter, end, bars):
     tests where its bar is in a span and its label ends by the last bar, and trains
     where its bar is a training bar and its label ends by the last bar,
     unless its label reaches a span from before it or it starts after a span up to the
-    span's reach and the embargo."""
+    span's reach, the latest end of a label that tests there, and the embargo."""
     width    = end.shape[1]
     labelled = [(t, k) for t in range(bars) for k in range(width)
                 if end[t, k] != NONE and end[t, k] < bars]
@@ -84,7 +84,7 @@ def by_rule(splitter, end, bars):
         reaches = []
         for a, b in spans:
             ends = [end[t, k] for t in range(a, b + 1) for k in range(width)
-                    if end[t, k] != NONE]
+                    if end[t, k] != NONE and end[t, k] < bars]
             reaches.append((a, b, max([b] + ends)))
 
         train, test = [], []
@@ -203,6 +203,17 @@ def test_the_layouts_worked_examples_hold():
     assert {split for split, fed in feeds.items() if len(fed) == 1} == {0, 5, 9, 12, 14}
     assert all(sum(s == split for path in paths for *_, s in path) == 2
                for split in range(15))
+
+
+def test_a_label_that_tests_nothing_in_a_span_reaches_nothing():
+    # labels end 12 bars on, but the one at row 210 never closes and ends past the
+    # bars, so split 1, testing 200 to 399, reaches 411 and trains again from 423, after
+    # its embargo of 11, to 987, the last label that ends by the last bar
+    end      = np.arange(1_000, dtype=np.int64) + 12
+    end[210] = 1_000
+    train, _ = list(PurgedKFold(5, end=end).split(np.zeros(1_000)))[1]
+
+    assert train.tolist() == list(range(188)) + list(range(423, 988))
 
 
 def test_one_test_group_combines_into_purged_k_fold_s_splits():
