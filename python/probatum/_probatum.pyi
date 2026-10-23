@@ -285,6 +285,8 @@ def run_array(
     stop: Optional[float | np.ndarray] = ...,
     take_profit: Optional[float | np.ndarray] = ...,
     start: int = ...,
+    seams: Optional[list[int]] = ...,
+    flattens: Optional[list[int]] = ...,
 ) -> None: ...
 def run_arrays(
     engine: Engine,

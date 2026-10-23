@@ -4512,12 +4512,14 @@ fn barrier_of(
 /// instrument at the close of bar `start + k`, a weight of equity or, with `sizing`
 /// "quantity", the position wanted, a NaN holding and the last row never read, and
 /// `stop` and `take_profit` are each a return from the average entry or `(K, N)` of
-/// them, NaN for none (Specification, An array; Barriers on an array). The caller reads
-/// the run's records off the engine after it.
+/// them, NaN for none (Specification, An array; Barriers on an array). `seams` are the
+/// rows `k` a validation's windows after a path's first start on, and `flattens` those
+/// whose close closes every position instead of deciding (Specification, Paths and
+/// seams). The caller reads the run's records off the engine after it.
 #[pyfunction]
 #[pyo3(signature = (
     engine, rows, sizing = "weight", tolerance = 0.0, stop = None, take_profit = None,
-    start = 0,
+    start = 0, seams = None, flattens = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_array(
@@ -4529,9 +4531,13 @@ fn run_array(
     stop: Option<Bound<'_, PyAny>>,
     take_profit: Option<Bound<'_, PyAny>>,
     start: usize,
+    seams: Option<Vec<usize>>,
+    flattens: Option<Vec<usize>>,
 ) -> PyResult<()> {
     let mut engine = engine.try_borrow_mut()?;
-    let mut array = engine.array(rows, sizing, tolerance, stop, take_profit, start)?;
+    let mut array = engine
+        .array(rows, sizing, tolerance, stop, take_profit, start)?
+        .seamed(seams.unwrap_or_default(), flattens.unwrap_or_default());
     let inner = &mut engine.inner;
     py.detach(|| {
         run_from(inner, &mut array, start);

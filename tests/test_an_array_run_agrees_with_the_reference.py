@@ -4,11 +4,11 @@ Two in three cases are a universe the universe comparison draws and the rest one
 instrument the first comparison draws, every other one an inverse contract. Each runs
 rows of weights or of quantities, a NaN holding and a zero now and then, with barriers
 that are a number or rows of their own, a NaN or a return of exactly 1 or more among
-them, and a third of the accounts open part way in. Besides every record the two
-write, the orders resting at a few closes are compared by id, so a barrier priced
-wrong is caught where no bar reaches it. Every gate stage runs a short comparison and
-the slow stage one at length, which has to reach each rule of an array run in every
-kind of case.
+them; a third of the accounts open part way in, and a third run across a validation's
+seams. Besides every record the two write, the orders resting at a few closes are
+compared by id, so a barrier priced wrong is caught where no bar reaches it. Every gate
+stage runs a short comparison and the slow stage one at length, which has to reach
+each rule of an array run in every kind of case.
 """
 
 import collections
@@ -37,6 +37,10 @@ ARRAY = [
     "an array's bracket placed at its entry",
     "an array's instrument held flat after its barrier",
     "an array's instrument named again after its barrier",
+    "an array's seam",
+    "an array's bracket placed again at a seam",
+    "an array's window closing every position at its seam",
+    "an array's legs placed again after a flattening close",
 ]
 # what every kind of case has to reach on its own
 EACH = ["a bracket leg filled", "an array's bracket moved with its entry",
@@ -89,8 +93,9 @@ def from_row(drawn, start):
     return values[start:], sizing, tolerance, *cut
 
 
-def engine(candles, times, settings, drawn, start):
-    """The engine after the array run in one call, its account opened at row `start`."""
+def engine(candles, times, settings, drawn, start, seams):
+    """The engine after the array run in one call, its account opened at row `start`,
+    with `seams`, the rows a window starts on and those that close every position."""
     run = probatum._probatum.Engine(
         candles,
         times  = np.array(times, dtype=np.int64),
@@ -106,7 +111,8 @@ def engine(candles, times, settings, drawn, start):
         return np.array(barrier, dtype=np.float64)
 
     probatum._probatum.run_array(run, np.array(values, dtype=np.float64), sizing,
-                                 tolerance, shaped(stop), shaped(take_profit), start=start)
+                                 tolerance, shaped(stop), shaped(take_profit), start=start,
+                                 seams=seams[0], flattens=seams[1])
 
     return run
 
@@ -173,6 +179,7 @@ def universe(rng, seed, number):
     drawn = array(random.Random(f"array {seed} {number}"), kinds, opens, cfg["quote"],
                   None, len(times))
     start = opening(seed, number, len(times))
+    seams = seamed(seed, number, len(times), start)
 
     def through(rows):
         nan     = [math.nan] * 5
@@ -182,10 +189,11 @@ def universe(rng, seed, number):
 
         part = funded_to(cfg, times[rows - 1])
         run  = engine(candles, times[:rows], universe_differential.venue(part),
-                      cut(drawn, rows), start)
+                      cut(drawn, rows), start, seams)
+
         sim = universe_differential.make_reference(
             times[:rows], kinds, [column[:rows] for column in columns], part, start=start)
-        return run, play_array(sim, *from_row(cut(drawn, rows), start))
+        return run, play_array(sim, *from_row(cut(drawn, rows), start), *seams)
 
     run, sim = through(len(times))
     found = universe_differential.disagreement(records(run), sim, end=None)
@@ -213,14 +221,16 @@ def one(rng, seed, number, inverse):
     drawn = array(random.Random(f"array one {seed} {number}"), [kind], [bars[0].open],
                   cfg["quote"], cfg.get("contract"), len(bars))
     start = opening(seed, number, len(bars))
+    seams = seamed(seed, number, len(bars), start)
 
     def through(rows):
         part    = funded_to(cfg, times[rows - 1])
         candles = np.array([list(bar) for bar in bars[:rows]], dtype=np.float64)
         run     = engine(candles, times[:rows], differential.venue(part), cut(drawn, rows),
-                         start)
+                         start, seams)
+
         sim = differential.make_reference(bars[:rows], part, times[:rows], start=start)
-        return run, play_array(sim, *from_row(cut(drawn, rows), start))
+        return run, play_array(sim, *from_row(cut(drawn, rows), start), *seams)
 
     run, sim = through(len(bars))
     found = differential.disagreement([], records(run), sim, cfg, end=None)
@@ -232,6 +242,19 @@ def opening(seed, number, rows):
     third of the cases, drawn apart from the stream the cases come from."""
     draw = random.Random(f"opening {seed} {number}")
     return draw.randint(1, rows // 2) if draw.random() < 1.0 / 3.0 and rows > 4 else 0
+
+
+def seamed(seed, number, rows, start):
+    """A third of the cases' seams, counted from the account's first row: up to two
+    rows a validation's window starts on, and the rows before some of them, which
+    close every position instead of deciding, drawn apart from the cases' stream."""
+    draw  = random.Random(f"seams {seed} {number}")
+    count = rows - start
+    if draw.random() >= 1.0 / 3.0 or count < 5:
+        return [], []
+
+    seams = sorted(draw.sample(range(2, count - 1), min(2, count - 3)))
+    return seams, [k - 1 for k in seams if draw.random() < 0.5]
 
 
 def cut(drawn, rows):
@@ -304,7 +327,8 @@ def test_random_array_runs_agree_on_every_record_and_every_resting_order(seed):
 
     assert not [rule for rule in ["a bracket leg filled",
                                   "an array's bracket placed at its entry",
-                                  "an array's instrument held flat after its barrier"]
+                                  "an array's instrument held flat after its barrier",
+                                  "an array's seam"]
                 if not reached[rule]]
 
 
