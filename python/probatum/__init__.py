@@ -16,7 +16,8 @@ search on the training bars of each split a splitter of ``cv`` gives, trades eac
 split's winner on its test span and returns the ``Study`` of the out-of-sample paths.
 ``stats`` says how far a run's statistics can be trusted, read from a Result or any
 series of returns: the Sharpe's interval, its probability of beating a benchmark and
-the track record that would show it.
+the track record that would show it; and how far a search's winner can, judged across
+all its trials.
 Every error probatum raises is a ``ProbatumError`` and the built-in it means, and
 every warning a ``ProbatumWarning``, outside the modules carried from emsl, which raise
 the built-ins and warn with ``UserWarning`` or ``RuntimeWarning``.

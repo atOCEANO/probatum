@@ -47,7 +47,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Categorical` | One of the choices a search draws among. [Below](#the-space). |
 | `probatum.cv` | The splitters, `Holdout`, `WalkForward`, `PurgedKFold` and `CombinatorialPurged`, which scikit-learn's tools take, each leaving out of training every row whose label reaches a test span. [Below](#splitters). |
 | `probatum.validate` | Run a search on the training bars of each split a splitter gives and trade each split's winner on its test span, every out-of-sample path one run across explicit seams. [Below](#validation). |
-| `probatum.stats` | How far a run's statistics can be trusted, read from a Result or any series of returns: the Sharpe's interval, its probability of beating a benchmark and the track record that would show it. [Below](#inference). |
+| `probatum.stats` | How far a run's statistics can be trusted, read from a Result or any series of returns: the Sharpe's interval, its probability of beating a benchmark and the track record that would show it; and how far a search's winner can, judged across all its trials. [Below](#inference). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
