@@ -11,7 +11,9 @@ self-contained HTML document for a notebook cell or a file, computing nothing it
 recorded, ``Strategy`` is a policy that decides at each close, and ``combine`` adds
 Results from accounts at different venues into one book. ``search`` searches a
 policy's parameters over ``Int``, ``Float`` and ``Categorical`` ranges on the bars
-before a holdout, and returns the ``Study`` of every trial. ``labels`` gives, as
+before a holdout, and returns the ``Study`` of every trial, which a directory given as
+its ``storage`` keeps as it runs, so the same call resumes it there, and which ``save``
+and ``Study.load`` write and read as open files. ``labels`` gives, as
 ``Labels``, what one trade of a notional decided at each row's close makes through the
 same fill model, for a model to fit on. ``validate`` runs that search, or fits a model
 to its labels, on the training bars of each split a splitter of ``cv`` gives, trades
