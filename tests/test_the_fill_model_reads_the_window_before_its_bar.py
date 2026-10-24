@@ -121,6 +121,10 @@ def test_a_limit_placed_through_the_market_fills_where_it_traded():
     (dict(window=24.0), "window: 24.0; give the number of bars before a fill its"),
     (dict(spread=-1.0), 'spread: -1.0; give basis points from 0, or "estimated"'),
     (dict(spread="Wide"), 'spread: "Wide" is not a spread; give basis points'),
+    (dict(spread=("estimated", -1.0)),
+     "spread: ('estimated', -1.0); give (\"estimated\", scale) with a scale from 0"),
+    (dict(spread=("fixed", 2.0)),
+     "spread: ('fixed', 2.0); give (\"estimated\", scale) with a scale from 0"),
     (dict(impact_model="Cubic"), 'impact_model: "Cubic" is not a model; use linear or'),
 ])
 def test_a_fill_model_the_engine_cannot_hold_is_refused(settings, says):

@@ -153,15 +153,26 @@ fn parse_impact(model: &str) -> PyResult<Impact> {
     }
 }
 
-/// The spread a taker crosses half of: none, a fixed number of basis points, or
-/// `"estimated"` from the window, case-insensitively.
+/// The spread a taker crosses half of: none, a fixed number of basis points,
+/// `"estimated"` from the window, case-insensitively, or `("estimated", scale)`, the
+/// estimate times a cost sweep's scale.
 fn parse_spread(spread: Option<&Bound<'_, PyAny>>) -> PyResult<Spread> {
     let Some(spread) = spread else {
         return Ok(Spread::None);
     };
+    if let Ok((name, scale)) = spread.extract::<(String, f64)>() {
+        return if name.eq_ignore_ascii_case("estimated") && scale.is_finite() && scale >= 0.0 {
+            Ok(Spread::Estimated(scale))
+        } else {
+            Err(VenueError::new_err(format!(
+                "spread: {}; give (\"estimated\", scale) with a scale from 0",
+                shown(spread)
+            )))
+        };
+    }
     if let Ok(name) = spread.extract::<String>() {
         return match name.to_ascii_lowercase().as_str() {
-            "estimated" => Ok(Spread::Estimated),
+            "estimated" => Ok(Spread::Estimated(1.0)),
             _ => Err(VenueError::new_err(format!(
                 "spread: {name:?} is not a spread; give basis points, or \"estimated\""
             ))),

@@ -41,8 +41,9 @@ pub enum Spread {
     None,
     /// A fixed spread, in basis points of the price.
     Fixed(f64),
-    /// Ardia, Guidotti and Kroencke's estimate over the window.
-    Estimated,
+    /// Ardia, Guidotti and Kroencke's estimate over the window, times a scale: 1, or
+    /// a cost sweep's.
+    Estimated(f64),
 }
 
 /// The cost side of execution: what a taker pays beyond its reference. What a fill
@@ -120,7 +121,7 @@ impl FillModel {
         if coefficient == 0.0 && matches!(self.spread, Spread::None) && flat <= MAX_SLIP {
             return (flat, 0.0, flat, 0.0);
         }
-        let window = if coefficient > 0.0 || matches!(self.spread, Spread::Estimated) {
+        let window = if coefficient > 0.0 || matches!(self.spread, Spread::Estimated(_)) {
             trailing()
         } else {
             Trailing::default()
@@ -128,7 +129,7 @@ impl FillModel {
         let half = match self.spread {
             Spread::None => 0.0,
             Spread::Fixed(bps) => bps / 10_000.0 / 2.0,
-            Spread::Estimated => window.spread / 2.0,
+            Spread::Estimated(scale) => scale * window.spread / 2.0,
         };
         let impact = if coefficient > 0.0 && positive(window.volume) {
             let share = size / window.volume;
@@ -522,7 +523,7 @@ mod tests {
             slippage_bps: Bps(1.0),
             impact: 0.1,
             impact_model: Impact::Sqrt,
-            spread: Spread::Estimated,
+            spread: Spread::Estimated(1.0),
         };
         let trailing = Trailing {
             volume: 24_800.0,
@@ -545,6 +546,56 @@ mod tests {
         // in place of the trailing one would miss by 0.0018
         let moved = 0.6e-4 / 2.0 + 1e-4 + 0.1 * 0.004 * (0.141f64 / 24_800.0).sqrt();
         assert!((fill.price.get() - 21_012.0 * (1.0 + moved)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_cost_sweep_s_scale_multiplies_the_estimated_spread() {
+        // the estimate of 0.6 bps at three times its scale adds 1.89 in place of 0.63
+        let m = FillModel {
+            slippage_bps: Bps(0.0),
+            impact: 0.0,
+            impact_model: Impact::Linear,
+            spread: Spread::Estimated(3.0),
+        };
+        let trailing = Trailing {
+            volume: 24_800.0,
+            sigma: 0.004,
+            spread: 0.6e-4,
+        };
+        let bar = ohlc(21_012.0, 21_030.0, 21_000.0, 21_020.0, 30_000.0);
+        let (fill, costs) = m
+            .fill_market(&market(Side::Buy, 0.141), &bar, ALL, || trailing)
+            .unwrap();
+        assert!(
+            (costs.spread - 21_012.0 * 0.9e-4).abs() < 1e-9,
+            "{}",
+            costs.spread
+        );
+        assert!((fill.price.get() - 21_012.0 * (1.0 + 0.9e-4)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_fixed_spread_costs_half_its_basis_points_and_reads_no_window() {
+        // 4 bps cross half of themselves, 2 bps of the open, and with no impact and no
+        // estimate the window is never read
+        let m = FillModel {
+            slippage_bps: Bps(0.0),
+            impact: 0.0,
+            impact_model: Impact::Linear,
+            spread: Spread::Fixed(4.0),
+        };
+        let bar = ohlc(21_012.0, 21_030.0, 21_000.0, 21_020.0, 30_000.0);
+        let (fill, costs) = m
+            .fill_market(&market(Side::Buy, 0.141), &bar, ALL, || {
+                panic!("the window was read")
+            })
+            .unwrap();
+        assert!(
+            (costs.spread - 21_012.0 * 2e-4).abs() < 1e-9,
+            "{}",
+            costs.spread
+        );
+        assert!((fill.price.get() - 21_012.0 * (1.0 + 2e-4)).abs() < 1e-9);
     }
 
     #[test]

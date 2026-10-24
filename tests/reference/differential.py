@@ -322,7 +322,7 @@ def engine_fills(cfg):
     out    = dict(budget=cfg.get("budget", 1.0), window=cfg.get("window", 24))
     spread = cfg.get("spread")
     if spread is not None:
-        out["spread"] = spread if spread == "estimated" else spread[1]
+        out["spread"] = spread[1] if spread[0] == "fixed" else spread
 
     impact = cfg.get("impact")
     if impact is not None:
@@ -822,14 +822,21 @@ def setting(seed, case):
 def fills(seed, case):
     """The fill model case `case` of `seed` trades under, drawn apart from the stream
     the cases come from: a budget that binds now and then against the walk's
-    volumes, a window, and a spread and an impact or none."""
+    volumes, a window, and a spread and an impact or none, an estimated spread scaled
+    now and then as a cost sweep scales it, on a stream of its own."""
     draw = random.Random(f"fills {seed} {case}")
-    return dict(
+    out  = dict(
         budget=draw.choice([1.0, 1.0, 1e-4, 2e-5]),
         window=draw.choice([24, 24, 3]),
         spread=draw.choice([None, None, ("fixed", 10.0), "estimated"]),
         impact=draw.choice([None, None, ("linear", 50.0), ("sqrt", 1.0)]),
     )
+
+    scale = random.Random(f"spread scale {seed} {case}").choice([1.0, 1.0, 0.0, 2.5])
+    if out["spread"] == "estimated" and scale != 1.0:
+        out["spread"] = ("estimated", scale)
+
+    return out
 
 
 def sizes(seed, case, quote, opens, contract=None):

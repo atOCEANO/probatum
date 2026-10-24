@@ -446,7 +446,7 @@ impl Engine {
         let sigma = configs.iter().any(|config| config.impact > 0.0);
         let estimated = configs
             .iter()
-            .any(|config| config.spread == Spread::Estimated);
+            .any(|config| matches!(config.spread, Spread::Estimated(_)));
         if candles.windowed(config.window, sigma, estimated) {
             candles
         } else {
