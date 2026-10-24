@@ -1196,6 +1196,67 @@ The win rate, the profit factor and the average trade take a bootstrap of the cl
 <br>
 
 
+## The environment
+
+`env(data, venue, window=64, ...)` steps `num_envs` environments together, each an account at the venue on the Data's bars. A step takes each environment's action at the close of its bar `t`, turns it into that close's decision, and returns the observation and the reward at the close of `t + 1`; the decision fills as a policy's would from the open of `t + 1`, so an episode is the run of [The step](#the-step) over its bars, and every fill, fee, funding charge, cap and liquidation in it is worked as in a backtest at the venue. Each environment is worked apart from the others, so a step gives the same results on any number of `threads`.
+
+### Episodes
+
+- The features are a `(T, N, F)` array or a function of a Data that returns one, read as `Data.features` reads them, so a NaN on a printed bar past an instrument's warm-up is refused unless `fill` is given, and a finite value past what float32 holds is refused; without them each instrument's features are its candles. An instrument's features start at `e`, the first bar it printed on with every feature finite, its first printed bar for the candles. It has entered at bar `t` once the window of `W` bars ending at `t` starts at or after `e`, and it is shown at `t` where it has entered, printed at `t` and is not delisted.
+- An episode starts at a bar `s` drawn uniformly among the bars from `W - 1` to `T - 2` at which at least one instrument is shown, or `sample` of them with `sample=`, as a fresh account with the venue's balance, observed at the close of `s`. It is truncated at the last bar, `T - 1`, or after `episode_length` steps.
+- `sample=k` gives each environment `k` slots, the instruments it trades in an episode, drawn without replacement among those shown at `s` and kept in the Data's order; without it the slots are every instrument. The observation and the actions are over the slots. A universe of spot and perpetual instruments together is not sampled, since its slots would change kind between episodes and the action space with them.
+- `costs` maps `maker`, `taker`, `slippage` and `impact` to `(low, high)` ranges, a fee as a rate, slippage in basis points and impact as the coefficient of the venue's impact model, and each environment draws its value of each uniformly once, from the stream named `costs` of the seed, keeping it for its life: environment `i` takes the `i`-th four draws, one for each cost in that order whether it is named or not, so its costs are the same whatever `num_envs` is. A cost not named is the venue's, and a fee drawn is every instrument's in place of its own.
+- Each environment `i` draws its episodes from the stream named `episodes i` of the seed, each episode its start and then its slots, so its `k`-th episode is the same whatever `num_envs` is; a seed left out is drawn once and recorded, so the episodes come again from it. `reset(seed=)` starts the stream of each environment it resets again from that seed, and leaves the costs as they were drawn. Under `intrabar="random"` each environment decides the bars' hidden events from a stream of its own, as a batch's do ([What a bar cannot show](#what-a-bar-cannot-show)).
+
+### The observation
+
+The observation is float32, the market block and then the account block, laid out flat by default or as a dict of the two with `layout="dict"`.
+- **Market**, `(W, N, F)` over the window's bars, its slots and their features: a shown instrument's features on the window's bars it printed, and 0.0 on those it did not. With the candles as features, a bar's open, high, low and close are each over the instrument's last close, and its volume is over the mean volume of the window's bars it printed, 0.0 where that mean is zero.
+- **Account**, for each slot in turn its weight, its notional at its last close over equity as [Target](#target) reckons it; its unrealized PnL over equity; its last close over its average entry, less one, 0.0 when flat; and 1.0 where it is shown, else 0.0. Then the account's log return over the step as the reward reads it, 0.0 at an episode's first observation; its leverage, gross notional over equity; its margin ratio, the maintenance its perpetuals keep over the margin wallet's equity, 0.0 where nothing is kept and 1.0 where something is and that equity is at or below zero; and its cash weight, one less the sum of the weights.
+- With `actions="orders"` each slot adds the number of its orders resting and the nearest one's distance from its last close in ticks, 0.0 where none rests.
+- An instrument not shown has every market cell 0.0 and its action ignored; its weight, PnL and distance still read its position at its last close. A value over equity is 0.0 where equity is at or below zero, so no cell is ever NaN or infinite.
+
+### Actions
+
+The decision at a step is a [Target](#target) of each shown slot's weight, with the environment's `tolerance`, the slots not shown going unnamed; or, for `"orders"`, an order for each.
+- `"box"`, the default: `Box(-1, 1, (N,))`, a spot slot's lower bound 0. The actions are clipped to the space and each weight is `max_leverage * a / max(1, sum |a|)`, the sum over the shown slots, so the gross weight never exceeds `max_leverage`.
+- `"simplex"`: `Box(0, 1, (N + 1,))`, the last a cash slot, each weight its action over the sum of the shown slots' and the cash slot's, all cash where they sum to zero.
+- `"discrete"`: each slot short, flat or long at `max_leverage / N`, a spot slot flat or long, as a `Discrete` for one slot and a `MultiDiscrete` for several.
+- `"orders"`: `Box` of `(N, 2)`, a slot's size in `[-1, 1]` and its offset in `[0, 1]`. The size is a limit order's notional, `|size| * max_leverage * equity` at the last close, a buy where it is positive and a sell where negative, and the offset puts its price `round(offset * max_offset)` ticks from the last close on the passive side, a half rounded to the even number of ticks. Each step's order for a slot replaces the one the last step left resting, a size of zero places none, as does a buy whose price would not be above zero, and every slot needs a tick.
+- `decode(actions, state)` returns the `(B, N)` weights itself, once a step for the whole batch, over the same state a reward reads; a NaN weight leaves its slot unnamed.
+
+### Reward and termination
+
+- The floor is 1% of the opening balance, both wallets together. An episode terminates on a bar where the account is liquidated or its equity falls to the floor, whatever the reward, so the equity before every rewarded step is above the floor.
+- `"log"`, the default: `log(max(E_t, floor) / E_(t-1))`, a liquidation a large finite penalty.
+- `"sharpe"`: the differential Sharpe of those log returns `R_t`, at the rate `eta = 2 / (W + 1)` of an average over the window, from moments `A` and `B` that start an episode at zero: `D_t = (B * dA - A * dB / 2) / (B - A^2)^1.5` with `dA = R_t - A` and `dB = R_t^2 - B` read before the moments move, 0.0 where `B - A^2` is not above zero; then `A += eta * dA` and `B += eta * dB`. A window of one bar, at a rate of 1, keeps the last return alone and so no deviation, and is refused.
+- `reward(state)` returns the `(B,)` rewards itself, once a step for the whole batch. Its `state` holds `(B,)` arrays of `equity`, `previous_equity`, `log_return`, the log return above; `drawdown`, one less equity over the episode's highest close of equity, the opening balance included; `leverage`; `turnover`, the bar's traded notional over the previous equity; `fees` and `funding`, the bar's over the previous equity, funding positive where paid; and `liquidated`; and `(B, N)` arrays of each slot's `weights` and `positions`.
+
+### Autoreset
+
+- `"next_step"`, the default: the step after an episode ends resets that environment, ignoring its action, and returns its first observation with a reward of 0.0 and neither flag set.
+- `"same_step"`: the step that ends an episode resets it and returns the next episode's first observation, the last one and its info under `final_obs` and `final_info`.
+- `"disabled"`: an episode that ends is left as it ended, each later step ignoring its action and returning its last observation and flags with a reward of 0.0, until `reset(options={"reset_mask": mask})` resets the environments `mask` names.
+- Every step's info holds each environment's `episode`, its number in its stream, its `step` and its `start`, the Data's row it opened on, and with `sample` its `instruments`, so any episode can be found again and run as a backtest from its start.
+
+### What an environment says
+
+`env.describe()` lists the assumptions its runs make as [Assumptions](#assumptions) lists a backtest's at the venue, a cost drawn per environment shown with its range, and `env.provenance` records the Data's provenance, the venue, every setting, the seed and the streams each environment draws from.
+
+**Worked example.** With one instrument, the candles as features and a window of 64, the observation holds `64 * 1 * 5` market values and `4 * 1 + 4` account values, 328.
+
+**Worked example.** A bar opening at 100 with a high of 110, a low of 95 and a close of 105, the instrument's last close, and a volume of 300 where the window's printed bars average 200, reads `(0.952381, 1.047619, 0.904762, 1.0, 1.5)`.
+
+**Worked example.** At `max_leverage=2.0` a single slot's action of 0.3 is a weight of 0.6, and two slots' actions of 0.8 and -0.6, summing to 1.4 in absolute value, are weights of `2 * 0.8 / 1.4 = 1.142857` and `-0.857143`.
+
+**Worked example.** With a balance of 10,000 the floor is 100, so a takeover that leaves no equity after a step from 2,000 is rewarded `log(100 / 2,000) = -3.00` and ends the episode; a sale on the book that leaves 1,500 is rewarded `log(1,500 / 2,000) = -0.29` and ends it too.
+
+**Worked example.** At `max_leverage=2.0`, an equity of 10,000 and a last close of 50,000 with a tick of 0.1, an order action of 0.25 with an offset of 0.5 and `max_offset=20` is a buy limit of `0.25 * 2 * 10,000 / 50,000 = 0.1` BTC at `50,000 - 10 * 0.1 = 49,999.0`.
+
+<br>
+<br>
+
+
 ## Numbers that are the same everywhere
 
 - Basic arithmetic and `sqrt` are correctly rounded everywhere, but `ln`, `exp` and `powf` may differ by platform, so integer powers are written as products and every other transcendental function goes through the `libm` crate.
