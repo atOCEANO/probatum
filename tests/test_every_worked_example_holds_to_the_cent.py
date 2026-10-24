@@ -616,14 +616,14 @@ def test_a_holding_of_0_0004_under_a_lot_of_0_001_is_swept_at_250_as_dust_of_0_1
     assert sim.ledger[-1]["dust"] == pytest.approx(0.1, abs=1e-12)
 
 
-def tenth(record="full"):
-    """The costs example recorded at ``record``: a tenth of a bitcoin bought and sold
-    with a fixed spread and slippage of 1 bp, a taker fee of 0.05% and 0.01% of funding
-    at every close, on bars at 60,000, then 60,000 to 60,500, then 60,400 to 60,450."""
+def costs_example():
+    """The costs example's quantities, Data and venue: a tenth of a bitcoin bought and
+    sold with a fixed spread and slippage of 1 bp, a taker fee of 0.05% and 0.01% of
+    funding at every close, on bars at 60,000, then 60,000 to 60,500, then 60,400 to
+    60,450."""
     frame = hourly_bars([60_000.0, 60_000.0, 60_400.0], [60_000.0, 60_500.0, 60_450.0],
                         range(3)).assign(high=[60_000.0, 60_600.0, 60_500.0],
                                          low=[60_000.0, 59_900.0, 60_300.0])
-
     venue = probatum.Venue(
         balance = 10_000.0,
         fees    = {"maker": 0.0, "taker": 0.0005},
@@ -631,9 +631,14 @@ def tenth(record="full"):
         funding = {"every_bars": 1, "rate": 0.0001},
     )
 
-    return probatum.backtest(np.array([0.1, 0.0, np.nan]),
-                             probatum.Data(frame, symbol="BTCUSDT", market="linear"),
-                             venue, sizing="quantity", record=record)
+    return (np.array([0.1, 0.0, np.nan]),
+            probatum.Data(frame, symbol="BTCUSDT", market="linear"), venue)
+
+
+def tenth(record="full"):
+    """The costs example recorded at ``record``."""
+    policy, data, venue = costs_example()
+    return probatum.backtest(policy, data, venue, sizing="quantity", record=record)
 
 
 def test_a_buy_and_a_sale_of_a_tenth_of_a_bitcoin_cost_8_430997():
@@ -666,6 +671,41 @@ def test_the_costs_example_at_the_account_level_prices_its_fees_and_not_its_boun
         assert cost["liquidation fee"] == 0.0
     assert [costs[0]["margin bound"], costs[0]["liquidation"]] == [0.0, 0.0]
     assert [costs[1]["margin bound"], costs[1]["liquidation"]] == [None, None]
+
+
+def test_the_costs_round_trip_pays_13_bps_and_26_at_twice_and_breaks_even_at_65_4():
+    policy, data, venue = costs_example()
+    curve = probatum.cost_curve(policy, data, venue, scales=(1.0, 2.0, 5.03, 5.04),
+                                sizing="quantity")
+
+    assert [round(cost, 1) for cost in curve.cost_bps[:2]] == [13.0, 26.0]
+    assert math.fsum([curve.fees[1], curve.spread[1], curve.slippage[1]]) == (
+        pytest.approx(15.651988, abs=1e-9))
+    assert curve.total_return_pct[2] > 0.0 > curve.total_return_pct[3]
+
+    found = probatum.breakeven_bps(policy, data, venue, sizing="quantity")
+    assert round(found, 1) == 65.4
+
+
+def test_a_weight_of_1_at_twice_the_balance_buys_half_of_it_held_by_the_budget():
+    # a trailing volume of 5 BTC under budget(0.1) holds a bar's fills to 0.5 BTC
+    frame = hourly_bars([60_000.0] * 3, [60_000.0] * 3, range(3)).assign(volume=5.0)
+    data  = probatum.Data(frame, symbol="BTCUSDT", market="linear")
+    venue = probatum.Venue(
+        fees  = {"maker": 0.0, "taker": 0.0},
+        fills = {"liquidity": {"budget": 0.1}},
+    )
+    weights = np.array([1.0, np.nan, np.nan])
+    held    = probatum.capacity(weights, data, venue, [30_000.0, 60_000.0]).held
+
+    assert held == (0.0, 1.0)
+
+    result = probatum.backtest(weights, data, venue.replace(balance=60_000.0))
+
+    assert [fill["size"] for fill in result.fills] == [0.5]
+
+    [clamp] = [event["reason"] for event in result.orders if event["kind"] == "clamped"]
+    assert clamp.startswith("the liquidity budget allows 0.5 of the 1")
 
 
 def test_a_bar_that_carries_half_a_bitcoin_and_buys_a_tenth_gains_266_0815():

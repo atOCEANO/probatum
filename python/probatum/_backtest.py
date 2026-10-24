@@ -50,6 +50,15 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     holdings, fill log, order log, baselines or policy (Specification, Recording
     levels).
     """
+    return _backtested(policy, data, venue, sizing, stop, take_profit, tolerance,
+                       record, risk_free)
+
+
+def _backtested(policy, data, venue, sizing, stop, take_profit, tolerance, record,
+                risk_free, balance=None, costs=1.0):
+    """`backtest`, its account opened with ``balance`` where given and every cost its
+    venue charges for trading multiplied by ``costs``, as capacity and the cost sweeps
+    run a policy (Specification, Capacity and costs)."""
     _level(record)
     data = data if isinstance(data, Data) else Data(data)
     if not len(data) or not data.available.any():
@@ -62,7 +71,7 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
                           f"pass {policy.__name__}()")
     elif isinstance(policy, Strategy):
         return _decided(policy, data, venue, sizing, stop, take_profit, tolerance,
-                        risk_free, record)
+                        risk_free, record, balance, costs)
     elif hasattr(policy, "fit") and not callable(policy):
         raise PolicyError(f"policy: {_kind(policy)}, a model that fits, which backtest "
                           f"does not fit; pass its predictions as an array, or fit "
@@ -77,22 +86,22 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
 
     _sized(sizing, tolerance)
     _rate(risk_free)
+
     barriers = {name: _barrier(name, given, data)
                 for name, given in (("stop", stop), ("take_profit", take_profit))}
 
     return _arrayed(rows, barriers, sizing, tolerance, data, _repeatable(venue), risk_free,
-                    record)
+                    record, balance=balance, costs=costs)
 
 
 def _arrayed(rows, barriers, sizing, tolerance, data, held, risk_free, record, seams=None,
-             flattens=None):
+             flattens=None, balance=None, costs=1.0):
     """``rows`` run on ``data`` at the Venue ``held`` as one array with ``barriers``,
     ``sizing`` and ``tolerance``, and the `Result` it recorded; ``seams`` and
     ``flattens`` are a validation's, the rows the account sees, counted from its first,
     that a window starts on and that close every position (Specification, Paths and
-    seams)."""
-    run = _run(held, data)
-
+    seams), and ``balance`` and ``costs`` a capacity run's or a cost sweep's."""
+    run = _run(held, data, balance=balance, costs=costs)
     # what the run is played with, which its Result keeps to play again without costs
     played = _played(rows, barriers, sizing, tolerance, data, run)
     engine = Engine(run.candles, report=True, record=record, **run.settings)
@@ -114,7 +123,7 @@ def _arrayed(rows, barriers, sizing, tolerance, data, held, risk_free, record, s
 
 
 def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_free,
-             record):
+             record, balance=None, costs=1.0):
     """``strategy`` run on ``data`` at ``venue`` through a deep copy of it, which places
     its own orders, so the settings of an array run are refused beside it; it runs at
     the full level, since its account reads the order log, and a Result below it keeps
@@ -135,7 +144,7 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
 
     _rate(risk_free)
     held   = _repeatable(venue)
-    run    = _run(held, data)
+    run    = _run(held, data, balance=balance, costs=costs)
     engine = Engine(run.candles, report=True, **run.settings)
     full   = record == "full"
 

@@ -1,7 +1,7 @@
 """The venue a run is on: its rules as one immutable object, a preset's or one built by
 hand, so a setting has one place to be given (ADR 0002)."""
 
-import collections
+import collections.abc
 import copy
 import dataclasses
 import datetime
@@ -304,23 +304,23 @@ class Venue:
         return self
 
 
-def _run(venue, data, seed=None, balance=None):
+def _run(venue, data, seed=None, balance=None, costs=1.0):
     """What the Engine is built from to run ``data`` on ``venue``, a Venue or a preset's
     name, as a `Run`, with ``seed`` the stream a venue deciding what a bar cannot show
-    at random draws from, and ``balance``, where given, opening the account in place of
-    the venue's. Each instrument takes its tables from the venue, keyed by its
-    symbol, or as kind:SYMBOL on a venue of several kinds, and each order limit the
-    router gave it where no table of the venue gives one; the rows none of the
-    instruments printed are left out. Refused are an empty Data; an unnamed instrument
-    where the venue keys tables by symbol; an account at two venues or whose cash would
-    be two assets; an instrument of no market or a kind the venue does not list; an
-    inverse contract of no size the bars give; one balance for
-    an account that uses both wallets, and the two of them for an inverse contract's,
-    which has one; funding from the data where it holds none for a perpetual; an
-    instrument without the lot and price rule the venue's sizes hold every order to,
-    or with significant figures and no decimals; a perpetual with no maintenance
-    where the venue books then backstops; and a delisting time at or before its
-    instrument's last bar."""
+    at random draws from, ``balance``, where given, opening the account in place of
+    the venue's, and ``costs`` the multiple of every cost the venue charges for
+    trading, as a cost sweep moves them. Each instrument takes its tables from the
+    venue, keyed by its symbol, or as kind:SYMBOL on a venue of several kinds, and each
+    order limit the router gave it where no table of the venue gives one; the rows none
+    of the instruments printed are left out. Refused are an empty Data; an unnamed
+    instrument where the venue keys tables by symbol; an account at two venues or whose
+    cash would be two assets; an instrument of no market or a kind the venue does not
+    list; an inverse contract of no size the bars give; one balance for an account that
+    uses both wallets, and the two of them for an inverse contract's, which has one;
+    funding from the data where it holds none for a perpetual; an instrument without
+    the lot and price rule the venue's sizes hold every order to, or with significant
+    figures and no decimals; a perpetual with no maintenance where the venue books then
+    backstops; and a delisting time at or before its instrument's last bar."""
     venue  = _venue_of(venue)
     data   = data if isinstance(data, Data) else Data(data)
     origin = venue.name or "venue"
@@ -370,6 +370,9 @@ def _run(venue, data, seed=None, balance=None):
             raise VenueError(f"venue: {origin} books then backstops, and gives {name} "
                              f"no tier table that keeps maintenance; give {name} its "
                              f"tiers in instruments")
+
+    if costs != 1.0:
+        _scaled(settings, costs)
 
     perps = [k for k, market in enumerate(markets) if market != "spot"]
     if venue._preset["defaults"]["funding"] == "data" and perps:
@@ -432,6 +435,26 @@ def _run(venue, data, seed=None, balance=None):
         candles = candles[:, 0]
 
     return Run(candles, settings, int(printed[:start].sum()))
+
+
+def _scaled(settings, scale):
+    """Multiply in ``settings`` every cost a venue charges for trading by ``scale``:
+    each fee rate above 0, the venue's and each instrument's, a rate below it being a
+    rebate the venue pays, the spread, a fixed one's basis points or the estimate, the
+    slippage and the impact coefficient (Specification, Cost sweeps)."""
+    for spec in (settings, *settings.get("instruments", [])):
+        for fee in ("fee_maker", "fee_taker"):
+            if spec.get(fee, 0.0) > 0.0:
+                spec[fee] *= scale
+
+    settings["slippage_bps"] *= scale
+    settings["impact"]       *= scale
+
+    spread = settings["spread"]
+    if spread == "estimated":
+        settings["spread"] = ("estimated", scale)
+    elif spread is not None:
+        settings["spread"] = spread * scale
 
 
 def _held_to_rules(spec, name, origin, sizes):
@@ -545,9 +568,9 @@ def _given_or_plain(given, setting):
 
 
 def _python(value):
-    """``value`` with its numbers Python's, numpy's among them, and every key a table
-    gives as None left out."""
-    if isinstance(value, dict):
+    """``value`` with its numbers Python's, numpy's among them, every mapping a dict,
+    and every key a table gives as None left out."""
+    if isinstance(value, collections.abc.Mapping):
         return {key: _python(item) for key, item in value.items() if item is not None}
 
     if isinstance(value, (list, tuple)):

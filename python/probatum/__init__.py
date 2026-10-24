@@ -41,6 +41,7 @@ from ._strategy import Strategy
 from ._engine import Engine
 from ._result import Result, combine
 from ._backtest import backtest
+from ._costs import Capacity, CostCurve, breakeven_bps, capacity, cost_curve
 from ._labels import Labels, labels
 from ._search import Study, search
 from ._validate import validate
@@ -48,10 +49,11 @@ from .market import Market
 from ._chart import chart, chart_defaults
 
 __all__ = [
-    "BacktestResult", "Backtester", "Batch", "Categorical", "Data", "Engine", "Float",
-    "Instrument", "Int", "Labels", "Market", "Result", "Strategy", "Study", "Venue",
-    "backtest", "chart", "chart_defaults", "combine", "labels", "search", "to_ohlcv",
-    "validate",
+    "BacktestResult", "Backtester", "Batch", "Capacity", "Categorical", "CostCurve",
+    "Data", "Engine", "Float", "Instrument", "Int", "Labels", "Market", "Result",
+    "Strategy", "Study", "Venue",
+    "backtest", "breakeven_bps", "capacity", "chart", "chart_defaults", "combine",
+    "cost_curve", "labels", "search", "to_ohlcv", "validate",
     "cv", "metrics", "plot", "rl", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",

@@ -50,6 +50,11 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.cv` | The splitters, `Holdout`, `WalkForward`, `PurgedKFold` and `CombinatorialPurged`, which scikit-learn's tools take, each leaving out of training every row whose label reaches a test span. [Below](#splitters). |
 | `probatum.validate` | Run a search, or fit a model to its labels, on the training bars of each split a splitter gives and trade each split's winner on its test span, every out-of-sample path one run across explicit seams. [Below](#validation). |
 | `probatum.stats` | How far a run's statistics can be trusted, read from a Result or any series of returns: the Sharpe's interval, its probability of beating a benchmark and the track record that would show it; and how far a search's winner can, judged across all its trials. [Below](#inference). |
+| `probatum.capacity` | Run a policy again at each of several balances: how its return, its impact and the orders its liquidity budget holds move as the book grows. [Below](#capacity-and-costs). |
+| `probatum.cost_curve` | Run a policy again with every cost its venue charges for trading multiplied by each of several scales: what it keeps as its costs grow. [Below](#capacity-and-costs). |
+| `probatum.breakeven_bps` | The round-trip cost, in basis points, at which a policy stops making money as every cost its venue charges for trading is multiplied. [Below](#capacity-and-costs). |
+| `probatum.Capacity` | What `capacity` found: each balance's return, Sharpe, impact paid, share of orders the liquidity budget held, round-trip cost and turnover. [Below](#capacity-and-costs). |
+| `probatum.CostCurve` | What `cost_curve` found: each scale's round-trip cost, return, Sharpe, round trips, each cost paid and turnover. [Below](#capacity-and-costs). |
 | `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
@@ -1130,6 +1135,27 @@ alpha 0.02% a year, standard error 0.04%, two-sided 95% interval -0.06% to 0.10%
 ```
 
 The two-sided interval holds zero while the one-sided probability is 0.899; both are right, and each says which it is. The returns reverse from month to month, so the long-run Sharpe, 2.95, is above the Sharpe the square root of time scales, and the interval's floor holds it to the width independent returns would give. Eight returns are far too few to resample, so the bootstrap reads the Quickstart's run, its 999 returns in blocks of 2.6. That run holds a tenth of a coin where buying and holding holds a hundred, so its beta is near a thousandth, and the two Sharpes cannot be told apart, at a p-value near 0.52 by either test.
+
+<br>
+
+## Capacity and costs
+
+`probatum.capacity(policy, data, venue, balances, sizing="weight", stop=None, take_profit=None, tolerance=0.0, risk_free=0.0)`, `probatum.cost_curve(policy, data, venue, scales=(0.0, 0.5, 1.0, 2.0, 4.0), ...)` and `probatum.breakeven_bps(policy, data, venue, ceiling=100.0, precision=0.05, ...)` run a policy again where only its balance or its costs differ, each run the `backtest` of it with the settings given, a Strategy copied afresh for each ([ADR 0045](Decisions.md), [Specification](Specification.md#capacity-and-costs)).
+
+- **Capacity.** Each of `balances` opens the account as `Venue.replace(balance=...)` would, a number or `{"spot": s, "margin": m}`, and one the account cannot open with, a single wallet's where the data trades spot and perpetuals or two for an inverse contract, is refused before any run. The `Capacity` it gives holds, a run a balance, `balances`, `total_return_pct`, `sharpe`, `impact` paid, `held`, the share of its orders the liquidity budget held, `cost_bps`, the round-trip cost its fills paid in basis points, and `turnover`, a year of what its fills traded over its mean equity, and prints as a table. A weight grows with the balance and a quantity does not, so `sizing="quantity"` is refused. Once the budget holds most of its orders a book trades another, slower path, and its return can move either way.
+- **Cost sweeps.** Each of `scales` multiplies every cost the venue charges for trading together, each fee rate above 0, maker and taker, the spread, fixed or estimated, the slippage and the impact coefficient, where emsl's sweep set the fee alone; a rebate, a fee rate below 0, the liquidity budget, funding and a liquidation fee the venue sets stay, and one it does not set is the taker rate and moves as it does. The `CostCurve` holds, a run a scale, `scales`, `cost_bps`, `total_return_pct`, `sharpe`, `num_trades`, `fees`, `spread`, `slippage`, `impact` and `turnover`, and prints as a table. A venue that charges none of the four on the data's instruments is refused.
+- **The break-even.** `breakeven_bps` bisects the scale from 0 to `ceiling` until the two runs that bracket the return's zero pay within `precision` basis points a round trip of each other, and gives their mean, to set beside what the venue charges at scale 1, with a warning where no scale between them brings them that close, as where a cost jumps at the crossing, and the lower one's cost where the upper filled nothing. It is None where the policy makes nothing with no costs at all, and the cost at `ceiling`, with a warning, where it still makes money there. The costs change which fills happen, so it finds a crossing rather than the crossing.
+
+```python
+fast, slow = probatum.ta.ema(data.close, 24), probatum.ta.ema(data.close, 96)
+trend = numpy.where(numpy.isnan(slow), numpy.nan, numpy.where(fast > slow, 1.0, -1.0))
+venue = probatum.Venue(fees={"maker": 0.0002, "taker": 0.0005},
+                       fills={"spread": {"fixed": 2.0}, "slippage": {"fixed": 1.0},
+                              "impact": {"sqrt": 0.1}, "liquidity": {"budget": 0.1}})
+print(probatum.capacity(trend, data, venue, balances=[10_000.0, 100_000.0]))
+print(probatum.cost_curve(trend, data, venue))      # 18.7 bps a round trip at scale 1
+print(probatum.breakeven_bps(trend, data, venue))   # where it stops making money
+```
 
 <br>
 
