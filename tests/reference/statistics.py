@@ -1,4 +1,5 @@
-"""probatum's reference statistics, written from the Specification's Inference section.
+"""probatum's reference statistics, written from the Specification's Inference, Across a
+search, and Capacity and costs sections.
 
 Like the reference simulator, it exists to disagree with `probatum.stats`, so it is
 written from the rules as the page states them and never from the module. Each
@@ -22,6 +23,7 @@ ROUNDING = 1e-20     # Two Sharpes on the same bars: a variance below it counts 
 MOST     = 100       # The effective number of trials: the most clusters a start tries
 LLOYD    = 300       # The effective number of trials: Lloyd's iterations at most
 PARTS    = 16        # The probability of backtest overfitting: the blocks of a run
+RADII    = [0.05 * k for k in range(1, 11)]   # The plateau: the radii it reads
 # The deflated Sharpe: the Euler-Mascheroni constant
 EULER = 0.5772156649015329
 # Intervals of the returns: the statistics read on the growth a bar, and every one
@@ -1118,3 +1120,71 @@ def forecast(predicted, returned, bars, lag):
     r_squared = 1.0 - (sum((y - p) ** 2 for p, y in zip(predicted, returned))
                        / sum(y * y for y in returned))
     return rho, math.sqrt(variance) / n, r_squared
+
+
+def plateau(trials, ranges, best, level, maximize=True):
+    """The plateau: at each of the radii, the share of the configurations but the
+    winner `best`'s within it, each the first trial that ran it, that completed past
+    `level`, None where none lies within; each trial a (values, state, score), and
+    `ranges` each parameter's ("categorical",) or (low, high, log), its values put on
+    [0, 1] across it."""
+    def same(a, b):
+        # NaN is one choice
+        return a == b or (a != a and b != b)
+
+    def placed(value, rule):
+        low, high, log = rule
+        if low == high:
+            return 0.0
+        if log:
+            return math.log(value / low) / math.log(high / low)
+        return (value - low) / (high - low)
+
+    def apart(values, winner):
+        total = 0.0
+        for value, held, rule in zip(values, winner, ranges):
+            if rule == ("categorical",):
+                part = 0.0 if same(value, held) else 1.0
+            else:
+                part = placed(value, rule) - placed(held, rule)
+            total += part * part
+        return math.sqrt(total)
+
+    winner = trials[best][0]
+    seen, kept = [winner], []
+
+    for trial in trials:
+        if not any(all(map(same, trial[0], values)) for values in seen):
+            seen.append(trial[0])
+            kept.append(trial)
+
+    shares = []
+    for radius in RADII:
+        near = [trial for trial in kept if apart(trial[0], winner) <= radius]
+        past = [trial for trial in near if trial[1] == "complete"
+                and (trial[2] > level if maximize else trial[2] < level)]
+        shares.append(len(past) / len(near) if near else None)
+
+    return shares
+
+
+def round_trip_cost(notionals, costs):
+    """What a run of them reads: twice the costs over the notional the fills traded,
+    in basis points, None where nothing filled."""
+    traded = math.fsum(notionals)
+    return 2.0 * 10_000.0 * costs / traded if traded > 0.0 else None
+
+
+def turnover(traded, equity, periods_per_year):
+    """What a run of them reads: a year of the traded notional over the mean equity,
+    its rows less one its returns."""
+    return traded / mean(equity) * periods_per_year / (len(equity) - 1)
+
+
+def held(events):
+    """What a run of them reads: the share of the orders placed with an event naming
+    the liquidity budget, 0 where none was."""
+    placed = {event["order"] for event in events if event["kind"] == "placed"}
+    named  = {event["order"] for event in events
+              if "the liquidity budget" in (event["reason"] or "")}
+    return len(placed & named) / len(placed) if placed else 0.0

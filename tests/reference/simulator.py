@@ -304,7 +304,7 @@ class Venue:
         self.limit           = limit
         self.window          = int(window)
         self.budget          = float(budget)
-        self.spread          = spread   # None, ("fixed", bps) or "estimated"
+        self.spread          = spread   # None, ("fixed", bps) or an estimate
         self.slippage        = float(slippage)
         self.impact          = impact   # None, ("linear", k) or ("sqrt", k)
         self.sizes           = sizes
@@ -2428,7 +2428,9 @@ class Simulator:
 
     def taker_price(self, i, side, reference, size, bar):
         """Fills, A taker's price: the reference moved against the side by half the
-        spread, the slippage and the impact, then held inside the bar."""
+        spread, the slippage and the impact, then held inside the bar; an estimated
+        spread, "estimated" or ("estimated", scale), is the estimate times the scale a
+        cost sweep gives it (The spread estimate)."""
         bars, volume, sigma = self.window(i)
         spread = self.venue.spread
 
@@ -2436,6 +2438,8 @@ class Simulator:
             s = 0.0
         elif spread == "estimated":
             s = edge(bars)
+        elif spread[0] == "estimated":
+            s = spread[1] * edge(bars)
         else:
             s = spread[1] / 10_000.0
 
@@ -2494,8 +2498,8 @@ class Simulator:
         """The rule a fill paying the cost `name` reaches, the spread and the impact
         by the kind the venue charges."""
         if name == "spread":
-            return ("an estimated spread paid" if self.venue.spread == "estimated"
-                    else "a fixed spread paid")
+            return ("a fixed spread paid" if self.venue.spread[0] == "fixed"
+                    else "an estimated spread paid")
         if name == "impact":
             return f"{self.venue.impact[0]} impact paid"
         return "slippage paid"

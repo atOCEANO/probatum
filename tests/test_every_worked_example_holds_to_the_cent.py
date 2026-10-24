@@ -1564,6 +1564,17 @@ def test_four_trials_on_four_bars_give_white_0_2_and_spa_0_6_on_five_resamples()
     assert statistics.reality_check(f, drawn, 0.5) == pytest.approx((0.2, 0.6))
 
 
+def test_three_trials_near_a_winner_leave_none_within_0_05_and_half_within_0_1():
+    ranges = [(5, 45, False), (100, 300, False)]
+    trials = [((25, 200), "complete", 1.41), ((27, 210), "complete", 1.2),
+              ((28, 200), "complete", 0.4), ((35, 240), "complete", 1.1)]
+    shares = statistics.plateau(trials, ranges, 0, 1.0)
+
+    assert (round(math.hypot(0.05, 0.05), 4), round(math.hypot(0.25, 0.2), 2)) == (
+        0.0707, 0.32)
+    assert shares[:2] == [None, 0.5] and shares[6] == pytest.approx(2 / 3)
+
+
 def test_a_label_closes_at_its_horizon_or_at_its_stop_and_the_last_rows_are_censored():
     # 10,000 buys 100 at row 1's open of 100.0; row 2 opens at 99.0 and trades down to
     # 94.0, and row 3 opens at 103.0
