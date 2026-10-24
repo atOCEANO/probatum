@@ -22,7 +22,6 @@ import probatum
 from probatum import Batch
 from probatum._probatum import Engine
 from probatum import Backtester, Strategy
-from probatum.rl import VectorEnv
 
 BARS = 10_000
 FAST = 10
@@ -227,15 +226,19 @@ def bench_search(policy, trials, n_jobs):
     return trials / (time.perf_counter() - t0)
 
 
-def bench_vectorenv(data, num_envs, steps):
-    env = VectorEnv(data, num_envs=num_envs, window=32, market="perp", quote=10_000, seed=0)
+def bench_env(num_envs, steps):
+    data, _weights = weighted(1, BARS)
+    env = probatum.env(data, probatum.Venue(), window=32, num_envs=num_envs, seed=0)
     obs, _ = env.reset(seed=0)
+
+    # the close of the window's last bar and of its first, over the last close
+    last, first = 31 * 5 + 3, 3
 
     def run():
         nonlocal obs
         for _ in range(steps):
-            actions = np.where(obs[:, -1, 3] > obs[:, 0, 3], 1, 2)
-            obs, _r, _t, _tr, _i = env.step(actions)
+            actions = np.where(obs[:, last] > obs[:, first], 1.0, -1.0)[:, None]
+            obs, _r, _t, _tr, _i = env.step(actions.astype(np.float32))
 
     return best_rate(run, num_envs * steps, repeats=2)
 
@@ -282,8 +285,8 @@ def main():
     strategy_fifty = bench_strategy(50)
 
     rl_envs, rl_steps = 1_024, 2_000
-    vectorenv_eps = bench_vectorenv(data, num_envs=rl_envs, steps=rl_steps)
-    batch_eps     = bench_batch(data, num_envs=rl_envs, steps=rl_steps)
+    env_eps   = bench_env(num_envs=rl_envs, steps=rl_steps)
+    batch_eps = bench_batch(data, num_envs=rl_envs, steps=rl_steps)
 
     print("surface,metric,value,detail")
     print(f"engine_raw_step,bars_per_sec,{engine_raw_bps:.0f},single env no strategy")
@@ -301,7 +304,7 @@ def main():
     print(f"search,trials_per_sec,{search_seq:.2f},n_jobs=1 {trials} trials of a strategy")
     print(f"search,trials_per_sec,{search_par:.2f},n_jobs=-1 {trials} trials of a strategy "
           f"{cores} cores")
-    print(f"vectorenv,env_steps_per_sec,{vectorenv_eps:.0f},{rl_envs} envs x {rl_steps} steps")
+    print(f"env,env_steps_per_sec,{env_eps:.0f},{rl_envs} envs x {rl_steps} steps")
     print(f"batch,env_steps_per_sec,{batch_eps:.0f},{rl_envs} envs x {rl_steps} steps")
 
 

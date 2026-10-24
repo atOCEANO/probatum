@@ -5,7 +5,7 @@ Covers the paths a user actually runs, not just the raw step:
 - single-env ``Engine.step``, which crosses the Python-to-Rust boundary each call;
 - batched ``Batch.advance``, which releases the GIL and steps every env in parallel;
 - a ``Backtester`` driving a Python ``Strategy`` callback each bar (flexible, slow);
-- a full RL ``VectorEnv`` step, including the observation gather and the reward.
+- a full ``probatum.env`` step, including the decode, the observation and the reward.
 
 It prints steps/sec and env-steps/sec, the only figures a speed claim in the docs
 may cite. Run it inside the Docker bench stage: ``docker build --target bench .``
@@ -99,24 +99,24 @@ def time_backtest(data, passes):
 
 
 def time_rl(data, num_envs, steps):
-    from probatum.rl import VectorEnv
+    import probatum
 
-    env = VectorEnv(
+    bars  = probatum.Data(
         data,
-        features     = data,
-        num_envs     = num_envs,
-        window       = 32,
-        market       = "perp",
-        quote        = 1_000_000.0,
-        slippage_bps = 2.0,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(len(data), dtype=np.int64) * 3_600_000_000_000,
     )
-
+    venue = probatum.Venue(balance=1_000_000.0, fills={"slippage": {"fixed": 2.0}})
+    env   = probatum.env(bars, venue, window=64, num_envs=num_envs, copy=False, seed=0)
     env.reset(seed=0)
 
-    rng   = np.random.default_rng(0)
-    start = time.perf_counter()
-    for _ in range(steps):
-        env.step(rng.integers(0, 3, size=num_envs))
+    rng     = np.random.default_rng(0)
+    actions = rng.uniform(-1.0, 1.0, (steps, num_envs, 1)).astype(np.float32)
+    start   = time.perf_counter()
+
+    for step in range(steps):
+        env.step(actions[step])
 
     elapsed = time.perf_counter() - start
     return (steps * num_envs) / elapsed
@@ -136,7 +136,7 @@ def main():
     print(f"Backtester (python SMA)    : {time_backtest(data, 20):>16,.0f} bar-steps/sec")
     for num_envs in (1_024, 4_096):
         rate = time_rl(data, num_envs, 300)
-        print(f"VectorEnv step n={num_envs:<5}      : {rate:>16,.0f} env-steps/sec")
+        print(f"probatum.env step n={num_envs:<5}   : {rate:>16,.0f} env-steps/sec")
 
 
 if __name__ == "__main__":

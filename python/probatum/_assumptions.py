@@ -38,12 +38,24 @@ def ran(record, result):
     asset   = _settlement(record.data.instruments,
                           [kind for _, kind, _, _ in reading.held])
 
-    delisted = [(venues._delisting(record.venue._preset, entry[2]),
-                 reading.source(("delist",), entry)) for entry in reading.held]
-
     return (_venue_rows(reading, priced, asset)
             + _engine_rows(reading, priced, _inside(record, len(result.time)))
-            + _data_rows(record.data, record.venue, delisted))
+            + _data_rows(record.data, record.venue, _delisted(reading)))
+
+
+def environment(record, drawn):
+    """The rows of an environment's assumptions, as ``ran`` reads a run's from its
+    ``record`` with no cost, the funding inside a bar counted over every row it steps,
+    and each cost ``drawn`` names, by its range, shown as the range each environment
+    draws its own from."""
+    reading = _Reading(record.venue, record)
+    asset   = _settlement(record.data.instruments,
+                          [kind for _, kind, _, _ in reading.held])
+    rows    = len(record.settings["times"]) - record.start
+
+    return (_venue_rows(reading, None, asset, drawn)
+            + _engine_rows(reading, None, _inside(record, rows))
+            + _data_rows(record.data, record.venue, _delisted(reading)))
 
 
 def described(venue):
@@ -57,6 +69,12 @@ def described(venue):
 def bars(data):
     """The rows of ``data``'s assumptions, read from the Data alone."""
     return _data_rows(data)
+
+
+def _delisted(reading):
+    """Each instrument ``reading`` holds, its delisting time with its source, or None."""
+    return [(venues._delisting(reading.venue._preset, entry[2]),
+             reading.source(("delist",), entry)) for entry in reading.held]
 
 
 class _Reading:
@@ -134,15 +152,17 @@ class _Reading:
         return name, value, _sourced(cells, led, counted), grade, direction, cost
 
 
-def _venue_rows(reading, priced=None, asset=None):
+def _venue_rows(reading, priced=None, asset=None, drawn=None):
     """The venue's rows for ``reading``'s instruments, each priced from ``priced``
-    where a run measured it, the balance in ``asset`` where it is known."""
+    where a run measured it, the balance in ``asset`` where it is known, and each cost
+    ``drawn`` names, by its range, shown as the range an environment draws it from."""
     venue, level = reading.venue, reading.level
     held, perps = reading.held, reading.perps
     defaults = venue._preset["defaults"]
     source, cell = reading.source, reading.cell
 
     priced = priced or {}
+    drawn  = drawn or {}
     rows   = []
 
     def plain(name, value, path, grade, direction=None, calibrated=False, cost=None):
@@ -163,13 +183,19 @@ def _venue_rows(reading, priced=None, asset=None):
         return spec.get("fee_taker", level["fee_taker"])
 
     def fees(spec):
-        if taker(spec) <= 0.0:
+        if not drawn.keys() & {"maker", "taker"} and taker(spec) <= 0.0:
             return "not charged", "optimistic", None
+
         maker = spec.get("fee_maker", level["fee_maker"])
-        return f"maker {_rate(maker)}, taker {_rate(taker(spec))}", "venue", None
+        said  = (f"maker {_drawn(drawn, 'maker', maker, _rate)}, "
+                 f"taker {_drawn(drawn, 'taker', taker(spec), _rate)}")
+        if "maker" in drawn or "taker" in drawn:
+            return said, "simplified", "either"
+        return said, "venue", None
 
     rows.append(cell("fees", held, fees,
-                     lambda entry: [(side, source(("fees", side), entry))
+                     lambda entry: [(side, USER if side in drawn
+                                     else source(("fees", side), entry))
                                     for side in ("maker", "taker")],
                      by_kind=True, cost=priced.get("fees")))
 
@@ -224,6 +250,8 @@ def _venue_rows(reading, priced=None, asset=None):
     def closing(spec):
         if keeps(spec):
             return "unused, as maintenance is kept", "venue", None
+        if fee is None and "taker" in drawn:
+            return "the taker rate", "simplified", "either"
         if (taker(spec) if fee is None else fee) <= 0.0:
             return "not charged", "optimistic", None
         return "the taker rate" if fee is None else _rate(fee), "simplified", "either"
@@ -232,7 +260,8 @@ def _venue_rows(reading, priced=None, asset=None):
         if keeps(entry[3]):
             return [("tiers", source(("tiers",), entry))]
         if fee is None:
-            return [("taker", source(("fees", "taker"), entry))]
+            return [("taker", USER if "taker" in drawn
+                     else source(("fees", "taker"), entry))]
         return [("liquidation_fee", source(("liquidation_fee",)))]
 
     perpetual("liquidation fee", closing, closed, ("liquidation_fee",))
@@ -279,7 +308,10 @@ def _venue_rows(reading, priced=None, asset=None):
               "either", cost=paid)
 
     slippage, paid = level["slippage_bps"], priced.get("slippage")
-    if slippage == 0.0:
+    if "slippage" in drawn:
+        rows.append(("slippage", _drawn(drawn, "slippage", slippage, _bps), USER,
+                     "simplified", "either", None))
+    elif slippage == 0.0:
         plain("slippage", "not modelled", ("fills", "slippage"), "optimistic",
               calibrated=True, cost=paid)
     else:
@@ -287,7 +319,11 @@ def _venue_rows(reading, priced=None, asset=None):
               calibrated=True, cost=paid)
 
     paid = priced.get("impact")
-    if level["impact"] == 0.0:
+    if "impact" in drawn:
+        k = _drawn(drawn, "impact", level["impact"], lambda value: f"{value:.3g}")
+        rows.append(("impact", f"{level['impact_model']}, k = {k}", USER, "simplified",
+                     "either", None))
+    elif level["impact"] == 0.0:
         plain("impact", "not modelled", ("fills", "impact"), "optimistic",
               calibrated=True, cost=paid)
     else:
@@ -742,6 +778,16 @@ def _rate(rate):
 def _bps(bps):
     """A number of basis points, to three figures."""
     return f"{bps:.3g} {'bp' if bps == 1.0 else 'bps'}"
+
+
+def _drawn(drawn, name, value, form):
+    """``value`` in ``form``, or where ``drawn`` names the cost ``name`` its range, which
+    each environment draws its own from."""
+    if name not in drawn:
+        return form(value)
+
+    low, high = drawn[name]
+    return f"{form(low)} to {form(high)}, drawn for each environment"
 
 
 def _share(share):

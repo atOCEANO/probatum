@@ -1,6 +1,6 @@
 """The venue and your account on it, as one object.
 
-A backtest and an RL rollout each take the same eleven of the engine's knobs.
+The engine and a backtest each take the same eleven of the engine's knobs.
 Written out at two call sites they are two chances to disagree, and the claim this
 library makes, that one fill model sits behind every surface, was being upheld by
 whoever typed them retyping them identically. ``Market`` holds them once and hands
@@ -11,7 +11,6 @@ out the surfaces itself::
                           funding_interval=8)
 
     result = binance.backtest(candles).run(MyStrategy())
-    env = binance.env(candles, num_envs=4096, window=60)
 
 Each method takes only the arguments that are not the venue, so there is nothing
 to reconcile: a knob cannot be passed twice, and no rule about which copy wins is
@@ -115,26 +114,6 @@ class Market:
             risk_free        = risk_free,
             **self.as_dict(),
         )
-
-
-    def env(self, data, **rest):
-        """A ``VectorEnv`` at this venue. ``rest`` takes the RL arguments
-        (``features``, ``num_envs``, ``window``, ``reward_fn``, ...).
-        """
-        from .rl import VectorEnv
-        self._only_the_search(rest, "env")
-        return VectorEnv(data, **rest, **self.as_dict())
-
-
-    def _only_the_search(self, given, where):
-        # the venue is this object, so a knob arriving beside it is not an
-        # override to resolve, it is two answers to one question
-        clash = sorted(set(given) & set(self.as_dict()))
-        if clash:
-            raise TypeError(
-                f"{clash} belongs to the market, not to {where}; set it on the "
-                f"Market, or use market.replace({clash[0]}=...) for a variant"
-            )
 
 
     def __eq__(self, other):

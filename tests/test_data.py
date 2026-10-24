@@ -64,14 +64,6 @@ def test_backtester_accepts_a_dataframe():
     assert "sharpe" in result.stats
 
 
-def test_vectorenv_accepts_a_dataframe():
-    from probatum.rl import VectorEnv
-    env = VectorEnv(frame(40), num_envs=2, window=4, seed=0)
-    obs, _ = env.reset(seed=0)
-
-    assert obs.shape == (2, 4, 5)
-
-
 def test_unsorted_datetime_index_is_rejected():
     df       = frame(5)
     df.index = pd.date_range("2024-01-01", periods=5, freq="1D")[::-1]  # descending

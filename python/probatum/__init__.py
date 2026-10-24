@@ -20,7 +20,10 @@ to its labels, on the training bars of each split a splitter of ``cv`` gives, tr
 each split's winner on its test span and returns the ``Study`` of the out-of-sample
 paths. ``capacity`` runs a policy again at several balances, and ``cost_curve`` with
 every cost its venue charges for trading multiplied together, where ``breakeven_bps``
-finds the round-trip cost at which it stops making money.
+finds the round-trip cost at which it stops making money. ``env`` steps accounts at a
+venue on a Data together in Rust as a Gymnasium vector environment, each in episodes
+drawn from a stream of its own, and ``rl`` holds it with one environment of it; both
+load Gymnasium when first reached, which nothing else here imports.
 ``stats`` says how far a run's statistics can be trusted, read from a Result or any
 series of returns: the Sharpe's interval, its probability of beating a benchmark and
 the track record that would show it; and how far a search's winner can, judged across
@@ -39,7 +42,7 @@ from ._probatum import Batch
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
 from ._space import Categorical, Float, Int
-from . import cv, metrics, plot, rl, stats, ta, venues
+from . import cv, metrics, plot, stats, ta, venues
 from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
 from ._engine import Engine
@@ -58,7 +61,7 @@ __all__ = [
     "Strategy", "Study", "Venue",
     "backtest", "breakeven_bps", "capacity", "chart", "chart_defaults", "combine",
     "cost_curve", "labels", "search", "to_ohlcv", "validate",
-    "cv", "metrics", "plot", "rl", "stats", "ta", "venues",
+    "cv", "metrics", "plot", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
     "ProbatumNotImplementedError", "DataError", "VenueError", "SpecError",
@@ -74,14 +77,18 @@ except Exception:
 
 
 def __getattr__(name):
-    # sb3 is reachable as `probatum.sb3` but is not imported with the package, because
-    # it needs stable_baselines3 and almost no install has it. The export table
-    # listed it for four releases while `probatum.sb3` raised AttributeError, and the
-    # test that would have caught that carried an exemption for this one name
-    if name == "sb3":
-        # import_module rather than `from . import sb3`, which resolves the name
-        # through getattr on this very module and recurses until the stack ends
-        import importlib
-        return importlib.import_module(".sb3", __name__)
+    # rl, env and sb3 are imported when first reached rather than with the package,
+    # and left out of __all__ so a star import reaches none of them, since they import
+    # Gymnasium, which a backtest never loads (ADR 0044), and sb3 stable_baselines3,
+    # which almost no install has. import_module rather than `from . import rl`, which
+    # resolves the name through getattr on this very module and recurses until the
+    # stack ends
+    import importlib
+
+    if name in ("rl", "sb3"):
+        return importlib.import_module(f".{name}", __name__)
+
+    if name == "env":
+        return importlib.import_module("._env", __name__).env
 
     raise ProbatumAttributeError(f"module 'probatum' has no attribute {name!r}")

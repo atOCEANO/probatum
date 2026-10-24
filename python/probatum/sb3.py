@@ -1,19 +1,19 @@
-"""Stable-Baselines3 adapter for ``probatum.rl.VectorEnv``.
+"""Stable-Baselines3 adapter for the environment ``probatum.env`` returns.
 
 SB3 does not consume a Gymnasium vector env directly; it wants a single ``gym.Env``
 it vectorizes itself, or its own ``VecEnv``. ``ProbatumVecEnv`` presents the batched,
 GIL-free ``VectorEnv`` as an SB3 ``VecEnv``, so PPO, A2C, and the rest of SB3 train
 on it without giving up the batch. The mapping is a straight remap rather than a
-re-vectorization: probatum's same-step autoreset (a finished env's step returns the next
-episode's first observation, the true final in ``infos``) is exactly the SB3
-``VecEnv`` contract, so a done env's final observation becomes SB3's
-``terminal_observation`` (ADR 0038).
+re-vectorization: it switches the environment to same-step autoreset (a finished
+env's step returns the next episode's first observation, the true final under
+``final_obs``), which is exactly the SB3 ``VecEnv`` contract, so a done env's final
+observation becomes SB3's ``terminal_observation`` (ADR 0038), and to an observation
+of its own each step, which SB3 keeps across the step after it.
 
     from stable_baselines3 import PPO
-    from probatum.rl import VectorEnv
     from probatum.sb3 import ProbatumVecEnv
 
-    venv = ProbatumVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, market="perp", seed=0))
+    venv = ProbatumVecEnv(probatum.env(data, venue, window=32, num_envs=8, seed=0))
     model = PPO("MlpPolicy", venv)
     model.learn(total_timesteps=100_000)
 
@@ -22,6 +22,7 @@ Needs stable-baselines3: ``pip install 'probatum[sb3]'``.
 
 from __future__ import annotations
 
+import gymnasium
 import numpy as np
 
 try:
@@ -35,7 +36,7 @@ __all__ = ["ProbatumVecEnv"]
 
 
 class ProbatumVecEnv(VecEnv):
-    """Present an ``probatum.rl.VectorEnv`` as a Stable-Baselines3 ``VecEnv``.
+    """Present a ``probatum.rl.VectorEnv`` as a Stable-Baselines3 ``VecEnv``.
 
     Construct it from a built ``VectorEnv`` and hand it to any SB3 algorithm. The
     underlying env keeps ownership of the batch, the observation, the reward, and
@@ -44,6 +45,12 @@ class ProbatumVecEnv(VecEnv):
 
 
     def __init__(self, env):
+        # SB3 resets an env on the step its episode ends, and keeps each observation
+        # across the step after it, which one array written over would change
+        env.autoreset_mode = gymnasium.vector.AutoresetMode.SAME_STEP
+        env.metadata       = {**env.metadata, "autoreset_mode": env.autoreset_mode}
+        env._copy          = True
+        env.provenance["settings"].update(autoreset="same_step", copy=True)
         self._env = env
         super().__init__(env.num_envs, env.single_observation_space, env.single_action_space)
 
@@ -77,8 +84,8 @@ class ProbatumVecEnv(VecEnv):
         obs, rewards, terminations, truncations, infos = self._env.step(self._actions)
 
         dones      = np.logical_or(np.asarray(terminations), np.asarray(truncations))
-        final_obs  = infos.get("final_observation")
-        final_mask = infos.get("_final_observation")
+        final_obs  = infos.get("final_obs")
+        final_mask = infos.get("_final_obs")
         info_list  = []
 
         for i in range(self.num_envs):

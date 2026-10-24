@@ -1,5 +1,5 @@
 """Tests for probatum.Market: it should carry the venue once and hand out every
-surface configured identically, and refuse a knob passed twice.
+surface configured identically, and refuse a knob it does not carry.
 """
 
 import numpy as np
@@ -55,42 +55,6 @@ def test_every_surface_gets_the_same_venue():
     assert result.config["leverage"]     == 5.0
 
 
-def test_the_rl_env_gets_the_same_venue_too():
-    pytest.importorskip("gymnasium")
-    from probatum.rl import VectorEnv
-
-    venue = Market(kind="perp", leverage=5.0, fee_taker=0.0004)
-    data  = series()
-    env   = venue.env(data, num_envs=4, window=8, seed=1)
-    obs, _ = env.reset(seed=0)
-
-    assert obs.shape == (4, 8, 5)
-
-    # the env has no config to read back, so the venue is read off what it charges:
-    # an `env` that stopped forwarding the market would run these four on spot at
-    # the default taker fee, and a bought and marked position is where the two
-    # answers part. The shape alone leaves that mutant alive
-    typed = VectorEnv(
-        data,
-        num_envs  = 4,
-        window    = 8,
-        seed      = 1,
-        market    = "perp",
-        leverage  = 5.0,
-        fee_taker = 0.0004,
-    )
-    typed.reset(seed=0)
-
-    buy    = np.ones(4, dtype=np.int64)
-    mine   = env.step(buy)[1]
-    theirs = typed.step(buy)[1]
-
-    assert np.array_equal(mine, theirs)
-
-    env.close()
-    typed.close()
-
-
 def test_a_market_backtest_matches_the_same_knobs_typed_out():
     from probatum import Backtester
 
@@ -107,17 +71,6 @@ def test_a_market_backtest_matches_the_same_knobs_typed_out():
 
     assert by_object.stats  == by_hand.stats
     assert by_object.config == by_hand.config
-
-
-def test_a_knob_passed_beside_the_market_is_two_answers_to_one_question():
-    pytest.importorskip("gymnasium")
-    venue = Market(kind="perp")
-
-    with pytest.raises(TypeError) as excinfo:
-        venue.env(series(), fee_taker=0.001)
-
-    assert "belongs to the market" in str(excinfo.value)
-    assert "replace" in str(excinfo.value)
 
 
 def test_replace_changes_one_knob_and_leaves_the_rest():

@@ -47,6 +47,7 @@ _API = {
     "to_ohlcv": probatum.to_ohlcv,
     "Backtester": Backtester,
     "backtest": probatum.backtest,
+    "env": probatum.env,
     "Engine": probatum.Engine,
     "Line": plot.Line,
     "Histogram": plot.Histogram,
