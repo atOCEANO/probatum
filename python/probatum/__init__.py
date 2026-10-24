@@ -16,7 +16,9 @@ before a holdout, and returns the ``Study`` of every trial. ``labels`` gives, as
 same fill model, for a model to fit on. ``validate`` runs that search, or fits a model
 to its labels, on the training bars of each split a splitter of ``cv`` gives, trades
 each split's winner on its test span and returns the ``Study`` of the out-of-sample
-paths.
+paths. ``capacity`` runs a policy again at several balances, and ``cost_curve`` with
+every cost its venue charges for trading multiplied together, where ``breakeven_bps``
+finds the round-trip cost at which it stops making money.
 ``stats`` says how far a run's statistics can be trusted, read from a Result or any
 series of returns: the Sharpe's interval, its probability of beating a benchmark and
 the track record that would show it; and how far a search's winner can, judged across
