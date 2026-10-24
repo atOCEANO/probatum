@@ -16,8 +16,8 @@ mod table;
 use numpy::ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 use numpy::npyffi::flags::NPY_ARRAY_WRITEABLE;
 use numpy::{
-    PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
-    PyUntypedArray, PyUntypedArrayMethods,
+    PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2,
+    PyReadonlyArray3, PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -31,6 +31,9 @@ use probatum_core::{
     TimeInForce, Wallet,
 };
 use probatum_engine::candles::printed;
+use probatum_engine::env::{
+    Decision, Environment as BarEnvironment, Reward, Settings, StateBuffers,
+};
 use probatum_engine::reporter::{
     Cause, EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Record, Refusal, Reporter,
 };
@@ -3646,6 +3649,355 @@ impl Batch {
     }
 }
 
+/// A step's rewards and its terminated and truncated flags, as `Environment.step`
+/// hands them back.
+type Stepped<'py> = (
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<bool>>,
+    Bound<'py, PyArray1<bool>>,
+);
+
+/// The environments `probatum.env` steps (Specification, The environment): a batch's
+/// accounts, each in the episode the Python layer draws for it, stepped from every
+/// slot's weight or limit at once with the GIL released, their observations written
+/// as float32 and their rewards and flags worked in Rust. It takes over the engines of
+/// the `Batch` it is built from, which is left with none.
+#[pyclass]
+struct Environment {
+    inner: BarEnvironment,
+    // the shared series' rows and instruments, which a start and a slot are held to
+    rows: usize,
+    width: usize,
+}
+
+#[pymethods]
+impl Environment {
+    #[new]
+    #[pyo3(signature = (
+        batch,
+        window,
+        onsets,
+        slots,
+        ticks,
+        reward = "log",
+        eta = 0.0,
+        features = None,
+        max_leverage = 1.0,
+        max_offset = 20.0,
+        tolerance = 0.0,
+        orders = false,
+        episode_length = None,
+        floor = 0.0,
+        threads = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        mut batch: PyRefMut<'_, Batch>,
+        window: usize,
+        onsets: Vec<Option<usize>>,
+        slots: usize,
+        ticks: Vec<f64>,
+        reward: &str,
+        eta: f64,
+        features: Option<PyReadonlyArray3<'_, f64>>,
+        max_leverage: f64,
+        max_offset: f64,
+        tolerance: f64,
+        orders: bool,
+        episode_length: Option<usize>,
+        floor: f64,
+        threads: Option<usize>,
+    ) -> PyResult<Environment> {
+        check_window(window)?;
+        if threads == Some(0) {
+            return Err(ProbatumValueError::new_err(
+                "threads: 0; give 1 or more, or None for as many as the work pays for",
+            ));
+        }
+        let (rows, width) = (batch.inner.num_bars(), batch.inner.width());
+        if onsets.len() != width || ticks.len() != width {
+            return Err(ProbatumValueError::new_err(format!(
+                "onsets: {} and ticks: {} for {width} instruments; give one of each for each",
+                onsets.len(),
+                ticks.len()
+            )));
+        }
+        if slots == 0 || slots > width {
+            return Err(ProbatumValueError::new_err(format!(
+                "slots: {slots} of {width} instruments; give from 1 to {width}"
+            )));
+        }
+        let reward = match reward {
+            "log" => Reward::Log,
+            "sharpe" => Reward::Sharpe(eta),
+            "own" => Reward::Own,
+            other => {
+                return Err(ProbatumValueError::new_err(format!(
+                    "reward: {other:?}; give \"log\", \"sharpe\" or \"own\""
+                )))
+            }
+        };
+        let (features, f) = match &features {
+            Some(values) => {
+                let view = values.as_array();
+                let (t, n, f) = view.dim();
+                if t != rows || n != width || f == 0 {
+                    return Err(DataError::new_err(format!(
+                        "features: shape ({t}, {n}, {f}) for {rows} bars of {width} \
+                         instruments; give ({rows}, {width}, F)"
+                    )));
+                }
+                // copied in the rows' order whatever order numpy holds them in, as
+                // set_features copies its matrix
+                (Some(view.iter().copied().collect()), f)
+            }
+            None => (None, 0),
+        };
+        let settings = Settings {
+            window,
+            features,
+            width: f,
+            onsets,
+            slots,
+            max_leverage,
+            max_offset,
+            tolerance: read_tolerance("", tolerance)?,
+            reward,
+            orders,
+            episode_length,
+            floor,
+            units: batch.units,
+            ticks,
+            threads,
+        };
+        let inner = BarEnvironment::new(batch.inner.take(), settings);
+        Ok(Environment { inner, rows, width })
+    }
+
+    /// Number of environments.
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// The floats of one environment's observation.
+    #[getter]
+    fn size(&self) -> usize {
+        self.inner.size()
+    }
+
+    /// The threads a step runs on, the caller's own counted as one.
+    #[getter]
+    fn threads(&self) -> usize {
+        self.inner.threads()
+    }
+
+    /// Start an episode in each environment `mask` names, at its row of `starts`, with
+    /// a fresh account trading its row of `slots`, an `(num_envs, k)` array of
+    /// instruments counted from 0.
+    fn reset(
+        &mut self,
+        py: Python<'_>,
+        mask: PyReadonlyArray1<'_, bool>,
+        starts: PyReadonlyArray1<'_, i64>,
+        slots: PyReadonlyArray2<'_, i64>,
+    ) -> PyResult<()> {
+        let (n, k) = (self.inner.len(), self.inner.settings().slots);
+        let mask = booleans(&mask)?;
+        let starts = starts.as_array();
+        let slots = slots.as_array();
+        if mask.len() != n || starts.len() != n || slots.dim() != (n, k) {
+            return Err(ProbatumValueError::new_err(format!(
+                "reset: a mask of {}, {} starts and slots of shape {:?} for {n} environments \
+                 of {k} slots; give ({n},), ({n},) and ({n}, {k})",
+                mask.len(),
+                starts.len(),
+                slots.dim()
+            )));
+        }
+        let rows = self.rows as i64;
+        if let Some(start) = starts.iter().find(|&&s| s < 0 || s >= rows) {
+            return Err(ProbatumValueError::new_err(format!(
+                "starts: {start} of {rows} bars; give a bar counted from 0"
+            )));
+        }
+        let width = self.width as i64;
+        if let Some(slot) = slots.iter().find(|&&i| i < 0 || i >= width) {
+            return Err(ProbatumValueError::new_err(format!(
+                "slots: {slot} of {width} instruments; give one counted from 0"
+            )));
+        }
+        let starts: Vec<usize> = starts.iter().map(|&s| s as usize).collect();
+        let slots: Vec<usize> = slots.iter().map(|&i| i as usize).collect();
+        py.detach(|| self.inner.reset(&mask, &starts, &slots));
+        Ok(())
+    }
+
+    /// Step each environment `active` names from its row of `actions`, its slots'
+    /// weights as `(num_envs, k)` float64, a NaN leaving a slot unnamed, or with
+    /// orders each slot's size and offset as `(num_envs, k, 2)`, returning the rewards
+    /// and the terminated and truncated flags, an environment not active rewarded 0.0
+    /// with its flags as they were.
+    fn step<'py>(
+        &mut self,
+        py: Python<'py>,
+        actions: PyReadonlyArrayDyn<'_, f64>,
+        active: PyReadonlyArray1<'_, bool>,
+    ) -> PyResult<Stepped<'py>> {
+        let (n, k) = (self.inner.len(), self.inner.settings().slots);
+        let orders = self.inner.settings().orders;
+        let view = actions.as_array();
+        let shape: &[usize] = if orders { &[n, k, 2] } else { &[n, k] };
+        if view.shape() != shape {
+            return Err(ProbatumValueError::new_err(format!(
+                "actions: shape {:?} for {n} environments of {k} slots; give {shape:?}",
+                view.shape()
+            )));
+        }
+        let active = booleans(&active)?;
+        if active.len() != n {
+            return Err(ProbatumValueError::new_err(format!(
+                "active: {} values for {n} environments; give one for each",
+                active.len()
+            )));
+        }
+        // read into an owned Vec under the GIL, which the step runs without
+        let rows: Vec<f64> = view.iter().copied().collect();
+        let decision = if orders {
+            Decision::Orders(&rows)
+        } else {
+            Decision::Weights(&rows)
+        };
+        let (mut rewards, mut terminated, mut truncated) =
+            (vec![0.0; n], vec![false; n], vec![false; n]);
+        py.detach(|| {
+            self.inner.step(
+                decision,
+                &active,
+                &mut rewards,
+                &mut terminated,
+                &mut truncated,
+            )
+        })
+        .map_err(|(env, TargetError::Short { instrument, weight })| {
+            ProbatumValueError::new_err(format!(
+                "weights: {weight} for instrument {instrument} of env {env}, which trades \
+                 spot and cannot be short; trade a perpetual instead"
+            ))
+        })?;
+        Ok((
+            PyArray1::from_vec(py, rewards),
+            PyArray1::from_vec(py, terminated),
+            PyArray1::from_vec(py, truncated),
+        ))
+    }
+
+    /// Write every environment's observation into `out`, a writable C-contiguous
+    /// `(num_envs, size)` float32 array, and return it. The write runs in parallel
+    /// under the GIL, which keeps any other thread from touching `out` meanwhile.
+    fn observe<'py>(&self, out: Bound<'py, PyArray2<f32>>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let (n, size) = (self.inner.len(), self.inner.size());
+        // a row is written where its values lie in memory, so only C order lays them
+        // out as rows
+        if out.shape() != [n, size] || !out.is_c_contiguous() {
+            return Err(ProbatumValueError::new_err(format!(
+                "out: an array of shape {:?}, C-contiguous {}; give a C-contiguous \
+                 ({n}, {size})",
+                out.shape(),
+                out.is_c_contiguous()
+            )));
+        }
+        {
+            let mut written = out.try_readwrite().map_err(|_| {
+                ProbatumValueError::new_err("out: a read-only array; give a writable one")
+            })?;
+            let cells = written.as_slice_mut().map_err(|_| {
+                ProbatumValueError::new_err("out: a strided array; give a C-contiguous one")
+            })?;
+            self.inner.observe(cells);
+        }
+        Ok(out)
+    }
+
+    /// Whether each slot of each environment is shown, as `(num_envs, k)`.
+    fn shown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<bool>>> {
+        let (n, k) = (self.inner.len(), self.inner.settings().slots);
+        let mut out = vec![false; n * k];
+        self.inner.shown(&mut out);
+        let array = Array2::from_shape_vec((n, k), out)
+            .map_err(|e| ProbatumValueError::new_err(e.to_string()))?;
+        Ok(PyArray2::from_owned_array(py, array))
+    }
+
+    /// Each environment's start and the steps its episode has taken, as two
+    /// `(num_envs,)` arrays.
+    fn progress<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>) {
+        let (starts, steps): (Vec<i64>, Vec<i64>) = self
+            .inner
+            .progress()
+            .into_iter()
+            .map(|(start, steps)| (start as i64, steps as i64))
+            .unzip();
+        (
+            PyArray1::from_vec(py, starts),
+            PyArray1::from_vec(py, steps),
+        )
+    }
+
+    /// The state each environment's last step left, as a reward or a decode reads it:
+    /// `(num_envs,)` arrays of `equity`, `previous_equity`, `log_return`, `drawdown`,
+    /// `leverage`, `turnover`, `fees`, `funding` and `liquidated`, and `(num_envs, k)`
+    /// arrays of each slot's `weights` and `positions`.
+    fn state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (n, k) = (self.inner.len(), self.inner.settings().slots);
+        let mut values: [Vec<f64>; 8] = std::array::from_fn(|_| vec![0.0; n]);
+        let mut liquidated = vec![false; n];
+        let (mut weights, mut positions) = (vec![0.0; n * k], vec![0.0; n * k]);
+        {
+            let [equity, previous_equity, log_return, drawdown, leverage, turnover, fees, funding] =
+                &mut values;
+            self.inner.state(StateBuffers {
+                equity,
+                previous_equity,
+                log_return,
+                drawdown,
+                leverage,
+                turnover,
+                fees,
+                funding,
+                liquidated: &mut liquidated,
+                weights: &mut weights,
+                positions: &mut positions,
+            });
+        }
+        let out = PyDict::new(py);
+        let names = [
+            "equity",
+            "previous_equity",
+            "log_return",
+            "drawdown",
+            "leverage",
+            "turnover",
+            "fees",
+            "funding",
+        ];
+        for (name, column) in names.into_iter().zip(values) {
+            out.set_item(name, PyArray1::from_vec(py, column))?;
+        }
+        out.set_item("liquidated", PyArray1::from_vec(py, liquidated))?;
+        let grid = |values: Vec<f64>| {
+            Array2::from_shape_vec((n, k), values)
+                .map(|array| PyArray2::from_owned_array(py, array))
+                .map_err(|e| ProbatumValueError::new_err(e.to_string()))
+        };
+        out.set_item("weights", grid(weights)?)?;
+        out.set_item("positions", grid(positions)?)?;
+        Ok(out)
+    }
+}
+
 /// The verbs a script takes, as an error lists them.
 const VERBS: &str =
     "buy, sell, buy_value, sell_value, bracket, close, cancel, cancel_all, replace, \
@@ -4871,6 +5223,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     check_errors(m.py())?;
     m.add_class::<Engine>()?;
     m.add_class::<Batch>()?;
+    m.add_class::<Environment>()?;
     m.add_class::<PyState>()?;
     m.add_class::<table::PyTable>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;

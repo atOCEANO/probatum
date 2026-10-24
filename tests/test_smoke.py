@@ -792,6 +792,35 @@ def test_an_empty_batch_over_a_universe_keeps_its_instrument_axis():
     assert batch.snapshot()["positions"].shape == (0, 2)
 
 
+def environment(batch):
+    """An environment over `batch`'s engines, a window of one bar on both slots."""
+    return probatum._probatum.Environment(batch, 1, [0, 0], 2, [0.1, 0.1])
+
+
+def test_a_batch_whose_engines_an_environment_took_is_a_batch_of_none():
+    batch = probatum.Batch(universe_pair(), 2)
+    environment(batch)
+
+    assert len(batch) == 0
+    assert batch.observe(1).shape == (0, 1, 2, 5)
+
+    batch.target(np.zeros((0, 2)))
+
+
+def test_an_environment_writes_its_observations_only_into_rows_of_its_own_shape():
+    env = environment(probatum.Batch(universe_pair(), 2))
+    env.reset(np.ones(2, dtype=bool), np.array([2, 2]), np.array([[0, 1], [1, 0]]))
+    rows = env.observe(np.zeros((2, env.size), dtype=np.float32))
+
+    assert rows[0].tolist() == rows[1][[5, 6, 7, 8, 9, 0, 1, 2, 3, 4]
+                                       + list(range(10, env.size))].tolist()
+
+    for out in (np.zeros((env.size, 2), dtype=np.float32),
+                np.zeros((2, env.size), dtype=np.float32, order="F")):
+        with pytest.raises(probatum.ProbatumValueError, match="out: "):
+            env.observe(out)
+
+
 @pytest.mark.parametrize("script, says", [
     ({0: [("hold", {})]}, '"hold" is not a verb'),
     ({0: [("buy", {"size": 1.0, "price": 99.0})]}, "buy takes no price"),
