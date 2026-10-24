@@ -106,14 +106,14 @@ CMD ["python", "/benchmarks/surfaces.py"]
 # compared case reached. Every gate stage above runs the same comparison over a
 # few hundred cases.
 #
-# `batch_differential.py` is the same idea one tier up, over `Batch`: every
-# reinforcement learning number comes out of `reset_at_each`, `advance` and
-# `snapshot`, and what stood behind them was a Rust test comparing the batch
-# against the engine it is built from, which shares every mistake the engine
-# makes. Each env is compared against a reference started at that env's own
-# offset, because an episode beginning part way into the series still funds on
-# the bars the SERIES funds on (ADR 0020) and nothing that starts
-# every env at bar zero can see that rule at all.
+# `batch_differential.py` is the same idea one tier up, over `Batch`, where a Rust
+# test comparing the batch against the engine it is built from shares every mistake
+# the engine makes. Each env is compared against a reference started at that env's
+# own offset, because an episode beginning part way into the series still funds on
+# the bars the SERIES funds on (ADR 0020) and nothing that starts every env at bar
+# zero can see that rule at all. `environment_differential.py` holds every step of
+# the environment an agent trains on to a reference episode, its observation,
+# reward, state and flags.
 #   docker build --target test-slow .
 FROM python:3.13-slim AS test-slow
 COPY --from=builder /wheels /wheels

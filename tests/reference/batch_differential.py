@@ -1,9 +1,9 @@
 """Run the BATCHED path against one independent reference per env.
 
-`Batch` is the tier every reinforcement learning number comes out of: `VectorEnv`
-drives `reset_at_each`, `advance` and `snapshot` and nothing else. What stood behind
-those was a Rust test comparing the batch against the engine it is built from, which
-is worth having and shares every mistake the engine makes. Here each env is compared
+`Batch` is the raw batch a loop of the caller's own steps, through `reset_at_each`,
+`advance` and `snapshot`. What stood behind those was a Rust test comparing the batch
+against the engine it is built from, which is worth having and shares every mistake
+the engine makes. Here each env is compared
 against a reference run over the bars from that env's own offset, written from the
 Specification and knowing nothing about either implementation, over the cases both
 model as `differential` decides them.
