@@ -182,6 +182,15 @@ def test_a_provenance_holding_a_float_json_has_no_number_for_loads_back(tmp_path
     assert loaded.trials == study.trials
 
 
+def test_a_saved_study_counts_each_look_it_takes_after(tmp_path):
+    study = searched()
+    study.save(tmp_path / "study")
+    study.evaluate_holdout()
+    loaded = Study.load(tmp_path / "study")
+
+    assert loaded.looks == 1 and loaded.holdout.stats == study.holdout.stats
+
+
 def test_a_save_into_a_directory_that_holds_no_study_is_refused(tmp_path):
     (tmp_path / "work" / "holdout").mkdir(parents=True)
     (tmp_path / "work" / "notes.txt").write_text("", encoding="utf-8")
@@ -205,6 +214,13 @@ def test_a_save_into_a_directory_that_holds_no_study_is_refused(tmp_path):
             searched().save(folder)
 
         assert (folder / "returns.npy").read_bytes() == b"its own"
+
+    searched(storage=tmp_path / "storage")
+
+    with pytest.raises(ProbatumValueError, match=r"^path: '[^']+' holds the storage of "
+                       r"another search, which this Study saved there would break; "
+                       r"give another directory$"):
+        searched(objective="sortino").save(tmp_path / "storage")
 
 
 def test_a_save_that_stops_leaves_the_study_that_was_there(tmp_path, monkeypatch):

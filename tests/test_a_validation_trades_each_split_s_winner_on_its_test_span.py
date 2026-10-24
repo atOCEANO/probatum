@@ -9,6 +9,7 @@ same Study in this process and in workers, and every refusal names what to give
 instead.
 """
 
+import functools
 import math
 import multiprocessing
 
@@ -719,6 +720,26 @@ def test_a_seeded_validation_repeats_and_its_workers_give_what_this_process_does
 
     np.testing.assert_array_equal(here.returns, far.returns)
     assert here.best_params == far.best_params
+
+
+def test_a_first_search_the_workers_breaking_cut_short_is_refused(monkeypatch):
+    searched = probatum._search.search
+
+    # its keywords' defaults still read from its signature
+    @functools.wraps(searched)
+    def broken(*args, **given):
+        study = searched(*args, **given)
+        # the trials a pool that broke failed, as the Study names them
+        study._broken = [3, 4, 5]
+
+        return study
+
+    monkeypatch.setattr(probatum._search, "search", broken)
+
+    with pytest.raises(ProbatumRuntimeError, match=r"^n_jobs: the workers broke in the "
+                       r"first search, failing 3 of its trials; their output says "
+                       r"why$"):
+        validated(probatum.cv.WalkForward(150, 100))
 
 
 def test_a_study_of_paths_reads_as_one_and_refuses_what_a_search_s_holds():

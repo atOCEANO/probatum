@@ -193,6 +193,13 @@ def validate(policy, data, venue, cv, space=None, search=None, features=None,
         min_trades=min_trades, holdout=len(data) - cut, keep="none", n_jobs=n_jobs,
         seed=final_seed, risk_free=risk_free)
 
+    # a first search the workers' breaking cut short has no winner to judge, as a fit
+    # it cuts short has none
+    if final._broken:
+        raise ProbatumRuntimeError(f"n_jobs: the workers broke in the first search, "
+                                   f"failing {len(final._broken):,} of its trials; "
+                                   f"their output says why")
+
     # what every trial decides, as the first search's winner decides on these bars
     made = ("strategy" if kind == "class"
             or isinstance(policy(inside, **final.best_params), Strategy) else "weights")

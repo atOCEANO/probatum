@@ -44,9 +44,8 @@ class ProbatumRuntimeError(ProbatumError, RuntimeError):
 
 class ProbatumNotImplementedError(ProbatumRuntimeError, NotImplementedError):
     """What is not done yet: a Strategy that writes no ``next``, an agent, which
-    ``backtest`` does not run yet, the transitions level, which it does not record yet,
-    and a search's ``storage``, which it does not save to yet. It is a
-    ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
+    ``backtest`` does not run yet, and the transitions level, which it does not record
+    yet. It is a ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
 
 
 class DataError(ProbatumValueError):

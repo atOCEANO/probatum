@@ -1356,7 +1356,8 @@ def plateau(study, level):
     configurations but the winner's within it, each counted once by the first trial
     that ran it, that completed with a score past ``level``, a finite number in the
     objective's units, in the search's direction, a floored or failed trial counting
-    against it (ADR 0033; Specification, The plateau)."""
+    against it and one the workers' breaking failed left out (ADR 0033; Specification,
+    The plateau)."""
     from ._space import Categorical, _one
     study = _searched(study, "study")
     level = _finite("level", level, "a score in the objective's units, a finite number")
@@ -1390,12 +1391,17 @@ def plateau(study, level):
     # a floored or failed trial has no score, so it passes no level
     past = (score > level) if given["direction"] == "maximize" else (score < level)
 
-    # a configuration run again is no new neighbour, and the winner's is none
-    keys   = list(zip(*axes))
-    seen   = {keys[best]}
-    others = np.zeros(len(table), dtype=bool)
+    # a configuration run again is no new neighbour, the winner's is none, and nor is a
+    # trial the workers' breaking failed, which never ran
+    keys    = list(zip(*axes))
+    seen    = {keys[best]}
+    broken  = set(study._broken)
+    numbers = np.asarray(table["number"]).tolist()
+    others  = np.zeros(len(table), dtype=bool)
 
     for k, key in enumerate(keys):
+        if numbers[k] in broken:
+            continue
         others[k] = key not in seen
         seen.add(key)
 

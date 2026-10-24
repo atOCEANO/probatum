@@ -182,18 +182,21 @@ class _Pool:
             initializer=_started, initargs=(str(folder),))
 
         self.returned, self.broken = 0, None
+        # the trials its breaking failed, by number, which a resume runs again
+        self.failed = []
         # the validation's fit whose trials it runs, None for a search's
         self.fit = None
         # each warning a worker gave, shown once a place, as this process shows its own
         self.registry = {}
 
 
-    def run(self, asked):
+    def run(self, asked, done=None):
         """``asked``, a number and its parameters for each trial, run in the workers and
-        given back as trials in that order. Where the pool breaks before any worker
+        given back as trials in that order, each one but those the pool's breaking
+        failed handed to ``done`` as it comes. Where the pool breaks before any worker
         gave back a trial, the search ends, naming the main guard where no worker came
-        up and spawn runs the script again; where it breaks later, the trials it had not
-        given back fail with its error."""
+        up and spawn runs the script again; where it breaks later, the trials it had
+        not given back fail with its error."""
         broken  = (concurrent.futures.BrokenExecutor, OSError)
         futures = {}
         for number, params in asked:
@@ -204,20 +207,42 @@ class _Pool:
                 self.broken = self.broken or error
                 break
 
-        concurrent.futures.wait(futures.values())
-        for future in futures.values():
-            if isinstance(future.exception(), broken):
-                self.broken = self.broken or future.exception()
+        given, numbers = {}, {future: number for number, future in futures.items()}
+        wanted = dict(asked)
+        for future in concurrent.futures.as_completed(futures.values()):
+            number, error = numbers[future], future.exception()
+            if isinstance(error, broken):
+                self.broken = self.broken or error
+                continue
 
-        came = sum(future.exception() is None for future in futures.values())
-        if self.broken is not None and not self.returned and not came:
+            if error is None:
+                given[number] = self.issued(future.result(), wanted[number])
+                self.returned += 1
+            else:
+                # what escaped the trial in its worker, such as a policy's exit, which
+                # fails it alone
+                given[number] = _Trial(
+                    number,
+                    wanted[number],
+                    "failed",
+                    error  = _told(error),
+                    worker = True,
+                )
+
+            if done is not None:
+                done(given[number])
+
+        if self.broken is not None and not self.returned:
             raise self.refused() from self.broken
 
         out = []
         for number, params in asked:
             future = futures.get(number)
-            error  = self.broken if future is None else future.exception()
-            if error is not None:
+            if number in given:
+                out.append(given[number])
+            else:
+                error = self.broken if future is None else future.exception()
+                self.failed.append(number)
                 out.append(_Trial(
                     number,
                     params,
@@ -225,9 +250,6 @@ class _Pool:
                     error  = _told(error),
                     worker = True,
                 ))
-            else:
-                self.returned += 1
-                out.append(self.issued(future.result(), params))
 
         return out
 

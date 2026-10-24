@@ -22,8 +22,8 @@ import probatum._data
 import probatum._samplers
 import probatum._venue
 from probatum import (Categorical, DataError, Float, Int, MissingDependency, PolicyError,
-                      ProbatumNotImplementedError, ProbatumRuntimeError,
-                      ProbatumTypeError, ProbatumValueError, ProbatumWarning, VenueError)
+                      ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
+                      ProbatumWarning, VenueError)
 from probatum._result import STATS
 from probatum._search import _Runner, _scored, _Trial, _winner
 from probatum._streams import stream
@@ -635,8 +635,6 @@ REFUSED = [
     (dict(n_jobs=-2), ProbatumValueError,
      "n_jobs: -2; give a number of workers from 1, or -1 for one a core"),
     (dict(n_jobs=2.5), ProbatumTypeError, "n_jobs: 2.5; give a whole number"),
-    (dict(storage="studies/cross"), ProbatumNotImplementedError,
-     "storage: 'studies/cross', which search does not save to yet; leave it out"),
     (dict(risk_free=math.nan), ProbatumValueError,
      "risk_free: nan; give the annual rate as a finite number, such as 0.04"),
     (dict(seed=-1), ProbatumValueError, "seed: -1; give a whole number from 0"),

@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import textwrap
+import uuid
 import warnings
 
 import numpy as np
@@ -24,8 +25,8 @@ from ._backtest import (_agent, _annualised, _kind, _markets, _number, _played,
 from ._causality import _check, _read
 from ._data import Data, _before, _chosen, _piece, _row, _when
 from ._errors import (DataError, PolicyError, ProbatumAttributeError,
-                      ProbatumNotImplementedError, ProbatumRuntimeError,
-                      ProbatumTypeError, ProbatumValueError, ProbatumWarning)
+                      ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
+                      ProbatumWarning)
 from ._probatum import Engine, Table as _Held, run_array, run_arrays, stats_of, threads
 from ._result import (COSTS, COUNTS, STATS, Table, _environment, _money, _returns,
                       _text, _version)
@@ -84,8 +85,14 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     of them, or the time it starts at; 0 holds out nothing, and None nothing with a
     warning. ``keep="all"`` keeps every trial's returns and ``"none"`` none.
     ``n_jobs`` above 1 runs the trials that do not run together in Rust in that many
-    workers spawn starts, -1 one a core, ``risk_free`` is the annual rate the statistics
-    are computed against, and ``storage`` is not built yet."""
+    workers spawn starts, -1 one a core, and ``risk_free`` is the annual rate the
+    statistics are computed against. ``storage``, a directory, keeps the Study as it
+    runs, each batch of trials as it arrives and the Study when it ends; the same call
+    made again resumes it there, a seed of None taking the one it ran with, and runs
+    only the trials it does not hold, refusing a directory that holds another search
+    (ADR 0046; Specification, Saving and resuming)."""
+    from ._storage import Storage
+
     if getattr(multiprocessing.current_process(), "_inheriting", False):
         raise ProbatumRuntimeError(f"search: called by a worker of a search as it starts, "
                                    f"as spawn runs the script's top level again in each; "
@@ -96,13 +103,13 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     trials, min_trades, n_jobs, resolved = _controls(objective, direction, trials,
                                                      sampler, min_trades, n_jobs)
     _chosen("keep", keep, KEEPS, "use \"all\" or \"none\"")
-    if storage is not None:
-        raise ProbatumNotImplementedError(f"storage: {storage!r}, which search does not "
-                                          f"save to yet; leave it out")
-
     _rate(risk_free)
     if seed is not None:
         _counted("seed", seed, 0)
+
+    kept = None if storage is None else Storage(storage)
+    if seed is None and kept is not None:
+        seed = kept.seed
     seed = np.random.SeedSequence().entropy if seed is None else int(seed)
 
     data = data if isinstance(data, Data) else Data(data)
@@ -119,8 +126,26 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
                      min_trades)
 
     named = _named(policy)
+    # the trials run and the parameters checked are filled in once the trials are in
+    provenance = dict(
+        kind="trials", policy=named,
+        space={name: repr(given) for name, given in space.items()},
+        objective=objective, direction=direction,
+        sampler=dict(name=sampler, **draws.arguments()), seed=seed, trials=trials,
+        ran=None, min_trades=min_trades, checked=None,
+        holdout=dict(given=_shown(holdout), rows=len(data) - cut,
+                     first=None if cut == len(data) else _when(data.time[cut])),
+        keep=keep, n_jobs=dict(given=n_jobs, resolved=resolved),
+        risk_free=float(risk_free),
+        periods_per_year=rate, fingerprint=inside.fingerprint, venue=repr(held),
+        venue_name=held.name, data=data.provenance, version=_version(),
+        **_environment())
+
     LOGGER.info("search: %s trials of %s by %s on %s rows, %s held out", draws.count,
                 named, sampler, f"{cut:,}", f"{len(data) - cut:,}")
+    if kept is not None:
+        kept.start(provenance, space, draws.count)
+        kept.again(runner)
 
     pools = []
 
@@ -134,7 +159,7 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
     try:
         made, checked, pool = _asked(
             runner, draws, sampler, keep, resolved, None, pooled,
-            lambda params: _check(policy, kind, params, inside, held, run))
+            lambda params: _check(policy, kind, params, inside, held, run), kept)
     finally:
         for started in pools:
             try:
@@ -162,21 +187,8 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
                 sum(trial.state == "complete" for trial in made), len(made),
                 winner.number, objective, _signed(objective) * winner.score + 0.0)
 
-    provenance = dict(
-        kind="trials", policy=named,
-        space={name: repr(given) for name, given in space.items()},
-        objective=objective, direction=direction,
-        sampler=dict(name=sampler, **draws.arguments()), seed=seed, trials=trials,
-        ran=len(made), min_trades=min_trades, checked=passed,
-        holdout=dict(given=_shown(holdout), rows=len(data) - cut,
-                     first=None if cut == len(data) else _when(data.time[cut])),
-        keep=keep, n_jobs=dict(given=n_jobs, resolved=resolved),
-        risk_free=float(risk_free),
-        periods_per_year=rate, fingerprint=inside.fingerprint, venue=repr(held),
-        venue_name=held.name, data=data.provenance, version=_version(),
-        **_environment())
-
-    return Study(
+    provenance.update(ran=len(made), checked=passed)
+    study = Study(
         _trials(made, space),
         _kept(made, keep),
         winner,
@@ -185,31 +197,57 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
         space  = space,
         params = [trial.params for trial in made],
     )
+    study._broken = [] if pool is None else pool.failed
+
+    if kept is not None:
+        kept.carry(study)
+        # a Study whose workers broke holds trials that failed for it, which are left
+        # out of the storage for the search that resumes it to run
+        if not study._broken:
+            kept.finish(study)
+
+    return study
 
 
-def _asked(runner, draws, sampler, keep, resolved, checked, pooled, check):
+def _asked(runner, draws, sampler, keep, resolved, checked, pooled, check, stored=None):
     """The trials ``draws`` asks, in their order: once one is checked, weights a random
     or grid search draws run together in Rust, and every other trial in the workers
     ``pooled`` starts where there are more than one, TPE asking a round of them at a
     time, since it chooses each trial from those before; and the first trial that ran
     and decided something checked by ``check`` before any other runs, where
     ``checked`` holds no parameters checked already (Specification, The causality
-    check). Returns the trials, the parameters checked and the pool."""
+    check). A trial ``stored`` holds is taken in its turn rather than run, and each
+    trial run is written there as it arrives (Specification, Saving and resuming).
+    Returns the trials, the parameters checked and the pool."""
     made, pool = [], None
     while len(made) < draws.count and (pool is None or pool.broken is None):
         number = len(made)
         # a validation's fit runs its trials on pieces of its own
         if (checked is not None and sampler != "tpe" and runner.made == "weights"
                 and runner.pieces is None):
-            arrived = runner.together(number, draws)
+            arrived = runner.together(number, draws, stored)
+            if stored is not None:
+                stored.write(arrived)
         elif checked is not None and resolved > 1:
-            if pool is None:
+            last  = min(number + resolved if sampler == "tpe" else draws.count,
+                        draws.count)
+            asked = [(k, draws.ask(k)) for k in range(number, last)]
+            kept  = {} if stored is None else stored.taken(asked)
+            left  = [(k, params) for k, params in asked if k not in kept]
+            if left and pool is None:
                 pool = pooled(min(resolved, draws.count - number))
-            last = min(number + resolved if sampler == "tpe" else draws.count,
-                       draws.count)
-            arrived = pool.run([(k, draws.ask(k)) for k in range(number, last)])
+
+            # each trial a worker gave back written as it came, and none the pool's
+            # breaking failed, which a resume runs again
+            ran = {trial.number: trial for trial in pool.run(
+                left, None if stored is None else stored.wrote)} if left else {}
+            arrived = [kept[k] if k in kept else ran[k] for k, _ in asked]
         else:
-            arrived = [runner.trial(number, draws.ask(number))]
+            params  = draws.ask(number)
+            kept    = {} if stored is None else stored.taken([(number, params)])
+            arrived = [kept[number] if kept else runner.trial(number, params)]
+            if stored is not None:
+                stored.write(arrived)
 
         for trial in arrived:
             draws.tell(trial.number, trial)
@@ -631,16 +669,22 @@ class _Runner:
         return made, (_joined(parts, self.opening, self.rate, self.risk_free), None)
 
 
-    def together(self, first, draws):
+    def together(self, first, draws, stored=None):
         """The trials from ``first`` on that a chunk holds, as many as there are threads
         and then until their arrays reach ``CHUNK``, each decided in turn, one that
-        raises or decides otherwise than weights failing alone, and every one that
-        decided run together on an engine of its own over the shared bars."""
+        raises or decides otherwise than weights failing alone, one ``stored`` holds
+        taken as it is, and every one that decided run together on an engine of its own
+        over the shared bars."""
         least = threads()
         made, played, size = [], [], 0
         while first + len(made) < draws.count and (len(played) < least or size < CHUNK):
             number = first + len(made)
             params = draws.ask(number)
+            kept   = {} if stored is None else stored.taken([(number, params)])
+            if kept:
+                made.append(kept[number])
+                continue
+
             try:
                 decided = self.kind_of(params)[1]
             except Exception as error:
@@ -653,6 +697,9 @@ class _Runner:
             played.append(decided)
             size += 8 * len(decided[0]) + 2 * sum(
                 given.nbytes for given in decided if isinstance(given, np.ndarray))
+
+        if not played:
+            return made
 
         engine = self.engine("account")
         # what the trials run alone recorded there, which nothing reads any more
@@ -946,11 +993,24 @@ class Study:
         # a model's pooled Forecast, or why it has none
         self._forecast = forecast
         self._looks    = 0
+
+        # whether this Study handed its winner the held-out bars, so a look with no
+        # holdout kept is one whose run raised rather than one counted before it
+        self._spent = False
+        # the trials its workers' breaking failed, by number, which a resume runs again
+        self._broken = []
+        # the id its saves name it by, which a Study loaded from one keeps, so its
+        # holdout is written only where a directory holds this very Study
+        self._id = uuid.uuid4().hex
+
         # how the winner runs again, None for a Study loaded with no policy or data
         self._winner, self._ran = winner, ran
         self._bars = bars if ran is None else Bars(
             len(ran.data), ran.cut, int(ran.inside.time[0]), int(ran.inside.time[-1]),
             ran.venue._balance)
+
+        # the directories the Study was saved or kept in, where each look is counted
+        self._bound = []
 
         # a search's ranges and each trial's parameters, which its plateau reads
         self._space, self._params = space, params
@@ -1097,8 +1157,19 @@ class Study:
 
             self.best
             held = ran.data.split(ran.cut)[1]
+
+            from . import _storage
             self._looks += 1
+            # each directory the Study was saved or kept in counts the look before the
+            # winner is handed the bars, so a run that raises or a process killed there
+            # still spends it
+            for folder in self._bound:
+                self._looks = max(self._looks, _storage.looked(folder, self))
+
+            self._spent   = True
             self._holdout = ran(self.best_params, held)
+            for folder in self._bound:
+                _storage.held(folder, self)
 
         return self._holdout
 
@@ -1272,14 +1343,20 @@ class Study:
                                          "storage= the directory it was saved in, "
                                          "which runs only what is not there, then "
                                          "evaluate its holdout")
+
+            times = f"{self._looks} time{'s' * (self._looks != 1)}"
             if self._holdout is None and not self._looks:
                 raise ProbatumValueError("decay: the holdout is not yet run; "
                                          "evaluate_holdout() runs it, and spends a look")
-            if self._holdout is None:
-                raise ProbatumValueError(f"decay: the holdout was read {self._looks} "
-                                         f"time{'s' * (self._looks != 1)} and its run "
-                                         f"raised, so no result is kept; "
+            if self._holdout is None and self._spent:
+                raise ProbatumValueError(f"decay: the holdout was read {times} and its "
+                                         f"run raised, so no result is kept; "
                                          f"evaluate_holdout() runs it again, and spends a "
+                                         f"look")
+            if self._holdout is None:
+                raise ProbatumValueError(f"decay: the holdout was read {times} before, "
+                                         f"and no result is kept for this winner; "
+                                         f"evaluate_holdout() runs it, and spends a "
                                          f"look")
 
             pairs = [(self.best_score, float(self._holdout.stats[objective]))]
@@ -1307,17 +1384,21 @@ class Study:
 
 
     def _held_out(self):
-        """The holdout as it stands: none, not yet run, run, or run and raised."""
+        """The holdout as it stands: none, not yet run, run, run and raised, or read
+        before with no result kept for this winner."""
         noun, verb = self._called()
 
         if self._bars.cut == self._bars.rows:
             return f"none: the {noun} held every bar"
 
         if self._holdout is None:
+            times = f"{self._looks} time{'s' * (self._looks != 1)}"
             if not self._looks:
                 return "not yet run; evaluate_holdout() spends a look"
-            return (f"read {self._looks} time{'s' * (self._looks != 1)}; its run raised, so "
-                    f"no result is kept")
+            if self._spent:
+                return f"read {times}; its run raised, so no result is kept"
+            return (f"read {times} before, with no result kept for this winner; "
+                    f"evaluate_holdout() spends another look")
 
         objective = self.provenance["objective"]
         record    = self._holdout.stats
