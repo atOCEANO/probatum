@@ -34,8 +34,9 @@ from ._space import Categorical, Float, Int, _whole
 from ._strategy import Strategy, _Run, _play
 from ._venue import _run
 from .stats import (BREAK_EVEN, GROWS, HALVED, PARTS, RETURNS, TRADES, Consistency, Decay,
-                    Forecast, _percent, bootstrap, deflated_sharpe, effective_trials,
-                    min_backtest_length, overfitting, reality_check, sharpe_interval)
+                    Forecast, _finite, _percent, bootstrap, deflated_sharpe,
+                    effective_trials, min_backtest_length, overfitting, plateau,
+                    reality_check, sharpe_interval)
 
 LOGGER     = logging.getLogger("probatum")
 SAMPLERS   = ("tpe", "random", "grid")
@@ -173,9 +174,15 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
         venue_name=held.name, data=data.provenance, version=_version(),
         **_environment())
 
-    return Study(_trials(made, space), _kept(made, keep), winner,
-                 _Ran(policy, kind, held, float(risk_free), data, cut, inside),
-                 provenance)
+    return Study(
+        _trials(made, space),
+        _kept(made, keep),
+        winner,
+        _Ran(policy, kind, held, float(risk_free), data, cut, inside),
+        provenance,
+        space  = space,
+        params = [trial.params for trial in made],
+    )
 
 
 def _asked(runner, draws, sampler, keep, resolved, checked, pooled, check):
@@ -925,12 +932,12 @@ class Study:
     ``looks``, how many times the winner has been handed the held-out bars; and
     ``provenance``, what the call was given and where it ran. A search's is judged
     across its trials by ``deflated_sharpe(null)``, ``effective_trials()``,
-    ``overfitting()``, ``reality_check()`` and ``min_backtest_length()``, as
-    ``probatum.stats`` computes them (ADR 0033)."""
+    ``overfitting()``, ``reality_check()``, ``min_backtest_length()`` and
+    ``plateau(level)``, as ``probatum.stats`` computes them (ADR 0033)."""
 
 
     def __init__(self, trials, returns, winner, ran, provenance, tables=None,
-                 forecast=None):
+                 forecast=None, space=None, params=None):
         self._trials, self.returns, self.provenance = trials, returns, provenance
         # a validation's paths, fits and windows, None for a search's Study
         self._tables = tables
@@ -938,6 +945,8 @@ class Study:
         self._forecast = forecast
         self._looks    = 0
         self._winner, self._ran = winner, ran
+        # a search's ranges and each trial's parameters, which its plateau reads
+        self._space, self._params = space, params
         self._best = self._holdout = self._effective = None
 
 
@@ -1077,16 +1086,18 @@ class Study:
         return self._holdout
 
 
-    def summary(self, null=None):
-        """The Study in a few lines of text. A search's: what it searched, at which
-        venue and on what bars, its in-sample span and holdout, the winner's parameters
-        and score, with ``null``, a random search of the same policy over the same space
-        on the same venue and in-sample bars scored alike, the winner's deflated Sharpe
-        and the mean of the null's complete trials, the overfitting probability, and the
-        holdout as it stands, each line that cannot be read saying why. A validation's:
-        its paths and how they were cut, each path's score, their median with the median
-        path's interval, its costs as a share of the gross edge, the reminder that paths
-        are stability evidence, and the holdout (Specification, Summaries)."""
+    def summary(self, null=None, plateau=None):
+        """The Study in a few lines of text. A search's: what it searched, at which venue
+        and on what bars, its in-sample span and holdout, the winner's parameters and
+        score, with ``null``, a random search of the same policy over the same space on
+        the same venue and in-sample bars scored alike, the winner's deflated Sharpe and
+        the mean of the null's complete trials, the overfitting probability, with
+        ``plateau``, a level in the objective's units, the share of the trials near the
+        winner that scored past it, and the holdout as it stands, each line that cannot
+        be read saying why. A validation's: its paths and how they were cut, each path's
+        score, their median with the median path's interval, its costs as a share of the
+        gross edge, the reminder that paths are stability evidence, and the holdout
+        (Specification, Summaries)."""
         given = self.provenance
         data  = given["data"]
         names = [name.split(":", 1)[-1] for name in data["instruments"]]
@@ -1094,6 +1105,10 @@ class Study:
                  f"{data['interval']}")
 
         if self._tables is None:
+            if plateau is not None:
+                plateau = _finite("plateau", plateau, "a score in the objective's "
+                                  "units, a finite number")
+
             lines = [f"search: {given['policy']}, {_venue_named(given)}, {where}, "
                      f"{given['ran']:,} {given['sampler']['name']} trials",
                      f"in sample {_day(self._ran.inside.time[0])} to "
@@ -1106,12 +1121,20 @@ class Study:
                 lines.append(_line("null", self._null(null)))
 
             lines.append(_line("overfitting", self._overfit()))
+            if plateau is not None:
+                lines.append(_line("plateau", str(self.plateau(plateau))))
+
             lines.append(_line("holdout", self._held_out()))
             return "\n".join(lines)
 
         if null is not None:
             raise ProbatumValueError("null: given to a validation's summary, which reads "
                                      "its paths; give the null to its search's summary")
+
+        if plateau is not None:
+            raise ProbatumValueError(f"plateau: {plateau!r} given to a validation's "
+                                     f"summary, whose paths are no competing "
+                                     f"configurations; give it to its search's summary")
 
         paths, fits = self._tables["paths"], self._tables["fits"]
         cut   = given["cv"]
@@ -1319,6 +1342,12 @@ class Study:
         """The minimum backtest length of the trials at the winner's Sharpe
         (``probatum.stats.min_backtest_length``)."""
         return min_backtest_length(self)
+
+
+    def plateau(self, level):
+        """The share of the trials near the winner, in normalised parameters, that
+        scored past ``level`` (``probatum.stats.plateau``)."""
+        return plateau(self, level)
 
 
     def _deflated(self, null):

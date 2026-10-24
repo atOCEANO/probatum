@@ -2,8 +2,10 @@
 from any series of returns: the Sharpe's interval by the delta method over a long-run
 variance with Newey and West's weights, its probability of beating a benchmark and the
 track record that would show it, the long-run Sharpe, and every other statistic's
-interval by a bootstrap of the returns or of the round trips (ADR 0031; Specification,
-Inference)."""
+interval by a bootstrap of the returns or of the round trips; and, across all of a
+search's trials, how far its winner can be trusted and whether it stands among
+neighbours that score as it does (ADRs 0031, 0033; Specification, Inference; Across a
+search)."""
 
 import hashlib
 import itertools
@@ -22,11 +24,12 @@ from ._streams import stream
 
 __all__ = ["AlphaBeta", "BacktestLength", "Consistency", "Decay", "Deflated", "Difference",
            "EffectiveTrials", "Forecast", "Interval", "Overfitting", "Permutations",
-           "Probability", "RealityCheck", "Statistics", "TrackRecord", "alpha_beta",
+           "Plateau", "Probability", "RealityCheck", "Statistics", "TrackRecord",
+           "alpha_beta",
            "autocorrelation",
            "bootstrap", "deflated_sharpe", "deflation_threshold", "effective_sample",
            "effective_trials", "min_backtest_length", "min_track_record_length",
-           "overfitting", "probabilistic_sharpe", "reality_check", "sharpe",
+           "overfitting", "plateau", "probabilistic_sharpe", "reality_check", "sharpe",
            "sharpe_difference", "sharpe_interval", "trade_order"]
 
 # the package's files, which a warning skips to name the caller's line
@@ -44,6 +47,7 @@ MOST     = 100       # the most clusters a start tries
 LLOYD    = 300       # Lloyd's iterations at most
 PARTS    = 16        # the blocks the overfitting probability cuts a run into
 AT_ONCE  = 1 << 21   # the halves' statistics a chunk reads, beside its complements'
+RADII    = tuple(0.05 * k for k in range(1, 11))   # the plateau's, in normalised units
 # the objectives the overfitting probability reads from halves joined out of order
 HALVED = ("sharpe", "sortino", "total_return_pct", "net_profit_pct", "cagr_pct",
           "volatility_pct")
@@ -578,6 +582,45 @@ class BacktestLength(_Frozen):
             said += f"; this series has {_years(self.series_years)}"
 
         return said
+
+
+class Plateau(_Frozen):
+    """Whether a search's winner stands among neighbours that score as it does:
+    ``radii``, from 0.05 to 0.5 in normalised parameters; ``trials``, how many trials
+    lie within each, a configuration run more than once counted once and the winner's
+    not at all; ``passed``, how many of those completed with a score past ``level`` in
+    the search's ``direction``; ``share``, the one over the other, NaN where none lies
+    within; and the ``objective``."""
+
+    __slots__ = ("radii", "trials", "passed", "share", "level", "objective", "direction")
+
+
+    def __init__(self, radii, trials, passed, share, level, objective, direction):
+        self._set(
+            radii     = tuple(float(radius) for radius in radii),
+            trials    = tuple(int(count) for count in trials),
+            passed    = tuple(int(count) for count in passed),
+            share     = tuple(float(value) for value in share),
+            level     = float(level),
+            objective = objective,
+            direction = direction,
+        )
+
+
+    def __str__(self):
+        # a loss prints as the negative return it is, its side turned with it
+        flip  = -1.0 if _shown(self.objective)[2] else 1.0
+        side  = "above" if (self.direction == "maximize") == (flip > 0.0) else "below"
+        bound = f"score {side} {flip * self.level + 0.0:g}"
+        count = self.trials[1]
+        head  = (f"{self.share[1]:.0%} of the {count:,} trial{'s' * (count != 1)} within "
+                 f"distance 0.1 of the best, in normalised parameters, {bound}" if count
+                 else f"no trial within distance 0.1 of the best, in normalised "
+                      f"parameters, to {bound}")
+
+        listed = ", ".join("none" if math.isnan(share) else f"{share:.0%}"
+                           for share in self.share)
+        return f"{head}; from 0.05 to 0.5: {listed}"
 
 
 class Forecast(_Frozen):
@@ -1303,6 +1346,87 @@ def min_backtest_length(trials, sharpe=None):
                                      f"such as 1.0")
 
     return BacktestLength((_most(count) / sharpe) ** 2, count, sharpe, years)
+
+
+def plateau(study, level):
+    """Whether a search's winner stands among neighbours that score as it does, as a
+    Plateau: each parameter put on [0, 1] across its range on the scale it was drawn
+    on, a categorical one 0 from the winner's where a trial's choice is the winner's
+    and 1 where it is not, each trial's distance from the winner the Euclidean one
+    over its parameters, and at each radius from 0.05 to 0.5 the share of the
+    configurations but the winner's within it, each counted once by the first trial
+    that ran it, that completed with a score past ``level``, a finite number in the
+    objective's units, in the search's direction, a floored or failed trial counting
+    against it (ADR 0033; Specification, The plateau)."""
+    from ._space import Categorical, _one
+    study = _searched(study, "study")
+    level = _finite("level", level, "a score in the objective's units, a finite number")
+
+    given = study.provenance
+    table = study.trials
+    best  = int(np.flatnonzero(np.asarray(table["number"]) == study._winner.number)[0])
+    total = np.zeros(len(table))
+    axes  = []
+
+    for name, drawn in study._space.items():
+        if isinstance(drawn, Categorical):
+            # a choice's place among the choices, since the trials table holds a None
+            # among floats as NaN
+            place = [next(k for k, choice in enumerate(drawn.choices)
+                          if _one(choice, params[name])) for params in study._params]
+            part  = np.array([0.0 if k == place[best] else 1.0 for k in place])
+        else:
+            # as each trial was given it, since a whole number past 2**53 has no float64
+            # of its own
+            place = [params[name] for params in study._params]
+            part  = _placed(place, drawn)
+            part  = part - part[best]
+
+        total = total + part * part
+        axes.append(place)
+
+    distance = np.sqrt(total)
+    score    = np.asarray(table["score"], dtype=np.float64)
+
+    # a floored or failed trial has no score, so it passes no level
+    past = (score > level) if given["direction"] == "maximize" else (score < level)
+
+    # a configuration run again is no new neighbour, and the winner's is none
+    keys   = list(zip(*axes))
+    seen   = {keys[best]}
+    others = np.zeros(len(table), dtype=bool)
+
+    for k, key in enumerate(keys):
+        others[k] = key not in seen
+        seen.add(key)
+
+    trials, passed = [], []
+    for radius in RADII:
+        near = others & (distance <= radius)
+        trials.append(int(near.sum()))
+        passed.append(int((near & past).sum()))
+
+    share = [count / within if within else math.nan
+             for count, within in zip(passed, trials)]
+
+    return Plateau(RADII, trials, passed, share, level, given["objective"],
+                   given["direction"])
+
+
+def _placed(values, drawn):
+    """An Int's or a Float's ``values`` on [0, 1] across its range, on the scale it was
+    drawn on, 0 where the range is one value (Specification, The plateau)."""
+    low, high = drawn.low, drawn.high
+    if low == high:
+        return np.zeros(len(values))
+
+    if drawn.log:
+        # Python's math.log, since numpy's own can part from it in a last bit at an edge
+        span = math.log(high / low)
+        return np.array([math.log(value / low) / span for value in values])
+
+    # in Python's numbers, which take a whole number's difference exactly
+    return np.array([(value - low) / (high - low) for value in values])
 
 
 def autocorrelation(returns, lag=1):

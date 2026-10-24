@@ -1,8 +1,9 @@
 """A search is judged across all of its trials: its winner's Sharpe deflated by what the
 best of every trial it asked reaches by luck, against every trial and against the
-effective number its clusters make, and the backtest length that many trials need. Each
-reads a search's Study or a matrix of trials' returns, and refuses what it cannot read
-(ADR 0033; Specification, Across a search).
+effective number its clusters make, the backtest length that many trials need, and the
+share of the trials near its winner that score past a level, so a spike reads as one.
+Each reads a search's Study or a matrix of trials' returns, the plateau a Study alone,
+and refuses what it cannot read (ADR 0033; Specification, Across a search).
 """
 
 import math
@@ -426,3 +427,171 @@ def test_cash_earns_the_risk_free_rate_a_bar():
                                  risk_free=0.05, resamples=50)
 
     assert (cash.p, cash.spa, cash.statistic) == (series.p, series.spa, series.statistic)
+
+
+def plateaued(study, ranges, level, maximize=True):
+    """The reference's plateau of ``study``'s trials, each parameter's range in
+    ``ranges``."""
+    names  = [name for name in study.provenance["space"]]
+    trials = [(tuple(row[name] for name in names), row["state"], row["score"])
+              for row in study.trials]
+    best   = [row["number"] for row in study.trials].index(study._winner.number)
+
+    return statistics.plateau(trials, ranges, best, level, maximize)
+
+
+def test_the_plateau_is_the_share_of_the_trials_near_the_winner_past_a_level(study):
+    level = float(np.nanmedian(study.trials["score"]))
+    found = stats.plateau(study, level)
+    held  = plateaued(study, [(2, 30, False), (0, 9, False)], level)
+
+    assert [None if math.isnan(share) else share for share in found.share] == held
+    assert found.radii == tuple(statistics.RADII) and found.level == level
+    assert sum(found.trials) > 0 and study.plateau(level) == found
+
+
+def test_a_plateau_reads_a_log_scale_and_a_choice_and_a_search_that_minimises():
+    def shaped(data, fast, kind, scale):
+        weights = alternating(data, fast)
+        return weights * scale if kind == "long" else -weights * scale
+
+    space = {
+        "fast":  probatum.Int(2, 64, log=True),
+        "kind":  probatum.Categorical(["long", "short"]),
+        "scale": probatum.Float(0.5, 2.0, log=True),
+    }
+
+    study = probatum.search(shaped, space, bars(), "frictionless", trials=40,
+                            sampler="random", holdout=0.3, seed=4,
+                            objective="max_drawdown_pct", direction="minimize")
+    level = float(np.nanmedian(study.trials["score"]))
+    found = stats.plateau(study, level)
+    held  = plateaued(study, [(2, 64, True), ("categorical",), (0.5, 2.0, True)], level,
+                      maximize=False)
+
+    assert [None if math.isnan(share) else share for share in found.share] == held
+    assert sum(found.trials) > 0
+    # a drawdown prints as the loss it is, and below a level becomes above its loss
+    assert f"score above {-level + 0.0:g}" in str(found)
+
+
+def test_a_trial_at_a_radius_s_edge_lies_within_it():
+    # a grid of Int(0, 4) puts its values a quarter apart, so the winner's neighbours
+    # lie at 0.25 exactly, the fifth radius
+    study = probatum.search(alternating, {"lag": probatum.Int(0, 4)}, bars(),
+                            "frictionless", trials=5, sampler="grid", holdout=0.3,
+                            seed=1)
+    found = stats.plateau(study, -1e9)
+    held  = plateaued(study, [(0, 4, False)], -1e9)
+    assert [None if math.isnan(share) else share for share in found.share] == held
+    assert found.trials[3] == 0 and found.trials[4] >= 1
+
+
+def test_a_choice_of_none_among_numbers_is_the_winner_s_where_the_winner_chose_it():
+    # the trials table holds a None among floats as NaN, which is still one choice
+    def stopped(data, lag, stop):
+        weights = alternating(data, 5, lag)
+        return {"policy": weights if stop is None else 0.0 * weights, "stop": stop}
+
+    space = {
+        "lag":  probatum.Int(0, 9),
+        "stop": probatum.Categorical([None, 0.02, 0.05]),
+    }
+
+    study = probatum.search(stopped, space, bars(), "frictionless", trials=30,
+                            sampler="grid", holdout=0.3, seed=1)
+    found = stats.plateau(study, -1e9)
+    held  = plateaued(study, [(0, 9, False), ("categorical",)], -1e9)
+
+    assert study.best_params == {"lag": 5, "stop": None}
+    assert found.trials      == (0, 0, 2, 2, 4, 4, 6, 6, 8, 8)
+    assert [None if math.isnan(share) else share for share in found.share] == held
+
+
+def test_a_configuration_run_again_is_one_neighbour_and_the_winner_s_is_none():
+    study = probatum.search(alternating, {"lag": probatum.Int(0, 4)}, bars(),
+                            "frictionless", trials=20, sampler="random", holdout=0.3,
+                            seed=2)
+    lags  = study.trials["lag"].tolist()
+    won   = study.best_params["lag"]
+    found = stats.plateau(study, -1e9)
+    held  = plateaued(study, [(0, 4, False)], -1e9)
+    assert lags.count(won) > 1 and found.trials[0] == 0
+    assert found.trials[-1] == len({lag for lag in lags if 0 < abs(lag - won) <= 2})
+    assert [None if math.isnan(share) else share for share in found.share] == held
+
+
+def test_a_whole_number_past_a_float_s_precision_keeps_its_own_place():
+    # 2**60 and the four after it are one float64, and five configurations
+    low   = 2**60
+    study = probatum.search(alternating, {"lag": probatum.Int(low, low + 4)}, bars(),
+                            "frictionless", trials=5, sampler="grid", holdout=0.3,
+                            seed=1)
+    found = stats.plateau(study, -1e9)
+    held  = plateaued(study, [(low, low + 4, False)], -1e9)
+    assert [None if math.isnan(share) else share for share in found.share] == held
+    assert found.trials[3] == 0 and found.trials[4] >= 1
+
+
+def test_a_plateau_reads_as_the_share_at_0_1_and_then_at_every_radius():
+    shares = [math.nan, 0.5] + [0.25] * 8
+    found  = stats.Plateau(stats.RADII, [0, 2] + [4] * 8, [0, 1] + [1] * 8, shares, 1.0,
+                           "sharpe", "maximize")
+
+    assert str(found) == ("50% of the 2 trials within distance 0.1 of the best, in "
+                          "normalised parameters, score above 1; from 0.05 to 0.5: none, "
+                          "50%, 25%, 25%, 25%, 25%, 25%, 25%, 25%, 25%")
+
+    alone = stats.Plateau(stats.RADII, [0] * 10, [0] * 10, [math.nan] * 10, 1.0,
+                          "sharpe", "maximize")
+
+    assert str(alone).startswith("no trial within distance 0.1 of the best, in "
+                                 "normalised parameters, to score above 1; from 0.05 to "
+                                 "0.5: none, none")
+
+
+def test_a_search_s_summary_prints_its_plateau_and_a_validation_s_refuses_one(study):
+    # its line wrapped beneath itself, after the overfitting probability's and before
+    # the holdout's
+    level = float(np.nanmedian(study.trials["score"]))
+    lines = [line.strip() for line in study.summary(plateau=level).splitlines()]
+    first = next(k for k, line in enumerate(lines) if line.startswith("plateau "))
+    last  = next(k for k, line in enumerate(lines) if line.startswith("holdout "))
+
+    assert " ".join(" ".join(lines[first:last]).split()) == (
+        f"plateau {study.plateau(level)}")
+    assert any(line.startswith("overfitting ") for line in lines[:first])
+
+    with pytest.raises(ProbatumTypeError, match=r"^plateau: '1'; give a score in the "
+                       r"objective's units, a finite number$"):
+        study.summary(plateau="1")
+
+    paths = probatum.validate(alternating, bars(), "frictionless",
+                              probatum.cv.WalkForward(200, 100), space=SPACE,
+                              search=dict(trials=4, sampler="random"), holdout=0.3,
+                              seed=1)
+
+    with pytest.raises(ProbatumValueError, match=r"^plateau: 1.0 given to a validation's "
+                       r"summary, whose paths are no competing configurations; give it "
+                       r"to its search's summary$"):
+        paths.summary(plateau=1.0)
+    with pytest.raises(ProbatumValueError, match="study: a validation's Study, whose "
+                       "paths are no competing configurations"):
+        stats.plateau(paths, 1.0)
+
+
+@pytest.mark.parametrize("given, level, error, said", [
+    (np.zeros((3, 10)), 1.0, ProbatumTypeError, "study: ndarray; give the Study of a "
+                                                "search"),
+    (None, math.nan, ProbatumValueError, "level: nan; give a score in the objective's "
+                                         "units, a finite number"),
+    (None, "high", ProbatumTypeError, "level: 'high'; give a score in the objective's "
+                                      "units, a finite number"),
+])
+def test_a_plateau_refuses_what_is_no_search_and_a_level_that_is_no_score(study, given,
+                                                                           level, error,
+                                                                           said):
+    with pytest.raises(error) as raised:
+        stats.plateau(study if given is None else given, level)
+
+    assert str(raised.value) == said
