@@ -12,9 +12,7 @@ run recorded rather than being told them again. Two readings of one number are h
 two numbers come to disagree, which is the whole reason ``initial`` and
 ``periods_per_year`` are carried on the result at all (ADR 0004).
 
-Three exports read something else. ``cost_curve`` and ``breakeven_bps`` take a
-``strategy`` and its ``data`` and run the backtest themselves, once per cost level,
-and ``deflation_threshold`` takes two floats.
+One export reads something else: ``deflation_threshold`` takes two floats.
 
 The return series is derived by the identical rule the engine uses: seeded from
 the opening balance, one return per interval, and a non-positive previous equity
@@ -31,8 +29,6 @@ import numpy as np
 __all__ = [
     "returns",
     "segment",
-    "cost_curve",
-    "breakeven_bps",
     "excursions",
     "session_buckets",
     "period_returns",
@@ -1014,139 +1010,6 @@ def _normal_ppf(p):
     r = q * q
     return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
-
-
-def cost_curve(strategy, data, costs=(0.0, 2.0, 5.0, 10.0, 20.0), **config):
-    """Re-run ``strategy`` over ``data`` at each round-trip cost in ``costs``, in
-    basis points, and report what survives.
-
-    The shipped defaults are a frictionless venue: no spread, no slippage, no
-    impact, and the whole of a bar's trailing volume for its orders to take. An
-    edge found there is an edge nobody can trade, and the useful question is not
-    whether a strategy makes money but how much friction it survives. Each cost is
-    split evenly across the two sides of a round trip and applied to both fee rates,
-    so 10 means five basis points in and five out. Anything else in ``config`` goes
-    to the ``Backtester`` unchanged.
-
-    ``strategy`` is a ``Strategy`` subclass, which is rebuilt for each run, or an
-    instance, whose attributes are put back as they were before each one. Either
-    way every run starts from the same strategy, since the point of the sweep is
-    that only the fee moved (ADR 0024).
-    """
-    from ._backtester import Backtester
-    _own_the_fees(config, "cost_curve")
-
-    rebuild = _rebuilder(strategy)
-    out     = []
-
-    for bps in costs:
-        rate   = float(bps) / 2.0 / 10_000.0
-        result = Backtester(
-            data,
-            fee_taker = rate,
-            fee_maker = rate,
-            **config,
-        ).run(rebuild())
-        out.append({
-            "round_trip_bps":   float(bps),
-            "total_return_pct": result.stats["total_return_pct"],
-            "sharpe":           result.stats["sharpe"],
-            "num_trades":       result.stats["num_trades"],
-            "fees":             float(sum(t["fees"] for t in result.trades)),
-        })
-
-    return out
-
-
-def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
-    """The round-trip cost, in basis points, at which ``strategy`` stops making
-    money. ``None`` when it is already losing at zero cost, and ``ceiling`` when it
-    survives all the way there.
-
-    "This dies at 8 basis points round trip and you pay 6" is a sentence worth more
-    in the first week than any probability, because it says how much of the edge is
-    real and how much is the absence of friction.
-    """
-    from ._backtester import Backtester
-    _own_the_fees(config, "breakeven_bps")
-    rebuild = _rebuilder(strategy)
-
-    def earned(bps):
-        rate = float(bps) / 2.0 / 10_000.0
-        run  = Backtester(data, fee_taker=rate, fee_maker=rate, **config)
-        return run.run(rebuild()).stats["total_return_pct"]
-
-    if earned(0.0) <= 0.0:
-        return None
-
-    if earned(ceiling) > 0.0:
-        return float(ceiling)
-
-    # bisect: the return is monotone in the cost for a fixed set of decisions, and
-    # not quite monotone once the costs change which trades happen, so this finds
-    # a crossing rather than the crossing. It is the honest kind of answer anyway
-    low, high = 0.0, float(ceiling)
-    while high - low > tolerance:
-        middle = (low + high) / 2.0
-        if earned(middle) > 0.0:
-            low = middle
-        else:
-            high = middle
-
-    return (low + high) / 2.0
-
-
-def _rebuilder(strategy):
-    """A callable handing back a strategy with nothing carried over from the last run.
-
-    A class is rebuilt. An instance cannot be, so its attributes are taken once
-    and put back before each run: the caller's configuration survives, which is
-    the whole reason to pass one, and anything a previous run left does not.
-    ``copy.deepcopy`` is the wrong tool here, because a strategy that followed the
-    documented idiom holds ``engine.closes``, a zero-copy view that keeps a whole
-    Engine alive behind it (ADR 0024).
-    """
-    if isinstance(strategy, type):
-        return lambda: _built(strategy)
-
-    kept = dict(vars(strategy))
-
-    def restore():
-        # restored into the same object rather than replaced by a copy, so a
-        # caller still holding it sees the strategy it passed
-        strategy.__dict__.clear()
-        strategy.__dict__.update(kept)
-        return strategy
-
-    return restore
-
-
-def _built(strategy):
-    try:
-        return strategy()
-    except TypeError as exc:
-        # the tunables are constructor arguments in every example the docs give,
-        # so the class that gets passed here is usually the one that cannot be
-        # built without them, and Python's own message names neither the sweep
-        # nor the fix
-        raise TypeError(
-            f"{strategy.__name__} takes arguments to build, and a sweep rebuilds "
-            f"the strategy for each run, so it needs one it can build with none; "
-            f"pass a configured instance instead, {strategy.__name__}(...)"
-        ) from exc
-
-
-def _own_the_fees(config, where):
-    # sweeping the fee IS the job, so one arriving in the configuration is a
-    # contradiction rather than an override. Without this it surfaced as Python's
-    # own "got multiple values for keyword argument", which says nothing about why
-    clash = sorted(key for key in ("fee_taker", "fee_maker") if key in config)
-    if clash:
-        raise TypeError(
-            f"{where} sets {clash} itself, because sweeping the cost is what it "
-            f"does; pass the rest of the configuration and leave those out. To "
-            f"vary a cost it does not set, slippage_bps and impact go through"
-        )
 
 
 def excursions(result, frame=None):

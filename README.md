@@ -238,13 +238,14 @@ from probatum import metrics
 
 metrics.summary(result, candles)                  # the headline, printed
 metrics.decompose(result)                         # gross, fees, funding, still open, net
-metrics.breakeven_bps(SmaCross(20, 60), candles)  # the round-trip cost that kills it
 metrics.trade_stats(result)                       # payoff, expectancy, worst losing streak
 metrics.period_returns(result, candles)           # by month, quarter or year
 metrics.compare({"cheap": a, "dear": b})          # several runs, side by side
 ```
 
-`decompose` splits the change in equity four ways, and gross less fees less funding plus what is still open is the whole of it: the two costs are reported as positive amounts paid away, so they subtract. `breakeven_bps` matters because the shipped defaults are a frictionless venue: no spread, no slippage, no impact, and the whole of a bar's trailing volume for its orders to take. "This dies at 8 basis points round trip and you pay 6" is worth more in the first week than any probability.
+`decompose` splits the change in equity four ways, and gross less fees less funding plus what is still open is the whole of it: the two costs are reported as positive amounts paid away, so they subtract.
+
+How much friction a policy survives is a run of its own. `probatum.cost_curve(policy, data, venue)` runs it again with every cost the venue charges for trading, its fees, spread, slippage and impact, multiplied together by 0, 0.5, 1, 2 and 4, and `probatum.breakeven_bps(policy, data, venue)` finds the round-trip cost at which it stops making money, so "this dies at 8 basis points a round trip and you pay 6" is a number you read rather than guess, worth more in the first week than any probability. `probatum.capacity(policy, data, venue, balances=[...])` runs it at several balances, to show where its own size starts to cost it ([ADR 0045](.Documentation/Decisions.md)).
 
 Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `summary` prints the two on adjacent lines and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
 

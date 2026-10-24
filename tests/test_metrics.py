@@ -309,76 +309,13 @@ def test_metrics_is_exported_from_the_package():
     assert "metrics" in probatum.__all__
 
 
-def test_the_cost_curve_charges_more_as_the_friction_rises():
-    curve = metrics.cost_curve(Alternate, series(), costs=(0.0, 10.0, 50.0),
-                               periods_per_year=365.0)
-
-    assert [row["round_trip_bps"] for row in curve] == [0.0, 10.0, 50.0]
-    assert curve[0]["fees"] == 0.0
-    assert curve[1]["fees"] < curve[2]["fees"]
-    assert curve[0]["total_return_pct"] > curve[2]["total_return_pct"]
-
-
-def test_a_strategy_class_is_rebuilt_and_an_instance_is_put_back_as_it_was():
-    rebuild = metrics._rebuilder(Alternate)
-
-    assert rebuild() is not rebuild()
-
-    # an instance is the same object each time, which is what lets a caller keep
-    # a reference to it, but its attributes are the ones it was handed over with
-    instance        = Alternate()
-    instance.marker = 1
-    rebuild         = metrics._rebuilder(instance)
-
-    assert rebuild() is instance
-
-    instance.marker = 99
-
-    assert rebuild().marker == 1
-
-
 def trending(n=120):
-    # a straight line up, so the strategy is reliably profitable at zero cost and
-    # the breakeven is a real number rather than a coin flip on the seed
+    # a straight line up, so the strategy is reliably profitable rather than a coin
+    # flip on the seed
     close = 100.0 + np.arange(n, dtype=np.float64) * 0.5
     return np.column_stack(
         [close, close + 1.0, close - 1.0, close, np.full(n, 1000.0)]
     )
-
-
-def test_breakeven_finds_the_cost_that_kills_the_edge():
-    data      = trending()
-    breakeven = metrics.breakeven_bps(Alternate, data, ceiling=500.0,
-                                      periods_per_year=365.0)
-
-    assert breakeven is not None and 0.0 < breakeven < 500.0
-
-    below = metrics.cost_curve(Alternate, data, costs=(breakeven * 0.5,),
-                               periods_per_year=365.0)[0]
-    above = metrics.cost_curve(Alternate, data, costs=(breakeven * 2.0,),
-                               periods_per_year=365.0)[0]
-
-    assert below["total_return_pct"] > 0.0
-    assert above["total_return_pct"] < 0.0
-
-
-def test_a_strategy_that_survives_every_cost_reports_the_ceiling():
-    assert metrics.breakeven_bps(Alternate, trending(), ceiling=1.0,
-                                 periods_per_year=365.0) == 1.0
-
-
-def test_a_strategy_that_loses_for_free_has_no_breakeven():
-    # slippage is a cost the sweep does not set, so it goes through and makes this
-    # run a loser even at a zero fee
-    assert metrics.breakeven_bps(Alternate, series(), slippage_bps=200.0,
-                                 periods_per_year=365.0) is None
-
-
-def test_setting_a_fee_on_a_cost_sweep_is_a_contradiction_not_an_override():
-    for call in (metrics.cost_curve, metrics.breakeven_bps):
-        with pytest.raises(TypeError) as excinfo:
-            call(Alternate, series(), fee_taker=0.001)
-        assert "sweeping the cost is what it does" in str(excinfo.value)
 
 
 def test_every_trade_lived_through_at_least_what_it_finished_with():
@@ -1405,31 +1342,6 @@ def test_the_return_per_exposure_is_the_return_over_the_time_at_risk():
     assert metrics.report(busy)["return_per_exposure"] == pytest.approx(25.0)
 
 
-class Tunable(Strategy):
-
-    # the shape every documented sweep example uses: the tunables arrive as
-    # constructor arguments, so the class cannot be built with none of them
-    def __init__(self, every):
-        self.every = int(every)
-
-
-    def next(self, state, engine):
-        if state["tick_index"] % self.every == 0:
-            engine.market_buy(1.0)
-        elif state["position"] > 0.0:
-            engine.close()
-
-
-def test_a_sweep_names_the_strategy_it_cannot_build():
-    with pytest.raises(TypeError) as excinfo:
-        metrics.breakeven_bps(Tunable, series())
-
-    said = str(excinfo.value)
-    assert "Tunable" in said
-    assert "configured instance" in said
-    assert metrics.breakeven_bps(Tunable(4), series(), ceiling=20.0) is not None
-
-
 def climbed(curve, ppy):
     # a short steep stretch, which is the only shape that puts the annualization
     # out of the float range: the exponent is ppy over the number of advances, so
@@ -1633,55 +1545,6 @@ def test_the_expected_shortfall_is_unchanged_where_nothing_ties_at_the_cutoff():
     by_comparison = float(-values[values <= cutoff].mean() * 100.0)
 
     assert metrics.conditional_value_at_risk(result) == pytest.approx(by_comparison)
-
-
-class Capped(Strategy):
-
-    # a budget set in __init__ rather than in init, which the documented examples
-    # never show and which passing a configured instance invites
-    def __init__(self, budget):
-        self.budget = int(budget)
-        self.taken  = 0
-
-
-    def next(self, state, engine):
-        if self.taken < self.budget and state["tick_index"] % 10 == 0:
-            engine.market_buy(1.0)
-            self.taken += 1
-        elif state["position"] > 0.0 and state["tick_index"] % 10 == 5:
-            engine.close()
-
-
-def test_a_cost_sweep_starts_every_run_from_the_same_strategy():
-    # only the fee is supposed to move. An instance carried its spent budget from
-    # one cost level into the next, so every level after the first traded nothing
-    # and the curve read as an edge that dies at the first basis point (ADR 0024)
-    rows = metrics.cost_curve(Capped(4), series(), costs=(0.0, 2.0, 5.0, 10.0),
-                              periods_per_year=365.0)
-    counts = [row["num_trades"] for row in rows]
-
-    assert counts[0] > 0
-    assert counts == [counts[0]] * len(counts)
-
-
-def test_a_cost_sweep_hands_back_the_instance_the_caller_still_holds():
-    # restored into the same object rather than replaced by a copy, so a caller
-    # who kept a reference is looking at the strategy they passed
-    held = Capped(4)
-    metrics.cost_curve(held, series(), costs=(0.0, 5.0), periods_per_year=365.0)
-
-    assert held.budget == 4
-
-
-def test_a_breakeven_search_is_not_biased_by_what_the_last_probe_left():
-    # the bisection calls the strategy many times, so a leak here moves the answer
-    # rather than one row of a table
-    instance = metrics.breakeven_bps(Capped(4), series(), ceiling=50.0,
-                                     periods_per_year=365.0)
-    rebuilt = metrics.breakeven_bps(Capped(4), series(), ceiling=50.0,
-                                    periods_per_year=365.0)
-
-    assert instance == rebuilt
 
 
 def test_a_venue_hands_out_an_engine_that_takes_what_its_siblings_take():
