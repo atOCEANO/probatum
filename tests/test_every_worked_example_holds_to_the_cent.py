@@ -17,6 +17,7 @@ import probatum
 from probatum import ProbatumKeyError
 
 from reference import statistics
+from reference.environment import Episode, limit, logged
 from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, labels,
                                  periods_per_year, play_array, run, uniqueness)
 
@@ -1634,6 +1635,61 @@ def test_a_label_closes_at_its_horizon_or_at_its_stop_and_the_last_rows_are_cens
     assert [held["exit"][t][0] for t in (7, 8, 9)] == ["censored", "censored", ""]
     assert [held["end"][t][0] for t in (7, 8)]     == [10, 11]
     assert math.isnan(held["ret"][7][0]) and held["end"][9][0] == -2 ** 63
+
+
+def episode(columns, window, start, kinds=None, **given):
+    """An episode of the reference environment over `columns`, one instrument's bars
+    each, with no fees, opened at row `start`."""
+    rows        = len(columns[0])
+    kinds       = kinds or ["linear"] * len(columns)
+    instruments = [Instrument(f"I{k}", kind=kind) for k, kind in enumerate(kinds)]
+    bars        = [[column[t] for column in columns] for t in range(rows)]
+    settings    = dict(columns=columns, features=None, window=window, actions="box",
+                       max_leverage=1.0, max_offset=20, reward="log", tolerance=0.0,
+                       episode_length=None, balance=10_000.0)
+    settings.update(given)
+
+    def make(at):
+        return Simulator(hourly(rows), bars, instruments, Venue(maker=0.0, taker=0.0),
+                         start=at)
+
+    return Episode(make, start, range(len(columns)), settings)
+
+
+def test_one_instrument_s_candles_in_a_window_of_64_are_328_values():
+    seen = episode([[flat(100.0) for _ in range(70)]], 64, 63)
+
+    assert len(seen.observe()) == 64 * 1 * 5 + 4 * 1 + 4 == 328
+
+
+def test_a_bar_reads_its_prices_over_the_last_close_and_its_volume_over_the_mean():
+    seen = episode([[flat(100.0, 100.0), Bar(100.0, 110.0, 95.0, 105.0, 300.0)]], 2, 1)
+
+    assert seen.market(0)[1] == pytest.approx([0.952381, 1.047619, 0.904762, 1.0, 1.5],
+                                              abs=5e-7)
+
+
+def test_an_action_of_0_3_is_a_weight_of_0_6_and_two_are_scaled_by_their_sum():
+    one = episode([[flat(100.0)] * 3], 1, 1, max_leverage=2.0)
+
+    assert one.decode([0.3]) == pytest.approx({0: 0.6})
+
+    two = episode([[flat(100.0)] * 3, [flat(50.0)] * 3], 1, 1, max_leverage=2.0)
+    assert two.decode([0.8, -0.6]) == pytest.approx({0: 1.142857, 1: -0.857143},
+                                                    abs=5e-7)
+
+
+def test_a_takeover_from_2_000_is_rewarded_minus_3_and_a_sale_to_1_500_minus_0_29():
+    assert episode([[flat(100.0)] * 3], 1, 1).floor  == 100.0
+    assert round(logged(0.0, 2_000.0, 100.0), 2)     == -3.00
+    assert round(logged(1_500.0, 2_000.0, 100.0), 2) == -0.29
+
+
+def test_an_order_action_of_0_25_at_half_its_offset_buys_0_1_btc_ten_ticks_below():
+    asked = limit(0.25, 0.5, 10_000.0, 50_000.0, Instrument("BTCUSDT", tick=0.1), 2.0,
+                  20)
+
+    assert asked == ("buy", pytest.approx(0.1), pytest.approx(49_999.0))
 
 
 def test_three_overlapping_labels_weigh_0_6111_0_4444_and_0_6111():
