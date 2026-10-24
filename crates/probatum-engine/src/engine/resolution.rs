@@ -530,7 +530,8 @@ impl Engine {
             return self.reaches_trigger();
         }
         let (account, book) = (self.account.clone(), self.book.clone());
-        let (notes, flipped, count) = (self.notes.len(), self.flipped, self.fills);
+        let (notes, flipped, count, tally) =
+            (self.notes.len(), self.flipped, self.fills, self.tally);
         let (starts, inside, reach) = (self.starts.clone(), self.inside.clone(), self.reach);
         let (entered, clips, clipped) = (self.entered.clone(), self.clips.clone(), self.clipped);
         let (budget, leg_fills) = (self.budget.clone(), self.leg_fills.clone());
@@ -550,6 +551,7 @@ impl Engine {
         self.notes.truncate(notes);
         self.flipped = flipped;
         self.fills = count;
+        self.tally = tally;
         self.reporter = reporter;
         liquidates
     }

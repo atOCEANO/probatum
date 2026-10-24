@@ -46,8 +46,8 @@ impl EnvBatch {
         EnvBatch { engines, width }
     }
 
-    /// Number of envs, fixed at construction: a batch never grows or shrinks, so
-    /// every per-env array the caller passes has to be exactly this long.
+    /// Number of envs, fixed at construction until `take` hands them on, so every
+    /// per-env array the caller passes has to be exactly this long.
     pub fn len(&self) -> usize {
         self.engines.len()
     }
@@ -55,6 +55,15 @@ impl EnvBatch {
     /// True when there are no envs.
     pub fn is_empty(&self) -> bool {
         self.engines.is_empty()
+    }
+
+    /// Every env, handed on in a batch of their own, leaving this one a batch of none
+    /// over the same instruments, which reads and steps as an empty batch does.
+    pub fn take(&mut self) -> EnvBatch {
+        EnvBatch {
+            engines: std::mem::take(&mut self.engines),
+            width: self.width,
+        }
     }
 
     /// Number of bars in the shared series, zero when there are no envs.
@@ -501,6 +510,15 @@ mod tests {
 
         // Bit-for-bit: parallelism introduces no numerical drift.
         assert_eq!(parallel, sequential);
+    }
+
+    #[test]
+    fn a_batch_whose_envs_were_taken_is_a_batch_of_none_over_the_same_instruments() {
+        let mut batch = EnvBatch::new(2, series(), cfg());
+        let taken = batch.take();
+        assert_eq!((taken.len(), batch.len(), batch.width()), (2, 0, 1));
+        assert!(batch.observe_all(3).is_empty());
+        assert!(batch.target_all(&[], 0.0, false).is_ok());
     }
 
     #[test]

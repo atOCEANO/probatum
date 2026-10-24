@@ -8,6 +8,7 @@ pub mod batch;
 pub mod candles;
 pub mod clock;
 pub mod engine;
+pub mod env;
 pub mod execution;
 pub mod inverse;
 pub mod labels;

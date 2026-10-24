@@ -261,6 +261,9 @@ impl Engine {
     ) {
         let (pos_before, _, realized_before) = before;
         self.fills += 1;
+        self.tally.fees += fee;
+        self.tally.traded += (applied * price).abs();
+        self.tally.liquidated |= reason == FillReason::Liquidation;
         let pos_after = self.account.positions[i].qty.get();
         let realized = self.account.positions[i].realized - realized_before;
         let tick = self.tick;

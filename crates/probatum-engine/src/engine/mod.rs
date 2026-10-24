@@ -213,6 +213,28 @@ impl Default for EngineConfig {
     }
 }
 
+/// What a step's fills did, kept whether or not the run records: the fees they
+/// paid and the notional they traded, in the account's currency, and whether one was
+/// a liquidation, which an environment's reward reads (Specification, Reward and
+/// termination).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Tally {
+    pub fees: f64,
+    pub traded: f64,
+    pub liquidated: bool,
+}
+
+/// What an environment reads of the account at the close: its equity, the margin
+/// wallet's, the gross notional of every position and the maintenance its perpetuals
+/// keep, in the account's currency (Specification, The observation).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Reading {
+    pub equity: f64,
+    pub margin_equity: f64,
+    pub gross: f64,
+    pub maintenance: f64,
+}
+
 /// The single-env bar engine: candles, an account, a resting book, the fill and
 /// cost models, and an optional reporter.
 pub struct Engine {
@@ -255,6 +277,8 @@ pub struct Engine {
     /// or below zero, where a takeover leaves it unless the spot wallet holds
     /// cash (ADR 0008). A terminal event for the RL env. Cleared on reset.
     bust: bool,
+    /// What the current step's fills did, cleared as each step begins.
+    tally: Tally,
     /// Each instrument's last close, the mark it keeps on a row it printed no bar
     /// on, NaN until its first bar.
     marks: Vec<f64>,
@@ -375,6 +399,7 @@ impl Engine {
             fills: 0,
             funding_paid: Total::default(),
             bust: false,
+            tally: Tally::default(),
             marks: vec![f64::NAN; width],
             legs: vec![Vec::new(); width],
             clips: vec![None; width],
@@ -581,6 +606,7 @@ impl Engine {
         self.fills = 0;
         self.funding_paid = Total::default();
         self.bust = false;
+        self.tally = Tally::default();
         // what an earlier episode took of a bar's budget is not taken in this one
         self.budget.fill((usize::MAX, 0.0));
         self.leg_fills.fill(usize::MAX);
@@ -710,7 +736,15 @@ impl Engine {
     /// Advance one bar and resolve the bar, then mark and return the state. At the
     /// end of the data the tick does not advance and the state is returned as is.
     pub fn step(&mut self) -> State {
+        self.advance();
+        self.state()
+    }
+
+    /// `step` without the State it returns, for a driver that reads what it needs of
+    /// the account itself, as an environment does.
+    pub fn advance(&mut self) {
         let advanced = self.tick + 1 < self.candles.len();
+        self.tally = Tally::default();
         if advanced {
             self.tick += 1;
 
@@ -837,13 +871,13 @@ impl Engine {
             }
         }
 
-        let state = self.state();
+        let equity = self.equity();
         // A dead account is terminal, marked at the close, for both markets: its
         // equity, both wallets together, at or below zero. A takeover leaves it
         // there unless the spot wallet holds cash, and a spot account or a perp
         // drained by fees or funding can reach it without a forced close; either way
         // it is a true terminal, not a truncation (ADR 0008).
-        if state.equity <= 0.0 {
+        if equity <= 0.0 {
             self.bust = true;
         }
         // Record only on a real advance, so a driver that keeps calling step past
@@ -851,10 +885,9 @@ impl Engine {
         if advanced {
             if let Some(reporter) = &mut self.reporter {
                 let held = self.account.positions.iter().any(|p| p.qty.get() != 0.0);
-                reporter.record_equity(state.equity, held);
+                reporter.record_equity(equity, held);
             }
         }
-        state
     }
 
     /// The reporter, or `None` when `report` was false at construction. It cannot
@@ -911,6 +944,53 @@ impl Engine {
     /// open-orders vector a snapshot would allocate. Matches `state().equity`.
     pub fn equity(&self) -> f64 {
         self.account.equity(&self.marks)
+    }
+
+    /// What the current step's fills did since it began.
+    pub fn tally(&self) -> Tally {
+        self.tally
+    }
+
+    /// Funding paid since the last reset, in quote, positive when paid away.
+    pub fn funding_paid(&self) -> f64 {
+        self.funding_paid.get()
+    }
+
+    /// Instrument `i`'s unrealized PnL at its last close, in quote, zero while flat.
+    pub fn unrealized(&self, i: usize) -> f64 {
+        if self.account.positions[i].is_flat() {
+            return 0.0;
+        }
+        self.account.unrealized(i, Price(self.marks[i]))
+    }
+
+    /// Whether instrument `i` is delisted.
+    pub fn is_delisted(&self, i: usize) -> bool {
+        self.delisted[i]
+    }
+
+    /// What an environment reads of the account at the current close, the gross
+    /// notional and the maintenance as the ledger row reckons them.
+    pub fn reading(&self) -> Reading {
+        let (mut margin, mut gross, mut kept) = (self.account.margin_cash, 0.0, 0.0);
+        for (i, position) in self.account.positions.iter().enumerate() {
+            let qty = position.qty.get();
+            if qty == 0.0 {
+                continue;
+            }
+            let mark = self.marks[i];
+            gross += (qty * mark).abs();
+            if self.account.markets[i] == Market::Perp {
+                margin += position.unrealized(Price(mark));
+                kept += self.maintenance(i, mark);
+            }
+        }
+        Reading {
+            equity: self.account.equity(&self.marks),
+            margin_equity: margin,
+            gross,
+            maintenance: kept,
+        }
     }
 
     /// The ledger row of the current bar, the account marked at the closes.
