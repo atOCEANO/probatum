@@ -58,6 +58,8 @@ UNHELD  = {
                  "paths show how the search holds up and no more; hold out the tail, "
                  "such as holdout=0.3, or pass holdout=0 to validate on every bar"),
 }
+# what a Study reads of the Data its winner ran on, which a loaded one keeps without it
+Bars = collections.namedtuple("Bars", "rows cut first last balance")
 
 
 def search(policy, space, data, venue, objective="sharpe", direction="maximize",
@@ -937,14 +939,19 @@ class Study:
 
 
     def __init__(self, trials, returns, winner, ran, provenance, tables=None,
-                 forecast=None, space=None, params=None):
+                 forecast=None, space=None, params=None, bars=None):
         self._trials, self.returns, self.provenance = trials, returns, provenance
         # a validation's paths, fits and windows, None for a search's Study
         self._tables = tables
         # a model's pooled Forecast, or why it has none
         self._forecast = forecast
         self._looks    = 0
+        # how the winner runs again, None for a Study loaded with no policy or data
         self._winner, self._ran = winner, ran
+        self._bars = bars if ran is None else Bars(
+            len(ran.data), ran.cut, int(ran.inside.time[0]), int(ran.inside.time[-1]),
+            ran.venue._balance)
+
         # a search's ranges and each trial's parameters, which its plateau reads
         self._space, self._params = space, params
         self._best = self._holdout = self._effective = None
@@ -1070,14 +1077,24 @@ class Study:
         call returns it. ``best`` is read first, so a winner that no longer gives its
         trial's statistics is refused before the held-out bars are touched, and the look
         counts from the moment the winner is handed them, so a run that raises there
-        spends it. A search or a validation that held nothing out refuses."""
+        spends it. A search or a validation that held nothing out refuses, and so does a
+        Study loaded with no holdout run, which holds no policy or data to run one."""
         ran = self._ran
-        if ran.cut == len(ran.data):
-            noun, verb = self._called()
+        noun, verb = self._called()
+
+        if self._bars.cut == self._bars.rows:
             raise ProbatumValueError(f"evaluate_holdout: the {noun} held nothing out; "
                                      f"{verb} with a holdout, such as holdout=0.3")
 
         if self._holdout is None:
+            if ran is None:
+                fix = ("search again with storage= the directory it was saved in, "
+                       "which runs only what is not there" if noun == "search"
+                       else "validate again, and evaluate the holdout before saving")
+                raise ProbatumValueError(f"evaluate_holdout: a Study loaded with no "
+                                         f"holdout run, and no policy or data to run "
+                                         f"its winner on the held-out bars; {fix}")
+
             self.best
             held = ran.data.split(ran.cut)[1]
             self._looks += 1
@@ -1111,8 +1128,9 @@ class Study:
 
             lines = [f"search: {given['policy']}, {_venue_named(given)}, {where}, "
                      f"{given['ran']:,} {given['sampler']['name']} trials",
-                     f"in sample {_day(self._ran.inside.time[0])} to "
-                     f"{_day(self._ran.inside.time[-1])}, {self._held()}"]
+                     f"in sample {_day(self._bars.first)} to "
+                     f"{_day(self._bars.last)}, {self._held()}"]
+
             chosen = ", ".join(f"{key} {value}" for key, value in self.best_params.items())
             best   = _signed(given["objective"]) * self.best_score + 0.0
             lines.append(_line("best", f"{chosen}: {given['objective']} {best:.2f}"))
@@ -1243,10 +1261,17 @@ class Study:
             pairs = [(a, b) for a, b in pairs if not (math.isnan(a) or math.isnan(b))]
         else:
             noun = "the search"
-            if self._ran.cut == len(self._ran.data):
+            if self._bars.cut == self._bars.rows:
                 raise ProbatumValueError(f"decay: {noun} held nothing out, so no bars "
                                          f"earned after the fit; search with a holdout, "
                                          f"such as holdout=0.3")
+            if self._holdout is None and self._ran is None:
+                raise ProbatumValueError("decay: a Study loaded with no holdout run, "
+                                         "and no policy or data to run its winner on "
+                                         "the held-out bars; search again with "
+                                         "storage= the directory it was saved in, "
+                                         "which runs only what is not there, then "
+                                         "evaluate its holdout")
             if self._holdout is None and not self._looks:
                 raise ProbatumValueError("decay: the holdout is not yet run; "
                                          "evaluate_holdout() runs it, and spends a look")
@@ -1284,7 +1309,8 @@ class Study:
     def _held_out(self):
         """The holdout as it stands: none, not yet run, run, or run and raised."""
         noun, verb = self._called()
-        if self._ran.cut == len(self._ran.data):
+
+        if self._bars.cut == self._bars.rows:
             return f"none: the {noun} held every bar"
 
         if self._holdout is None:
@@ -1467,7 +1493,7 @@ class Study:
     def _costs(self, paths, done):
         """The complete paths' costs as a share of their gross edge, the net profit
         and the costs summed."""
-        balance = self._ran.venue._balance
+        balance = self._bars.balance
         opening = sum(balance.values()) if isinstance(balance, dict) else balance
         paid    = sum(float(np.asarray(paths[name], dtype=np.float64)[done].sum())
                       for name in COSTS)
@@ -1479,14 +1505,45 @@ class Study:
         return f"took {paid / (net + paid):.0%} of the gross edge"
 
 
+    def save(self, path):
+        """Write the Study into the directory ``path``, made where it is missing, as
+        files any tool reads, as a Result is written (ADR 0046): ``study.json``, the
+        manifest, holding the format, the version of probatum that wrote it, the
+        provenance, the looks, the winner and what else the Study needs to be read back
+        with no policy or data; a search's ``trials.arrow`` and ``choices.arrow``, each
+        trial's choice of each Categorical as its index among the choices, or a
+        validation's ``paths.arrow``, ``fits.arrow`` and ``windows.arrow``;
+        ``returns.npy`` where the Study kept its returns; and the winner's in-sample
+        Result in ``best``, run where it was not yet read, and its holdout's in
+        ``holdout`` where it ran. Every file is written under another name first and the
+        manifest last, the one there before, or this one where there is none, set aside
+        as ``study.json.old`` until it is in place, so a save that an error or a killed
+        process stops leaves either the Study that was there or a directory load
+        refuses until a save into it ends (Specification, Saving and resuming)."""
+        from ._storage import save
+        save(self, path)
+
+
+    @classmethod
+    def load(cls, path):
+        """The Study ``save`` wrote into the directory ``path``, read by its format,
+        with every table, statistic and summary the saved one had. It holds no policy
+        and no data, so ``evaluate_holdout`` gives the saved holdout where one ran and
+        refuses otherwise, before any look. Refused are a directory with no manifest, a
+        format this version does not read, and files that do not agree with one
+        another."""
+        from ._storage import load
+        return load(path)
+
+
     def __repr__(self):
-        given, ran = self.provenance, self._ran
+        given, bars = self.provenance, self._bars
 
         if self._tables is None:
             best = _signed(given["objective"]) * self.best_score + 0.0
             what = (f"{given['ran']:,} trials of {given['policy']} by "
                     f"{given['sampler']['name']}, best {given['objective']} "
-                    f"{best:,.2f} over {ran.cut:,} bars")
+                    f"{best:,.2f} over {bars.cut:,} bars")
         else:
             paths, fits = self._tables["paths"], len(self._tables["fits"])
             failed = int((paths["state"] == "failed").sum())
@@ -1500,7 +1557,7 @@ class Study:
                     f"evidence, median {given['objective']} {median:,.2f} over "
                     f"{given['cv']['bars']:,} bars")
 
-        held = len(ran.data) - ran.cut
+        held = bars.rows - bars.cut
         if not held:
             return f"Study({what}; nothing held out)"
 

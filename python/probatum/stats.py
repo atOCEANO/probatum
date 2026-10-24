@@ -1324,8 +1324,7 @@ def min_backtest_length(trials, sharpe=None):
 
         count  = len(study.trials)
         sharpe = float(study._winner.stats["sharpe"])
-        years  = (len(study._ran.inside.time) - 1) / study.provenance["periods_per_year"]
-
+        years  = (study._bars.cut - 1) / study.provenance["periods_per_year"]
         if count < 2:
             raise ProbatumValueError("trials: a Study of 1 trial; a backtest length is "
                                      "for the best of more than one, so search with "
