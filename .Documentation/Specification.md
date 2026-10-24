@@ -278,7 +278,7 @@ s2 = (v2 * e1 + v1 * e2) / (v1 + v2), or (e1 + e2) / 2 when v1 + v2 is not posit
 s  = sqrt(max(s2, 0))
 ```
 
-`[a]` is 1 when `a` holds and 0 otherwise. The estimate is undefined with fewer than three bars, with fewer than two pairs where `tau` is 1, or with `po` or `pc` at zero, and an undefined estimate is a spread of zero. So is a negative `s2`, where the authors' published code returns the root of its magnitude.
+`[a]` is 1 when `a` holds and 0 otherwise. The estimate is undefined with fewer than three bars, with fewer than two pairs where `tau` is 1, or with `po` or `pc` at zero, and an undefined estimate is a spread of zero. So is a negative `s2`, where the authors' published code returns the root of its magnitude. A cost sweep multiplies the estimate by its scale ([Cost sweeps](#cost-sweeps)).
 
 **Worked example.** Six bars:
 
@@ -1041,7 +1041,7 @@ The win rate, the profit factor and the average trade take a bootstrap of the cl
 ### Summaries
 
 - `Result.summary()` prints the run's header and span, its return, its Sharpe with the interval and the lag or why it has none, the long-run Sharpe beside it where they differ by more than 0.1, its maximum drawdown as a loss with the longest time under water in days, from a row at the running peak to the first row back at or above it or to the last row, its round trips with the win rate and the profit factor, its costs and its assumptions. A combined book names each account and says the accounts are margined apart and no capital moves between them, and a run recorded below the full level names its level.
-- A search's `summary(null=None)` prints its header, its in-sample span, the best trial's parameters and score, and its holdout. `null` is a random search of the same policy over the same space on the same venue and in-sample bars, scored by the same objective, direction, `min_trades` and risk-free rate, and is refused naming what differs; its line is the mean score of its complete trials and their count, "null mean sharpe 0.38 over 500 trials", after the deflated Sharpe's line, which reads it (Across a search). Before the holdout a search prints its overfitting probability's text, or why it has none: no returns kept, an objective the halvings cannot read, fewer than 2 complete trials, or fewer returns than its 16 blocks. An adaptive search's lines say "descriptive".
+- A search's `summary(null=None, plateau=None)` prints its header, its in-sample span, the best trial's parameters and score, and its holdout. `null` is a random search of the same policy over the same space on the same venue and in-sample bars, scored by the same objective, direction, `min_trades` and risk-free rate, and is refused naming what differs; its line is the mean score of its complete trials and their count, "null mean sharpe 0.38 over 500 trials", after the deflated Sharpe's line, which reads it (Across a search). Before the holdout a search prints its overfitting probability's text, or why it has none: no returns kept, an objective the halvings cannot read, fewer than 2 complete trials, or fewer returns than its 16 blocks. With `plateau`, a level in the objective's units as the trials table holds them, the plateau's text follows it ([The plateau](#the-plateau)). An adaptive search's lines say "descriptive".
 - A validation's `summary()` prints its header and its paths, the embargo, each path's score, the median of the complete paths' scores, and the interval of the median path's objective on its returns, or the range of its resampled histories for drawdown and Calmar, the median path being the lower of the two middle ones for an even count, with "the paths share bars"; where the returns were not kept, or the objective reads round trips, which a path's returns do not hold, it says so and gives none. A model's then prints its pooled forecast, "forecast rank IC 0.021, t = 2.4 (Newey-West, lag 25); R squared 0.3%", or why it has none. Then its costs as a share of the gross edge, the net profit plus the costs, each summed over the complete paths, or "costs N, with no gross edge", the label "the paths are stability evidence; the verdict comes from the holdout", and the holdout.
 - The holdout reads as its state:
   - none held out: "holdout none: the search held every bar";
@@ -1064,13 +1064,13 @@ The win rate, the profit factor and the average trade take a bootstrap of the cl
 
 ## Across a search
 
-`probatum.stats` also judges a search across all of its trials: how far the winner's Sharpe clears what the best of that many trials reaches by luck, how often the in-sample winner falls below the median out of sample, whether any trial beats a benchmark once every trial is counted, and how long a backtest that many trials need. Each reads a Study of trials or a matrix of trials' returns, and states how many trials it read.
+`probatum.stats` also judges a search across all of its trials: how far the winner's Sharpe clears what the best of that many trials reaches by luck, how often the in-sample winner falls below the median out of sample, whether any trial beats a benchmark once every trial is counted, how long a backtest that many trials need, and whether the winner stands among neighbours that score as it does. Each reads a Study of trials or a matrix of trials' returns, the plateau a Study alone, and states how many trials it read.
 
 ### What a statistic of trials reads
 
 - A Study's trials are the rows of its `returns`, each trial's `n = T - 1` returns after the in-sample bars' first row, as a Result's are, at the Study's annualisation and risk-free rate, so a Study refuses `periods_per_year` and `risk_free`. A plain matrix, one row a trial's returns and every row on the same bars, needs `periods_per_year` and takes `risk_free` as an annual rate, 0 unless given; a NaN or an infinity in it is refused, naming its trial and position.
 - The deflated Sharpe counts every trial the search asked as a look, complete, floored and failed. The effective number of trials and the Reality Check read every trial that ran, complete and floored, and the overfitting probability the complete trials, the ones that could win. A trial whose returns never vary is left out of the clustering, and the count left out is reported.
-- A Study kept with `keep="none"` holds no returns, and what reads them is refused, naming `keep="all"`. The deflated Sharpe against every trial reads only the null's statistics and the winner's run, so it stands, its effective part None.
+- A Study kept with `keep="none"` holds no returns, and what reads them is refused, naming `keep="all"`. The deflated Sharpe against every trial reads only the null's statistics and the winner's run, so it stands, its effective part None, and the plateau reads the trials table alone.
 - A Study of paths is refused by each: its rows are no competing configurations.
 - An adaptive search's trials were chosen on the bars they are judged on, so its deflated Sharpe, overfitting probability, Reality Check and SPA are computed and labelled descriptive. A random or grid search chooses its trials without reading a score, so those are tests.
 - The clustering's starts draw from the stream `stats onc`, seeded by the trials' returns, and the Reality Check's resamples from `stats reality check`, seeded by the trials' returns and the benchmark's, so each is the same on every read and in every process, and `seed=` stands in for the digest.
@@ -1127,6 +1127,53 @@ The win rate, the profit factor and the average trade take a bootstrap of the cl
 - Its text: "minimum backtest length 3.1 years for the best of 500 trials to fall to a sharpe of 1.41; this series has 2.6".
 
 **Worked example.** 45 trials need `f(45)^2 = 2.2356^2 = 4.998` years to bring their expected best down to a Sharpe of 1, and 46 need `2.2442^2 = 5.036`, so five years of data support no more than 45 configurations (2014, figure 2).
+
+### The plateau
+
+- `plateau(study, level)` reads a search's trials around its winner. An `Int`'s or a `Float`'s value is put on `[0, 1]` across its range on the scale it was drawn on, `(x - low) / (high - low)`, or `ln(x / low) / ln(high / low)` on a log scale, and is 0 where `low` is `high`; a `Categorical`'s is 0 from the winner's where a trial's choice is the winner's, NaN being one choice, and 1 where it is not; and a trial's distance from the winner is the Euclidean distance over its parameters.
+- At each radius `r = 0.05 * k`, `k` from 1 to 10, the trials within `r` are those at a distance of at most `r`, a configuration the search ran more than once counted once, by the first trial that ran it, and the winner's own not at all, since a configuration asked for again adds no neighbour; and the share is how many of them completed with a score past `level` in the search's direction, above it maximising and below it minimising, over how many there are, NaN where there are none. A floored or a failed trial within `r` counts against the share, as a configuration beside the winner that scored nothing.
+- `level` is a finite number in the objective's units as the trials table holds them.
+- Its text gives the share at 0.1 and then at every radius, "22% of the 40 trials within distance 0.1 of the best, in normalised parameters, score above 1; from 0.05 to 0.5: 30%, 22%, 25%, 21%, 18%, 15%, 14%, 12%, 11%, 10%", a loss printed as the negative return it is with its side turned, and "none" for a radius no trial lies within, which a search's summary prints after "plateau".
+
+**Worked example.** A search maximising the Sharpe over `fast` in `Int(5, 45)` and `slow` in `Int(100, 300)`, whose winner is fast 25 and slow 200. A trial at 27 and 210 lies `sqrt(0.05^2 + 0.05^2) = 0.0707` from it, one at 28 and 200 at 0.075, and one at 35 and 240 at `sqrt(0.25^2 + 0.2^2) = 0.32`. Scoring 1.2, 0.4 and 1.1 against a level of 1.0, they leave no trial within 0.05, 1 of 2 past the level within 0.1, and 2 of 3 within 0.35.
+
+<br>
+<br>
+
+
+## Capacity and costs
+
+`capacity`, `cost_curve` and `breakeven_bps` run one policy again where only its balance or its costs differ. Each run is the `backtest` of the policy on the data at the venue with the settings given, `sizing`, `stop`, `take_profit`, `tolerance` and `risk_free`, at the full recording level, a Strategy on a copy of its own as `backtest` copies one, so the runs differ in nothing else.
+
+### What a run of them reads
+
+- A run's traded notional is its fills' notionals at their prices summed, `abs(q) * p`, or `abs(u) / p` on an inverse contract ([Inverse contracts](#inverse-contracts)), in the asset the account settles in.
+- Its round-trip cost is `2 * 10,000 * (fees + spread + slippage + impact) / traded` basis points, the costs as the run totals them ([Costs](#costs)), a round trip trading its notional once each way; NaN where nothing filled.
+- Its turnover is a year of its traded notional over its mean equity, `traded / mean(E) * ppy / n`, with `E` the equity at each of its rows, `n` its returns and `ppy` its periods a year ([Annualisation](#annualisation)), NaN where it has no annualisation or its mean equity is not above zero.
+- The orders the liquidity budget held are those with an event naming it, a clamp it set, a fill of nothing it allowed or a `fok` it refused ([The fill log and the order log](#the-fill-log-and-the-order-log)), as a share of the orders placed, 0 where none was.
+
+### Capacity
+
+- `capacity(policy, data, venue, balances)` runs at each balance of `balances` in turn, the account opening with it as `Venue.replace(balance=...)` opens one, and gives each balance's return, Sharpe, impact paid, share of orders the liquidity budget held, round-trip cost and turnover.
+- A weight is a share of equity, so its positions grow with the balance; a quantity does not, and `sizing="quantity"` is refused, as is, before any run, a balance the account cannot open with: one wallet's where the data trades spot and perpetuals, which use both, or two for an inverse contract, whose account holds its coin in one.
+
+**Worked example.** A weight of 1.0 on a linear perpetual decided at a close of 60,000, its next bar opening there with a trailing volume of 5 BTC under `budget(0.1)`. At a balance of 30,000 the order of 0.5 BTC fills whole and no order is held. At a balance of 60,000 the order of 1 BTC fills 0.5 BTC, a clamp naming the liquidity budget, so the one order placed is one it held, and half the position wanted is bought.
+
+### Cost sweeps
+
+- `cost_curve(policy, data, venue, scales=(0, 0.5, 1, 2, 4))` runs at each scale in turn with every cost the venue charges for trading multiplied by it: each fee rate above 0, maker and taker, of the venue, its kinds and its instruments; the spread, a fixed one's basis points or the estimate ([The spread estimate](#the-spread-estimate)); the slippage; and the impact coefficient. A fee rate below 0 is a rebate the venue pays and is not moved, nor are the liquidity budget, funding and a liquidation fee the venue sets, being the market's limit and rates rather than charges for trading; where the venue sets none, the liquidation fee is the taker rate ([The trigger, close and clip points](#the-trigger-close-and-clip-points)) and moves as it does. It gives each scale's round-trip cost, return, Sharpe, round trips, fees, spread, slippage and impact paid, and turnover.
+- A scale is a number from 0. Where the venue charges none of the four on the data's instruments the sweep is refused, since no scale of it moves a cost.
+- `breakeven_bps(policy, data, venue, ceiling=100, precision=0.05)` is the round-trip cost at the scale where the return reaches zero, `ceiling` a scale above 0 and `precision` basis points above 0:
+  - None where the run at scale 0 returns nothing above zero;
+  - where the run at `ceiling` still returns above zero, its round-trip cost, warning that the break-even lies past it;
+  - and otherwise the mean of the round-trip costs of two runs that bracket a crossing, the lower scale's return above zero and the upper's not, the bracket halved from 0 and `ceiling` until those costs are within `precision` of each other, no scale lies between its ends or 60 halvings have run, warning where the costs are still more than `precision` apart, as where a cost jumps at the crossing; or the lower run's cost where the upper filled nothing.
+- The costs change which fills happen and how large, so the return need not fall steadily as the scale grows, and the bisection finds a crossing rather than the crossing.
+
+**Worked example.** The round trip of [Costs](#costs) pays, at scale 1, fees of 6.019997, spread 0.602 and slippage 1.204 on a traded notional of `6,000.90 + 6,039.094 = 12,039.994`, a round-trip cost of `2 * 10,000 * 7.825997 / 12,039.994 = 13.0` basis points: 5 of fee, 0.5 of half the spread and 1 of slippage each way. At scale 2 it fills at 60,018.00 and 60,381.88 and its costs come to 15.651988, 26.0 basis points. Its price PnL of 40.00, less the funding of 0.605 that no scale moves, leaves 39.395 for the costs to take, so its return reaches zero at a scale of about 5.03, where it pays 65.4 basis points a round trip.
+
+<br>
+<br>
+
 
 ## Numbers that are the same everywhere
 
