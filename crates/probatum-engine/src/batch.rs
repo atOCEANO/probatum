@@ -11,6 +11,7 @@ use probatum_core::{Market, State};
 
 use crate::candles::{printed, Candles};
 use crate::engine::{Engine, EngineConfig, TargetError};
+use crate::reporter::Record;
 
 /// A batch of independent engines over one shared candle series.
 pub struct EnvBatch {
@@ -44,6 +45,17 @@ impl EnvBatch {
             .map(|(env, config)| Engine::new(candles.clone(), *config).for_env(env))
             .collect();
         EnvBatch { engines, width }
+    }
+
+    /// Every env recording at `level` where its config reports, as an agent's
+    /// backtest records its one env as a run does.
+    pub fn recording(mut self, level: Record) -> EnvBatch {
+        self.engines = self
+            .engines
+            .into_iter()
+            .map(|engine| engine.recording(level))
+            .collect();
+        self
     }
 
     /// Number of envs, fixed at construction until `take` hands them on, so every
@@ -285,6 +297,7 @@ mod tests {
     use crate::clock::Clock;
     use crate::engine::{Engine, EngineConfig, Intrabar, Liquidation, TargetError};
     use crate::execution::{Impact, Limit, Spread};
+    use crate::reporter::{Record, Reporter};
     use probatum_core::{Candle, Market, Side, State, Tiers};
     use proptest::prelude::*;
 
@@ -519,6 +532,24 @@ mod tests {
         assert_eq!((taken.len(), batch.len(), batch.width()), (2, 0, 1));
         assert!(batch.observe_all(3).is_empty());
         assert!(batch.target_all(&[], 0.0, false).is_ok());
+    }
+
+    #[test]
+    fn a_batch_records_each_env_at_the_level_given_where_its_config_reports() {
+        let reporting = EngineConfig {
+            report: true,
+            ..cfg()
+        };
+        let batch = EnvBatch::new(2, series(), reporting).recording(Record::Account);
+        assert!(batch
+            .engines()
+            .iter()
+            .all(|engine| engine.reporter().map(Reporter::level) == Some(Record::Account)));
+        let quiet = EnvBatch::new(2, series(), cfg()).recording(Record::Account);
+        assert!(quiet
+            .engines()
+            .iter()
+            .all(|engine| engine.reporter().is_none()));
     }
 
     #[test]
