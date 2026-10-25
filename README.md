@@ -179,16 +179,17 @@ for _ in range(1000):
     # on the next step, its start and number in info
 ```
 
-Or skip the loop and hand it to Stable-Baselines3, which trains on the same env in three lines:
+Or skip the loop and hand it to Stable-Baselines3, which trains on the same env, and judge the agent with the same backtest as a rule, on bars it has not seen:
 
 ```python
 from stable_baselines3 import PPO
-from probatum.sb3 import ProbatumVecEnv
 
-PPO("MlpPolicy", ProbatumVecEnv(env)).learn(total_timesteps=100_000)   # A2C and SAC swap in
+agent = PPO("MlpPolicy", probatum.sb3.wrap(env))       # A2C and SAC swap in
+agent.learn(total_timesteps=100_000)
+result = probatum.backtest(agent, later, "binance_perp", features=my_features)
 ```
 
-The observation, reward, action, and autoreset contract, and the full training examples, are in the [RL Guide](.Documentation/RL_Guide.md).
+The observation, reward, action, and autoreset contract, the full training examples and the backtest of an agent are in the [RL Guide](.Documentation/RL_Guide.md).
 
 ### Parameter search
 

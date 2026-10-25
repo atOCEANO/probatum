@@ -57,26 +57,29 @@ env.close()
 
 ## Training
 
-The quick path is Stable-Baselines3. `probatum.sb3.ProbatumVecEnv` presents the environment as an SB3 `VecEnv` and switches it to same-step autoreset and to an observation of its own each step, which SB3 expects, so a stock PPO trains on it:
+The quick path is Stable-Baselines3. `probatum.sb3.wrap` presents the environment as an SB3 `VecEnv` and switches it to same-step autoreset and to an observation of its own each step, which SB3 expects, so a stock PPO trains on it:
 
 ```python
 import stable_baselines3
 
 env = probatum.env(train, "binance_perp", window=32, num_envs=8, seed=0)
-venv = probatum.sb3.ProbatumVecEnv(env)
-stable_baselines3.PPO("MlpPolicy", venv).learn(total_timesteps=100_000)
+agent = stable_baselines3.PPO("MlpPolicy", probatum.sb3.wrap(env))
+agent.learn(total_timesteps=100_000)
+agent.save("agent")
 ```
 
-One adapter serves every SB3 algorithm: PPO, A2C and SAC on the default `Box`, and DQN on `actions="discrete"` over one instrument, whose space is a `Discrete`. SB3's vector wrappers compose on top unchanged, to log episodes and normalise the observation and reward:
+One adapter serves every SB3 algorithm: PPO, A2C and SAC on the default `Box`, and DQN on `actions="discrete"` over one instrument, whose space is a `Discrete`. The agent spec rides on a copy of the action space, which SB3 saves into the model's zip, so a model loaded again is backtested as it trained. SB3's vector wrappers compose on top unchanged, to log episodes and normalise the observation and reward, and `probatum.sb3.SpecCallback` copies `VecNormalize`'s statistics of the observation into the spec after each rollout, so a backtest normalises the observation as training did:
 
 ```python
 import stable_baselines3.common.vec_env
 
 venv = stable_baselines3.common.vec_env.VecNormalize(
-    stable_baselines3.common.vec_env.VecMonitor(probatum.sb3.ProbatumVecEnv(env)))
+    stable_baselines3.common.vec_env.VecMonitor(probatum.sb3.wrap(env)))
+agent = stable_baselines3.PPO("MlpPolicy", venv)
+agent.learn(total_timesteps=100_000, callback=probatum.sb3.SpecCallback())
 ```
 
-`probatum.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (probatum is not on PyPI, so install from a release as the [README](../README.md#install) shows). A trained model saves and loads the usual SB3 way.
+`probatum.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (probatum is not on PyPI, so install from a release as the [README](../README.md#install) shows).
 
 <br>
 
@@ -240,6 +243,7 @@ An agent is judged fairly only if a backtest shows it what it saw in training an
                "reference": "b2:f517e3ebe5808298"},
   "fill": null,
   "normalisation": {"mean": [0.0004, 0.5573], "deviation": [0.0096, 0.2634]},
+  "sb3": null,
   "observation": {"size": 268, "layout": "flat", "shape": [64, 2, 2],
                   "account": ["weight", "upnl", "entry_distance", "shown",
                               "weight", "upnl", "entry_distance", "shown",
@@ -256,7 +260,33 @@ An agent is judged fairly only if a backtest shows it what it saw in training an
 }
 ```
 
-A custom function is never pickled. A feature function is recorded by its name, its width, a hash of its source and a hash of its output, rounded to float32, on probe bars the package builds the same way on every machine, 512 bars of each training instrument on its market, which a function passed again is held to; a function that cannot run there leaves no reference, with a warning that says so. A custom decode is held the same way to its output on eight probe actions, taken the first time the spec is read, so a decode that keeps state of its own meets them then. An array of features is recorded by its width alone, and a custom reward by its name and source, since a backtest never reads a reward. The venue is recorded as the preset it was made from, the day that preset was taken and every setting changed, as its repr shows them, so the spec builds the venue again.
+A custom function is never pickled. A feature function is recorded by its name, its width, a hash of its source and a hash of its output, rounded to float32, on probe bars the package builds the same way on every machine, 512 bars of each training instrument on its market, which a function passed again is held to; a function that cannot run there leaves no reference, with a warning that says so. A custom decode is held the same way to its output on eight probe actions, taken the first time the spec is read, so a decode that keeps state of its own meets them then. An array of features is recorded by its width alone, and a custom reward by its name and source, since a backtest never reads a reward. The venue is recorded as the preset it was made from, the day that preset was taken and every setting changed, as its repr shows them, so the spec builds the venue again. `sb3` holds the statistics `SpecCallback` copies in, null until it does.
+
+<br>
+
+## Backtesting an agent
+
+`probatum.backtest` runs a trained agent as it runs a rule, and returns the same `Result` ([Specification](Specification.md#an-agent-in-a-backtest), [ADR 0039](Decisions.md)). The agent is an SB3 model or policy, asked for its deterministic prediction, a recurrent policy's state carried from one close to the next; a torch module, called on the observation as a tensor on its device, in eval mode with no gradient; or any other function of the observation, the first element of a tuple a module or a function returns being its action. It runs as one environment of its spec over the Data from its first bar, recording as a run does. The window reads the bars before a slice, so an agent decides at the slice's first close, and each observation is the one training showed it, normalised as it was. Once the account holds nothing the agent is no longer asked.
+
+```python
+agent = stable_baselines3.PPO.load("agent")
+result = probatum.backtest(agent, test, "binance_perp")
+again = probatum.backtest(result.policy, test, "binance_perp")  # the same equity
+```
+
+An SB3 model carries its spec; any other agent is given it as `spec=`: the spec itself, a path to its JSON or to a directory holding `spec.json`, or the environment it trained in. `probatum.save` writes an agent beside its spec, a torch module as its state dict and an SB3 model as its own zip, and never pickles a module. The policy-gradient loop above trains a module whose output is the logits, so a function of the observation turns them into its action:
+
+```python
+probatum.save(policy, "agents/reinforce", spec=env)          # weights.pt and spec.json
+policy.load_state_dict(torch.load("agents/reinforce/weights.pt"))
+greedy = lambda obs: policy(torch.as_tensor(obs)).argmax(dim=1).numpy()
+result = probatum.backtest(greedy, test, "binance_perp", spec="agents/reinforce")
+```
+
+- **Functions it trained with.** A feature function or a decode is passed again as `features=` or `decode=`, never pickled, and held to its output on its probe, so a changed function is refused with both hashes; an array of features is over the Data given.
+- **Instruments.** The Data's instruments must be the spec's, in its order, or `instruments=` names them, and an agent trained with `sample=k` trades any `k` instruments it names; each must be on the market the agent trained on, since a spot slot reads the same action as another weight than a perpetual's.
+- **What it decided.** `result.policy` holds each close's weights, or each slot's size and offset for orders as placed, NaN where nothing was decided or a slot was not shown; played again as weights with the spec's `tolerance`, it gives the same equity to the bit. The frictionless baseline is the agent run again without the costs of trading, at once rather than when the baselines are first read, as an agent cannot be copied to be played later, so a full-level backtest asks it twice; `capacity` and the cost sweeps take an agent's settings and leave the baseline out.
+- **What it warns.** A run on bars that overlap the training span, at another venue than the one the spec records, or on another interval warns, and the Result's provenance records the spec, the overlap and whether the venue is the one it trained at. An agent trained under `intrabar="random"` is judged under each fixed setting, and each of its Results says it ran at another venue than it trained at.
 
 <br>
 

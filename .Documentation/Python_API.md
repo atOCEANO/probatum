@@ -37,7 +37,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.venues` | The presets, each a Venue: `binance_perp`, `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
 | `probatum.Engine` | An account at a venue on a Data for a loop the caller owns: `reset`, `step`, and the account's state and verbs, recording the Result `backtest` records. [Below](#engine). |
 | `probatum.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
-| `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, or a Strategy deciding at each close. [Below](#backtesting). |
+| `probatum.backtest` | Run a policy on a Data at a venue: an array of weights or quantities, or a table of them, stepped bar by bar in Rust with its barriers, a Strategy deciding at each close, or a trained agent asked at each close for its action. [Below](#backtesting). |
 | `probatum.Result` | What a run recorded: its equity and returns, its ledger, holdings, fill log, order log and round trips as tables any Arrow reader takes, the totals of its costs, each modelling choice it made, graded, three baselines beside it, each instrument's record, its statistics and its provenance, saved as files any tool reads. [Below](#the-result). |
 | `probatum.combine` | Add Results from accounts at different venues into one book. [Below](#combining-books). |
 | `probatum.search` | Search a policy's parameters on the bars before a holdout, each trial one run there, every trial kept. [Below](#search). |
@@ -63,7 +63,8 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
 | `probatum.env` | Step accounts at a venue on a Data together in Rust as a Gymnasium vector environment, each environment drawing its episodes from a stream of its own. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `probatum.rl` | `VectorEnv`, the environment `probatum.env` returns, `Env`, one environment of it, both registered as `probatum/Trading-v0`, and `Batch`, the raw batch. [Below](#reinforcement-learning). |
-| `probatum.sb3` | `ProbatumVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
+| `probatum.sb3` | `wrap`, which presents an environment as a Stable-Baselines3 `VecEnv`, a `ProbatumVecEnv` carrying its agent spec, and `SpecCallback`, which copies `VecNormalize`'s statistics into the spec. [RL Guide](RL_Guide.md#training). |
+| `probatum.save` | Write a trained agent beside the spec it trained with: a torch module's state dict or an SB3 model's own zip, and `spec.json`. [Below](#an-agent). |
 | `probatum.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
 | `probatum.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
 | `probatum.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Markers`, `Background`, `Panel`, `Recorder`, `ramp`, `at_bar` and `at_next`: the marks a chart carries and the helpers that record and align them. [Plotting](Plotting.md#the-marks). |
@@ -340,22 +341,23 @@ obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 
 The observation is the market block of each instrument's features, or its candles, on the window's bars beside the account block, what the account holds and owes. Actions are target weights scaled by `max_leverage` by default, or `"simplex"`, `"discrete"` or `"orders"`, and the reward is the step's log return, its differential Sharpe or `reward(state)` over the whole batch at once. `env.describe()` lists what its runs assume, as a backtest's assumptions, `env.provenance` records what they run on, and `env.agent_spec` records, as a JSON document, what a backtest needs to show an agent what it saw in training and read its outputs as they were read; `normalise=True` writes each market feature over its mean and deviation across the training span's observations, which the spec keeps. `probatum.rl.Env` is one environment as Gymnasium's single API steps it, and `gymnasium.make` and `gymnasium.make_vec` build both as `probatum/Trading-v0` once `probatum.rl` or `probatum.env` has loaded; a plain `import probatum` never loads Gymnasium.
 
-Stable-Baselines3 will not take a Gymnasium vector env directly, so `probatum.sb3.ProbatumVecEnv` presents it as an SB3 `VecEnv`, switched to same-step autoreset and to an observation of its own each step, which keeps the batch intact under PPO, A2C and SAC, and DQN on one instrument's discrete actions:
+Stable-Baselines3 will not take a Gymnasium vector env directly, so `probatum.sb3.wrap` presents it as an SB3 `VecEnv`, switched to same-step autoreset and to an observation of its own each step, which keeps the batch intact under PPO, A2C and SAC, and DQN on one instrument's discrete actions. The agent spec rides on a copy of its action space, which SB3 saves into the model's zip, and `probatum.sb3.SpecCallback` copies `VecNormalize`'s statistics into it after each rollout:
 
 ```python
 from stable_baselines3 import PPO
-from probatum.sb3 import ProbatumVecEnv
 
-PPO("MlpPolicy", ProbatumVecEnv(env)).learn(total_timesteps=100_000)
+agent = PPO("MlpPolicy", probatum.sb3.wrap(env))
+agent.learn(total_timesteps=100_000)
+result = probatum.backtest(agent, test, "binance_perp", features=features)
 ```
 
-Every setting, the observation, the actions, the rewards, the episodes and the autoreset modes are in the [RL Guide](RL_Guide.md).
+Every setting, the observation, the actions, the rewards, the episodes, the autoreset modes and the backtest of an agent are in the [RL Guide](RL_Guide.md).
 
 <br>
 
 ## Backtesting
 
-`probatum.backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None, tolerance=0.0, record="full", risk_free=0.0)` runs a policy on a Data at a venue and returns its `Result`. `data` is a `probatum.Data` or anything one is built from, and `venue` a `probatum.Venue` or a preset's name. The policy is read in one fixed order, so no input is read two ways ([ADR 0024](Decisions.md)):
+`probatum.backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None, tolerance=0.0, record="full", risk_free=0.0, spec=None, features=None, decode=None, instruments=None)` runs a policy on a Data at a venue and returns its `Result`. `data` is a `probatum.Data` or anything one is built from, and `venue` a `probatum.Venue` or a preset's name. The policy is read in one fixed order, so no input is read two ways ([ADR 0024](Decisions.md)):
 
 | Order | Policy | How it runs |
 | :--- | :--- | :--- |
@@ -364,7 +366,7 @@ Every setting, the observation, the actions, the rewards, the episodes and the a
 | 3 | a class | refused: pass an instance |
 | 4 | a `Strategy` | a deep copy of it, `init(data)` once and `next(bar, account)` at each close ([below](#a-strategy)) |
 | 5 | an object with `fit` that is not callable | refused: pass its predictions as an array |
-| 6 | an agent: a Stable-Baselines3 model, a torch module or any other callable | not run yet |
+| 6 | an agent: a Stable-Baselines3 model or policy, a torch module, each recognised only where its framework is already imported, or any other callable | one environment of its spec, asked at each close for its action ([below](#an-agent)) |
 | 7 | anything else | refused |
 
 **An array** is `(T, N)` over the Data's rows and instruments, or `(T,)` for one instrument. Row t is the decision at the close of bar t and a NaN holds, and the engine still steps every bar, so an array run is no vectorized backtest. With `sizing="weight"` each value is a weight of equity, reached as `target` reaches it, a leg below `tolerance` of equity skipped; with `sizing="quantity"` it is the position wanted, in base units, or in contracts on an inverse contract. The last row is never read, since no bar follows it to fill on. An array of booleans is refused, since False would flatten where it means to hold: 1.0 enters, 0.0 leaves and NaN holds. A negative value on a spot instrument is refused before the run, and so is a venue that decides at random what a bar cannot show, so a backtest repeats without a seed ([Specification](Specification.md#an-array)).
@@ -439,6 +441,25 @@ result = probatum.backtest(Breakout(), btc, venue)
 `buy` and `sell` also take `tif`, `"gtc"`, `"ioc"` or `"fok"`, on a market or a limit order, `post_only` on a limit and `reduce_only` on any order; their value forms take `tif`, `"ioc"` or `"fok"`, and `reduce_only`.
 
 **Every placing verb returns an `Order`**, a live handle that shows the order as it stands on any later bar: its `id`, `instrument`, `side`, None for a bracket's leg until it arms, `kind`, `size`, None for a bracket's leg that closes the position it finds and for a value order, whose `filled` is what its amount bought, `filled`, `price`, `trigger`, `placed`, the Data's row it was placed at, `status` and `reason`, what the order log said last of it. Its status is `pending` while a market order waits for the next open and `resting` while a limit or a stop is on the book, then `filled`, `cancelled`, `expired`, as an order is once its time in force ends what is left of it, or `refused`, since a refused order is returned too, with its reason ([ADR 0010](Decisions.md)). `bracket` returns both legs as `.stop` and `.take_profit`, and `target` the list of its legs, refused ones included. Each of the account's events is an `Event` with its `kind`, `placed`, `armed`, `filled`, `clamped`, `refused`, `not_filled`, `expired` or `cancelled`, its `order`, None for a transfer's clamp, its `instrument`, its `bar`, its `side`, `size` and `price` as the order log gives them, and its `reason`.
+
+### An agent
+
+A trained agent runs as one environment of the spec it trained with on the Data's bars at the venue, from the Data's first bar to its last, recording as a run does: an SB3 model or policy is asked for its deterministic prediction, carrying a recurrent policy's state; a torch module is called on the observation as a tensor on its device, in eval mode with no gradient; and any other function is called on the observation, the first element of a tuple it returns being its action ([Specification](Specification.md#an-agent-in-a-backtest), [ADR 0039](Decisions.md)). The window reads the bars before a slice, so an agent decides at the slice's first close, and once the account holds nothing it is no longer asked.
+
+```python
+result = probatum.backtest(agent, test, "binance_perp", features=features)
+again = probatum.backtest(result.policy, test, "binance_perp")  # the same equity
+```
+
+`spec` is the agent spec, a path to its JSON or to a directory holding `spec.json`, or the environment the agent trained in, and an SB3 agent's own where it is left out. A feature function or a decode it trained with is passed again as `features` or `decode` and held to its probe, so a changed function is refused as a `probatum.SpecError`, as is a Data of other instruments, unless `instruments` names the slots in the agent's order, and a slot on another market than the agent trained on; an array of features is over the Data given. `result.policy` holds what it decided, each close's weights or each slot's size and offset for orders as placed, NaN where nothing was decided, and its frictionless baseline is the agent run again without costs, at once, as an agent cannot be copied to be played later. A run on bars that overlap the training span, at another venue or on another interval warns, and the provenance records the spec, the overlap and whether the venue is the one it trained at. `stop`, `take_profit`, `sizing` and `tolerance` are refused beside an agent, whose spec says how its actions trade, and an agent's settings beside any other policy.
+
+`probatum.save(agent, path, spec=None)` writes an agent into the directory `path` beside its spec as `spec.json`: a torch module as its state dict, `weights.pt`, and an SB3 model as its own zip, `agent.zip`, so no module is pickled. `spec` is read as `backtest` reads it.
+
+```python
+probatum.save(policy, "agents/ppo-1", spec=env)                # weights.pt and spec.json
+policy.load_state_dict(torch.load("agents/ppo-1/weights.pt"))
+result = probatum.backtest(policy, test, "binance_perp", spec="agents/ppo-1")
+```
 
 ### The strategy runner
 
@@ -879,7 +900,7 @@ print(book.fills.to_pandas()[["venue", "bar", "instrument", "price"]])
 
 `explain(item)` tells one fill's price or one order's life as text. A fill, a row of `fills`, reads as its reference, what its price was measured from; the half spread and the slippage it paid, each with its rate, and the impact with its model, none for a maker, in a takeover or at a delisting; how far the bar's range held its price, or that a delisting's close came before the bar opened; what the margin bound lifted and paid in, where it acted; and its fee, as a rate on its notional. Its price lines add up to its price, each to the decimals its reference sets, two from 1 up and enough for five significant figures below, its parts and its hold signed, a sale's costs negative. Money prints to the cent, or to five significant figures in a coin, rates in basis points to one decimal and to three significant figures below one, fees as percentages to three significant figures, and sizes to twelve significant figures. An order, a row of `orders` or an `Order` the run's account handed out, reads as a line for each of its events, its time, its kind and what the order log says, under a head from the event that placed it, or that refused it where none did. A Result tells the handles of its own run alone, so one loaded, unpickled or combined asks for a row of its order log, and a book's text names the venue, as its rows do.
 
-`baselines` sets the run beside three baselines on its own data and venue ([Specification](Specification.md#baselines)), a table of a row per row of the Result: `bar`, `time`, `cash`, the opening equity on every row; `buy_and_hold`, an equal share of the opening balance in each of the Data's instruments, bought as the quantity it buys at the instrument's first close and asked for at every close from then on, on the run's venue and paying its costs; and `frictionless`, the same policy on the run's venue with the costs of trading removed and every rule kept, which still pays what a forced close takes. An array plays again with its rows, sizing, tolerance and barriers, and a Strategy on a second copy `backtest` takes at the call, played once; a loop the caller stepped has no policy to play, and its `frictionless` is missing, as it is with a warning where the play raises. They are computed when first read, and `save` reads them first, while pickling plays no policy and carries them only once they are read. A book's are its accounts' summed as its equity is, each at its opening balance before its first row and at its last value after its end.
+`baselines` sets the run beside three baselines on its own data and venue ([Specification](Specification.md#baselines)), a table of a row per row of the Result: `bar`, `time`, `cash`, the opening equity on every row; `buy_and_hold`, an equal share of the opening balance in each of the Data's instruments, bought as the quantity it buys at the instrument's first close and asked for at every close from then on, on the run's venue and paying its costs; and `frictionless`, the same policy on the run's venue with the costs of trading removed and every rule kept, which still pays what a forced close takes. An array plays again with its rows, sizing, tolerance and barriers, and a Strategy on a second copy `backtest` takes at the call, played once; a loop the caller stepped has no policy to play, and its `frictionless` is missing, as it is with a warning where the play raises. They are computed when first read, an agent's as its backtest runs, since an agent cannot be copied to be played later, and `save` reads them first, while pickling plays no policy and carries them only once they are computed. A book's are its accounts' summed as its equity is, each at its opening balance before its first row and at its last value after its end.
 
 ```python
 print(binance.costs)                            # what trading on binance_perp cost
@@ -1144,7 +1165,7 @@ The two-sided interval holds zero while the one-sided probability is 0.899; both
 
 ## Capacity and costs
 
-`probatum.capacity(policy, data, venue, balances, sizing="weight", stop=None, take_profit=None, tolerance=0.0, risk_free=0.0)`, `probatum.cost_curve(policy, data, venue, scales=(0.0, 0.5, 1.0, 2.0, 4.0), ...)` and `probatum.breakeven_bps(policy, data, venue, ceiling=100.0, precision=0.05, ...)` run a policy again where only its balance or its costs differ, each run the `backtest` of it with the settings given, a Strategy copied afresh for each ([ADR 0045](Decisions.md), [Specification](Specification.md#capacity-and-costs)).
+`probatum.capacity(policy, data, venue, balances, sizing="weight", stop=None, take_profit=None, tolerance=0.0, risk_free=0.0, spec=None, features=None, decode=None, instruments=None)`, `probatum.cost_curve(policy, data, venue, scales=(0.0, 0.5, 1.0, 2.0, 4.0), ...)` and `probatum.breakeven_bps(policy, data, venue, ceiling=100.0, precision=0.05, ...)`, each taking an agent's settings as `backtest` does ([An agent](#an-agent)) run a policy again where only its balance or its costs differ, each run the `backtest` of it with the settings given, a Strategy copied afresh for each ([ADR 0045](Decisions.md), [Specification](Specification.md#capacity-and-costs)).
 
 - **Capacity.** Each of `balances` opens the account as `Venue.replace(balance=...)` would, a number or `{"spot": s, "margin": m}`, and one the account cannot open with, a single wallet's where the data trades spot and perpetuals or two for an inverse contract, is refused before any run. The `Capacity` it gives holds, a run a balance, `balances`, `total_return_pct`, `sharpe`, `impact` paid, `held`, the share of its orders the liquidity budget held, `cost_bps`, the round-trip cost its fills paid in basis points, and `turnover`, a year of what its fills traded over its mean equity, and prints as a table. A weight grows with the balance and a quantity does not, so `sizing="quantity"` is refused. Once the budget holds most of its orders a book trades another, slower path, and its return can move either way.
 - **Cost sweeps.** Each of `scales` multiplies every cost the venue charges for trading together, each fee rate above 0, maker and taker, the spread, fixed or estimated, the slippage and the impact coefficient, where emsl's sweep set the fee alone; a rebate, a fee rate below 0, the liquidity budget, funding and a liquidation fee the venue sets stay, and one it does not set is the taker rate and moves as it does. The `CostCurve` holds, a run a scale, `scales`, `cost_bps`, `total_return_pct`, `sharpe`, `num_trades`, `fees`, `spread`, `slippage`, `impact` and `turnover`, and prints as a table. A venue that charges none of the four on the data's instruments is refused.
@@ -1367,7 +1388,7 @@ Every error probatum raises is one of its own classes and the built-in it means,
 | `probatum.ProbatumValueError` | `ValueError` | A wrong value, the four kinds below among them. |
 | `probatum.DataError` | `ValueError` | A wrong value in bars, frames, the clock, features, funding or a series an indicator reads. |
 | `probatum.VenueError` | `ValueError` | A wrong value in a venue's settings, and any wrong setting in a preset's file. |
-| `probatum.SpecError` | `ValueError` | An agent whose spec does not match the run it is given; nothing raises it yet. |
+| `probatum.SpecError` | `ValueError` | An agent whose spec does not match the run it is given: one that carries no spec, a spec of another schema, a Data of other instruments, and a feature function or a decode that is not the one it trained with. |
 | `probatum.LookaheadError` | `ValueError` | A policy the causality check of `search` or `validate` finds deciding on bars that had not closed, or a model's features, predictions or `to_weights` of them that `validate` finds reading them. |
 | `probatum.ProbatumTypeError` | `TypeError` | An argument of the wrong type, `PolicyError` among them. |
 | `probatum.PolicyError` | `TypeError` | A policy `backtest`, `search` or `validate` cannot run as given: a class for an instance, and for a search or a validation an instance for its class, a class that is no Strategy or a function that takes no data, a model that fits, an object of no kind it reads, an array it cannot read as decisions, a trial that decides in another kind than the trials before it, and a policy the workers cannot carry. |
@@ -1375,7 +1396,7 @@ Every error probatum raises is one of its own classes and the built-in it means,
 | `probatum.ProbatumIndexError` | `IndexError` | A position past the end of a table. |
 | `probatum.ProbatumAttributeError` | `AttributeError` | An attribute an object does not have, such as one instrument's `close` on a universe, which `hasattr` reads as missing. |
 | `probatum.ProbatumRuntimeError` | `RuntimeError` | A search or a validation that cannot go on: its workers lost, every trial of a search or every path of a validation failed, or its winner run again not matching its trial, and `ProbatumNotImplementedError`, as `NotImplementedError` is a `RuntimeError`. |
-| `probatum.ProbatumNotImplementedError` | `NotImplementedError` | A Strategy that writes no `next`, an agent, which `backtest` does not run yet, and the transitions level, which it does not record yet. |
+| `probatum.ProbatumNotImplementedError` | `NotImplementedError` | A Strategy that writes no `next`, and the transitions level, which `backtest` does not record yet. |
 | `probatum.MissingDependency` | `ImportError` | A package a call needs that is not installed, named with the line that installs it. |
 
 A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which follows what arrived: a value of a type the argument does not take raises a `TypeError`, and one of its type that the call cannot take a `ValueError`, so `tolerance="0.01"` is a `ProbatumTypeError` and `tolerance=-0.01` a `ProbatumValueError`. So a Data's wrong value is a `DataError` and its wrong type a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a Venue built in Python splits the same way between `VenueError` and `ProbatumTypeError`, while every wrong setting in a preset's file is a `VenueError`. A policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
