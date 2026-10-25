@@ -821,6 +821,44 @@ def test_an_environment_writes_its_observations_only_into_rows_of_its_own_shape(
             env.observe(out)
 
 
+def test_an_environment_over_a_reporting_batch_hands_back_its_engine_s_records():
+    clock = np.arange(len(universe_pair()), dtype=np.int64) * HOUR
+    env   = environment(probatum.Batch(
+        universe_pair(),
+        2,
+        market = "perp",
+        report = True,
+        times  = clock,
+    ))
+    env.reset(np.ones(2, dtype=bool), np.array([1, 1]), np.array([[0, 1], [0, 1]]))
+    env.step(np.array([[0.5, -0.5], [0.0, 0.0]]), np.ones(2, dtype=bool))
+    held = env.tables(0, 1, ["A", "B"])
+
+    assert set(held) == {"ledger", "holdings", "fills", "orders", "trades"}
+    assert len(env.equity_curve(1)) == 1 and env.is_bust(0) is False
+    assert set(env.stats(0, 8760.0)) >= {"sharpe", "max_drawdown_pct"}
+
+    with pytest.raises(ProbatumValueError, match=re.escape("env: 2 of 2 environments; "
+                                                           "give one from 0 to 1")):
+        env.tables(2, 1, ["A", "B"])
+
+    quiet = environment(probatum.Batch(universe_pair(), 2))
+
+    assert quiet.tables(0, 0, ["A", "B"]) is None and quiet.equity_curve(0) is None
+
+    lean = environment(probatum.Batch(
+        universe_pair(),
+        1,
+        market = "perp",
+        report = True,
+        record = "account",
+        times  = clock,
+    ))
+    lean.reset(np.ones(1, dtype=bool), np.array([1]), np.array([[0, 1]]))
+
+    assert set(lean.tables(0, 1, ["A", "B"])) == {"ledger", "trades"}
+
+
 @pytest.mark.parametrize("script, says", [
     ({0: [("hold", {})]}, '"hold" is not a verb'),
     ({0: [("buy", {"size": 1.0, "price": 99.0})]}, "buy takes no price"),

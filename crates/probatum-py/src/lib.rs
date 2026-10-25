@@ -3115,6 +3115,7 @@ impl Batch {
         liquidation = "takeover",
         backstop = None,
         liquidation_fee = None,
+        record = "full",
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3162,7 +3163,9 @@ impl Batch {
         liquidation: &str,
         backstop: Option<f64>,
         liquidation_fee: Option<f64>,
+        record: &str,
     ) -> PyResult<Batch> {
+        let level = parse_record(record, report)?;
         let (series, config, universe, units) = build_series(
             &candles,
             market,
@@ -3243,7 +3246,8 @@ impl Batch {
             EnvBatch::with_configs(series, &configs)
         } else {
             EnvBatch::new(num_envs, series, config)
-        };
+        }
+        .recording(level);
 
         Ok(Batch {
             inner,
@@ -3668,6 +3672,8 @@ struct Environment {
     // the shared series' rows and instruments, which a start and a slot are held to
     rows: usize,
     width: usize,
+    // how the batch's engines count their sizes and prices, which their tables read
+    units: Units,
 }
 
 #[pymethods]
@@ -3794,7 +3800,12 @@ impl Environment {
             threads,
         };
         let inner = BarEnvironment::new(batch.inner.take(), settings);
-        Ok(Environment { inner, rows, width })
+        Ok(Environment {
+            inner,
+            rows,
+            width,
+            units: batch.units,
+        })
     }
 
     /// Number of environments.
@@ -3812,6 +3823,64 @@ impl Environment {
     #[getter]
     fn threads(&self) -> usize {
         self.inner.threads()
+    }
+
+    /// The ledger, holdings, fills, order log and round trips environment `env`'s
+    /// engine recorded, as `Engine.tables` gives them, every bar counted from `start`
+    /// and each instrument by its name in `names`, or None when its batch did not
+    /// report.
+    fn tables<'py>(
+        &self,
+        py: Python<'py>,
+        env: usize,
+        start: usize,
+        names: Vec<String>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let engine = self.engine(env)?;
+        let tables = py.detach(|| table::tables(engine, self.units, start, &names));
+        let Some(built) = tables? else {
+            return Ok(None);
+        };
+        let out = PyDict::new(py);
+        for (name, built) in built {
+            out.set_item(name, Bound::new(py, built)?)?;
+        }
+        Ok(Some(out))
+    }
+
+    /// Environment `env`'s statistics, as `Engine.stats` gives them, or None when its
+    /// batch did not report.
+    #[pyo3(signature = (env, periods_per_year = 365.0, risk_free = 0.0))]
+    fn stats<'py>(
+        &self,
+        py: Python<'py>,
+        env: usize,
+        periods_per_year: f64,
+        risk_free: f64,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        annualised(periods_per_year, risk_free)?;
+        match self.engine(env)?.stats(periods_per_year, risk_free) {
+            Some(stats) => Ok(Some(stats_to_dict(py, &stats)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Environment `env`'s recorded equity, one point a step, or None when its batch
+    /// did not report.
+    fn equity_curve<'py>(
+        &self,
+        py: Python<'py>,
+        env: usize,
+    ) -> PyResult<Option<Bound<'py, PyArray1<f64>>>> {
+        Ok(self
+            .engine(env)?
+            .reporter()
+            .map(|reporter| PyArray1::from_slice(py, reporter.equity_curve())))
+    }
+
+    /// Whether environment `env`'s account went bust, as `Engine.is_bust` says.
+    fn is_bust(&self, env: usize) -> PyResult<bool> {
+        Ok(self.engine(env)?.is_bust())
     }
 
     /// Start an episode in each environment `mask` names, at its row of `starts`, with
@@ -4018,6 +4087,19 @@ impl Environment {
         out.set_item("weights", grid(weights)?)?;
         out.set_item("positions", grid(positions)?)?;
         Ok(out)
+    }
+}
+
+impl Environment {
+    /// Environment `env`'s engine, refused where there is no such environment.
+    fn engine(&self, env: usize) -> PyResult<&BarEngine> {
+        let n = self.inner.len();
+        self.inner.engines().get(env).ok_or_else(|| {
+            ProbatumValueError::new_err(format!(
+                "env: {env} of {n} environments; give one from 0 to {}",
+                n.saturating_sub(1)
+            ))
+        })
     }
 }
 
