@@ -40,6 +40,9 @@ pub struct Settings {
     /// each, or None for the candles.
     pub features: Option<Vec<f64>>,
     pub width: usize,
+    /// Each feature's mean and deviation, which a market value is written over, or
+    /// None to write it as it is.
+    pub scale: Option<Vec<(f64, f64)>>,
     /// Each instrument's first printed bar with every feature finite, None where it
     /// has none.
     pub onsets: Vec<Option<usize>>,
@@ -246,6 +249,15 @@ fn advance(s: &Settings, engine: &mut Engine, episode: &mut Episode) -> f64 {
     reward
 }
 
+/// Feature `g`'s market value `x` as the observation writes it, over the feature's
+/// mean and deviation where it is normalised (Specification, The observation).
+fn scaled(s: &Settings, g: usize, x: f64) -> f32 {
+    match &s.scale {
+        Some(scale) => ((x - scale[g].0) / scale[g].1) as f32,
+        None => x as f32,
+    }
+}
+
 /// One environment's observation, written into `row` (Specification, The
 /// observation).
 fn observed(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
@@ -265,7 +277,7 @@ fn observed(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
                 if printed(&bars[r * n + i]) {
                     let at = ((r - first) * k + j) * f;
                     for g in 0..f {
-                        row[at + g] = values[(r * n + i) * f + g] as f32;
+                        row[at + g] = scaled(s, g, values[(r * n + i) * f + g]);
                     }
                 }
             }
@@ -285,12 +297,12 @@ fn observed(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
             let bar = &bars[r * n + i];
             if printed(bar) {
                 let at = ((r - first) * k + j) * 5;
-                row[at] = (bar.open / last) as f32;
-                row[at + 1] = (bar.high / last) as f32;
-                row[at + 2] = (bar.low / last) as f32;
-                row[at + 3] = (bar.close / last) as f32;
+                row[at] = scaled(s, 0, bar.open / last);
+                row[at + 1] = scaled(s, 1, bar.high / last);
+                row[at + 2] = scaled(s, 2, bar.low / last);
+                row[at + 3] = scaled(s, 3, bar.close / last);
                 row[at + 4] = if mean > 0.0 {
-                    (bar.volume / mean) as f32
+                    scaled(s, 4, bar.volume / mean)
                 } else {
                     0.0
                 };
@@ -628,6 +640,7 @@ mod tests {
             window,
             features: None,
             width: 0,
+            scale: None,
             onsets: vec![Some(0)],
             slots: 1,
             max_leverage: 1.0,
@@ -922,6 +935,55 @@ mod tests {
             &[0.0, 0.0, 100.0, 101.0, 210.0, 211.0, 200.0, 201.0]
         );
         assert_eq!((row[8 + 3], row[12 + 3]), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_normalised_market_value_is_written_over_its_mean_and_deviation() {
+        let rows = vec![
+            vec![flat(100.0), flat(50.0)],
+            vec![flat(100.0), ABSENT],
+            vec![flat(100.0), flat(50.0)],
+        ];
+        let values = (0..3)
+            .flat_map(|t| {
+                (0..2).flat_map(move |i| (0..2).map(move |g| (100 * t + 10 * i + g) as f64))
+            })
+            .collect();
+        let featured = Settings {
+            features: Some(values),
+            width: 2,
+            scale: Some(vec![(100.0, 50.0), (1.0, 4.0)]),
+            onsets: vec![Some(0), Some(0)],
+            slots: 2,
+            ticks: vec![0.1, 0.1],
+            ..settings(2)
+        };
+        let batch = EnvBatch::new(1, universe(rows, &[Market::Perp; 2], &[None, None]), perp());
+        let mut env = Environment::new(batch, featured);
+        env.reset(&[true], &[2], &[1, 0]);
+        // the bar the second slot never printed stays 0.0, every other cell is scaled
+        assert_eq!(
+            &observed(&env)[..8],
+            &[0.0, 0.0, 0.0, 25.0, 2.2, 52.5, 2.0, 50.0]
+        );
+        // the candles' five columns, a volume of a window that traded nothing left 0.0
+        let quiet = bar(100.0, 100.0, 100.0, 100.0, 0.0);
+        let candled = Settings {
+            scale: Some(vec![
+                (1.0, 0.5),
+                (1.0, 0.25),
+                (0.5, 0.5),
+                (1.0, 1.0),
+                (1.0, 2.0),
+            ]),
+            ..settings(1)
+        };
+        let row = observed(&opened(
+            vec![quiet, bar(98.0, 102.0, 96.0, 100.0, 0.0)],
+            candled,
+            1,
+        ));
+        assert_eq!(&row[..5], &[-0.04, 0.08, 0.92, 0.0, 0.0]);
     }
 
     #[test]

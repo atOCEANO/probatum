@@ -3757,6 +3757,7 @@ impl Environment {
             window,
             features,
             width: f,
+            scale: None,
             onsets,
             slots,
             max_leverage,
