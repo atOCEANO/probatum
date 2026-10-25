@@ -1279,6 +1279,18 @@ The decision at a step is a [Target](#target) of each shown slot's weight, with 
 
 **Worked example.** With SB3's statistics of a mean of 1.0, a variance of 0.04, an epsilon of 1e-8 and a clip of 10, an observation value of 9.0 is given to the agent as `min((9.0 - 1.0) / sqrt(0.04 + 1e-8), 10) = 10.0`, and one of 1.5 as `0.5 / sqrt(0.04000001) = 2.4999998` once rounded to float32.
 
+### Tensors on a device
+
+`probatum.torch.TensorEnv(env, device="cpu", resident=False)` wraps the environment `probatum.env` returns and hands out what each `reset` and `step` returns as torch tensors on `device`: the observation as float32, flat or as a dict of its two blocks, the rewards as float64 and the terminated and truncated flags as booleans, each the numpy path's to the bit; the info stays as the environment gives it ([ADR 0040](Decisions.md)).
+- Actions are a tensor on any device or anything numpy reads, and reach the environment on the host, one synchronisation a step.
+- On a CUDA device the observation is written into the first or the second of two pinned host buffers in turn, and the rewards and flags are copied into pinned buffers of their own; each is copied to the device without blocking the host, and an event recorded after a turn's copies marks when its buffers are free, which the step after next waits for before writing them again. Every tensor handed out is a fresh device tensor, so no later step changes one. On any other device the copies are synchronous.
+- With `resident=True` the market block is worked on the device. At the wrap the market's cells are copied there once: with features, each bar's cells as the observation writes them, over the scale and rounded to float32, and 0.0 where its instrument did not print; with the candles, the bars in float64 and each bar's mean volume over the printed bars of the window ending at it, summed in order from the window's first bar, as the engine sums it. At each step the host gives each environment's row `t`, its slots and its account block, and the device gathers rows `t - W + 1` to `t` of each slot: with the candles, each bar's open, high, low and close over the close at `t` and its volume over the mean at `t`, 0.0 where that mean is not above zero, each over the scale in float64 and then rounded to float32. Every cell of a bar its instrument did not print, and of a slot the account block says is not shown, is 0.0.
+- The resident mode is refused under `same_step` autoreset, whose final observations are written on the host.
+- A device given without an index, such as `"cuda"`, is the one current at the wrap, which every step's tensors are handed out on.
+- The wrap takes the environment over: from then on it writes into TensorEnv's buffers whatever its `copy`, which its provenance keeps as given.
+
+**Worked example.** One step of 4,096 environments of ten instruments, eight features and a 64-bar window copies `4,096 x (64 x 10 x 8 + 4 x 10 + 4) x 4 = 84,606,976` bytes of observation to the device on the host path, and `4,096 x (8 + 10 x 8 + 44 x 4) = 1,081,344` bytes in the resident mode: each environment's row and its ten slots as 64-bit integers, and its 44 account values.
+
 <br>
 <br>
 
