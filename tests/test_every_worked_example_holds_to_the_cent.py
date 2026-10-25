@@ -1699,6 +1699,11 @@ def test_a_feature_of_3_averaging_0_5_with_a_deviation_of_2_is_written_as_1_25()
     assert seen.market(0) == [[1.25]]
 
 
+def test_sb3_s_statistics_give_an_agent_10_for_9_and_2_4999998_for_1_5():
+    assert environment.sb3_normalised(9.0, 1.0, 0.04, 1e-8, 10.0) == 10.0
+    assert round(environment.sb3_normalised(1.5, 1.0, 0.04, 1e-8, 10.0), 7) == 2.4999998
+
+
 def test_instrument_0_s_first_probe_bar_closes_at_99_846418():
     (r, _, _, _), _ = environment.draws(1, 4)
 

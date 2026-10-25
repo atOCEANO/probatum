@@ -109,6 +109,12 @@ def moments(columns, features, window, shown):
     return out
 
 
+def sb3_normalised(x, mean, var, epsilon, clip):
+    """An agent in a backtest: an observation value `x` as SB3's statistics normalise
+    it, clipped and then rounded to float32."""
+    return float(np.float32(min(max((x - mean) / math.sqrt(var + epsilon), -clip), clip)))
+
+
 def draws(x, count):
     """The agent spec: `count` draws of the probe generator after state `x`, and the
     state it leaves."""
