@@ -246,35 +246,11 @@ class Venue:
     def __repr__(self):
         # as the code that builds it: a variant of the preset it came from, or a venue
         # built by hand, each setting that differs from where it started
-        source = self._source
-        start  = (venues._venue(source) if source is not None else _plain())._view()
-        shown  = []
-
-        for setting, value in self._view().items():
-            before = start[setting]
-            if value == before:
-                continue
-
-            if setting in ("kinds", "instruments") and source is not None:
-                changed = {}
-                for key in {**before, **value}:
-                    table, was = value.get(key), before.get(key)
-                    if table == was:
-                        continue
-                    if isinstance(table, dict) and isinstance(was, dict):
-                        # replace merges a table key by key, so a key the variant
-                        # dropped is shown as None, which drops it again
-                        table = {**{name: None for name in was if name not in table},
-                                 **table}
-                    changed[key] = table
-                value = changed
-
-            shown.append(f"{setting}={value!r}")
-
-        if source is None:
+        shown = [f"{setting}={_code(value)}" for setting, value in _changes(self).items()]
+        if self._source is None:
             return f"probatum.Venue({', '.join(shown)})"
 
-        head = f"probatum.venues.{source}"
+        head = f"probatum.venues.{self._source}"
         return f"{head}.replace({', '.join(shown)})" if shown else head
 
 
@@ -541,6 +517,65 @@ def _settlement(instruments, markets):
 def _plain():
     """The venue built by hand with every setting left out."""
     return Venue()
+
+
+def _code(value):
+    """``value`` as the code that gives it, as repr writes it but for a float that is
+    not finite, which repr writes as no name Python knows."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"float({str(value)!r})"
+
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{_code(key)}: {_code(item)}"
+                               for key, item in value.items()) + "}"
+
+    if isinstance(value, list):
+        return "[" + ", ".join(_code(item) for item in value) + "]"
+
+    if isinstance(value, tuple):
+        return "(" + ", ".join(_code(item) for item in value) + ("," if len(value) == 1
+                                                                 else "") + ")"
+
+    return repr(value)
+
+
+def _changes(venue):
+    """Each setting of ``venue`` that differs from where it started, the preset it was
+    made a variant of or the venue built by hand with every setting left out, as its
+    repr shows them."""
+    source = venue._source
+    start  = (venues._venue(source) if source is not None else _plain())._view()
+    out    = {}
+
+    for setting, value in venue._view().items():
+        before = start[setting]
+        if value == before:
+            continue
+
+        if setting in ("kinds", "instruments") and source is not None:
+            changed = {}
+            for key in {**before, **value}:
+                table, was = value.get(key), before.get(key)
+                if table == was:
+                    continue
+
+                if isinstance(table, dict) and isinstance(was, dict):
+                    # replace merges a table key by key and its fees side by side, so a
+                    # key or a fee side the variant dropped is shown as None, which
+                    # drops it again
+                    table = {**{name: None for name in was if name not in table},
+                             **table}
+                    fees, held = table.get("fees"), was.get("fees")
+                    if isinstance(fees, dict) and isinstance(held, dict):
+                        table["fees"] = {**{side: None for side in held
+                                            if side not in fees}, **fees}
+                changed[key] = table
+
+            value = changed
+
+        out[setting] = value
+
+    return out
 
 
 def _day(text):

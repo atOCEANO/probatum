@@ -5,12 +5,14 @@ The environment). This module imports Gymnasium, which nothing a backtest loads 
 (ADR 0044), and registers the environment as it loads."""
 
 import collections.abc
+import copy
 import inspect
 import math
 
 import numpy as np
 
-from . import _assumptions, _probatum
+from . import _agent, _assumptions, _probatum
+from ._agent import STATE, State
 from ._backtest import _annualised, _kind, _markets, _number, _real
 from ._data import Data, _chosen, _count, _when, features as _features
 from ._errors import (DataError, MissingDependency, ProbatumKeyError,
@@ -41,8 +43,6 @@ MODES   = {
     "same_step": gymnasium.vector.AutoresetMode.SAME_STEP,
     "disabled":  gymnasium.vector.AutoresetMode.DISABLED,
 }
-STATE   = ("equity", "previous_equity", "log_return", "drawdown", "leverage", "turnover",
-           "fees", "funding", "liquidated", "weights", "positions")
 # the Batch's setting that each cost an environment draws replaces
 DRAWN   = {
     "maker":    "fee_maker_per_env",
@@ -83,40 +83,22 @@ def env(data, venue, window=64, features=None, layout="flat", max_leverage=1.0,
     state that returns each environment's. An episode ends at a liquidation or at the
     floor, and is cut at the last bar or after ``episode_length`` steps.
 
-    ``costs`` maps ``"maker"``, ``"taker"``, ``"slippage"`` and ``"impact"`` to the
+    ``normalise=True`` writes each market feature over its mean and deviation across
+    every value the observations of ``data`` hold, which the environment's
+    ``agent_spec`` keeps beside everything a backtest needs to show an agent what it saw
+    here. ``costs`` maps ``"maker"``, ``"taker"``, ``"slippage"`` and ``"impact"`` to the
     ``(low, high)`` range each environment draws its own from once; ``threads`` is the
     number of threads a step runs on, by default one for each 2^17 floats its
     observations hold and at most half the CPUs, no result depending on it;
     ``autoreset`` is Gymnasium's mode, ``"next_step"``, ``"same_step"`` or
     ``"disabled"``; ``copy=False`` hands out one observation array that the next step
     writes over; and ``seed`` names every stream the environments draw from, a fresh one
-    where it is None. Not done yet are ``normalise=True`` and ``record="transitions"``.
+    where it is None. Not done yet is ``record="transitions"``.
     """
     return VectorEnv(**locals())
 
 
 SIGNATURE = inspect.signature(env)
-
-
-class State:
-    """What a reward or a decode reads of every environment, as its last step or its
-    reset left it (Specification, Reward and termination): ``(B,)`` arrays of
-    ``equity``, ``previous_equity``, ``log_return``, ``drawdown``, ``leverage``,
-    ``turnover``, ``fees``, ``funding`` and ``liquidated``, and ``(B, N)`` arrays of
-    each slot's ``weights`` and ``positions``, all read-only."""
-
-    __slots__ = STATE
-
-
-    def __init__(self, arrays):
-        for name in STATE:
-            array = arrays[name]
-            array.flags.writeable = False
-            setattr(self, name, array)
-
-
-    def __repr__(self):
-        return f"State({len(self.equity)} environments)"
 
 
 class VectorEnv(gymnasium.vector.VectorEnv):
@@ -223,6 +205,9 @@ class VectorEnv(gymnasium.vector.VectorEnv):
                             f"shown a whole window past the first bar its features are "
                             f"finite on; give a shorter window, or more bars")
 
+        scale = (_agent._moments(values, run.candles, printed, shown, window)
+                 if given["normalise"] else None)
+
         ranges = _ranges(given["costs"])
         drawn  = {}
         if ranges:
@@ -256,6 +241,7 @@ class VectorEnv(gymnasium.vector.VectorEnv):
             episode_length = None if length is None else int(length),
             floor          = 0.01 * balance,
             threads        = None if threads is None else int(threads),
+            scale          = scale,
         )
 
         lows   = np.where([spot[0]] * k if sampled else spot, 0.0, -1.0)
@@ -272,15 +258,16 @@ class VectorEnv(gymnasium.vector.VectorEnv):
                                                 np.float32),
             })
 
-        kind = given["actions"]
+        kind    = given["actions"]
+        choices = np.where(lows == 0.0, 2, 3)
+
         if kind == "box":
             acted = gymnasium.spaces.Box(lows.astype(np.float32), 1.0, (k,), np.float32)
         elif kind == "simplex":
             acted = gymnasium.spaces.Box(0.0, 1.0, (k + 1,), np.float32)
         elif kind == "discrete":
-            choices = np.where(lows == 0.0, 2, 3)
-            acted   = (gymnasium.spaces.Discrete(int(choices[0])) if k == 1
-                       else gymnasium.spaces.MultiDiscrete(choices))
+            acted = (gymnasium.spaces.Discrete(int(choices[0])) if k == 1
+                     else gymnasium.spaces.MultiDiscrete(choices))
         else:
             acted = gymnasium.spaces.Box(np.tile([-1.0, 0.0], (k, 1)).astype(np.float32),
                                          1.0, (k, 2), np.float32)
@@ -326,6 +313,19 @@ class VectorEnv(gymnasium.vector.VectorEnv):
                                  _annualised(data), seed=seed, settings=_settings(given))
         provenance.pop("risk_free")
         self.provenance = {**provenance, "streams": streams}
+        self._spec      = _agent._spec(given, data, held, names, provenance["markets"],
+                                       k, sampled, lows,
+                                       choices if kind == "discrete" else None, size,
+                                       (window, k, f), scale)
+
+
+    @property
+    def agent_spec(self):
+        """What a backtest needs to show an agent what it saw here and to read its
+        outputs as they were read, as a JSON document: the inputs, the observation, the
+        outputs, the venue and the training span (Specification, The agent spec). The
+        first read calls a custom decode on its probe actions, once."""
+        return copy.deepcopy(_agent._referenced(self._spec, self._decode))
 
 
     def reset(self, *, seed=None, options=None):
@@ -584,6 +584,11 @@ class Env(gymnasium.Env):
         return self._batch.provenance
 
 
+    @property
+    def agent_spec(self):
+        return self._batch.agent_spec
+
+
     def reset(self, *, seed=None, options=None):
         """Start an episode and return its first observation and its info; ``seed``
         starts the environment's stream again from that seed."""
@@ -647,10 +652,6 @@ def _checked(given):
     if given["sample"] is not None:
         _counted("sample", given["sample"], 1, "instruments")
     _flag("normalise", given["normalise"])
-    if given["normalise"]:
-        raise ProbatumNotImplementedError("normalise: True, which an environment does "
-                                          "not do yet; scale the features in their "
-                                          "function")
 
     tolerance = given["tolerance"]
     if not (_number(tolerance) and tolerance >= 0.0):
