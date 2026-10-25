@@ -79,15 +79,14 @@ except Exception:
 
 
 def __getattr__(name):
-    # rl, env and sb3 are imported when first reached rather than with the package,
-    # and left out of __all__ so a star import reaches none of them, since they import
-    # Gymnasium, which a backtest loads only to run an agent (ADR 0044), and sb3
-    # stable_baselines3, which almost no install has. import_module rather than
+    # rl, env, sb3 and torch are imported when first reached rather than with the
+    # package, and left out of __all__ so a star import reaches none of them, since they
+    # import Gymnasium, which a backtest loads only to run an agent (ADR 0044), and sb3
+    # and torch the frameworks a user brings. import_module rather than
     # `from . import rl`, which resolves the name through getattr on this very module
     # and recurses until the stack ends
     import importlib
-
-    if name in ("rl", "sb3"):
+    if name in ("rl", "sb3", "torch"):
         return importlib.import_module(f".{name}", __name__)
 
     if name == "env":

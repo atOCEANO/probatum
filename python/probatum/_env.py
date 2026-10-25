@@ -355,6 +355,7 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         self._start   = np.full(n, starts[0] if record is None else first, dtype=np.int64)
         self._slots   = np.tile(np.arange(k, dtype=np.int64), (n, 1))
         self._out     = np.zeros((n, size), dtype=np.float32)
+        self._account = False
         self._ended   = None
         self._state   = None
         self._ranges  = ranges
@@ -511,7 +512,11 @@ class VectorEnv(gymnasium.vector.VectorEnv):
 
 
     def _observed(self):
-        """The observations, in an array of their own unless ``copy`` is off."""
+        """The observations, in an array of their own unless ``copy`` is off, or the
+        account blocks alone where a device writes the market block itself."""
+        if self._account:
+            return self._inner.observe_account(self._out)
+
         out = np.empty_like(self._out) if self._copy else self._out
         self._inner.observe(out)
         if self._layout == "flat":
