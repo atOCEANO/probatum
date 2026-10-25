@@ -4010,6 +4010,92 @@ impl Environment {
         Ok(out)
     }
 
+    /// The floats of one environment's account block, the observation's last.
+    #[getter]
+    fn account_size(&self) -> usize {
+        self.inner.account_size()
+    }
+
+    /// Write every environment's account block alone into `out`, a writable
+    /// C-contiguous `(num_envs, account_size)` float32 array, and return it.
+    fn observe_account<'py>(
+        &self,
+        out: Bound<'py, PyArray2<f32>>,
+    ) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let (n, size) = (self.inner.len(), self.inner.account_size());
+        if out.shape() != [n, size] || !out.is_c_contiguous() {
+            return Err(ProbatumValueError::new_err(format!(
+                "out: an array of shape {:?}, C-contiguous {}; give a C-contiguous \
+                 ({n}, {size})",
+                out.shape(),
+                out.is_c_contiguous()
+            )));
+        }
+        {
+            let mut written = out.try_readwrite().map_err(|_| {
+                ProbatumValueError::new_err("out: a read-only array; give a writable one")
+            })?;
+            let cells = written.as_slice_mut().map_err(|_| {
+                ProbatumValueError::new_err("out: a strided array; give a C-contiguous one")
+            })?;
+            self.inner.observe_account(cells);
+        }
+        Ok(out)
+    }
+
+    /// Each environment's row of the series, the bar its engine stands at, as
+    /// `(num_envs,)`.
+    fn ticks<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i64>> {
+        PyArray1::from_vec(
+            py,
+            self.inner.ticks().into_iter().map(|t| t as i64).collect(),
+        )
+    }
+
+    /// What a device needs to write the market block itself: with features, each
+    /// bar's `cells` as the observation writes them, `(rows, width, F)` float32; with
+    /// the candles, the printed `candles` as `(rows, width, 5)` float64 and each bar's
+    /// window mean volume as `means`, `(rows, width)`; and the `scale`, each feature's
+    /// mean and deviation, or None.
+    fn market<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        if self.inner.is_empty() {
+            return Err(ProbatumValueError::new_err(
+                "market: an environment of no engines, and so no bars; build it from a \
+                 batch that holds its engines",
+            ));
+        }
+        let out = PyDict::new(py);
+        let shape = |values: usize| (self.rows, self.width, values);
+        match self.inner.cells() {
+            Some(cells) => {
+                let f = cells.len() / (self.rows * self.width);
+                let array = Array3::from_shape_vec(shape(f), cells)
+                    .map_err(|e| ProbatumValueError::new_err(e.to_string()))?;
+                out.set_item("cells", PyArray3::from_owned_array(py, array))?;
+                out.set_item("candles", py.None())?;
+                out.set_item("means", py.None())?;
+            }
+            None => {
+                let bars: Vec<f64> = self
+                    .inner
+                    .candles()
+                    .iter()
+                    .flat_map(|bar| [bar.open, bar.high, bar.low, bar.close, bar.volume])
+                    .collect();
+                let array = Array3::from_shape_vec(shape(5), bars)
+                    .map_err(|e| ProbatumValueError::new_err(e.to_string()))?;
+                let means =
+                    Array2::from_shape_vec((self.rows, self.width), self.inner.window_means())
+                        .map_err(|e| ProbatumValueError::new_err(e.to_string()))?;
+                out.set_item("cells", py.None())?;
+                out.set_item("candles", PyArray3::from_owned_array(py, array))?;
+                out.set_item("means", PyArray2::from_owned_array(py, means))?;
+            }
+        }
+        out.set_item("scale", self.inner.settings().scale.clone())?;
+        Ok(out)
+    }
+
     /// Whether each slot of each environment is shown, as `(num_envs, k)`.
     fn shown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<bool>>> {
         let (n, k) = (self.inner.len(), self.inner.settings().slots);

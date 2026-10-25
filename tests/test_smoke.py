@@ -821,6 +821,48 @@ def test_an_environment_writes_its_observations_only_into_rows_of_its_own_shape(
             env.observe(out)
 
 
+def test_an_environment_writes_its_account_blocks_alone_and_its_market_for_a_device():
+    pair = universe_pair()
+    env  = environment(probatum.Batch(pair, 2))
+    env.reset(np.ones(2, dtype=bool), np.array([1, 2]), np.array([[0, 1], [1, 0]]))
+    whole = env.observe(np.zeros((2, env.size), dtype=np.float32))
+    alone = env.observe_account(np.ones((2, env.account_size), dtype=np.float32))
+
+    assert env.account_size == 12 and np.array_equal(alone, whole[:, 10:])
+    assert env.ticks().tolist() == [1, 2]
+
+    held = env.market()
+    assert held["cells"] is None and held["scale"] is None
+    # a window of one bar, whose mean volume is its own, NaN where it did not print
+    np.testing.assert_array_equal(held["candles"], pair)
+    np.testing.assert_array_equal(held["means"], pair[:, :, 4])
+
+    values   = np.arange(12, dtype=np.float64).reshape(3, 2, 2)
+    featured = probatum._probatum.Environment(
+        probatum.Batch(pair, 1), 1, [0, 0], 2, [0.1, 0.1],
+        features = values,
+        scale    = [(1.0, 2.0), (0.0, 1.0)],
+    ).market()
+
+    cells = featured["cells"]
+    assert cells.dtype == np.float32 and featured["candles"] is None
+    assert cells[1, 1].tolist() == [0.0, 0.0] and cells[2, 0].tolist() == [3.5, 9.0]
+    assert featured["scale"] == [(1.0, 2.0), (0.0, 1.0)]
+
+    for out in (np.zeros((env.account_size, 2), dtype=np.float32),
+                np.zeros((2, env.account_size), dtype=np.float32, order="F")):
+        with pytest.raises(probatum.ProbatumValueError, match="out: "):
+            env.observe_account(out)
+
+    # a batch an environment took holds no engines, and so no bars
+    taken = probatum.Batch(pair, 2)
+    environment(taken)
+
+    with pytest.raises(probatum.ProbatumValueError, match="^market: an environment of "
+                                                          "no engines"):
+        environment(taken).market()
+
+
 def test_an_environment_over_a_reporting_batch_hands_back_its_engine_s_records():
     clock = np.arange(len(universe_pair()), dtype=np.int64) * HOUR
     env   = environment(probatum.Batch(
