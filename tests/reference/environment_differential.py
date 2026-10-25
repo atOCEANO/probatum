@@ -154,17 +154,18 @@ def compare(cases, seed):
     inverse = random.Random(f"inverse environment {seed}")
 
     reached = collections.Counter({
-        "liquidated":           0,
-        "cut at its length":    0,
-        "cut at the last bar":  0,
-        "a hidden slot":        0,
-        "an order resting":     0,
-        "features":             0,
-        "a sample":             0,
-        "the sharpe reward":    0,
-        "an own reward":        0,
-        "a decode of its own":  0,
-        "an inverse perpetual": 0,
+        "liquidated":               0,
+        "cut at its length":        0,
+        "cut at the last bar":      0,
+        "a hidden slot":            0,
+        "an order resting":         0,
+        "features":                 0,
+        "a sample":                 0,
+        "the sharpe reward":        0,
+        "an own reward":            0,
+        "a decode of its own":      0,
+        "an inverse perpetual":     0,
+        "a normalised observation": 0,
     })
     aside = collections.Counter()
     agreed, disagreed = 0, []
@@ -190,6 +191,14 @@ def compare(cases, seed):
 
         features = (drawn_features(draw, columns, draw.randint(1, 3))
                     if draw.random() < 0.4 else None)
+
+        # the scale comes from a stream of its own, so drawing it left every other
+        # case as it was
+        scaling = random.Random(f"scale {seed} {case}")
+        scale   = ([(scaling.uniform(-1.0, 1.0), scaling.uniform(0.1, 3.0))
+                    for _ in range(5 if features is None else len(features[0][0]))]
+                   if scaling.random() < 0.3 else None)
+
         one_kind = len(set(each == "spot" for each in kinds)) == 1
         k        = draw.randint(1, width) if one_kind and draw.random() < 0.4 else width
         sampled  = k < width
@@ -197,7 +206,6 @@ def compare(cases, seed):
                             else [0.0 if each == "spot" else -1.0 for each in kinds])
         decode   = (decoding(lows) if kind != "orders" and draw.random() < 0.25
                     else None)
-
         settings = dict(
             columns        = columns,
             features       = features,
@@ -209,6 +217,7 @@ def compare(cases, seed):
             tolerance      = draw.choice([0.0, 0.0, 0.02]),
             episode_length = draw.choice([None, None, 3, 7]),
             balance        = found["balance"],
+            scale          = scale,
         )
 
         e = onsets(columns, features)
@@ -243,6 +252,7 @@ def compare(cases, seed):
         reached["an own reward"] += reward == "own"
         reached["a decode of its own"] += decode is not None
         reached["an inverse perpetual"] += kinds == ["inverse"]
+        reached["a normalised observation"] += scale is not None
 
         if where is None:
             agreed += 1
@@ -291,6 +301,7 @@ def run(case, settings, at, slots, lows, decode, draw, reached, aside):
         orders         = kind == "orders",
         episode_length = settings["episode_length"],
         floor          = 0.01 * settings["balance"],
+        scale          = settings["scale"],
     )
 
     refs = [Episode(case["make"], start, own, settings)
