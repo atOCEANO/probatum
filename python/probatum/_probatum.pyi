@@ -256,6 +256,7 @@ class Environment:
         episode_length: Optional[int] = ...,
         floor: float = ...,
         threads: Optional[int] = ...,
+        scale: Optional[list[tuple[float, float]]] = ...,
     ) -> None: ...
     def __len__(self) -> int: ...
     @property

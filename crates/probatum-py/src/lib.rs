@@ -3689,6 +3689,7 @@ impl Environment {
         episode_length = None,
         floor = 0.0,
         threads = None,
+        scale = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3707,6 +3708,7 @@ impl Environment {
         episode_length: Option<usize>,
         floor: f64,
         threads: Option<usize>,
+        scale: Option<Vec<(f64, f64)>>,
     ) -> PyResult<Environment> {
         check_window(window)?;
         if threads == Some(0) {
@@ -3753,11 +3755,31 @@ impl Environment {
             }
             None => (None, 0),
         };
+        if let Some(scale) = &scale {
+            let columns = if features.is_some() { f } else { 5 };
+            if scale.len() != columns {
+                return Err(ProbatumValueError::new_err(format!(
+                    "scale: {} means and deviations for {columns} features; give one pair \
+                     for each",
+                    scale.len()
+                )));
+            }
+            if let Some((g, (mean, deviation))) =
+                scale.iter().enumerate().find(|(_, (mean, deviation))| {
+                    !mean.is_finite() || !deviation.is_finite() || *deviation <= 0.0
+                })
+            {
+                return Err(ProbatumValueError::new_err(format!(
+                    "scale: feature {g}'s mean {mean} and deviation {deviation}; give a \
+                     finite mean and a deviation above 0"
+                )));
+            }
+        }
         let settings = Settings {
             window,
             features,
             width: f,
-            scale: None,
+            scale,
             onsets,
             slots,
             max_leverage,
