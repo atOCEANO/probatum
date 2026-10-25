@@ -17,3 +17,5 @@ libm = { workspace = true }
 rayon = { workspace = true }
 probatum-core = { path = "../probatum-core" }
 probatum-engine = { path = "../probatum-engine" }
+serde = { workspace = true }
+postcard = { workspace = true }

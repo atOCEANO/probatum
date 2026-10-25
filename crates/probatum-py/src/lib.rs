@@ -21,7 +21,7 @@ use numpy::{
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyList, PyTuple, PyType};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyTuple, PyType};
 use pyo3::PyTypeInfo;
 use rayon::prelude::*;
 
@@ -2166,6 +2166,27 @@ impl Engine {
         self.inner.done()
     }
 
+    /// A copy of the engine as it stands, the bars shared and everything else its own,
+    /// which steps on as this one would (ADR 0040).
+    #[pyo3(name = "clone")]
+    fn cloned(&self) -> Engine {
+        Engine {
+            inner: self.inner.clone(),
+            universe: self.universe,
+            units: self.units,
+        }
+    }
+
+    /// What a pickle keeps: probatum's version and every byte of the engine, the bars
+    /// with it, which a process of another version refuses (ADR 0040).
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<Reduced<'py>> {
+        pickled(
+            py,
+            "_engine_from",
+            &(self.universe, self.units, self.inner.to_bytes()),
+        )
+    }
+
     /// Bars a year by the candles' own clock, or `None` when they came without
     /// `times` (ADR 0004).
     fn periods_per_year(&self) -> Option<f64> {
@@ -3057,8 +3078,9 @@ struct Batch {
     inner: EnvBatch,
     // the feature matrix, cached once by set_features (ADR 0038): observe_features
     // gathers from this buffer each step rather than recopying the whole (T, F)
-    // matrix from numpy, matching how the candles are copied once and shared
-    features: Vec<f64>,
+    // matrix from numpy, matching how the candles are copied once and shared, by a
+    // clone too
+    features: std::sync::Arc<[f64]>,
     n_features: usize,
     // built from a universe's (T, N, 5) candles, whose observation and records
     // carry an instrument axis
@@ -3251,7 +3273,7 @@ impl Batch {
 
         Ok(Batch {
             inner,
-            features: Vec::new(),
+            features: Vec::new().into(),
             n_features: 0,
             universe,
             units,
@@ -3275,6 +3297,44 @@ impl Batch {
     /// done from the start.
     fn done(&self) -> bool {
         self.inner.done()
+    }
+
+    /// A copy of every env, or with `env` a batch of `n` copies of that one env, each
+    /// stepping on as it would, the bars shared (ADR 0040).
+    #[pyo3(name = "clone", signature = (env = None, n = None))]
+    fn cloned(&self, env: Option<i64>, n: Option<i64>) -> PyResult<Batch> {
+        let inner = match (env, n) {
+            (None, Some(n)) => return Err(unforked(n)),
+            (None, None) => self.inner.clone(),
+            (Some(env), n) => {
+                let len = self.inner.len();
+                let Some(at) = usize::try_from(env).ok().filter(|&at| at < len) else {
+                    return Err(ProbatumValueError::new_err(format!(
+                        "env: {env} of {len}; name one counted from 0"
+                    )));
+                };
+                self.inner.fork(at, copies(n)?)
+            }
+        };
+        Ok(Batch {
+            inner,
+            features: self.features.clone(),
+            n_features: self.n_features,
+            universe: self.universe,
+            units: self.units,
+        })
+    }
+
+    /// What a pickle keeps, as an engine's does, the bars once for every env.
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<Reduced<'py>> {
+        let parts = (
+            self.universe,
+            self.units,
+            self.n_features,
+            &self.features,
+            self.inner.to_bytes(),
+        );
+        pickled(py, "_batch_from", &parts)
     }
 
     /// Bars a year by the shared candles' own clock, or `None` when they came
@@ -3811,6 +3871,26 @@ impl Environment {
     /// Number of environments.
     fn __len__(&self) -> usize {
         self.inner.len()
+    }
+
+    /// A copy of every environment, or with `env` environments of `n` copies of that
+    /// one, each stepping on as it would, the bars shared (ADR 0040).
+    #[pyo3(name = "clone", signature = (env = None, n = None))]
+    fn cloned(&self, env: Option<usize>, n: Option<i64>) -> PyResult<Environment> {
+        let inner = match (env, n) {
+            (None, Some(n)) => return Err(unforked(n)),
+            (None, None) => self.inner.clone(),
+            (Some(env), n) => {
+                self.engine(env)?;
+                self.inner.fork(env, copies(n)?)
+            }
+        };
+        Ok(Environment {
+            inner,
+            rows: self.rows,
+            width: self.width,
+            units: self.units,
+        })
     }
 
     /// The floats of one environment's observation.
@@ -5408,6 +5488,93 @@ fn stats_of<'py>(
     stats_to_dict(py, &stats)
 }
 
+/// The version a pickle carries, which alone reads the bytes beside it.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What `__reduce__` hands a pickle: the function that restores the object and its
+/// arguments, the version and the object's bytes.
+type Reduced<'py> = (Bound<'py, PyAny>, (&'static str, Bound<'py, PyBytes>));
+
+/// A pickle of an object of this module: the function named `restore`, and this
+/// version of probatum beside `parts` as bytes, which it takes back.
+fn pickled<'py>(
+    py: Python<'py>,
+    restore: &str,
+    parts: &impl serde::Serialize,
+) -> PyResult<Reduced<'py>> {
+    let bytes = postcard::to_stdvec(parts).expect("every part of a pickle serializes");
+    let restore = py.import("probatum._probatum")?.getattr(restore)?;
+    Ok((restore, (VERSION, PyBytes::new(py, &bytes))))
+}
+
+/// The parts a pickle of `what` keeps in `bytes`, refused where probatum `version`,
+/// another than this one, wrote them.
+fn unpickled<T: serde::de::DeserializeOwned>(
+    version: &str,
+    what: &str,
+    bytes: &[u8],
+) -> PyResult<T> {
+    if version != VERSION {
+        return Err(ProbatumValueError::new_err(format!(
+            "pickle: {what} probatum {version} wrote, which probatum {VERSION} does not \
+             read; move it between processes of one version, or build it again"
+        )));
+    }
+    postcard::from_bytes(bytes).map_err(|error| unread(what, error))
+}
+
+/// The refusal of bytes that are not `what` this version wrote.
+fn unread(what: &str, error: postcard::Error) -> PyErr {
+    ProbatumValueError::new_err(format!(
+        "pickle: bytes that are not {what} probatum {VERSION} wrote ({error}); pickle it \
+         again"
+    ))
+}
+
+/// The copies a clone's `n` asks of the env it forks, one where `n` is left out.
+fn copies(n: Option<i64>) -> PyResult<usize> {
+    let n = n.unwrap_or(1);
+    usize::try_from(n)
+        .ok()
+        .filter(|&copies| copies > 0)
+        .ok_or_else(|| ProbatumValueError::new_err(format!("n: {n}; give 1 or more copies")))
+}
+
+/// The refusal of a clone's `n`, given without the env it would fork.
+fn unforked(n: i64) -> PyErr {
+    ProbatumValueError::new_err(format!(
+        "n: {n} without env; name the env to fork with env=, or leave n out"
+    ))
+}
+
+/// An engine back from the bytes its pickle keeps, refused where another version of
+/// probatum wrote them.
+#[pyfunction]
+fn _engine_from(version: &str, bytes: &[u8]) -> PyResult<Engine> {
+    let (universe, units, inner): (bool, Units, Vec<u8>) = unpickled(version, "an engine", bytes)?;
+    let inner = BarEngine::from_bytes(&inner).map_err(|error| unread("an engine", error))?;
+    Ok(Engine {
+        inner,
+        universe,
+        units,
+    })
+}
+
+/// A batch back from the bytes its pickle keeps, as `_engine_from` takes an engine back.
+#[pyfunction]
+fn _batch_from(version: &str, bytes: &[u8]) -> PyResult<Batch> {
+    let (universe, units, n_features, features, inner): (bool, Units, usize, Vec<f64>, Vec<u8>) =
+        unpickled(version, "a batch", bytes)?;
+    let inner = EnvBatch::from_bytes(&inner).map_err(|error| unread("a batch", error))?;
+    Ok(Batch {
+        inner,
+        features: features.into(),
+        n_features,
+        universe,
+        units,
+    })
+}
+
 /// The `_probatum` extension module, imported by Python as `probatum._probatum`.
 #[pymodule]
 fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -5428,5 +5595,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_labels, m)?)?;
     m.add_function(wrap_pyfunction!(threads, m)?)?;
     m.add_function(wrap_pyfunction!(arrow::arrow_columns, m)?)?;
+    m.add_function(wrap_pyfunction!(_engine_from, m)?)?;
+    m.add_function(wrap_pyfunction!(_batch_from, m)?)?;
     Ok(())
 }

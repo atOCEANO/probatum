@@ -6,6 +6,7 @@ for the Python boundary: numpy candles in, a typed state out, and the cross-bar
 no-lookahead rule holding through the binding.
 """
 
+import pickle
 import re
 import threading
 
@@ -899,6 +900,180 @@ def test_an_environment_over_a_reporting_batch_hands_back_its_engine_s_records()
     lean.reset(np.ones(1, dtype=bool), np.array([1]), np.array([[0, 1]]))
 
     assert set(lean.tables(0, 1, ["A", "B"])) == {"ledger", "trades"}
+
+
+def drawn():
+    """Twenty bars from 100, every other one reaching 20 either way, so a stop at 90
+    and a take-profit at 110 both trigger on it."""
+    return np.array([[100.0, 100.0 + reach, 100.0 - reach, 100.0, 1000.0]
+                     for reach in [1.0, 20.0] * 10])
+
+
+def bracketed(e, state, steps):
+    """``steps`` closes of a buy where the engine is flat, else a stop and a
+    take-profit on its long where none rests, each followed by a step, and the states
+    they left."""
+    seen = []
+    for _ in range(steps):
+        if state.position == 0.0:
+            e.market_buy(1.0)
+        elif not state.open_orders:
+            e.stop("sell", 1.0, 90.0, reduce_only=True)
+            e.limit_sell(1.0, 110.0)
+
+        state = e.step()
+        seen.append(state)
+
+    return seen
+
+
+def test_an_engine_cloned_or_pickled_steps_on_as_it_would():
+    e = probatum._probatum.Engine(
+        drawn(),
+        fee_taker = 0.0,
+        fee_maker = 0.0,
+        report    = True,
+        intrabar  = "random",
+        seed      = 7,
+    )
+
+    state = bracketed(e, e.reset(), 8)[-1]
+    twin  = e.clone()
+    back  = pickle.loads(pickle.dumps(e))
+    ahead = bracketed(e, state, 11)
+
+    for copy in (twin, back):
+        assert bracketed(copy, state, 11) == ahead
+        assert copy.fills() == e.fills() and repr(copy.trades()) == repr(e.trades())
+        np.testing.assert_array_equal(copy.equity_curve(), e.equity_curve())
+        assert copy.shape == e.shape
+
+    # the random setting drew the bars both ways, so a stream begun again would part
+    assert {"stop", "limit"} <= {fill["reason"] for fill in e.fills()}
+
+    # an inverse contract's copies read its prices and sizes in its own terms
+    inverse = probatum._probatum.Engine(
+        drawn(),
+        market   = "inverse",
+        contract = 100.0,
+        quote    = 1.0,
+        report   = True,
+    )
+    inverse.reset()
+    inverse.market_buy(0.6)
+    inverse.step()
+
+    copies = (inverse.clone(), pickle.loads(pickle.dumps(inverse)))
+    for each in (inverse, *copies):
+        each.market_sell(0.2)
+
+    ahead = inverse.step()
+
+    assert ahead.position == 0.4
+    for copy in copies:
+        assert copy.step() == ahead and copy.fills() == inverse.fills()
+
+
+def test_a_batch_cloned_forked_or_pickled_steps_on_as_each_env_would():
+    pair  = np.stack([drawn(), drawn() / 10.0], axis=1)
+    batch = probatum.Batch(
+        pair,
+        3,
+        market    = "perp",
+        report    = True,
+        fee_taker = 0.0,
+        fee_maker = 0.0,
+    )
+
+    def rows(k):
+        return np.array([[0.5, -0.2], [0.1, 0.3], [-0.4, 0.2]]) * (-1.0) ** k
+
+    batch.reset_all()
+    batch.set_features(np.arange(40.0).reshape(20, 2))
+    for k in range(4):
+        batch.target(rows(k))
+        batch.step_all()
+
+    twin, fork = batch.clone(), batch.clone(env=1, n=2)
+    back = pickle.loads(pickle.dumps(batch))
+
+    assert (len(twin), len(fork), len(back)) == (3, 2, 3)
+    # the feature matrix the batch was given goes with it
+    for copy in (twin, back):
+        np.testing.assert_array_equal(copy.observe_features(3), batch.observe_features(3))
+
+    for k in range(4, 10):
+        for each in (batch, twin, back):
+            each.target(rows(k))
+        fork.target(rows(k)[[1, 1]])
+        ahead = batch.step_all()
+        assert twin.step_all() == ahead and back.step_all() == ahead
+        assert fork.step_all() == [ahead[1], ahead[1]]
+
+    assert repr(back.records(2)) == repr(batch.records(2))
+    # the bars close where they open, so only the records keep what a fork began from
+    assert repr(fork.records(1)) == repr(batch.records(1))
+
+    for env, n, says in [(-1, None, "env: -1 of 3; name one counted from 0"),
+                         (None, 2, "n: 2 without env; name the env to fork with env=, or "
+                                   "leave n out"),
+                         (0, 0, "n: 0; give 1 or more copies")]:
+        with pytest.raises(ProbatumValueError, match=re.escape(says)):
+            batch.clone(env=env, n=n)
+
+
+def test_an_environment_cloned_or_forked_steps_on_as_it_would():
+    env = environment(probatum.Batch(np.stack([drawn(), drawn() / 10.0], axis=1), 3,
+                                     market="perp"))
+    env.reset(np.ones(3, dtype=bool), np.array([0, 1, 2]),
+              np.array([[0, 1], [1, 0], [0, 1]]))
+
+    def step(e, rows):
+        flags = e.step(rows, np.ones(len(e), dtype=bool))
+        out   = e.observe(np.zeros((len(e), e.size), dtype=np.float32))
+        return [part.tolist() for part in flags] + [out.tolist()]
+
+    weights = np.array([[0.5, -0.2], [0.1, 0.3], [-0.4, 0.2]])
+    step(env, weights)
+
+    twin, fork = env.clone(), env.clone(env=1, n=2)
+    held = env.market()
+
+    for copy in (twin, fork):
+        np.testing.assert_array_equal(copy.market()["candles"], held["candles"])
+    assert twin.ticks().tolist() == env.ticks().tolist()
+    assert fork.ticks().tolist() == [env.ticks()[1]] * 2
+
+    for k in range(6):
+        rows  = weights * (-1.0) ** k
+        ahead = step(env, rows)
+        assert step(twin, rows)         == ahead
+        assert step(fork, rows[[1, 1]]) == [[part[1]] * 2 for part in ahead]
+
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            "env: 3 of 3 environments; give one from 0 to 2")):
+        env.clone(env=3)
+
+
+def test_a_pickle_of_another_version_or_of_bytes_it_never_wrote_is_refused():
+    restore, (version, held) = engine().__reduce__()
+
+    assert version == probatum.__version__
+
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            f"pickle: an engine probatum 0.0.1 wrote, which probatum {version} does not "
+            f"read; move it between processes of one version, or build it again")):
+        restore("0.0.1", held)
+
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            f"pickle: bytes that are not an engine probatum {version} wrote (")):
+        restore(version, held[:len(held) // 2])
+
+    _, (_, batch) = probatum.Batch(series(), 2).__reduce__()
+    with pytest.raises(ProbatumValueError, match="^pickle: bytes that are not a batch"):
+        probatum._probatum._batch_from(version, batch[:10])
+
+    assert restore(version, held).reset() == engine().reset()
 
 
 @pytest.mark.parametrize("script, says", [

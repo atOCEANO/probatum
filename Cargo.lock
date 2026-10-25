@@ -654,10 +654,12 @@ version = "1.3.2"
 dependencies = [
  "libm",
  "numpy",
+ "postcard",
  "probatum-core",
  "probatum-engine",
  "pyo3",
  "rayon",
+ "serde",
 ]
 
 [[package]]
