@@ -5,7 +5,7 @@
 //! and its slots, the Python layer draws from that environment's own stream and hands
 //! in.
 
-use probatum_core::{Market, OrderId, OrderType, Side, TimeInForce};
+use probatum_core::{Candle, Market, OrderId, OrderType, Side, TimeInForce};
 use rayon::prelude::*;
 
 use crate::batch::EnvBatch;
@@ -258,9 +258,35 @@ fn scaled(s: &Settings, g: usize, x: f64) -> f32 {
     }
 }
 
+/// The floats of one environment's market block, the observation's first.
+fn market_size(s: &Settings) -> usize {
+    s.window * s.slots * if s.features.is_some() { s.width } else { 5 }
+}
+
+/// Instrument `i`'s mean volume over the printed bars of the window from bar `first`
+/// to bar `t`, summed in order, which a candle's volume is written over.
+fn window_mean(bars: &[Candle], n: usize, i: usize, first: usize, t: usize) -> f64 {
+    let (mut volume, mut count) = (0.0, 0.0);
+    for r in first..=t {
+        let bar = &bars[r * n + i];
+        if printed(bar) {
+            volume += bar.volume;
+            count += 1.0;
+        }
+    }
+    volume / count
+}
+
 /// One environment's observation, written into `row` (Specification, The
 /// observation).
 fn observed(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
+    let (market, account) = row.split_at_mut(market_size(s));
+    observed_market(s, engine, episode, market);
+    observed_account(s, engine, episode, account);
+}
+
+/// One environment's market block, written into `row`.
+fn observed_market(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
     let (w, k) = (s.window, s.slots);
     let f = if s.features.is_some() { s.width } else { 5 };
     let (t, n) = (engine.tick(), engine.width());
@@ -284,15 +310,7 @@ fn observed(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
             continue;
         }
         let last = bars[t * n + i].close;
-        let (mut volume, mut count) = (0.0, 0.0);
-        for r in first..=t {
-            let bar = &bars[r * n + i];
-            if printed(bar) {
-                volume += bar.volume;
-                count += 1.0;
-            }
-        }
-        let mean = volume / count;
+        let mean = window_mean(bars, n, i, first, t);
         for r in first..=t {
             let bar = &bars[r * n + i];
             if printed(bar) {
@@ -309,9 +327,13 @@ fn observed(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
             }
         }
     }
+}
+
+/// One environment's account block, written into `row`.
+fn observed_account(s: &Settings, engine: &Engine, episode: &Episode, row: &mut [f32]) {
     let reading = engine.reading();
     let equity = reading.equity;
-    let mut at = w * k * f;
+    let mut at = 0;
     let mut weights = 0.0;
     for &i in &episode.slots {
         let held = engine.position(i) != 0.0;
@@ -551,9 +573,76 @@ impl Environment {
     /// Every environment's observation, row `env` of `out` its own, `size()` floats
     /// each.
     pub fn observe(&self, out: &mut [f32]) {
-        let (size, s) = (self.size(), &self.settings);
+        self.write_each(out, self.size(), observed);
+    }
+
+    /// The floats of one environment's account block, the observation's last.
+    pub fn account_size(&self) -> usize {
+        self.size() - market_size(&self.settings)
+    }
+
+    /// Every environment's account block, as `observe` writes it after the market
+    /// block, row `env` of `out` its own, `account_size()` floats each.
+    pub fn observe_account(&self, out: &mut [f32]) {
+        self.write_each(out, self.account_size(), observed_account);
+    }
+
+    /// Each environment's row of the series, the bar its engine stands at.
+    pub fn ticks(&self) -> Vec<usize> {
+        self.batch.engines().iter().map(Engine::tick).collect()
+    }
+
+    /// The printed bars every environment reads, row-major over the rows and the
+    /// instruments.
+    pub fn candles(&self) -> &[Candle] {
+        self.batch.engines()[0].candles_all()
+    }
+
+    /// Each bar's market cells as the observation writes them, row-major over the rows,
+    /// the instruments and the features, 0.0 where its instrument did not print; None
+    /// for the candles, whose cells the close at the window's last bar decides.
+    pub fn cells(&self) -> Option<Vec<f32>> {
+        let s = &self.settings;
+        let values = s.features.as_ref()?;
+        let bars = self.batch.engines()[0].candles_all();
+        let mut out = vec![0.0; values.len()];
+        for (at, bar) in bars.iter().enumerate() {
+            if printed(bar) {
+                for g in 0..s.width {
+                    out[at * s.width + g] = scaled(s, g, values[at * s.width + g]);
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Each bar's mean volume over the printed bars of the window ending at it, row-major
+    /// over the rows and the instruments, NaN for a bar the window does not fit before
+    /// and where the window holds no printed bar.
+    pub fn window_means(&self) -> Vec<f64> {
+        let w = self.settings.window;
+        let engine = &self.batch.engines()[0];
+        let (bars, n) = (engine.candles_all(), engine.width());
+        let rows = bars.len() / n;
+        let mut out = vec![f64::NAN; rows * n];
+        for t in w - 1..rows {
+            for i in 0..n {
+                out[t * n + i] = window_mean(bars, n, i, t + 1 - w, t);
+            }
+        }
+        out
+    }
+
+    /// Each environment's `size` floats of `out`, its row, written by `write`.
+    fn write_each(
+        &self,
+        out: &mut [f32],
+        size: usize,
+        write: fn(&Settings, &Engine, &Episode, &mut [f32]),
+    ) {
+        let s = &self.settings;
         let work = |((row, engine), episode): ((&mut [f32], &Engine), &Episode)| {
-            observed(s, engine, episode, row)
+            write(s, engine, episode, row)
         };
         let (engines, episodes) = (self.batch.engines(), &self.episodes);
         match &self.pool {
@@ -1543,5 +1632,98 @@ mod tests {
         assert_eq!(super::threads_for(1 << 20, 328), half);
         let env = pair(vec![vec![flat(100.0), flat(50.0)]; 4], 2, settings(1));
         assert_eq!(env.threads(), 1);
+    }
+
+    #[test]
+    fn the_account_block_alone_is_the_observation_after_its_market_block() {
+        let rows: Vec<Vec<Candle>> = (0..6)
+            .map(|t| {
+                let p = 100.0 + t as f64;
+                vec![
+                    bar(p, p + 2.0, p - 1.0, p + 1.0, 500.0),
+                    flat(50.0 - t as f64),
+                ]
+            })
+            .collect();
+        let ordering = Settings {
+            orders: true,
+            ..settings(2)
+        };
+        for settings in [settings(2), ordering] {
+            let mut env = pair(rows.clone(), 2, settings);
+            env.reset(&[true, true], &[2, 3], &[0, 1, 1, 0]);
+            let decision = [0.5, 0.25, -0.5, 0.75];
+            let (mut rewards, mut ended, mut cut) = ([0.0; 2], [false; 2], [false; 2]);
+            let step = if env.settings().orders {
+                Decision::Orders(&[0.5, 0.0, -0.25, 1.0, 0.1, 0.5, 0.0, 0.0])
+            } else {
+                Decision::Weights(&decision)
+            };
+            env.step(step, &[true, true], &mut rewards, &mut ended, &mut cut)
+                .unwrap();
+            let (size, account) = (env.size(), env.account_size());
+            let mut alone = vec![1.0f32; 2 * account];
+            env.observe_account(&mut alone);
+            let whole = observed(&env);
+            for e in 0..2 {
+                assert_eq!(
+                    &alone[e * account..(e + 1) * account],
+                    &whole[(e + 1) * size - account..(e + 1) * size]
+                );
+            }
+            assert_eq!(account, if env.settings().orders { 16 } else { 12 });
+            assert_eq!(env.ticks(), vec![3, 4]);
+        }
+    }
+
+    #[test]
+    fn a_bar_s_cells_and_window_mean_are_what_the_observation_writes_from() {
+        // the second instrument prints nothing on row 1, and trades nothing on rows 2
+        // and 3, so its window over rows 2 and 3 has a mean volume of 0
+        let rows = vec![
+            vec![
+                bar(100.0, 104.0, 98.0, 102.0, 300.0),
+                bar(50.0, 51.0, 49.0, 50.5, 70.0),
+            ],
+            vec![bar(102.0, 103.0, 99.0, 100.0, 100.0), ABSENT],
+            vec![
+                bar(100.0, 101.0, 97.0, 98.0, 200.0),
+                bar(50.5, 52.0, 50.0, 51.0, 0.0),
+            ],
+            vec![
+                bar(98.0, 99.0, 95.0, 96.0, 400.0),
+                bar(51.0, 51.5, 50.5, 51.0, 0.0),
+            ],
+        ];
+        let candles = pair(rows.clone(), 1, settings(2));
+        // the printed bars, row-major over the rows and the instruments
+        let bars = candles.candles();
+        assert_eq!(bars.len(), 8);
+        assert_eq!((bars[2].close, bars[6].close), (100.0, 96.0));
+        assert!(bars[3].close.is_nan());
+        let means = candles.window_means();
+        assert!(means[0].is_nan() && means[1].is_nan());
+        assert_eq!(&means[2..], &[200.0, 70.0, 150.0, 0.0, 300.0, 0.0]);
+        // a window of the one bar the second instrument did not print has no mean
+        let single = pair(rows.clone(), 1, settings(1)).window_means();
+        assert_eq!(&single[..3], &[300.0, 70.0, 100.0]);
+        assert!(single[3].is_nan());
+        assert_eq!(&single[4..], &[200.0, 0.0, 400.0, 0.0]);
+        assert_eq!(candles.cells(), None);
+        let values: Vec<f64> = (0..4 * 2 * 2).map(|v| v as f64).collect();
+        let featured = Settings {
+            features: Some(values),
+            width: 2,
+            scale: Some(vec![(1.0, 2.0), (0.0, 4.0)]),
+            ..settings(2)
+        };
+        let mut env = pair(rows, 1, featured);
+        let cells = env.cells().unwrap();
+        assert_eq!(&cells[..8], &[-0.5, 0.25, 0.5, 0.75, 1.5, 1.25, 0.0, 0.0]);
+        // the observation's market block is the cells of the window's rows
+        env.reset(&[true], &[3], &[0, 1]);
+        let row = observed(&env);
+        let window = [&cells[8..12], &cells[12..16]].concat();
+        assert_eq!(&row[..8], &window[..]);
     }
 }
