@@ -148,7 +148,7 @@ Only `data` and `venue`, a Venue or a preset's name, have no default.
 | `threads` | `None` | The threads a step runs on; by default one for each 2^17 floats its observations hold, at most half the CPUs. No result depends on it. |
 | `autoreset` | `"next_step"` | Gymnasium's mode: `"next_step"`, `"same_step"` or `"disabled"`. |
 | `copy` | `True` | Each observation its own array; `False` hands out one array the next step writes over. |
-| `normalise` | `False` | Not done yet. |
+| `normalise` | `False` | Each market feature written over its mean and deviation across every value the training span's observations hold, which the agent spec keeps. |
 | `record` | `"none"` | `"transitions"` is not done yet. |
 | `seed` | `None` | The seed every stream is named from, drawn and recorded where it is left out. |
 
@@ -173,6 +173,8 @@ The observation is float32, the market block and then the account block.
 - **Account**, for each slot its weight, its unrealized PnL over equity, its distance from its entry and whether it is shown; then the account's log return over the step, its leverage, its margin ratio and its cash weight. With `actions="orders"` each slot also reports how many of its orders rest and the nearest one's distance from the close in ticks.
 
 The default layout is one flat `Box`, which SB3's `MlpPolicy`, TorchRL and CleanRL-style scripts take; `layout="dict"` splits the two blocks for a `MultiInputPolicy`. Every value over equity is 0.0 where equity is at or below zero, so no cell is NaN or infinite.
+
+`normalise=True` writes each market feature, the candles' or a function's, over its mean and deviation across every value the training span's observations hold, so an untrained network sees inputs near zero with a spread near one. The scaling is worked in Rust as each observation is written, a cell the observation leaves at 0.0 stays 0.0, the account block is never scaled, and the agent spec keeps both numbers, for bars the agent has not seen to be scaled the same way. A feature whose values lie within a billionth of their size of one another never varies, and is written over a deviation of 1, as 0.0 where it is constant.
 
 <br>
 
@@ -219,6 +221,42 @@ The mode is declared in `metadata["autoreset_mode"]` and as `autoreset_mode`, th
 ## What an environment says
 
 `env.describe()` lists what its runs assume, as a backtest's assumptions at its venue on its Data list them, each cost an environment draws shown with its range and marked as set by the user. `env.provenance` records the Data's provenance, the venue, every setting, the seed, drawn where none was given, and the streams each environment draws from.
+
+<br>
+
+## The agent spec
+
+An agent is judged fairly only if a backtest shows it what it saw in training and reads its outputs as they were read, so every environment records `env.agent_spec`, a JSON document of its inputs, its observation, its outputs, its venue and the span it trained on ([Specification](Specification.md#the-agent-spec), [ADR 0039](Decisions.md)):
+
+```json
+{
+  "schema": 1,
+  "window": 64,
+  "instruments": ["BTCUSDT", "ETHUSDT"],
+  "markets": ["linear", "linear"],
+  "slots": 2,
+  "sample": null,
+  "features": {"custom": "momentum", "width": 2, "source_hash": "b2:a224894254dea50d",
+               "reference": "b2:f517e3ebe5808298"},
+  "fill": null,
+  "normalisation": {"mean": [0.0004, 0.5573], "deviation": [0.0096, 0.2634]},
+  "observation": {"size": 268, "layout": "flat", "shape": [64, 2, 2],
+                  "account": ["weight", "upnl", "entry_distance", "shown",
+                              "weight", "upnl", "entry_distance", "shown",
+                              "log_return", "leverage", "margin_ratio", "cash_weight"]},
+  "actions": {"space": "box", "low": [-1.0, -1.0], "high": 1.0, "max_leverage": 2.0},
+  "decode": {"builtin": "box"},
+  "reward": {"builtin": "log", "floor": 0.01},
+  "tolerance": 0.0,
+  "venue": {"name": "binance_perp", "taken": "2026-10-16", "changed": {"funding": "none"}},
+  "training": {"fingerprint": "b2:5f0c2a91e3d84b17a6c09e2d4f81b3c5", "interval": "1h",
+               "bars": 8760, "start": "2024-01-01T00:00:00Z",
+               "end": "2024-12-31T23:00:00Z"},
+  "version": "2.0.0"
+}
+```
+
+A custom function is never pickled. A feature function is recorded by its name, its width, a hash of its source and a hash of its output, rounded to float32, on probe bars the package builds the same way on every machine, 512 bars of each training instrument on its market, which a function passed again is held to; a function that cannot run there leaves no reference, with a warning that says so. A custom decode is held the same way to its output on eight probe actions, taken the first time the spec is read, so a decode that keeps state of its own meets them then. An array of features is recorded by its width alone, and a custom reward by its name and source, since a backtest never reads a reward. The venue is recorded as the preset it was made from, the day that preset was taken and every setting changed, as its repr shows them, so the spec builds the venue again.
 
 <br>
 

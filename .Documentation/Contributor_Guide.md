@@ -45,6 +45,7 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | Capacity, a cost sweep or its break-even | `python/probatum/_costs.py`, the costs a sweep multiplies in `_venue.py`, and a scaled spread estimate in `crates/probatum-engine/src/execution.rs` |
 | How a Study is saved and loaded, or how a search keeps its storage and resumes from it | `python/probatum/_storage.py`, and the loop that takes a stored trial in its turn in `_search.py` |
 | The environment an agent trains on | `crates/probatum-engine/src/env.rs` for what each step works out, `python/probatum/_env.py` for the episodes drawn, the spaces and Gymnasium's API, and the reference's environment in `tests/reference/environment.py` |
+| What an agent's spec records, its probes and its normalisation statistics | `python/probatum/_agent.py`, the scaling each observation is written with in `crates/probatum-engine/src/env.rs`, and the same rules in plain loops in `tests/reference/environment.py` |
 | One of emsl's statistics of a `BacktestResult` | `python/probatum/metrics.py` |
 | An indicator, which is a function of arrays and never sees the engine | `python/probatum/ta.py` |
 | Anything a chart draws (a mark, a guard, a panel rule) | `python/probatum/_chart.py` and `plot.py` |
