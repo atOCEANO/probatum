@@ -470,9 +470,10 @@ class _Record:
     Engine's ``settings`` with ``start``, the row of the Data's first bar among the
     Engine's, as `_run` gave them; the ``token`` of a run whose account handed out
     handles, which explain checks one against; the ``seed`` of a loop the caller
-    stepped; and the ``policy`` to play again without costs, an array's arguments or
-    the copy of a Strategy taken at the call, until the baselines are ``computed``,
-    with whether that play is ``playing``."""
+    stepped; and the ``policy`` to play again without costs, an array's arguments, the
+    copy of a Strategy taken at the call or an agent's run, a function of the change to
+    its settings that returns its equity, until the baselines are ``computed``, with
+    whether that play is ``playing``."""
 
     __slots__ = ("venue", "data", "settings", "start", "token", "seed", "policy",
                  "computed", "playing")
@@ -760,9 +761,9 @@ class Result:
         balance in every instrument bought at its first close and held, and
         ``frictionless``, the same policy with the costs of trading removed and every
         rule kept, missing for a loop the caller stepped. They are computed when first
-        read, the policy played again then, so a Result pickled before they were read
-        refuses them, as a run below the full level does, and a book's are its accounts'
-        summed as its equity is."""
+        read, the policy played again then, an agent's as its backtest runs, so a Result
+        pickled before they were computed refuses them, as a run below the full level
+        does, and a book's are its accounts' summed as its equity is."""
         if _recorded(self.provenance) != "full":
             raise ProbatumAttributeError(_unkept(self, "result.baselines",
                                                  "no copy of its policy to play them"))
@@ -984,9 +985,9 @@ class Result:
     def to_dict(self):
         """This Result as plain data: ``time``, ``equity`` and ``returns`` as lists,
         each table as a dict of its columns as lists, None where a value is missing,
-        the baselines None until they are read, since this plays no policy, ``costs``,
-        and ``stats``, a ratio infinite where it earned something against no measured
-        risk, ``policy`` where it is an array, ``bust``, ``liquidations`` and
+        the baselines None until they are computed, since this plays no policy,
+        ``costs``, and ``stats``, a ratio infinite where it earned something against no
+        measured risk, ``policy`` where it is an array, ``bust``, ``liquidations`` and
         ``provenance``."""
         out = dict(time=self.time.tolist(), equity=self.equity.tolist(),
                    returns=self.returns.tolist())
@@ -1127,7 +1128,7 @@ class Result:
                 or not len(time) or equity.shape != time.shape
                 or arrays["returns"].shape != time.shape
                 or (policy is not None and (policy.dtype != np.float64
-                                            or policy.ndim not in (1, 2)))):
+                                            or policy.ndim not in (1, 2, 3)))):
             raise ProbatumValueError(f"path: the arrays of {str(path)!r} are not a row "
                                      f"each of one clock as save writes them; {fix}")
 

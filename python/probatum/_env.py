@@ -1,8 +1,8 @@
 """``env``: accounts at a venue on a Data's bars stepped together in Rust as a Gymnasium
 vector environment, each in an episode drawn from a stream of its own, and ``Env``, one
 of them, which Gymnasium's ``make`` builds as ``probatum/Trading-v0`` (Specification,
-The environment). This module imports Gymnasium, which nothing a backtest loads does
-(ADR 0044), and registers the environment as it loads."""
+The environment). This module imports Gymnasium, which a backtest loads only to run an
+agent here (ADR 0044), and registers the environment as it loads."""
 
 import collections.abc
 import copy
@@ -17,7 +17,7 @@ from ._backtest import _annualised, _kind, _markets, _number, _real
 from ._data import Data, _chosen, _count, _when, features as _features
 from ._errors import (DataError, MissingDependency, ProbatumKeyError,
                       ProbatumNotImplementedError, ProbatumRuntimeError, ProbatumTypeError,
-                      ProbatumValueError, VenueError)
+                      ProbatumValueError, SpecError, VenueError)
 from ._result import Assumptions, _Record, _provenance
 from ._search import _counted
 from ._space import _flag
@@ -115,10 +115,34 @@ class VectorEnv(gymnasium.vector.VectorEnv):
     def __init__(self, data, venue, **settings):
         given = SIGNATURE.bind(data, venue, **settings)
         given.apply_defaults()
-        given = given.arguments
+        self._build(given.arguments)
 
+
+    @classmethod
+    def _of(cls, data, venue, record, scale, shape, balance=None, costs=1.0, change=None,
+            **settings):
+        """The one environment of `env`'s ``settings`` an agent's backtest runs on
+        ``data`` at ``venue``: its batch recording at ``record``, its window reading the
+        bars before a slice, its market values written over the ``scale`` its spec
+        holds, a function's features refused where they are not as many a bar as the
+        market block's ``shape`` its spec records, and its run opened with ``balance``
+        and ``costs`` as a backtest's, its settings as ``change`` leaves them."""
+        given = SIGNATURE.bind(data, venue, **settings)
+        given.apply_defaults()
+
+        built = cls.__new__(cls)
+        built._build(given.arguments, record, scale, shape, balance, costs, change)
+
+        return built
+
+
+    def _build(self, given, record=None, scale=None, shape=None, balance=None, costs=1.0,
+               change=None):
+        """Build the environments of `env`'s arguments ``given``, or with ``record`` the
+        one an agent's backtest runs, as `_of` says."""
         _checked(given)
-        held = _venue_of(venue)
+        held = _venue_of(given["venue"])
+        data = given["data"]
         data = data if isinstance(data, Data) else Data(data)
         if not len(data) or not data.available.any():
             raise DataError("data: no bars to step; give a Data that has some")
@@ -127,7 +151,7 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         seed = (np.random.SeedSequence().entropy if given["seed"] is None
                 else int(given["seed"]))
 
-        run     = _run(held, data, seed)
+        run     = _run(held, data, seed, balance=balance, costs=costs)
         markets = _markets(run)
         specs   = run.settings.get("instruments", [run.settings])
         names   = data.names
@@ -165,27 +189,49 @@ class VectorEnv(gymnasium.vector.VectorEnv):
                 raise ProbatumValueError(f"fill: {given['fill']!r}, and no features are "
                                          f"given for it to fill; pass features=, or "
                                          f"leave fill out")
+
             values, f = None, 5
             ready = printed.copy()
         else:
-            read = _features(data, given["features"], given["fill"])
+            # an agent's window reads a function's features on the bars before a slice
+            warm   = record is not None and callable(given["features"])
+            read   = _features(data, given["features"], given["fill"], whole=warm)
+            before = data._rows[0] if warm else 0
+            own    = read[before:]
 
             # the observation is float32, which a finite float64 past its range is not;
             # an infinity is a warm-up's or an unprinted bar's, which none observes
-            big = np.argwhere(np.isfinite(read) & (np.abs(read) > np.finfo(np.float32).max))
+            big = np.argwhere(np.isfinite(own) & (np.abs(own) > np.finfo(np.float32).max))
             if len(big):
                 row, i, g = big[0]
-                raise DataError(f"features: {read[row, i, g]:g} at bar {row:,} "
+                raise DataError(f"features: {own[row, i, g]:g} at bar {row:,} "
                                 f"({_when(data.time[row])}) for {names[i]}, feature {g}, "
                                 f"past what float32 holds; scale it down")
 
-            f      = read.shape[2]
-            values = np.full((rows, width, f), np.nan)
-            values[first:] = read[data.available.any(axis=1)]
-            ready = printed & np.isfinite(values).all(axis=2)
+            f = read.shape[2]
+            if shape is not None and f != shape[2]:
+                raise SpecError(f"features: {_agent._named(given['features'])} gives "
+                                f"{f} features a bar, and the agent trained on "
+                                f"{shape[2]}; pass the function it trained with")
 
-        # the Engine holds the rows before the Data's own, which no episode reads
-        ready[:first] = False
+            values = np.full((rows, width, f), np.nan)
+            values[first:] = own[data.available.any(axis=1)]
+            if warm:
+                earlier = data._root.available[:before][:, list(data._cols)].any(axis=1)
+                values[:first] = read[:before][earlier]
+
+            kept  = np.isfinite(values) & (np.abs(values) <= np.finfo(np.float32).max)
+            ready = printed & kept.all(axis=2)
+
+        if record is None:
+            # the Engine holds the rows before the Data's own, which no episode reads
+            ready[:first] = False
+        else:
+            # an agent's window reads the bars before a slice, so an instrument's
+            # features start after the last bar it printed with one float32 cannot give
+            lost = printed & ~ready
+            last = np.where(lost.any(axis=0), rows - 1 - lost[::-1].argmax(axis=0), -1)
+            ready &= np.arange(rows)[:, None] > last
 
         found    = ready.argmax(axis=0)
         onsets   = [int(t) if ready[t, i] else None for i, t in enumerate(found)]
@@ -199,14 +245,14 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         starts = np.flatnonzero(shown[:rows - 1].sum(axis=1) >= k if sampled
                                 else shown[:rows - 1].any(axis=1))
 
-        if not len(starts):
+        if not len(starts) and record is None:
             what = f"{k} instruments" if sampled else "an instrument"
             raise DataError(f"window: {window}, and no bar before the last has {what} "
                             f"shown a whole window past the first bar its features are "
                             f"finite on; give a shorter window, or more bars")
 
-        scale = (_agent._moments(values, run.candles, printed, shown, window)
-                 if given["normalise"] else None)
+        if given["normalise"]:
+            scale = _agent._moments(values, run.candles, printed, shown, window)
 
         ranges = _ranges(given["costs"])
         drawn  = {}
@@ -218,17 +264,27 @@ class VectorEnv(gymnasium.vector.VectorEnv):
                 if name in ranges:
                     low, high = ranges[name]
                     drawn[DRAWN[name]] = low + (high - low) * u[:, j]
+
             for spec in run.settings.get("instruments", []):
                 for side in ("maker", "taker"):
                     if side in ranges:
                         spec.pop(f"fee_{side}", None)
 
-        quote       = run.settings["quote"]
-        balance     = sum(quote.values()) if isinstance(quote, dict) else float(quote)
-        reward      = given["reward"]
-        length      = given["episode_length"]
-        threads     = given["threads"]
-        batch       = _probatum.Batch(run.candles, n, report=False, **run.settings, **drawn)
+        quote    = run.settings["quote"]
+        balance  = sum(quote.values()) if isinstance(quote, dict) else float(quote)
+        reward   = given["reward"]
+        length   = given["episode_length"]
+        threads  = given["threads"]
+        settings = run.settings if change is None else change(dict(run.settings))
+        batch    = _probatum.Batch(
+            run.candles,
+            n,
+            **settings,
+            **drawn,
+            report = record is not None,
+            record = record or "full",
+        )
+
         self._inner = _probatum.Environment(
             batch, window, onsets, k, ticks,
             reward         = "own" if callable(reward) else reward,
@@ -260,7 +316,6 @@ class VectorEnv(gymnasium.vector.VectorEnv):
 
         kind    = given["actions"]
         choices = np.where(lows == 0.0, 2, 3)
-
         if kind == "box":
             acted = gymnasium.spaces.Box(lows.astype(np.float32), 1.0, (k,), np.float32)
         elif kind == "simplex":
@@ -287,6 +342,7 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         self._lows, self._lever, self._names = lows, float(given["max_leverage"]), names
         self._decode, self._reward = given["decode"], reward
         self._copy, self._layout, self._market = given["copy"], given["layout"], market
+
         self._grid   = (n, window, k, f)
         self._shown  = shown if sampled else None
         self._starts = starts
@@ -296,13 +352,13 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         self._rows    = np.flatnonzero(data.available.any(axis=1))
         self._streams = [stream(seed, f"episodes {i}") for i in range(n)]
         self._episode = np.full(n, -1, dtype=np.int64)
-        self._start   = np.full(n, starts[0], dtype=np.int64)
+        self._start   = np.full(n, starts[0] if record is None else first, dtype=np.int64)
         self._slots   = np.tile(np.arange(k, dtype=np.int64), (n, 1))
         self._out     = np.zeros((n, size), dtype=np.float32)
         self._ended   = None
         self._state   = None
         self._ranges  = ranges
-        self._record  = _Record(held, data, run, seed=seed)
+        self._record  = _Record(held, data, run, seed=seed if record is None else None)
         streams       = {"episodes {i}": "PCG64"}
         if ranges:
             streams["costs"] = "PCG64"
@@ -313,10 +369,9 @@ class VectorEnv(gymnasium.vector.VectorEnv):
                                  _annualised(data), seed=seed, settings=_settings(given))
         provenance.pop("risk_free")
         self.provenance = {**provenance, "streams": streams}
-        self._spec      = _agent._spec(given, data, held, names, provenance["markets"],
-                                       k, sampled, lows,
-                                       choices if kind == "discrete" else None, size,
-                                       (window, k, f), scale)
+        self._spec      = None if record is not None else _agent._spec(
+            given, data, held, names, provenance["markets"], k, sampled, lows,
+            choices if kind == "discrete" else None, size, (window, k, f), scale)
 
 
     @property
@@ -424,6 +479,37 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         self._state = None
 
 
+    def _played(self, act, rows):
+        """The run of an agent's backtest, from the Data's first bar to its last: at each
+        close ``act`` is handed the observation and returns the action, decoded and
+        placed as a step places it, until the account's equity is at or below zero,
+        after which no slot is named, or with orders none placed. Returns what it
+        decided on the Data's ``rows``, each close's weights or each slot's size and
+        offset, NaN where nothing was decided or a slot was not shown."""
+        inner, k, first = self._inner, self._k, self._first
+        orders = self._kind == "orders"
+        one    = np.ones(1, dtype=bool)
+        idle   = np.zeros((1, k, 2)) if orders else np.full((1, k), np.nan)
+        out    = np.full((rows, k, 2) if orders else (rows, k), np.nan)
+
+        inner.reset(one, self._start, self._slots)
+        self._state = None
+
+        for step in range(len(self._record.settings["times"]) - 1 - first):
+            if inner.is_bust(0):
+                decided = idle
+            else:
+                decided = self._decided(act(self._observed()))
+                shown   = inner.shown()
+                out[self._rows[step]] = np.where(shown[..., None] if orders else shown,
+                                                 decided, np.nan)[0]
+
+            inner.step(decided, one)
+            self._state = None
+
+        return out
+
+
     def _observed(self):
         """The observations, in an array of their own unless ``copy`` is off."""
         out = np.empty_like(self._out) if self._copy else self._out
@@ -492,7 +578,7 @@ class VectorEnv(gymnasium.vector.VectorEnv):
             return _discrete(given.reshape(n, k), self._lows, self._lever)
 
         if self._kind == "orders":
-            return given
+            return np.clip(given, (-1.0, 0.0), 1.0)
 
         if self._kind == "box":
             return _box(given, self._lows, self._inner.shown(), self._lever)

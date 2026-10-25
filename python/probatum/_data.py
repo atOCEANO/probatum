@@ -1971,14 +1971,14 @@ def _dated(times, zone):
                       - epoch).days * DAY for t in times], dtype=np.int64)
 
 
-def features(data, values, fill=None):
+def features(data, values, fill=None, whole=False):
     """The ``(T, N, F)`` features ``values`` for ``data``: the array itself, or a
     function of a Data that returns one, given the bars before a slice as well so
-    that it can warm up on them. A feature is finite wherever its instrument is
-    available once its warm-up, the values before its first finite one, is past,
-    counted from the first bar the feature was given; one that is not is refused
-    unless ``fill`` is a finite number to put in its place or ``"previous"``, the
-    instrument's last value before it."""
+    that it can warm up on them, and with ``whole`` returning its values there too. A
+    feature is finite wherever its instrument is available once its warm-up, the
+    values before its first finite one, is past, counted from the first bar the
+    feature was given; one that is not is refused unless ``fill`` is a finite number to
+    put in its place or ``"previous"``, the instrument's last value before it."""
     number = (isinstance(fill, (int, float, np.integer, np.floating))
               and not isinstance(fill, bool))
     if not (fill is None or isinstance(fill, str) and fill == "previous"
@@ -2019,7 +2019,7 @@ def features(data, values, fill=None):
                 series[k] = series[k - 1] if fill == "previous" else fill
             out[rows, instrument, feature] = series
 
-    return _frozen(out[start:])
+    return _frozen(out if whole else out[start:])
 
 
 def _computed(data, values):

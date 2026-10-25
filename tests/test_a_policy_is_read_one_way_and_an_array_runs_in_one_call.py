@@ -2,7 +2,7 @@
 and instruments by label. An array of weights, with its barriers, makes the run the
 Engine makes stepped from Python with the same targets and the same brackets, and one
 of quantities reaches the positions it wants. A class, a model that fits and an agent
-are each refused or not run yet, with what to do instead, and so is anything the run
+with no spec are each refused, with what to do instead, and so is anything the run
 cannot read before it starts. The Result holds what the run recorded, its bars counted
 from its first row, the copy of the policy the run read and what it was given,
 annualized over the whole Data whatever slice of it ran.
@@ -15,8 +15,8 @@ import pandas as pd
 import pytest
 
 import probatum
-from probatum import (DataError, PolicyError, ProbatumNotImplementedError,
-                      ProbatumTypeError, ProbatumValueError, Venue, VenueError)
+from probatum import (DataError, PolicyError, ProbatumTypeError, ProbatumValueError,
+                      SpecError, Venue, VenueError)
 from probatum._venue import _run
 from test_every_depth_gives_one_ledger import placed
 
@@ -326,9 +326,8 @@ def test_what_backtest_does_not_run_is_answered_with_what_to_do_instead():
                                           "predictions as an array, or fit it with "
                                           "probatum.validate"):
         probatum.backtest(Fitted(), data, VENUE)
-    with pytest.raises(ProbatumNotImplementedError, match="a function, which backtest "
-                                                          "does not run as an agent "
-                                                          "yet"):
+    with pytest.raises(SpecError, match="spec: this agent carries no spec; pass spec= "
+                                        "with the env it trained on or its JSON"):
         probatum.backtest(lambda observation: 0.0, data, VENUE)
     with pytest.raises(PolicyError, match=r"an object of type str; pass a \(T, N\) "
                                           r"array"):

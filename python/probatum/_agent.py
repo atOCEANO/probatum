@@ -1,22 +1,32 @@
 """The agent spec: what `env` records of an environment so a backtest shows an agent what
 it saw in training and reads its outputs as they were read, the probes a custom
 function is held to, and the normalisation statistics (Specification, The agent spec;
-ADR 0039)."""
+ADR 0039); and the backtest of an agent, which runs it in one environment of its spec,
+and ``save``, which writes it beside its spec (Specification, An agent in a
+backtest)."""
 
+import contextlib
+import copy
 import hashlib
 import inspect
+import itertools
+import json
 import os
+import pathlib
+import sys
 import warnings
 
 import numpy as np
 
-from . import venues
-from ._backtest import _kind
-from ._data import INTERVALS, Data
-from ._errors import ProbatumValueError, ProbatumWarning, SpecError
-from ._result import _version
+from . import _baselines, venues
+from ._backtest import (_annualised, _kind, _markets, _module, _rate, _repeatable, _sb3,
+                        _slots)
+from ._data import INTERVALS, Data, _count, _when
+from ._errors import (DataError, ProbatumTypeError, ProbatumValueError, ProbatumWarning,
+                      SpecError)
+from ._result import Result, _provenance, _version
 from ._storage import _given as _decoded_json, _plain
-from ._venue import Venue, _changes
+from ._venue import Venue, _changes, _market
 
 PACKAGE = (os.path.dirname(__file__),)
 STATE   = ("equity", "previous_equity", "log_return", "drawdown", "leverage", "turnover",
@@ -95,7 +105,7 @@ def _spec(given, data, venue, names, markets, k, sampled, lows, choices, size, s
     decode = ({"builtin": kind} if decode is None
               else {"custom": _named(decode), "source_hash": _source(decode)})
     account = ACCOUNT + (ORDERS if kind == "orders" else ())
-    source  = venue._source
+
     return _plain({
         "schema":        SCHEMA,
         "window":        int(given["window"]),
@@ -110,6 +120,8 @@ def _spec(given, data, venue, names, markets, k, sampled, lows, choices, size, s
             "mean":      [mean for mean, _ in scale],
             "deviation": [deviation for _, deviation in scale],
         },
+        # what SB3's VecNormalize kept, which probatum.sb3.SpecCallback copies in
+        "sb3":           None,
         "observation":   {
             "size":    size,
             "layout":  given["layout"],
@@ -120,12 +132,7 @@ def _spec(given, data, venue, names, markets, k, sampled, lows, choices, size, s
         "decode":        decode,
         "reward":        reward,
         "tolerance":     float(given["tolerance"]),
-        # the preset a variant was made from and what it changed, as its repr says
-        "venue":         {
-            "name":    source,
-            "taken":   None if source is None else venues._venue(source).taken,
-            "changed": _changes(venue),
-        },
+        "venue":         _venued(venue),
         "training":      {
             "fingerprint": data.fingerprint,
             "interval":    data.interval,
@@ -135,6 +142,17 @@ def _spec(given, data, venue, names, markets, k, sampled, lows, choices, size, s
         },
         "version":       _version(),
     })
+
+
+def _venued(venue):
+    """What the spec records of ``venue``: the preset it was made from, the day that
+    preset was taken and every setting changed from it, as its repr shows them."""
+    source = venue._source
+    return {
+        "name":    source,
+        "taken":   None if source is None else venues._venue(source).taken,
+        "changed": _changes(venue),
+    }
 
 
 def _featured(features, names, markets, interval, width):
@@ -304,6 +322,346 @@ def _trained_venue(spec):
     if held["name"] is None:
         return Venue(**changed)
     return venues._venue(held["name"]).replace(**changed)
+
+
+def _backtested(agent, data, venue, sizing, stop, take_profit, tolerance, record,
+                risk_free, balance=None, costs=1.0, spec=None, features=None,
+                decode=None, instruments=None, baseline=True):
+    """`backtest` of ``agent``, a trained agent: one environment of its spec on the
+    slots' bars at ``venue``, recording at ``record``, the agent asked at each close
+    for its action, with the run's account opened with ``balance`` and its costs
+    multiplied by ``costs`` where a capacity run or a cost sweep gives them, and at the
+    full level its run without costs played at once where ``baseline`` is on, since an
+    agent cannot be copied as it stands to play it later."""
+    for name, given in (("stop", stop), ("take_profit", take_profit)):
+        if given is not None:
+            raise ProbatumValueError(f"{name}: {given!r} beside an agent, which places "
+                                     f"its own trades; leave it out")
+
+    if sizing != "weight":
+        raise ProbatumValueError(f"sizing: {sizing!r} beside an agent, whose spec says "
+                                 f"what its actions trade; leave it out")
+
+    if tolerance != 0.0:
+        raise ProbatumValueError(f"tolerance: {tolerance!r} beside an agent, which trades "
+                                 f"with the tolerance its spec holds; leave it out")
+
+    _rate(risk_free)
+    spec = _found(agent, spec)
+    held = _repeatable(venue)
+    rows, n = len(data), len(data.names)
+    data, columns = _slotted(data, spec, instruments, held)
+
+    if instruments is not None and features is not None and not callable(features):
+        # an array of features is over the Data given, whose slots are taken
+        given = np.asarray(features, dtype=np.float64)
+        if given.ndim != 3 or given.shape[:2] != (rows, n):
+            raise DataError(f"features: shape {given.shape} for a Data of {rows:,} bars "
+                            f"of {_count(n, 'instrument')}; give ({rows}, {n}, F) over "
+                            f"it, whose slots instruments= takes")
+        features = given[:, columns]
+
+    _held(spec, features, decode)
+    overlap, trained = _told(spec, data, held)
+
+    # the environment loads Gymnasium, which no other backtest does
+    from ._env import VectorEnv
+    actions  = spec["actions"]
+    settings = dict(
+        window       = spec["window"],
+        features     = features,
+        layout       = spec["observation"]["layout"],
+        max_leverage = actions.get("max_leverage", 1.0),
+        actions      = actions["space"],
+        max_offset   = actions.get("max_offset", 20),
+        decode       = decode,
+        fill         = spec["fill"],
+        tolerance    = spec["tolerance"],
+        autoreset    = "disabled",
+        seed         = 0,
+    )
+
+    normal = spec["normalisation"]
+    scale  = None if normal is None else list(zip(normal["mean"], normal["deviation"]))
+    shape  = spec["observation"]["shape"]
+
+    def run(change=None):
+        env = VectorEnv._of(data, held, record, scale, shape, balance, costs, change,
+                            **settings)
+        with _evaluated(agent):
+            decided = env._played(_acting(agent, spec), len(data))
+        return env, decided
+
+    env, decided = run()
+
+    inner      = env._inner
+    rate       = _annualised(data)
+    stats      = None if rate is None else inner.stats(0, rate, float(risk_free))
+    provenance = _provenance(data, held, _markets(env._record), _described(agent),
+                             risk_free, rate, record=record, spec=spec, overlap=overlap,
+                             trained_venue=trained)
+
+    full = record == "full"
+    if full and baseline:
+        def again(change):
+            played, _ = run(change)
+            quote   = played._record.settings["quote"]
+            opening = sum(quote.values()) if isinstance(quote, dict) else quote
+            return np.concatenate([[opening], played._inner.equity_curve(0)])
+
+        env._record.policy = again
+        _baselines.computed(env._record)
+
+    return Result._of(inner.tables(0, env._first, list(data.names)), stats,
+                      decided if full else None, inner.is_bust(0), provenance,
+                      env._record)
+
+
+def _found(agent, spec):
+    """The agent spec ``spec`` gives: the spec itself, a path to its JSON or to a
+    directory holding ``spec.json``, or the environment the agent trained in, and where
+    it is None the one an SB3 agent carries on its action space; refused where there is
+    none, or its schema is not the one this probatum reads."""
+    if spec is None:
+        spec = getattr(agent.action_space, "agent_spec", None) if _sb3(agent) else None
+        if spec is None:
+            raise SpecError("spec: this agent carries no spec; pass spec= with the env it "
+                            "trained on or its JSON")
+    elif isinstance(spec, (str, os.PathLike)):
+        path = pathlib.Path(spec)
+        file = path / "spec.json" if path.is_dir() else path
+        try:
+            spec = json.loads(file.read_text(encoding="utf-8"))
+        except OSError as error:
+            raise SpecError(f"spec: {str(file)!r} cannot be read ({error.strerror}); pass "
+                            f"the spec.json probatum.save wrote, or its "
+                            f"directory") from None
+        except ValueError as error:
+            raise SpecError(f"spec: {str(file)!r} holds no JSON ({error}); pass the "
+                            f"spec.json probatum.save wrote") from None
+    elif hasattr(spec, "agent_spec"):
+        spec = spec.agent_spec
+    elif not isinstance(spec, dict):
+        raise ProbatumTypeError(f"spec: {_kind(spec)}; pass the agent spec, a path to its "
+                                f"JSON or the environment the agent trained in")
+
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    if schema != SCHEMA:
+        raise SpecError(f"spec: schema {schema!r}, and this probatum reads schema "
+                        f"{SCHEMA}; pass a spec env.agent_spec recorded")
+
+    return copy.deepcopy(spec)
+
+
+def _slotted(data, spec, instruments, venue):
+    """``data`` as the slots the agent trades, the instruments ``instruments`` names, in
+    that order, or every one, beside each slot's place among ``data``'s instruments;
+    refused where they are not the spec's slots in number, or not an unsampled spec's
+    instruments in order, each the same symbol on the same market, or where a slot is
+    of another market than the agent trained on at ``venue``."""
+    names = data.names
+    if instruments is not None:
+        data = _slots(data, instruments)
+
+    slots, k = data.names, spec["slots"]
+    typed    = "data" if instruments is None else "instruments"
+    if len(slots) != k:
+        raise SpecError(f"{typed}: {_count(len(slots), 'instrument')}, "
+                        f"{', '.join(slots)}, and the agent trades {_count(k, 'slot')}; "
+                        f"name {k} of them with instruments=")
+
+    unsampled = spec["sample"] is None
+    if unsampled and not all(_same(name, instrument, own) for name, instrument, own
+                             in zip(slots, data.instruments, spec["instruments"])):
+        raise SpecError(f"{typed}: {', '.join(slots)}, and the agent trained on "
+                        f"{', '.join(spec['instruments'])}, in that order; name them "
+                        f"with instruments=")
+
+    origin = venue.name or "the venue"
+    for i, (name, instrument) in enumerate(zip(slots, data.instruments)):
+        market = _market(instrument, name, venue, origin)
+        kind   = spec["markets"][i if unsampled else 0]
+        if market != kind:
+            raise SpecError(f"{typed}: {name} is {market} at {origin}, and the agent "
+                            f"trained on it as {kind}; give it the market it trained on")
+
+    return data, [names.index(name) for name in slots]
+
+
+def _same(name, instrument, trained):
+    """Whether the slot ``name``, ``instrument``, is the instrument the spec names
+    ``trained``: the same name, or the same symbol where one of the two Data named it
+    with its market or its venue before it, as a Data does where it holds the symbol on
+    another, two such names being the same only where they are equal."""
+    symbol = instrument.symbol
+    return name == trained or symbol is not None and (
+        trained == symbol or name == symbol and trained.endswith(f":{symbol}"))
+
+
+def _told(spec, data, venue):
+    """Warn where ``data``'s bars overlap the training span ``spec`` records, ``venue``
+    is not the venue it records or the bars are of another interval, and return the
+    overlap, the first and the last time both hold, or None, beside whether the venue
+    is the one the agent trained at."""
+    trained    = spec["training"]
+    start, end = (int(np.datetime64(trained[key].removesuffix("Z"), "ns").astype(np.int64))
+                  for key in ("start", "end"))
+    first, last = int(data.time[0]), int(data.time[-1])
+
+    overlap = None
+    if first <= end and last >= start:
+        overlap = [_iso(max(first, start)), _iso(min(last, end))]
+        warnings.warn(f"data: bars from {_when(first)} to {_when(last)}, which overlap the "
+                      f"agent's training span from {_when(start)} to {_when(end)}; give "
+                      f"bars after {_when(end)} for a run out of sample", ProbatumWarning,
+                      skip_file_prefixes=PACKAGE)
+
+    at = _plain(_venued(venue))
+    if at != spec["venue"]:
+        warnings.warn(f"venue: {_said(at)}, and the agent trained at "
+                      f"{_said(spec['venue'])}; the run judges it at a venue it did not "
+                      f"learn", ProbatumWarning, skip_file_prefixes=PACKAGE)
+
+    interval = trained["interval"]
+    if data.interval != interval:
+        warnings.warn(f"data: {data.interval} bars, and the agent trained on {interval} "
+                      f"bars, so its window of {spec['window']} spans another length of "
+                      f"time; give {interval} bars", ProbatumWarning,
+                      skip_file_prefixes=PACKAGE)
+
+    return overlap, at == spec["venue"]
+
+
+def _said(venue):
+    """What a warning says of a venue as a spec records it."""
+    said = venue["name"] or "a venue built by hand"
+    if venue["taken"] is not None:
+        said += f" taken {venue['taken']}"
+
+    if venue["changed"]:
+        said += f" with {', '.join(venue['changed'])} changed"
+
+    return said
+
+
+def _acting(agent, spec):
+    """A function of the observation that returns ``agent``'s action for it, the
+    observation first normalised by the statistics SB3's VecNormalize kept where
+    ``spec`` holds them: an SB3 model's or policy's deterministic prediction, carrying a
+    recurrent policy's state from one close to the next; a torch module's output for it
+    as a tensor on the module's device, worked with no gradient; or a function's
+    output; the first element of a tuple either returns being the action."""
+    stats = spec["sb3"]
+    parts = {}
+
+    if stats is not None:
+        stats = _decoded_json(stats)
+        # a flat observation's statistics are its own, a dict's each key's it normalised
+        for key, part in ({None: stats} if "mean" in stats else stats).items():
+            if isinstance(part, dict):
+                parts[key] = (np.asarray(part["mean"]),
+                              np.sqrt(np.asarray(part["var"]) + stats["epsilon"]),
+                              stats["clip"])
+
+    def seen(obs):
+        if isinstance(obs, dict):
+            return {key: _clipped(value, *parts[key]) if key in parts else value
+                    for key, value in obs.items()}
+        return _clipped(obs, *parts[None]) if None in parts else obs
+
+    if _sb3(agent):
+        state = [None, np.ones(1, dtype=bool)]
+
+        def act(obs):
+            action, state[0] = agent.predict(seen(obs), state=state[0],
+                                             episode_start=state[1], deterministic=True)
+            state[1] = np.zeros(1, dtype=bool)
+            return action
+
+        return act
+
+    if _module(agent):
+        torch  = sys.modules["torch"]
+        on     = next(itertools.chain(agent.parameters(), agent.buffers()), None)
+        device = torch.device("cpu") if on is None else on.device
+
+        def act(obs):
+            obs   = seen(obs)
+            given = ({key: torch.as_tensor(value, device=device)
+                      for key, value in obs.items()} if isinstance(obs, dict)
+                     else torch.as_tensor(obs, device=device))
+            with torch.no_grad():
+                out = agent(given)
+            out = out[0] if isinstance(out, tuple) else out
+            return out.cpu().numpy() if isinstance(out, torch.Tensor) else out
+
+        return act
+
+    def act(obs):
+        out = agent(seen(obs))
+        return out[0] if isinstance(out, tuple) else out
+
+    return act
+
+
+def _clipped(values, mean, deviation, clip):
+    """``values`` as SB3's VecNormalize gives them, over their ``mean`` and
+    ``deviation``, clipped at ``clip`` and rounded to float32."""
+    return np.clip((values - mean) / deviation, -clip, clip).astype(np.float32)
+
+
+@contextlib.contextmanager
+def _evaluated(agent):
+    """``agent`` in eval mode for a run where it is a torch module and no SB3 policy,
+    which predicts in it of its own accord, and each of its modules in the mode it was
+    in after."""
+    module = _module(agent) and not _sb3(agent)
+    modes  = [(part, part.training) for part in agent.modules()] if module else []
+    if module:
+        agent.eval()
+
+    try:
+        yield
+    finally:
+        for part, mode in modes:
+            part.training = mode
+
+
+def _described(agent):
+    """What a provenance says of ``agent``."""
+    if _sb3(agent):
+        return (f"the SB3 {'policy' if _module(agent) else 'model'} "
+                f"{type(agent).__name__}")
+    if _module(agent):
+        return f"the torch module {type(agent).__name__}"
+    return f"the {'function' if inspect.isroutine(agent) else 'callable'} {_named(agent)}"
+
+
+def save(agent, path, spec=None):
+    """Write ``agent`` into the directory ``path``, made where it is missing, beside the
+    spec it trained with as ``spec.json``: a torch module as its state dict,
+    ``weights.pt``, and an SB3 model as its own zip, ``agent.zip``, so no module is
+    pickled. ``spec`` is the agent spec, a path to its JSON or the environment the
+    agent trained in, an SB3 agent's own where it is left out (ADR 0039)."""
+    model = _sb3(agent) and not _module(agent)
+    if not (model or _module(agent)):
+        raise ProbatumTypeError(f"agent: {_kind(agent)}, which save writes no weights of; "
+                                f"pass a torch module or an SB3 model, and keep a "
+                                f"function in your own code")
+
+    held   = _found(agent, spec)
+    folder = pathlib.Path(path)
+    if folder.exists() and not folder.is_dir():
+        raise ProbatumValueError(f"path: {str(path)!r} is a file; name a directory")
+
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "spec.json").write_text(json.dumps(_plain(held), indent=2) + "\n",
+                                      encoding="utf-8")
+
+    if model:
+        agent.save(folder / "agent.zip")
+    else:
+        sys.modules["torch"].save(agent.state_dict(), folder / "weights.pt")
 
 
 def _probe(names, markets, interval):

@@ -1,7 +1,7 @@
 """A run set beside three baselines on its own data and venue (Specification,
 Baselines): holding cash, buying and holding an equal share of every instrument, and
 the same policy with the costs of trading removed and every rule kept, each read when
-first asked for."""
+first asked for, an agent's as its backtest runs."""
 
 import os
 import warnings
@@ -148,8 +148,9 @@ def _costless(settings):
 def _frictionless(record):
     """The run's policy played again without the costs of trading: an array's rows,
     sizing, tolerance and barriers, or the copy of a Strategy taken at the call,
-    played once; missing for a loop the caller stepped, and where the play raises or
-    did not finish, with a warning that says so."""
+    played once, or an agent run again in an environment of its own; missing for a loop
+    the caller stepped, and where the play raises or did not finish, with a warning
+    that says so."""
     missing = np.full(len(record.settings["times"]) - record.start, np.nan)
 
     # the policy leaves the record before its play, so it is played at most once, and
@@ -165,13 +166,16 @@ def _frictionless(record):
     if isinstance(policy, Strategy):
         def play(engine, start):
             _play(policy, _Run(engine, record.data, start, _markets(record.settings)))
+    elif callable(policy):
+        play = None
     else:
         def play(engine, start):
             run_array(engine, *policy, start=start)
 
     record.playing = True
     try:
-        equity = _equity(record, (_costless, play))
+        # an agent's run is its own, given the settings to change
+        equity = policy(_costless) if play is None else _equity(record, (_costless, play))
     except Exception as error:
         warnings.warn(f"baselines: the run without costs raised "
                       f"{type(error).__name__}: {error}; its column is missing",

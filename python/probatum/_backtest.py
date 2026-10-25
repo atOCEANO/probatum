@@ -10,7 +10,7 @@ import types
 import numpy as np
 
 from ._data import DAY, Data, _chosen, _columns, _dated, _when
-from ._errors import (DataError, PolicyError, ProbatumNotImplementedError,
+from ._errors import (DataError, PolicyError, ProbatumError, ProbatumNotImplementedError,
                       ProbatumTypeError, ProbatumValueError, VenueError)
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
 from ._result import Result, _Record, _provenance
@@ -22,7 +22,8 @@ RECORDS = ("full", "account")
 
 
 def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
-             tolerance=0.0, record="full", risk_free=0.0):
+             tolerance=0.0, record="full", risk_free=0.0, spec=None, features=None,
+             decode=None, instruments=None):
     """Run ``policy`` on ``data``, a Data or anything one is built from, at ``venue``,
     a Venue or a preset's name, and return its `Result`.
 
@@ -35,8 +36,17 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     t is the decision at the close of bar t, a weight of equity or, with ``sizing``
     of ``"quantity"``, the position wanted, in base units or contracts, a NaN holding
     and the last row never read. A class is refused for an instance and a model that
-    fits for its predictions, and an agent is not run yet. A Strategy runs on a deep
-    copy of itself, which is the Result's ``policy``, deciding at each close.
+    fits for its predictions. A Strategy runs on a deep copy of itself, which is the
+    Result's ``policy``, deciding at each close.
+
+    A trained agent, an SB3 model or policy, a torch module or any other function of
+    the observation, runs as one environment of its ``spec``, the agent spec, a path to
+    its JSON or to a directory holding ``spec.json``, or the environment it trained in,
+    an SB3 agent's own where it is left out. It trades the Data's instruments, or those
+    ``instruments`` names, and a custom function it trained with is passed again as
+    ``features`` or ``decode`` and held to the spec; at each close it is asked for its
+    deterministic action on the observation training showed it, and the Result's
+    ``policy`` holds what it decided (Specification, An agent in a backtest).
 
     ``stop`` and ``take_profit`` give each round trip of an array run its barriers,
     each a return from the average entry, a number, or an array or a table of them
@@ -51,25 +61,32 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     levels).
     """
     return _backtested(policy, data, venue, sizing, stop, take_profit, tolerance,
-                       record, risk_free)
+                       record, risk_free, spec=spec, features=features, decode=decode,
+                       instruments=instruments)
 
 
 def _backtested(policy, data, venue, sizing, stop, take_profit, tolerance, record,
-                risk_free, balance=None, costs=1.0):
+                risk_free, balance=None, costs=1.0, spec=None, features=None,
+                decode=None, instruments=None, baseline=True):
     """`backtest`, its account opened with ``balance`` where given and every cost its
     venue charges for trading multiplied by ``costs``, as capacity and the cost sweeps
-    run a policy (Specification, Capacity and costs)."""
+    run a policy, an agent's run without costs played at once only where ``baseline``
+    is on, as a sweep reads no baseline (Specification, Capacity and costs)."""
     _level(record)
     data = data if isinstance(data, Data) else Data(data)
     if not len(data) or not data.available.any():
         raise DataError("data: no bars to run; give a Data that has some")
 
+    given = dict(spec=spec, features=features, decode=decode, instruments=instruments)
+
     if _table_like(policy) or _array_like(policy):
+        _unasked("a table" if _table_like(policy) else "an array", given)
         rows = _rows(policy, data)
     elif isinstance(policy, type):
         raise PolicyError(f"policy: got the class {policy.__name__}, not an instance; "
                           f"pass {policy.__name__}()")
     elif isinstance(policy, Strategy):
+        _unasked("a Strategy", given)
         return _decided(policy, data, venue, sizing, stop, take_profit, tolerance,
                         risk_free, record, balance, costs)
     elif hasattr(policy, "fit") and not callable(policy):
@@ -77,9 +94,9 @@ def _backtested(policy, data, venue, sizing, stop, take_profit, tolerance, recor
                           f"does not fit; pass its predictions as an array, or fit "
                           f"it with probatum.validate")
     elif _agent(policy) or callable(policy):
-        raise ProbatumNotImplementedError(f"policy: {_kind(policy)}, which backtest "
-                                          f"does not run as an agent yet; pass its "
-                                          f"decisions as an array")
+        from ._agent import _backtested as judged
+        return judged(policy, data, venue, sizing, stop, take_profit, tolerance, record,
+                      risk_free, balance=balance, costs=costs, baseline=baseline, **given)
     else:
         raise PolicyError(f"policy: {_kind(policy)}; pass a (T, N) array of weights or "
                           f"quantities, or a table of them")
@@ -179,6 +196,25 @@ def _rows(policy, data):
 
     _finite("policy", rows, data)
     return rows
+
+
+def _slots(data, instruments):
+    """``data``'s instruments ``instruments`` names, in that order, as an agent trades
+    them, refused as ``instruments``."""
+    try:
+        return data.select(instruments)
+    except ProbatumError as error:
+        raise type(error)(f"instruments: "
+                          f"{str(error).removeprefix('names: ')}") from None
+
+
+def _unasked(what, given):
+    """Refuse an agent's settings ``given`` beside ``what``, a policy that is no agent."""
+    for name, value in given.items():
+        if value is not None:
+            shown = repr(value) if name == "instruments" else _kind(value)
+            raise ProbatumValueError(f"{name}: {shown} beside {what}, which is no agent; "
+                                     f"leave it out")
 
 
 def _sized(sizing, tolerance):
@@ -316,15 +352,26 @@ def _array_like(value):
 def _agent(policy):
     """Whether ``policy`` is a Stable-Baselines3 model or policy or a torch module, each
     recognised only where its framework is already imported."""
-    sb3 = sys.modules.get("stable_baselines3")
-    if sb3 is not None:
-        common = sys.modules.get("stable_baselines3.common.policies")
-        kinds  = [sb3.common.base_class.BaseAlgorithm]
-        if common is not None:
-            kinds.append(common.BasePolicy)
-        if isinstance(policy, tuple(kinds)):
-            return True
+    return _sb3(policy) or _module(policy)
 
+
+def _sb3(policy):
+    """Whether ``policy`` is a Stable-Baselines3 model or policy, recognised only where
+    stable_baselines3 is already imported."""
+    sb3 = sys.modules.get("stable_baselines3")
+    if sb3 is None:
+        return False
+
+    common = sys.modules.get("stable_baselines3.common.policies")
+    kinds  = [sb3.common.base_class.BaseAlgorithm]
+    if common is not None:
+        kinds.append(common.BasePolicy)
+    return isinstance(policy, tuple(kinds))
+
+
+def _module(policy):
+    """Whether ``policy`` is a torch module, recognised only where torch is already
+    imported."""
     torch = sys.modules.get("torch")
     return torch is not None and isinstance(policy, torch.nn.Module)
 

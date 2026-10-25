@@ -258,7 +258,7 @@ def bisected(monkeypatch, cost):
     paying ``cost(scale)`` basis points a round trip, and the break-even it found."""
     ran = []
 
-    def backtested(*given, costs):
+    def backtested(*given, costs, **settings):
         ran.append(costs)
         return costs
 

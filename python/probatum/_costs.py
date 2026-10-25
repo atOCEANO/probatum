@@ -8,7 +8,7 @@ import warnings
 
 import numpy as np
 
-from ._backtest import _backtested, _real
+from ._backtest import _backtested, _real, _slots
 from ._data import Data
 from ._errors import ProbatumTypeError, ProbatumValueError, ProbatumWarning, VenueError
 from ._result import _money
@@ -116,16 +116,17 @@ class CostCurve(_Frozen):
 
 
 def capacity(policy, data, venue, balances, sizing="weight", stop=None,
-             take_profit=None, tolerance=0.0, risk_free=0.0):
+             take_profit=None, tolerance=0.0, risk_free=0.0, spec=None, features=None,
+             decode=None, instruments=None):
     """How ``policy`` holds up as its account grows: a backtest of it on ``data`` at
     ``venue``, a Venue or a preset's name, with the account opening at each of
     ``balances`` in turn, each a number or ``{"spot": s, "margin": m}`` as a Venue's
-    balance is, and the rest of backtest's settings, as a `Capacity` of each run's
-    return, Sharpe, impact paid, share of orders the liquidity budget held, round-trip
-    cost and turnover (ADR 0045; Specification, Capacity). A weight is a share of
-    equity, so its positions grow with the balance; a quantity does not, and
-    ``sizing="quantity"`` is refused, as is, before any run, a balance the account
-    cannot open with."""
+    balance is, and the rest of backtest's settings, an agent's among them, as a
+    `Capacity` of each run's return, Sharpe, impact paid, share of orders the liquidity
+    budget held, round-trip cost and turnover (ADR 0045; Specification, Capacity). A
+    weight is a share of equity, so its positions grow with the balance; a quantity
+    does not, and ``sizing="quantity"`` is refused, as is, before any run, a balance the
+    account cannot open with."""
     if isinstance(sizing, str) and sizing == "quantity":
         raise ProbatumValueError("sizing: \"quantity\", whose positions do not grow "
                                  "with the balance; give weights, which capacity "
@@ -134,12 +135,17 @@ def capacity(policy, data, venue, balances, sizing="weight", stop=None,
     balances = _listed("balances", balances, _opening, "give the opening balances to "
                        "run at, such as [10_000.0, 100_000.0, 1_000_000.0]")
 
-    data = data if isinstance(data, Data) else Data(data)
-    _shaped(balances, _venue_of(venue), data)
+    data   = data if isinstance(data, Data) else Data(data)
+    # the account an agent opens trades its slots alone
+    traded = data if instruments is None else _slots(data, instruments)
 
-    runs = [_measured(_backtested(policy, data, venue, sizing, stop, take_profit,
-                                  tolerance, "full", risk_free, balance=balance), data)
-            for balance in balances]
+    _shaped(balances, _venue_of(venue), traded)
+
+    agent = dict(spec=spec, features=features, decode=decode, instruments=instruments)
+    runs  = [_measured(_backtested(policy, data, venue, sizing, stop, take_profit,
+                                   tolerance, "full", risk_free, balance=balance,
+                                   baseline=False, **agent), traded)
+             for balance in balances]
 
     return Capacity(balances, [run.total_return_pct for run in runs],
                     [run.sharpe for run in runs], [run.costs["impact"] for run in runs],
@@ -148,25 +154,30 @@ def capacity(policy, data, venue, balances, sizing="weight", stop=None,
 
 
 def cost_curve(policy, data, venue, scales=SCALES, sizing="weight", stop=None,
-               take_profit=None, tolerance=0.0, risk_free=0.0):
+               take_profit=None, tolerance=0.0, risk_free=0.0, spec=None, features=None,
+               decode=None, instruments=None):
     """What ``policy`` keeps as its costs grow: a backtest of it on ``data`` at
     ``venue``, a Venue or a preset's name, with every cost the venue charges for
     trading multiplied by each of ``scales`` in turn, each fee rate above 0, maker and
     taker, the spread, fixed or estimated, the slippage and the impact coefficient, and
-    the rest of backtest's settings, as a `CostCurve` of each run's round-trip cost,
-    return, Sharpe, round trips, each cost paid and turnover (ADR 0045; Specification,
-    Cost sweeps). A rebate, a fee rate below 0, the liquidity budget, funding and a
-    liquidation fee the venue sets are not moved, one it does not set being the taker
-    rate and moving as that does; and a venue that charges none of the four on the
-    data's instruments is refused."""
+    the rest of backtest's settings, an agent's among them, as a `CostCurve` of each
+    run's round-trip cost, return, Sharpe, round trips, each cost paid and turnover
+    (ADR 0045; Specification, Cost sweeps). A rebate, a fee rate below 0, the liquidity
+    budget, funding and a liquidation fee the venue sets are not moved, one it does not
+    set being the taker rate and moving as that does; and a venue that charges none of
+    the four on the data's instruments is refused."""
     scales = _listed("scales", scales, _scale, "give the multiples of the venue's "
                      "costs to run at, numbers from 0, such as (0.0, 1.0, 2.0)")
-    data = data if isinstance(data, Data) else Data(data)
-    _charged(venue, data)
+    data   = data if isinstance(data, Data) else Data(data)
+    traded = data if instruments is None else _slots(data, instruments)
 
-    runs = [_measured(_backtested(policy, data, venue, sizing, stop, take_profit,
-                                  tolerance, "full", risk_free, costs=scale), data)
-            for scale in scales]
+    _charged(venue, traded)
+
+    agent = dict(spec=spec, features=features, decode=decode, instruments=instruments)
+    runs  = [_measured(_backtested(policy, data, venue, sizing, stop, take_profit,
+                                   tolerance, "full", risk_free, costs=scale,
+                                   baseline=False, **agent), traded)
+             for scale in scales]
 
     return CostCurve(scales, [run.cost_bps for run in runs],
                      [run.total_return_pct for run in runs],
@@ -176,28 +187,33 @@ def cost_curve(policy, data, venue, scales=SCALES, sizing="weight", stop=None,
 
 
 def breakeven_bps(policy, data, venue, ceiling=100.0, precision=0.05, sizing="weight",
-                  stop=None, take_profit=None, tolerance=0.0, risk_free=0.0):
+                  stop=None, take_profit=None, tolerance=0.0, risk_free=0.0, spec=None,
+                  features=None, decode=None, instruments=None):
     """The round-trip cost, in basis points, at which ``policy`` stops making money on
-    ``data`` at ``venue``: what its fills paid where its return reaches zero as every
-    cost the venue charges for trading is multiplied, the multiple bisected from 0 and
-    ``ceiling`` until the two runs that bracket it pay within ``precision`` basis
-    points of each other, the mean of the two, or the lower one's where the upper
-    filled nothing, with a warning where no scale between them brings them that
-    close. None where it makes nothing with no costs at all, and where it still makes
-    money at ``ceiling``, that run's cost, with a warning; the costs change which
-    fills happen, so this finds a crossing rather than the crossing (ADR 0045;
-    Specification, Cost sweeps)."""
+    ``data`` at ``venue``, run with backtest's settings, an agent's among them: what its
+    fills paid where its return reaches zero as every cost the venue charges for
+    trading is multiplied, the multiple bisected from 0 and ``ceiling`` until the two
+    runs that bracket it pay within ``precision`` basis points of each other, the mean
+    of the two, or the lower one's where the upper filled nothing, with a warning where
+    no scale between them brings them that close. None where it makes nothing with no
+    costs at all, and where it still makes money at ``ceiling``, that run's cost, with a
+    warning; the costs change which fills happen, so this finds a crossing rather than
+    the crossing (ADR 0045; Specification, Cost sweeps)."""
     ceiling   = _positive("ceiling", ceiling, "give the largest multiple of the "
                           "venue's costs to try, such as 100")
     precision = _positive("precision", precision, "give the basis points the answer "
                           "may be off by, such as 0.05")
 
-    data = data if isinstance(data, Data) else Data(data)
-    _charged(venue, data)
+    data   = data if isinstance(data, Data) else Data(data)
+    traded = data if instruments is None else _slots(data, instruments)
+    agent  = dict(spec=spec, features=features, decode=decode, instruments=instruments)
+
+    _charged(venue, traded)
 
     def ran(scale):
         run = _measured(_backtested(policy, data, venue, sizing, stop, take_profit,
-                                    tolerance, "full", risk_free, costs=scale), data)
+                                    tolerance, "full", risk_free, costs=scale,
+                                    baseline=False, **agent), traded)
         return run.total_return_pct > 0.0, run.cost_bps
 
     gains, low_cost = ran(0.0)

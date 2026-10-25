@@ -23,7 +23,8 @@ every cost its venue charges for trading multiplied together, where ``breakeven_
 finds the round-trip cost at which it stops making money. ``env`` steps accounts at a
 venue on a Data together in Rust as a Gymnasium vector environment, each in episodes
 drawn from a stream of its own, and ``rl`` holds it with one environment of it; both
-load Gymnasium when first reached, which nothing else here imports.
+load Gymnasium when first reached, which nothing else here imports but the backtest of
+an agent trained there, which ``save`` writes beside the spec it trained with.
 ``stats`` says how far a run's statistics can be trusted, read from a Result or any
 series of returns: the Sharpe's interval, its probability of beating a benchmark and
 the track record that would show it; and how far a search's winner can, judged across
@@ -48,6 +49,7 @@ from ._strategy import Strategy
 from ._engine import Engine
 from ._result import Result, combine
 from ._backtest import backtest
+from ._agent import save
 from ._costs import Capacity, CostCurve, breakeven_bps, capacity, cost_curve
 from ._labels import Labels, labels
 from ._search import Study, search
@@ -60,7 +62,7 @@ __all__ = [
     "Data", "Engine", "Float", "Instrument", "Int", "Labels", "Market", "Result",
     "Strategy", "Study", "Venue",
     "backtest", "breakeven_bps", "capacity", "chart", "chart_defaults", "combine",
-    "cost_curve", "labels", "search", "to_ohlcv", "validate",
+    "cost_curve", "labels", "save", "search", "to_ohlcv", "validate",
     "cv", "metrics", "plot", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
@@ -79,10 +81,10 @@ except Exception:
 def __getattr__(name):
     # rl, env and sb3 are imported when first reached rather than with the package,
     # and left out of __all__ so a star import reaches none of them, since they import
-    # Gymnasium, which a backtest never loads (ADR 0044), and sb3 stable_baselines3,
-    # which almost no install has. import_module rather than `from . import rl`, which
-    # resolves the name through getattr on this very module and recurses until the
-    # stack ends
+    # Gymnasium, which a backtest loads only to run an agent (ADR 0044), and sb3
+    # stable_baselines3, which almost no install has. import_module rather than
+    # `from . import rl`, which resolves the name through getattr on this very module
+    # and recurses until the stack ends
     import importlib
 
     if name in ("rl", "sb3"):
