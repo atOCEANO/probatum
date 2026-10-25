@@ -1,19 +1,21 @@
 """Stable-Baselines3 adapter for the environment ``probatum.env`` returns.
 
 SB3 does not consume a Gymnasium vector env directly; it wants a single ``gym.Env``
-it vectorizes itself, or its own ``VecEnv``. ``ProbatumVecEnv`` presents the batched,
-GIL-free ``VectorEnv`` as an SB3 ``VecEnv``, so PPO, A2C, and the rest of SB3 train
-on it without giving up the batch. The mapping is a straight remap rather than a
-re-vectorization: it switches the environment to same-step autoreset (a finished
-env's step returns the next episode's first observation, the true final under
+it vectorizes itself, or its own ``VecEnv``. ``wrap`` presents the batched, GIL-free
+``VectorEnv`` as an SB3 ``VecEnv``, a ``ProbatumVecEnv``, so PPO, A2C, and the rest of
+SB3 train on it without giving up the batch. The mapping is a straight remap rather
+than a re-vectorization: it switches the environment to same-step autoreset (a
+finished env's step returns the next episode's first observation, the true final under
 ``final_obs``), which is exactly the SB3 ``VecEnv`` contract, so a done env's final
 observation becomes SB3's ``terminal_observation`` (ADR 0038), and to an observation
-of its own each step, which SB3 keeps across the step after it.
+of its own each step, which SB3 keeps across the step after it. The agent spec rides
+on a copy of the action space, which SB3 saves into the model's zip, so a model loaded
+again is backtested as it trained, and ``SpecCallback`` copies ``VecNormalize``'s
+observation statistics into it after each rollout (ADR 0039).
 
     from stable_baselines3 import PPO
-    from probatum.sb3 import ProbatumVecEnv
 
-    venv = ProbatumVecEnv(probatum.env(data, venue, window=32, num_envs=8, seed=0))
+    venv = probatum.sb3.wrap(probatum.env(data, venue, window=32, num_envs=8, seed=0))
     model = PPO("MlpPolicy", venv)
     model.learn(total_timesteps=100_000)
 
@@ -22,25 +24,39 @@ Needs stable-baselines3: ``pip install 'probatum[sb3]'``.
 
 from __future__ import annotations
 
+import copy
+
 import gymnasium
 import numpy as np
 
 try:
+    from stable_baselines3.common.callbacks import BaseCallback
     from stable_baselines3.common.vec_env import VecEnv
 except ImportError as exc:
     raise ImportError(
         "stable-baselines3 is required for probatum.sb3; pip install 'probatum[sb3]'"
     ) from exc
 
-__all__ = ["ProbatumVecEnv"]
+from ._errors import SpecError
+from ._storage import _plain
+
+__all__ = ["ProbatumVecEnv", "SpecCallback", "wrap"]
+
+
+def wrap(env):
+    """``env``, the environment ``probatum.env`` returns, as a Stable-Baselines3
+    ``VecEnv`` any SB3 algorithm trains on, a ``ProbatumVecEnv`` carrying its agent
+    spec on a copy of its action space."""
+    return ProbatumVecEnv(env)
 
 
 class ProbatumVecEnv(VecEnv):
-    """Present a ``probatum.rl.VectorEnv`` as a Stable-Baselines3 ``VecEnv``.
+    """Present a ``probatum.rl.VectorEnv`` as a Stable-Baselines3 ``VecEnv``, as
+    ``wrap`` builds it.
 
-    Construct it from a built ``VectorEnv`` and hand it to any SB3 algorithm. The
-    underlying env keeps ownership of the batch, the observation, the reward, and
-    the action decoding; this only translates the step and reset conventions.
+    The underlying env keeps ownership of the batch, the observation, the reward, and
+    the action decoding; this only translates the step and reset conventions, and
+    carries the env's agent spec on a copy of its action space as ``agent_spec``.
     """
 
 
@@ -52,10 +68,21 @@ class ProbatumVecEnv(VecEnv):
         env._copy          = True
         env.provenance["settings"].update(autoreset="same_step", copy=True)
         self._env = env
-        super().__init__(env.num_envs, env.single_observation_space, env.single_action_space)
+
+        # the space SB3 pickles into a saved model's zip, so the spec loads with it
+        acted            = copy.deepcopy(env.single_action_space)
+        acted.agent_spec = env.agent_spec
+        super().__init__(env.num_envs, env.single_observation_space, acted)
 
         self._actions    = None
         self._reset_seed = None
+
+
+    @property
+    def agent_spec(self):
+        """The agent spec the action space carries, with any statistics
+        ``SpecCallback`` copied in."""
+        return copy.deepcopy(self.action_space.agent_spec)
 
 
     def reset(self):
@@ -131,3 +158,43 @@ class ProbatumVecEnv(VecEnv):
 
     def env_is_wrapped(self, wrapper_class, indices=None):
         return [False] * self._count(indices)
+
+
+class SpecCallback(BaseCallback):
+    """An SB3 callback that copies ``VecNormalize``'s observation statistics, each
+    feature's mean and variance, by key for a dict, its clip and its epsilon, into the
+    agent spec on the model's action space after each rollout, and into the spec of the
+    environment ``wrap`` presents, so a backtest shows the agent the observation it
+    learned on whichever spec it is given. Pass it to ``learn`` with a ``VecNormalize``
+    over ``wrap``'s environment."""
+
+
+    def _init_callback(self):
+        if getattr(self.model.action_space, "agent_spec", None) is None:
+            raise SpecError("callback: the model's action space carries no agent spec; "
+                            "train it on probatum.sb3.wrap(env)")
+
+
+    def _on_step(self):
+        return True
+
+
+    def _on_rollout_end(self):
+        normalising = self.model.get_vec_normalize_env()
+        if normalising is None or not normalising.norm_obs:
+            return
+
+        rms  = normalising.obs_rms
+        held = {"clip": float(normalising.clip_obs), "epsilon": float(normalising.epsilon)}
+
+        if isinstance(rms, dict):
+            for key, part in rms.items():
+                held[key] = {"mean": part.mean.tolist(), "var": part.var.tolist()}
+        else:
+            held.update(mean=rms.mean.tolist(), var=rms.var.tolist())
+
+        self.model.action_space.agent_spec["sb3"] = _plain(held)
+
+        inner = self.training_env.unwrapped
+        if isinstance(inner, ProbatumVecEnv):
+            inner._env._spec["sb3"] = _plain(held)
