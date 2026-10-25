@@ -16,6 +16,7 @@ import math
 import re
 import warnings
 
+import gymnasium
 import numpy as np
 import pandas as pd
 import pytest
@@ -92,6 +93,13 @@ def widened(data):
     """unprobed with a third feature."""
     out = unprobed(data)
     return np.concatenate([out, out[:, :, :1]], axis=2)
+
+
+def relative(data):
+    """Each instrument's close over the mean close of every instrument at the bar, a
+    feature only the whole universe gives."""
+    closes = data.closes
+    return (closes / np.nanmean(closes, axis=1, keepdims=True))[:, :, None]
 
 
 def paired(step=HOUR, rows=300, seed=3, market="linear"):
@@ -262,12 +270,14 @@ def test_an_agent_s_spec_is_read_from_itself_its_file_its_directory_or_its_envir
     data   = universe()
     env    = probatum.env(data[:150], VENUE, window=8, seed=1)
     single = probatum.rl.Env(data[:150], VENUE, window=8, seed=1)
+    made   = gymnasium.make("probatum/Trading-v0", data=data[:150], venue=VENUE, window=8,
+                            seed=1)
     spec   = env.agent_spec
     (tmp_path / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
 
     runs = [probatum.backtest(Agent(env.single_action_space), data[150:], VENUE,
                               spec=given)
-            for given in (spec, tmp_path / "spec.json", str(tmp_path), env, single)]
+            for given in (spec, tmp_path / "spec.json", str(tmp_path), env, single, made)]
 
     for result in runs:
         assert np.array_equal(result.equity, runs[0].equity)
@@ -431,6 +441,20 @@ def test_a_sampled_agent_trades_the_instruments_named_as_its_slots():
     again = probatum.backtest(result.policy, data[150:].select(["ETHUSDT"]), VENUE)
 
     assert np.array_equal(again.equity, result.equity)
+
+
+def test_a_sampled_agent_s_features_are_worked_over_the_universe_as_in_training():
+    # its function saw every instrument in training, of which its slot is one
+    data  = universe()
+    env   = probatum.env(data[:150], VENUE, window=8, sample=1, features=relative, seed=1)
+    agent = Agent(env.single_action_space)
+
+    probatum.backtest(agent, data[150:], VENUE, spec=env, features=relative,
+                      instruments=["ETHUSDT"])
+
+    # the first close's window, the eight bars to the slice's first, of ETHUSDT's column
+    window = relative(data)[143:151, 1, 0].astype(np.float32)
+    assert agent.seen[0][0, :8].tolist() == window.tolist() != [1.0] * 8
 
 
 def test_an_agent_trades_each_slot_on_the_market_it_trained_on():

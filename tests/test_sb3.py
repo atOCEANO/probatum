@@ -256,6 +256,56 @@ def test_the_callback_copies_a_dict_observation_s_statistics_key_by_key():
     assert np.array_equal(again.equity, result.equity)
 
 
+def test_a_model_s_statistics_reach_no_environment_s_spec():
+    # another agent trained on the environment, or on a copy of it, would otherwise see
+    # an observation normalised for this one
+    env      = probatum.env(series(), VENUE, window=8, num_envs=2, seed=0)
+    model, _ = trained(env)
+
+    assert model.action_space.agent_spec["sb3"] is not None
+    assert env.agent_spec["sb3"] is None and env.clone().agent_spec["sb3"] is None
+    assert probatum.sb3.wrap(env).agent_spec["sb3"] is None
+
+
+def test_a_model_trained_again_on_another_environment_takes_its_spec():
+    # as a walk forward trains on each later span in turn
+    data         = universe()
+    early, later = (probatum.env(data[a:b], PERP, window=8, num_envs=4, seed=1,
+                                 normalise=True) for a, b in ((0, 150), (150, 300)))
+    model, _ = trained(early)
+
+    model.set_env(VecNormalize(probatum.sb3.wrap(later)))
+    model.learn(total_timesteps=64, callback=probatum.sb3.SpecCallback())
+    spec = model.action_space.agent_spec
+
+    assert spec["training"] == later.agent_spec["training"] != early.agent_spec["training"]
+    assert spec["normalisation"] == later.agent_spec["normalisation"]
+    assert spec["sb3"]["mean"]   == model.get_vec_normalize_env().obs_rms.mean.tolist()
+
+
+@pytest.mark.parametrize("settings, policy", [
+    (dict(layout="dict"), "MultiInputPolicy"),
+    (dict(actions="discrete"), "MlpPolicy"),
+], ids=["dict", "discrete"])
+def test_a_dict_or_discrete_sb3_agent_saved_and_loaded_backtests_as_it_did(
+        settings, policy, tmp_path):
+    data  = universe()
+    env   = probatum.env(data[:150], PERP, window=8, num_envs=4, seed=1, **settings)
+    venv  = VecNormalize(probatum.sb3.wrap(env))
+    model = PPO(policy, venv, n_steps=16, batch_size=32, n_epochs=1, seed=0,
+                device="cpu")
+    model.learn(total_timesteps=128, callback=probatum.sb3.SpecCallback())
+
+    memory = probatum.backtest(model, data[150:], PERP)
+
+    model.save(tmp_path / "agent")
+    loaded = probatum.backtest(PPO.load(tmp_path / "agent", device="cpu"), data[150:],
+                               PERP)
+
+    assert np.array_equal(loaded.equity, memory.equity)
+    assert np.array_equal(loaded.policy, memory.policy, equal_nan=True)
+
+
 class Recorder(torch.nn.Module):
     """A module that records the tensor, the gradient mode and its own mode at each
     call, and returns its action beside a value, as an actor-critic does."""

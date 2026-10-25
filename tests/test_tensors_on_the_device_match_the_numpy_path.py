@@ -10,6 +10,7 @@ a buffer written again too soon would show, and a loop of 4,096 environments tha
 waits for the card (Specification, Tensors on a device; ADR 0040).
 """
 
+import copy
 import random
 import re
 import time
@@ -146,6 +147,56 @@ def test_what_tensor_env_cannot_wrap_is_refused_naming_the_fix():
             "written on the host; give autoreset=\"next_step\" or \"disabled\"")):
         probatum.torch.TensorEnv(built(dict(autoreset="same_step")), resident=True)
 
+    with pytest.raises(ProbatumValueError, match=re.escape(
+            "resident: True on an environment recording transitions, whose observations "
+            "are kept whole on the host; record them with resident=False")):
+        probatum.torch.TensorEnv(built(dict(record="transitions")), resident=True)
+
+
+def test_a_clone_of_an_environment_tensor_env_took_over_is_one_of_its_own():
+    env = built({})
+    probatum.torch.TensorEnv(env, resident=True)
+
+    obs, _ = env.clone().reset()
+
+    assert np.array_equal(obs, built({}).reset()[0])
+
+
+@pytest.mark.parametrize("resident", [False, True], ids=["host", "resident"])
+def test_a_copy_of_tensor_env_wraps_a_clone_of_its_environment(resident):
+    wrap  = probatum.torch.TensorEnv(built({}), resident=resident)
+    space = wrap.action_space
+    space.seed(3)
+
+    wrap.reset()
+    wrap.step(space.sample())
+
+    twin    = copy.deepcopy(wrap)
+    actions = [space.sample() for _ in range(5)]
+
+    # the copy steps first, so a buffer or an environment it shared would show
+    ahead = [twin.step(actions[k]) for k in range(5)]
+    for mine, theirs in zip([wrap.step(actions[k]) for k in range(5)], ahead):
+        assert all(torch.equal(a, b) for a, b in zip(mine[:4], theirs[:4]))
+
+
+def test_tensor_env_s_host_path_records_the_transitions_the_numpy_path_does():
+    host  = built(dict(record="transitions"))
+    dev   = probatum.torch.TensorEnv(built(dict(record="transitions")))
+    space = host.action_space
+    space.seed(3)
+
+    host.reset()
+    dev.reset()
+    for _ in range(40):
+        actions = space.sample()
+        host.step(actions)
+        dev.step(torch.as_tensor(actions))
+
+    assert len(host.transitions) > 0
+    for name in host.transitions.columns:
+        assert dev.env.transitions[name].tobytes() == host.transitions[name].tobytes()
+
 
 def test_tensor_env_carries_the_environment_s_spec_spaces_and_provenance():
     env  = built(dict(features=momentum, fill=0.0))
@@ -220,6 +271,31 @@ def test_every_tensor_on_the_card_is_the_numpy_path_s_however_the_policy_paces_i
 
     assert held(seen, "cuda")
     assert held(ran(settings, "cuda", resident, steps=40), "cuda")
+
+
+@CUDA
+@pytest.mark.gpu
+def test_tensor_env_resets_the_environments_the_flags_it_handed_out_name():
+    # the disabled mode leaves an ended episode for the caller to reset, by the flags
+    # the card handed back
+    settings = dict(autoreset="disabled", episode_length=3)
+    host     = built(settings)
+    dev      = probatum.torch.TensorEnv(built(settings), device="cuda", resident=True)
+    space    = host.action_space
+    space.seed(3)
+
+    seen = [(host.reset()[0], dev.reset()[0])]
+    for _ in range(9):
+        actions = space.sample()
+        mine, theirs = host.step(actions), dev.step(actions)
+        seen.append((mine, theirs))
+        if (mine[2] | mine[3]).any():
+            seen.append((host.reset(options={"reset_mask": mine[2] | mine[3]})[0],
+                         dev.reset(options={"reset_mask": theirs[2] | theirs[3]})[0]))
+
+    torch.cuda.synchronize()
+
+    assert held(seen, "cuda") and len(seen) == 13
 
 
 @CUDA
