@@ -16,7 +16,7 @@ import pytest
 import probatum
 from probatum import ProbatumKeyError
 
-from reference import statistics
+from reference import environment, statistics
 from reference.environment import Episode, limit, logged
 from reference.simulator import (Bar, Instrument, Simulator, Venue, edge, labels,
                                  periods_per_year, play_array, run, uniqueness)
@@ -1690,6 +1690,23 @@ def test_an_order_action_of_0_25_at_half_its_offset_buys_0_1_btc_ten_ticks_below
                   20)
 
     assert asked == ("buy", pytest.approx(0.1), pytest.approx(49_999.0))
+
+
+def test_a_feature_of_3_averaging_0_5_with_a_deviation_of_2_is_written_as_1_25():
+    seen = episode([[flat(100.0)] * 3], 1, 1, features=[[[3.0]]] * 3,
+                   scale=[(0.5, 2.0)])
+
+    assert seen.market(0) == [[1.25]]
+
+
+def test_instrument_0_s_first_probe_bar_closes_at_99_846418():
+    (r, _, _, _), _ = environment.draws(1, 4)
+
+    assert round(r, 6) == 0.423209
+
+    first = environment.probe(1)[0][0]
+    assert first == pytest.approx(
+        (100.0, 100.254704, 99.522737, 99.846418, 1_382.863391), abs=5e-7)
 
 
 def test_three_overlapping_labels_weigh_0_6111_0_4444_and_0_6111():

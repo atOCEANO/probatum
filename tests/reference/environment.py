@@ -2,13 +2,19 @@
 of one environment over a universe, run through a reference simulator opened at its
 start, its observation, its decoding, its reward and its flags read from the account
 that simulator keeps (Specification, The environment). It knows nothing of the batch,
-which test_the_environment_agrees_with_the_reference.py holds to it.
+which test_the_environment_agrees_with_the_reference.py holds to it. Beside it are the
+agent spec's statistics, probes and hashes, worked as plain loops (Specification, The
+agent spec).
 """
 
+import hashlib
 import math
 import types
 
 import numpy as np
+
+# the agent spec's generator, x_(n+1) = (A * x_n + C) mod 2^64
+A, C = 6364136223846793005, 1442695040888963407
 
 
 def logged(equity, before, floor):
@@ -52,6 +58,121 @@ def onsets(columns, features):
         found.append(e)
 
     return found
+
+
+def moments(columns, features, window, shown):
+    """The Observation, normalise=True: each feature's mean and deviation over every
+    value the observations hold, at each bar `t` instrument `i` is shown at, by
+    `shown(i, t)`, each bar of its window it printed, the candles' volume only where
+    the window's mean volume is above zero; a feature whose values lie within a
+    billionth of their size of one another never varies, and takes its smallest value
+    and a deviation of 1, and one of no value a mean of 0 and a deviation of 1."""
+    held  = {}
+    width = 5 if features is None else len(features[0][0])
+
+    for i, column in enumerate(columns):
+        for t, bar in enumerate(column):
+            if not shown(i, t):
+                continue
+            bars = [r for r in range(t - window + 1, t + 1) if column[r] is not None]
+            if features is not None:
+                for r in bars:
+                    for g, x in enumerate(features[r][i]):
+                        held.setdefault(g, []).append(float(x))
+                continue
+
+            mean = sum(column[r].volume for r in bars) / len(bars)
+            for r in bars:
+                one = column[r]
+                for g, x in enumerate((one.open, one.high, one.low, one.close)):
+                    held.setdefault(g, []).append(x / bar.close)
+                if mean > 0.0:
+                    held.setdefault(4, []).append(one.volume / mean)
+
+    out = []
+    for g in range(width):
+        values = held.get(g, [])
+        if not values:
+            out.append((0.0, 1.0))
+            continue
+
+        low, high = min(values), max(values)
+        if high - low <= 1e-9 * max(abs(low), abs(high)):
+            out.append((low, 1.0))
+            continue
+
+        m = sum(values) / len(values)
+        d = math.sqrt(sum((x - m) ** 2 for x in values) / len(values))
+        # a spread whose squares underflow to zero is no spread to divide by
+        out.append((m, d if d > 0.0 else 1.0))
+
+    return out
+
+
+def draws(x, count):
+    """The agent spec: `count` draws of the probe generator after state `x`, and the
+    state it leaves."""
+    out = []
+    for _ in range(count):
+        x = (A * x + C) % 2**64
+        out.append((x >> 11) / 2**53)
+
+    return out, x
+
+
+def probe(width, rows=512):
+    """The agent spec: a feature function's probe, each of `width` instruments' bars as
+    (open, high, low, close, volume)."""
+    columns = []
+    for i in range(width):
+        x, bars, opened = i + 1, [], 100.0
+        for _ in range(rows):
+            (r, h, l, v), x = draws(x, 4)
+            close = opened * (1.0 + 0.02 * (r - 0.5))
+            bars.append((opened, max(opened, close) * (1.0 + 0.005 * h),
+                         min(opened, close) * (1.0 - 0.005 * l), close,
+                         1000.0 * (1.0 + v)))
+            opened = close
+        columns.append(bars)
+
+    return columns
+
+
+def probe_actions(space):
+    """The agent spec: a decode's probe, 8 rows of actions, each over `space`, its
+    components in order as ("box", low, high), ("simplex",) or ("discrete", n)."""
+    rows, x = [], 2**32
+    for _ in range(8):
+        row = []
+        for component in space:
+            (u,), x = draws(x, 1)
+            if component[0] == "box":
+                row.append(component[1] + (component[2] - component[1]) * u)
+            elif component[0] == "simplex":
+                row.append(u)
+            else:
+                row.append(float(math.floor(u * component[1])))
+        rows.append(row)
+
+    return rows
+
+
+def digest(shape, values):
+    """The agent spec: a reference, blake2b's 8 bytes over `shape`, each a
+    little-endian 64-bit integer, and `values` in order, each rounded to a
+    little-endian float32, every NaN one NaN and every zero +0.0."""
+    out = hashlib.blake2b(digest_size=8)
+    for n in shape:
+        out.update(int(n).to_bytes(8, "little", signed=True))
+
+    for x in values:
+        # a value past float32's range rounds to an infinity, as numpy's cast does
+        with np.errstate(over="ignore"):
+            y = np.float32(x)
+        y = np.float32(np.nan) if np.isnan(y) else (np.float32(0.0) if y == 0.0 else y)
+        out.update(np.array([y], dtype="<f4").tobytes())
+
+    return "b2:" + out.hexdigest()
 
 
 class Episode:
@@ -107,7 +228,8 @@ class Episode:
         if self.s.features is not None:
             for k, r in enumerate(bars):
                 if self.printed(i, r):
-                    rows[k] = [float(x) for x in self.s.features[r][i]]
+                    rows[k] = [self.scaled(g, float(x))
+                               for g, x in enumerate(self.s.features[r][i])]
             return rows
 
         last    = self.s.columns[i][t].close
@@ -117,10 +239,18 @@ class Episode:
         for k, r in enumerate(bars):
             bar = self.s.columns[i][r]
             if bar is not None:
-                rows[k] = [bar.open / last, bar.high / last, bar.low / last,
-                           bar.close / last, bar.volume / mean if mean > 0.0 else 0.0]
+                rows[k] = [self.scaled(g, x / last) for g, x in
+                           enumerate((bar.open, bar.high, bar.low, bar.close))]
+                rows[k].append(self.scaled(4, bar.volume / mean) if mean > 0.0 else 0.0)
 
         return rows
+
+
+    def scaled(self, g, x):
+        """The Observation: feature `g`'s value `x` as it is written, over the mean
+        and the deviation `scale` gives it with normalise=True."""
+        scale = getattr(self.s, "scale", None)
+        return x if scale is None else (x - scale[g][0]) / scale[g][1]
 
 
     def weight(self, i, equity):
