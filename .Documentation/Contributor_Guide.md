@@ -47,6 +47,8 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | The environment an agent trains on | `crates/probatum-engine/src/env.rs` for what each step works out, `python/probatum/_env.py` for the episodes drawn, the spaces and Gymnasium's API, and the reference's environment in `tests/reference/environment.py` |
 | What an agent's spec records, its probes and its normalisation statistics | `python/probatum/_agent.py`, the scaling each observation is written with in `crates/probatum-engine/src/env.rs`, and the same rules in plain loops in `tests/reference/environment.py` |
 | How an environment's tensors reach a device, or the resident mode's market block | `python/probatum/torch.py`, and the account block alone and the market's cells it reads in `crates/probatum-engine/src/env.rs` |
+| How an engine, a batch or an environment clones or pickles | the bytes and the forks in `crates/probatum-engine/src/engine/mod.rs`, `batch.rs` and `env.rs`, the pickles in `crates/probatum-py/src/lib.rs`, and the Python state they carry in `_engine.py`, `_strategy.py` and `_env.py` |
+| How transitions are recorded or exported | `python/probatum/_transitions.py` for the rows and the export, the recording in `_env.py`, the Result's in `_result.py`, and the Arrow lists in `_ipc.py` |
 | How a backtest runs an agent, or how the spec travels with it | `python/probatum/_agent.py` for the spec found, the slots, the warnings and `save`, the episode it plays in `_env.py`, and the SB3 adapter and its callback in `sb3.py` |
 | One of emsl's statistics of a `BacktestResult` | `python/probatum/metrics.py` |
 | An indicator, which is a function of arrays and never sees the engine | `python/probatum/ta.py` |

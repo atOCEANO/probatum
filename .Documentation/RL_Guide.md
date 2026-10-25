@@ -68,7 +68,7 @@ agent.learn(total_timesteps=100_000)
 agent.save("agent")
 ```
 
-One adapter serves every SB3 algorithm: PPO, A2C and SAC on the default `Box`, and DQN on `actions="discrete"` over one instrument, whose space is a `Discrete`. The agent spec rides on a copy of the action space, which SB3 saves into the model's zip, so a model loaded again is backtested as it trained. SB3's vector wrappers compose on top unchanged, to log episodes and normalise the observation and reward, and `probatum.sb3.SpecCallback` copies `VecNormalize`'s statistics of the observation into the spec after each rollout, so a backtest normalises the observation as training did:
+One adapter serves every SB3 algorithm: PPO, A2C and SAC on the default `Box`, and DQN on `actions="discrete"` over one instrument, whose space is a `Discrete`. The agent spec rides on a copy of the action space, which SB3 saves into the model's zip, so a model loaded again is backtested as it trained. SB3's vector wrappers compose on top unchanged, to log episodes and normalise the observation and reward, and `probatum.sb3.SpecCallback` copies `VecNormalize`'s statistics of the observation into the model's spec after each rollout, so a backtest normalises the observation as training did. The statistics are the model's own: no environment's spec holds them, so another agent trained on the same environment never reads them, and a model trained again on another environment takes that one's spec:
 
 ```python
 import stable_baselines3.common.vec_env
@@ -145,7 +145,33 @@ obs, reward, terminated, truncated, info = env.step(actions)
 
 On a CUDA device each step's observation, rewards and flags are written into pinned host buffers that take turns and copied to the card without blocking the host; a buffer is written again only once an event says its last copy has finished, so every tensor handed out is a fresh one that no later step changes, and the host runs on while the card works. Actions come back to the host once a step. The info stays numpy, as the environment gives it. The wrap takes the environment over, as `probatum.sb3.wrap` does: from then on it writes into TensorEnv's buffers, so step it through the wrapper alone.
 
-`resident=True` copies the market's cells to the card once, a function's features as the observation writes them or the candles in float64, and writes each window's market block there from each environment's row and slots, so of the observation only those and the account block cross the link each step. It pays where the observation is wide: 4,096 environments of ten instruments, eight features and a 64-bar window move 84.6 MB of observation a step on the host path and 1.08 MB resident. The device works the candles' ratios in float64 before rounding them, so its observation is the host's to the bit. It is refused under `same_step` autoreset, whose final observations are written on the host.
+`resident=True` copies the market's cells to the card once, a function's features as the observation writes them or the candles in float64, and writes each window's market block there from each environment's row and slots, so of the observation only those and the account block cross the link each step. It pays where the observation is wide: 4,096 environments of ten instruments, eight features and a 64-bar window move 84.6 MB of observation a step on the host path and 1.08 MB resident. The device works the candles' ratios in float64 before rounding them, so its observation is the host's to the bit. It is refused under `same_step` autoreset, whose final observations are written on the host, and on an environment recording transitions, whose observations are kept whole there.
+
+<br>
+
+## Clones and transitions
+
+`env.clone()` copies the environments as they stand, their accounts, their episodes, every stream they draw from and what they recorded, sharing the Data, so the copy steps on as the original would to the bit ([Specification](Specification.md#clones-and-pickles), [ADR 0040](Decisions.md)). `env.clone(env=i, n=k)` forks environment `i` into `k` copies of it, for planning or a counterfactual:
+
+```python
+fork = env.clone(env=0, n=len(plans))           # a copy of environment 0 for each plan
+obs, reward, terminated, truncated, info = fork.step(plans)   # each copy tries its own
+```
+
+`probatum.Engine` and `probatum.Batch` clone the same way, and pickle to move into a worker process of the same version. An environment does not pickle, since it holds the functions it was given, so a worker builds its own.
+
+`record="transitions"` keeps a row for each step each environment takes, for offline reinforcement learning: its episode and step, the observation the environment wrote at the close, flat, the action as it was given, the reward, both flags and the observation the step returned ([Specification](Specification.md#transitions)). A step that resets an environment under `next_step` takes no row, and under `same_step` the row of the step that ended an episode holds its last observation. `env.transitions` hands them out as numpy arrays and `export` writes them as one Arrow IPC file, with the spaces, the reward and the agent spec on its schema:
+
+```python
+env = probatum.env(train, "binance_perp", window=64, num_envs=8, record="transitions")
+...                                              # the rollouts of any policy
+env.export("arrow", "datasets/rollouts.arrow")
+
+result = probatum.backtest(policy, test, "binance_perp", spec=env, record="transitions")
+result.export("arrow", "datasets/test.arrow")    # a row a close, to its episode's end
+```
+
+A backtest at this level keeps the account level's records beside the agent's steps, rewarded with the spec's reward; an agent trained on a reward of its own is refused there, since a backtest has no function to work it, and its transitions are recorded in its environment. Each row holds two observations, so recording many environments over long rollouts costs that much memory.
 
 <br>
 
@@ -173,7 +199,7 @@ Only `data` and `venue`, a Venue or a preset's name, have no default.
 | `autoreset` | `"next_step"` | Gymnasium's mode: `"next_step"`, `"same_step"` or `"disabled"`. |
 | `copy` | `True` | Each observation its own array; `False` hands out one array the next step writes over. |
 | `normalise` | `False` | Each market feature written over its mean and deviation across every value the training span's observations hold, which the agent spec keeps. |
-| `record` | `"none"` | `"transitions"` is not done yet. |
+| `record` | `"none"` | `"transitions"` keeps a row for each step each environment takes, which `env.transitions` hands out. |
 | `seed` | `None` | The seed every stream is named from, drawn and recorded where it is left out. |
 
 A setting the environment cannot take is refused as it is built, from probatum's tree of errors, naming the setting, what arrived and the fix.
@@ -281,13 +307,13 @@ An agent is judged fairly only if a backtest shows it what it saw in training an
 }
 ```
 
-A custom function is never pickled. A feature function is recorded by its name, its width, a hash of its source and a hash of its output, rounded to float32, on probe bars the package builds the same way on every machine, 512 bars of each training instrument on its market, which a function passed again is held to; a function that cannot run there leaves no reference, with a warning that says so. A custom decode is held the same way to its output on eight probe actions, taken the first time the spec is read, so a decode that keeps state of its own meets them then. An array of features is recorded by its width alone, and a custom reward by its name and source, since a backtest never reads a reward. The venue is recorded as the preset it was made from, the day that preset was taken and every setting changed, as its repr shows them, so the spec builds the venue again. `sb3` holds the statistics `SpecCallback` copies in, null until it does.
+A custom function is never pickled. A feature function is recorded by its name, its width, a hash of its source and a hash of its output, rounded to float32, on probe bars the package builds the same way on every machine, 512 bars of each training instrument on its market, which a function passed again is held to; a function that cannot run there leaves no reference, with a warning that says so. A custom decode is held the same way to its output on eight probe actions, taken the first time the spec is read, so a decode that keeps state of its own meets them then. An array of features is recorded by its width alone, and a custom reward by its name and source, since a backtest reads a reward only to record transitions, and refuses those for a reward of its own. The venue is recorded as the preset it was made from, the day that preset was taken and every setting changed, as its repr shows them, so the spec builds the venue again. `sb3` holds the statistics `SpecCallback` copies in, null until it does.
 
 <br>
 
 ## Backtesting an agent
 
-`probatum.backtest` runs a trained agent as it runs a rule, and returns the same `Result` ([Specification](Specification.md#an-agent-in-a-backtest), [ADR 0039](Decisions.md)). The agent is an SB3 model or policy, asked for its deterministic prediction, a recurrent policy's state carried from one close to the next; a torch module, called on the observation as a tensor on its device, in eval mode with no gradient; or any other function of the observation, the first element of a tuple a module or a function returns being its action. It runs as one environment of its spec over the Data from its first bar, recording as a run does. The window reads the bars before a slice, so an agent decides at the slice's first close, and each observation is the one training showed it, normalised as it was. Once the account holds nothing the agent is no longer asked.
+`probatum.backtest` runs a trained agent as it runs a rule, and returns the same `Result` ([Specification](Specification.md#an-agent-in-a-backtest), [ADR 0039](Decisions.md)). The agent is an SB3 model or policy, asked for its deterministic prediction, a recurrent policy's state carried from one close to the next; a torch module, called on the observation as a tensor on its device, in eval mode with no gradient; or any other function of the observation, the first element of a tuple a module or a function returns being its action. It runs as one environment of its spec over the Data from its first bar, recording as a run does. The window reads the bars before a slice, so with the candles or a function of features an agent decides at the slice's first close, and with an array of features over the slice alone once a window of them is full; each observation is the one training showed it, normalised as it was. Once the account holds nothing the agent is no longer asked.
 
 ```python
 agent = stable_baselines3.PPO.load("agent")
