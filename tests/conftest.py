@@ -11,6 +11,8 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: runs at length, and only with --slow")
+    config.addinivalue_line("markers", "gpu: needs a CUDA device, which the gpu stage "
+                                       "hands in")
     config.addinivalue_line("markers", "coverage: a coverage cell, run only with "
                                        "--coverage")
 

@@ -216,8 +216,9 @@ ENTRYPOINT []
 # the images invert badly against GitHub's dark mode
 CMD ["sh", "-c", "set -e; for f in /diagrams/*.mmd; do n=$(basename \"$f\" .mmd); /home/mermaidcli/node_modules/.bin/mmdc -i \"$f\" -o \"/out/$n.png\" -c /diagrams/config.json -p /diagrams/puppeteer.json -b transparent -s 3; echo \"rendered $n\"; done"]
 
-# Stable-Baselines3 integration: install torch and sb3 and run the adapter tests.
-# torch is heavy, so this stays out of the local gate, and CI runs it:
+# Stable-Baselines3 integration: install torch and sb3 and run the adapter tests, and
+# TensorEnv's on the CPU. torch is heavy, so this stays out of the local gate, and CI
+# runs it:
 #   docker build --target test-sb3 .
 # torch alone comes from its CPU index, which does not carry every pinned version
 # of torch's own dependencies; those install from PyPI with the rest
@@ -231,7 +232,25 @@ COPY .Documentation /docs
 COPY README.md /README.md
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
     numpy gymnasium stable-baselines3 pytest \
-    && pytest -q /tests/test_sb3.py
+    && pytest -q /tests/test_sb3.py /tests/test_tensors_on_the_device_match_the_numpy_path.py
+
+# TensorEnv on a CUDA card, its tensors held to the numpy path's bit for bit. A build
+# cannot reach a GPU, so the image is built here and run with the card handed in, each
+# run printing the card, its driver and torch's version first:
+#   docker build --target test-gpu -t probatum-test-gpu .
+#   docker run --rm --gpus all probatum-test-gpu
+# torch's CUDA 12.6 build carries a Turing card's sm_75, and its dependencies install
+# from PyPI, as the CPU build's do, in a layer of their own that no change to the
+# engine rebuilds
+FROM python:3.13-slim AS test-gpu
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir --no-deps -c /constraints.txt torch \
+    --index-url https://download.pytorch.org/whl/cu126 \
+    && pip install --no-cache-dir -c /constraints.txt torch
+COPY --from=builder /wheels /wheels
+COPY tests /tests
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl numpy gymnasium pytest
+CMD ["sh", "-c", "nvidia-smi --query-gpu=name,driver_version,utilization.gpu,memory.used,memory.total --format=csv; python -c 'import torch; print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, torch.cuda.get_device_name(0))' && pytest -q -p no:cacheprovider /tests/test_tensors_on_the_device_match_the_numpy_path.py"]
 
 # The source archive a release ships, installed the way pip installs it where no
 # wheel fits, then tested, so a file it leaves out fails here. CI runs it:
