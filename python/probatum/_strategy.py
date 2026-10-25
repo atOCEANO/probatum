@@ -213,6 +213,32 @@ class _Run:
         return self
 
 
+    def cloned(self):
+        """A run of its own over a copy of this one's engine as it stands, with handles
+        of its own for the orders placed so far, which this run's handles are not
+        (Specification, Clones and pickles)."""
+        twin = _Run.__new__(_Run)
+        twin.__dict__.update(self.__dict__)
+
+        twin.engine = self.engine.clone()
+        twin.token  = object()
+        twin.live   = set(self.live)
+        twin.curve  = self.curve.copy()
+        twin.store  = {name: values.copy() for name, values in self.store.items()}
+        twin.trips, twin.state, twin.events = None, None, None
+        twin.handles = {order: _handed(fields, twin)
+                        for order, fields in self.held().items()}
+
+        return twin
+
+
+    def held(self):
+        """Each order's handle as its fields, by its id, every one but its run."""
+        return {order: {name: getattr(handle, name) for name in Order.__slots__
+                        if name != "_run"}
+                for order, handle in self.handles.items()}
+
+
     def reset(self):
         """Open the account again at its first bar."""
         self.engine.reset_at(self.start)
@@ -1291,6 +1317,15 @@ class Order:
     def reason(self):
         self._run.sync()
         return self._reason
+
+
+def _handed(fields, run):
+    """A handle of ``run`` holding ``fields``, an order's handle as `_Run.held` gives it."""
+    handle = Order.__new__(Order)
+    for name, value in fields.items():
+        setattr(handle, name, value)
+    handle._run = run
+    return handle
 
 
 class _Left:

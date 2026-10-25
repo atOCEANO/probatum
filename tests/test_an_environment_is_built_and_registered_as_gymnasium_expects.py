@@ -20,9 +20,8 @@ import pytest
 
 import probatum
 import probatum.rl
-from probatum import (DataError, ProbatumKeyError, ProbatumNotImplementedError,
-                      ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
-                      VenueError)
+from probatum import (DataError, ProbatumKeyError, ProbatumRuntimeError,
+                      ProbatumTypeError, ProbatumValueError, VenueError)
 from test_an_episode_runs_again_as_a_backtest_from_its_start import (HOUR, VENUE,
                                                                      universe, walked)
 
@@ -217,9 +216,8 @@ REFUSED = [
      "episode_length: 0; give a whole number of steps from 1"),
     (dict(sample=3), ProbatumValueError, "sample: 3 of 2 instruments; give at most 2"),
     (dict(normalise=1), ProbatumTypeError, "normalise: 1; give True or False"),
-    (dict(record="transitions"), ProbatumNotImplementedError,
-     "record: 'transitions', which an environment does not record yet"),
-    (dict(record="full"), ProbatumValueError, "record: 'full'; leave it \"none\""),
+    (dict(record="full"), ProbatumValueError,
+     "record: 'full'; give \"none\" or \"transitions\""),
     (dict(costs={"fee": (0.0, 0.1)}), ProbatumKeyError,
      "costs: 'fee', which is no cost an environment draws"),
     (dict(costs={"taker": 0.001}), ProbatumTypeError,

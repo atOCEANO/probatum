@@ -199,8 +199,9 @@ def test_an_sb3_agent_saved_loaded_and_backtested_gives_the_in_memory_result_to_
 
     memory = probatum.backtest(model, data[150:], PERP)
 
-    # the environment's own spec holds the statistics too
-    assert env.agent_spec["sb3"] == stats
+    # the statistics are the model's own: the environment's spec holds none, and a
+    # backtest given it reads the model's
+    assert env.agent_spec["sb3"] is None
     assert np.array_equal(probatum.backtest(model, data[150:], PERP, spec=env).equity,
                           memory.equity)
 
@@ -224,12 +225,11 @@ def test_an_sb3_agent_saved_loaded_and_backtested_gives_the_in_memory_result_to_
     assert np.array_equal(again.equity, memory.equity)
     assert memory.provenance["policy"] == "the SB3 model PPO"
 
-    # the statistics are what the run reads: without them the agent sees another
+    # the statistics are what the run reads: a model whose spec holds none sees another
     # observation, and decides otherwise
-    bare = dict(spec, sb3=None)
+    model.action_space.agent_spec["sb3"] = None
 
-    assert not np.array_equal(probatum.backtest(model, data[150:], PERP,
-                                                spec=bare).policy,
+    assert not np.array_equal(probatum.backtest(model, data[150:], PERP).policy,
                               memory.policy, equal_nan=True)
 
 

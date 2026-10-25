@@ -30,17 +30,20 @@ class TensorEnv(gymnasium.vector.VectorWrapper):
     ``reset`` and ``step`` returns as torch tensors on ``device``: the observation as
     float32, flat or as a dict of its two blocks, the rewards as float64 and the flags
     as booleans, each the numpy path's to the bit, and the info as the environment
-    gives it. Actions are a tensor on any device or anything numpy reads. On a CUDA
-    device each step's observation, rewards and flags are written into pinned host
-    buffers that take turns, copied to the device without blocking the host, and
-    written again only once an event says their last copy has finished, so every
-    tensor handed out is a fresh one; on any other device the copies are synchronous.
+    gives it. Actions, and a reset's ``reset_mask``, are a tensor on any device or
+    anything numpy reads. On a CUDA device each step's observation, rewards and flags
+    are written into pinned host buffers that take turns, copied to the device without
+    blocking the host, and written again only once an event says their last copy has
+    finished, so every tensor handed out is a fresh one; on any other device the copies
+    are synchronous.
     ``resident=True`` copies the market's cells to the device once and writes each
     window's market block there, the host giving each environment's row, its slots and
     its account block alone; it is refused under ``same_step`` autoreset, whose final
-    observations are written on the host. A ``device`` given without an index is the one
-    current at the wrap. The wrap takes ``env`` over, which from then on writes into the
-    wrapper's buffers whatever its ``copy`` and is stepped through the wrapper alone."""
+    observations are written on the host, and on an environment recording transitions,
+    whose observations are kept whole there. A ``device`` given without an index is the
+    one current at the wrap. The wrap takes ``env`` over, which from then on writes into
+    the wrapper's buffers whatever its ``copy`` and is stepped through the wrapper
+    alone; a copy of the wrapper wraps a clone of ``env`` as one of its own."""
 
 
     def __init__(self, env, device="cpu", resident=False):
@@ -55,6 +58,11 @@ class TensorEnv(gymnasium.vector.VectorWrapper):
             raise ProbatumValueError("resident: True under same_step autoreset, whose "
                                      "final observations are written on the host; give "
                                      "autoreset=\"next_step\" or \"disabled\"")
+
+        if resident and env._recorder is not None:
+            raise ProbatumValueError("resident: True on an environment recording "
+                                     "transitions, whose observations are kept whole on "
+                                     "the host; record them with resident=False")
 
         # a device given without an index is the one current at the wrap, where the
         # market's cells stay and every step's copies go
@@ -99,9 +107,20 @@ class TensorEnv(gymnasium.vector.VectorWrapper):
         return self.env.describe()
 
 
+    def __copy__(self):
+        return TensorEnv(self.env.clone(), self.device, self.resident)
+
+
+    def __deepcopy__(self, memo):
+        return self.__copy__()
+
+
     def reset(self, *, seed=None, options=None):
         """Start episodes as the environment's ``reset`` does, and return the
         observations as a tensor on the device beside the info."""
+        if options is not None and isinstance(options.get("reset_mask"), torch.Tensor):
+            options = {**options, "reset_mask": options["reset_mask"].cpu().numpy()}
+
         self._free()
         self.env._out = self._observed[self._turn].numpy()
         _, info = self.env.reset(seed=seed, options=options)

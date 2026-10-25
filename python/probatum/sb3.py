@@ -11,7 +11,8 @@ observation becomes SB3's ``terminal_observation`` (ADR 0038), and to an observa
 of its own each step, which SB3 keeps across the step after it. The agent spec rides
 on a copy of the action space, which SB3 saves into the model's zip, so a model loaded
 again is backtested as it trained, and ``SpecCallback`` copies ``VecNormalize``'s
-observation statistics into it after each rollout (ADR 0039).
+observation statistics into the model's spec after each rollout, as the model's own
+(ADR 0039).
 
     from stable_baselines3 import PPO
 
@@ -161,18 +162,24 @@ class ProbatumVecEnv(VecEnv):
 
 
 class SpecCallback(BaseCallback):
-    """An SB3 callback that copies ``VecNormalize``'s observation statistics, each
-    feature's mean and variance, by key for a dict, its clip and its epsilon, into the
-    agent spec on the model's action space after each rollout, and into the spec of the
-    environment ``wrap`` presents, so a backtest shows the agent the observation it
-    learned on whichever spec it is given. Pass it to ``learn`` with a ``VecNormalize``
-    over ``wrap``'s environment."""
+    """An SB3 callback that keeps the agent spec on the model's action space: as each
+    run of training starts, the spec of the environment ``wrap`` presents, and after
+    each rollout ``VecNormalize``'s observation statistics copied into it, each
+    feature's mean and variance, by key for a dict, its clip and its epsilon, so a
+    backtest shows the agent the observation it learned on. The statistics are the
+    model's own, which no environment's spec holds. Pass it to ``learn`` with a
+    ``VecNormalize`` over ``wrap``'s environment."""
 
 
     def _init_callback(self):
         if getattr(self.model.action_space, "agent_spec", None) is None:
             raise SpecError("callback: the model's action space carries no agent spec; "
                             "train it on probatum.sb3.wrap(env)")
+
+        inner = self.training_env.unwrapped
+        if isinstance(inner, ProbatumVecEnv):
+            # a model trained again on another environment trades as its spec says
+            self.model.action_space.agent_spec = inner._env.agent_spec
 
 
     def _on_step(self):
@@ -194,7 +201,3 @@ class SpecCallback(BaseCallback):
             held.update(mean=rms.mean.tolist(), var=rms.var.tolist())
 
         self.model.action_space.agent_spec["sb3"] = _plain(held)
-
-        inner = self.training_env.unwrapped
-        if isinstance(inner, ProbatumVecEnv):
-            inner._env._spec["sb3"] = _plain(held)

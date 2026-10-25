@@ -10,8 +10,8 @@ import types
 import numpy as np
 
 from ._data import DAY, Data, _chosen, _columns, _dated, _when
-from ._errors import (DataError, PolicyError, ProbatumError, ProbatumNotImplementedError,
-                      ProbatumTypeError, ProbatumValueError, VenueError)
+from ._errors import (DataError, PolicyError, ProbatumError, ProbatumTypeError,
+                      ProbatumValueError, VenueError)
 from ._probatum import Engine, arrow_columns, periods_per_year, run_array
 from ._result import Result, _Record, _provenance
 from ._strategy import Strategy, _Run, _called, _play
@@ -54,11 +54,12 @@ def backtest(policy, data, venue, sizing="weight", stop=None, take_profit=None,
     leg below that fraction of equity; and ``risk_free`` is the annual rate the
     statistics are computed against (Specification, An array; Barriers on an array).
 
-    ``record`` is what the Result keeps: ``"full"`` every record, and ``"account"`` the
+    ``record`` is what the Result keeps: ``"full"`` every record, ``"account"`` the
     ledger, the round trips, the costs and the statistics, the full level's, and the
     assumptions priced where the ledger and the round trips measure them, with no
-    holdings, fill log, order log, baselines or policy (Specification, Recording
-    levels).
+    holdings, fill log, order log, baselines or policy, and for an agent
+    ``"transitions"`` the account level's beside each step of its episode, as
+    ``result.transitions`` (Specification, Recording levels; Transitions).
     """
     return _backtested(policy, data, venue, sizing, stop, take_profit, tolerance,
                        record, risk_free, spec=spec, features=features, decode=decode,
@@ -80,13 +81,16 @@ def _backtested(policy, data, venue, sizing, stop, take_profit, tolerance, recor
     given = dict(spec=spec, features=features, decode=decode, instruments=instruments)
 
     if _table_like(policy) or _array_like(policy):
-        _unasked("a table" if _table_like(policy) else "an array", given)
+        what = "a table" if _table_like(policy) else "an array"
+        _unasked(what, given)
+        _stepless(record, what)
         rows = _rows(policy, data)
     elif isinstance(policy, type):
         raise PolicyError(f"policy: got the class {policy.__name__}, not an instance; "
                           f"pass {policy.__name__}()")
     elif isinstance(policy, Strategy):
         _unasked("a Strategy", given)
+        _stepless(record, "a Strategy")
         return _decided(policy, data, venue, sizing, stop, take_profit, tolerance,
                         risk_free, record, balance, costs)
     elif hasattr(policy, "fit") and not callable(policy):
@@ -272,15 +276,12 @@ def _repeatable(venue, called="backtest", run=None):
 
 
 def _level(record):
-    """Refuse ``record`` where it names no level backtest keeps: ``"transitions"``, not
-    recorded yet, ``"none"``, which keeps nothing a Result holds, and anything else."""
+    """Refuse ``record`` where it names no level backtest keeps: ``"none"``, which keeps
+    nothing a Result holds, and anything else; ``"transitions"`` is an agent's alone,
+    which `_stepless` holds every other policy to."""
     named = isinstance(record, str)
-    if named and record in RECORDS:
+    if named and (record in RECORDS or record == "transitions"):
         return
-
-    if named and record == "transitions":
-        raise ProbatumNotImplementedError("record: 'transitions', which backtest does "
-                                          "not record yet; use \"full\" or \"account\"")
 
     if named and record == "none":
         raise ProbatumValueError("record: 'none', which keeps nothing a Result holds; "
@@ -288,6 +289,15 @@ def _level(record):
 
     error = ProbatumValueError if named else ProbatumTypeError
     raise error(f"record: {record!r}; use \"full\" or \"account\"")
+
+
+def _stepless(record, what):
+    """Refuse the transitions level beside ``what``, a policy that takes no steps of an
+    environment."""
+    if record == "transitions":
+        raise ProbatumValueError(f"record: 'transitions' beside {what}, which takes no "
+                                 f"steps of an environment; use \"full\" or \"account\", "
+                                 f"or backtest an agent")
 
 
 def _markets(run):

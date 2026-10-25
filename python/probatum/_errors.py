@@ -43,9 +43,8 @@ class ProbatumRuntimeError(ProbatumError, RuntimeError):
 
 
 class ProbatumNotImplementedError(ProbatumRuntimeError, NotImplementedError):
-    """What is not done yet: a Strategy that writes no ``next``, and the transitions
-    level, which ``backtest`` does not record yet. It is a ProbatumRuntimeError as
-    NotImplementedError is a RuntimeError."""
+    """What is not done yet: a Strategy that writes no ``next``. It is a
+    ProbatumRuntimeError as NotImplementedError is a RuntimeError."""
 
 
 class DataError(ProbatumValueError):

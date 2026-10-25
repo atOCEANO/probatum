@@ -21,7 +21,8 @@ from . import _assumptions, _ipc
 from ._data import DAY, INTERVALS, _chosen, _when
 from ._errors import (MissingDependency, ProbatumAttributeError, ProbatumIndexError,
                       ProbatumKeyError, ProbatumTypeError, ProbatumValueError)
-from ._probatum import Table as _Held, stats_of
+from ._probatum import Table as _Held, ln, stats_of
+from ._transitions import Transitions
 from ._venue import _settlement
 from .stats import Statistics, _closed, _percent, sharpe
 
@@ -179,6 +180,12 @@ def _unkept(result, said, what):
     keep, of ``result``."""
     return (f"{said}: a run recorded at {_recorded(result.provenance)!r} keeps {what}; "
             f"run it with record=\"full\"")
+
+
+def _untaken(result, said):
+    """The refusal of ``said``, which reads the transitions ``result`` did not record."""
+    return (f"{said}: a run recorded at {_recorded(result.provenance)!r} keeps no "
+            f"transitions; backtest an agent with record=\"transitions\"")
 
 
 class Table:
@@ -528,23 +535,25 @@ class Result:
     level keeps its ledger, its round trips, its costs and its statistics, the full
     level's, its assumptions priced where those measure them, and no policy, and refuses
     by name its holdings, its fills, its orders, its baselines, an instrument's record
-    and ``explain``. Its repr
-    names every assumption graded optimistic, and a level below the full one.
-    ``save(path)`` writes it as files any tool reads, and ``Result.load(path)`` reads it
-    back."""
+    and ``explain``; an agent's run recorded at the transitions level keeps the same
+    and ``transitions``, each step of the agent's episode, which ``export("arrow",
+    path)`` writes. Its repr names every assumption graded optimistic, and a level below the
+    full one. ``save(path)`` writes it as files any tool reads, and
+    ``Result.load(path)`` reads it back."""
 
     # a Result is no sequence of its instruments, which it names rather than counts
     __iter__ = None
 
 
     def __init__(self, time, equity, tables, stats, policy, bust, provenance,
-                 record=None):
-        self.time    = _frozen(np.array(time, dtype=np.int64))
-        self.equity  = _frozen(np.array(equity, dtype=np.float64))
-        self.returns = _frozen(_returns(self.equity))
-        self.ledger  = tables["ledger"]
-        self._logged = {name: tables.get(name) for name in LOGGED}
-        self.trades  = tables["trades"]
+                 record=None, transitions=None):
+        self._transitions = transitions
+        self.time         = _frozen(np.array(time, dtype=np.int64))
+        self.equity       = _frozen(np.array(equity, dtype=np.float64))
+        self.returns      = _frozen(_returns(self.equity))
+        self.ledger       = tables["ledger"]
+        self._logged      = {name: tables.get(name) for name in LOGGED}
+        self.trades       = tables["trades"]
 
         # a run's assumptions and baselines are read from its record when first asked
         # for and a book's baselines from its accounts'; tables holds them otherwise, an
@@ -573,14 +582,15 @@ class Result:
 
 
     @classmethod
-    def _of(cls, held, stats, policy, bust, provenance, record):
+    def _of(cls, held, stats, policy, bust, provenance, record, transitions=None):
         """The Result of a run whose tables the binding built, ``held``, which keeps
-        ``record`` of the run; a run below the full level reads its assumptions now and
-        keeps nothing to read them, or baselines, from (ADR 0027)."""
+        ``record`` of the run and an agent's ``transitions`` where it recorded them; a
+        run below the full level reads its assumptions now and keeps nothing to read
+        them, or baselines, from (ADR 0027)."""
         tables = _tables(held)
         ledger = tables["ledger"]
         result = cls(ledger["time"], ledger["equity"], tables, stats, policy, bust,
-                     provenance, record)
+                     provenance, record, transitions)
         if _recorded(provenance) != "full":
             result.assumptions
             result._record = None
@@ -612,6 +622,24 @@ class Result:
         if table is None:
             raise ProbatumAttributeError(_unkept(self, f"result.{name}", what))
         return table
+
+
+    @property
+    def transitions(self):
+        """Each step of an agent's episode, a row each, as `Transitions`, which only an
+        agent's backtest recorded at ``"transitions"`` keeps (Specification,
+        Transitions)."""
+        if self._transitions is None:
+            raise ProbatumAttributeError(_untaken(self, "result.transitions"))
+        return self._transitions
+
+
+    def export(self, format, path):
+        """Write the transitions, the one record this writes, as one Arrow IPC file at
+        ``path``, as `Transitions.export` writes them; ``save`` writes the rest."""
+        if self._transitions is None:
+            raise ProbatumAttributeError(_untaken(self, "result.export"))
+        self._transitions.export(format, path)
 
 
     def _table(self, name):
@@ -951,6 +979,7 @@ class Result:
             if not isinstance(value, np.ndarray):
                 setattr(copied, name, copy.deepcopy(value, memo))
 
+        copied._transitions = copy.deepcopy(self._transitions, memo)
         return copied
 
 
@@ -962,7 +991,7 @@ class Result:
         tables = {name: self._table(name) for name in SCHEMAS}
         stats  = None if self.stats is None else dict(self.stats)
         return Result, (self.time, self.equity, tables, stats, policy, self.bust,
-                        self.provenance)
+                        self.provenance, None, self._transitions)
 
 
     def to_pandas(self):
@@ -987,8 +1016,9 @@ class Result:
         each table as a dict of its columns as lists, None where a value is missing,
         the baselines None until they are computed, since this plays no policy,
         ``costs``, and ``stats``, a ratio infinite where it earned something against no
-        measured risk, ``policy`` where it is an array, ``bust``, ``liquidations`` and
-        ``provenance``."""
+        measured risk, ``policy`` where it is an array, ``bust``, ``liquidations``,
+        ``provenance`` and ``transitions``, its columns as lists beside its
+        ``metadata``, None where the run kept none."""
         out = dict(time=self.time.tolist(), equity=self.equity.tolist(),
                    returns=self.returns.tolist())
 
@@ -997,6 +1027,11 @@ class Result:
             out[name] = None if table is None else {
                 column: _listed(table._column(column, kept=False))
                 for column in table.columns}
+
+        steps = self._transitions
+        out["transitions"] = None if steps is None else {
+            **{column: _listed(steps[column]) for column in steps.columns},
+            "metadata": json.loads(json.dumps(steps.metadata))}
 
         out.update(costs=self.costs,
                    stats=None if self.stats is None else dict(self.stats),
@@ -1017,8 +1052,9 @@ class Result:
         array; each table as an Arrow IPC file, ``ledger.arrow``, ``holdings.arrow``,
         ``fills.arrow``, ``orders.arrow``, ``trades.arrow``, ``assumptions.arrow`` and
         ``baselines.arrow``, the last two read first where the run has not read them
-        yet; and ``stats.arrow``, the statistics as one row, none where the clock was
-        too short to annualise. A run below the full level writes the tables it keeps
+        yet; ``stats.arrow``, the statistics as one row, none where the clock was too
+        short to annualise; and ``transitions.arrow`` where an agent's run kept them, as
+        ``export`` writes them. A run below the full level writes the tables it keeps
         alone. A Result pickled before its baselines were read, or a book of one, is
         refused before anything is written. Every file is written under another name
         first, all of them removed again where one cannot be written, then the manifest
@@ -1045,8 +1081,9 @@ class Result:
         if array is not None:
             arrays["policy"] = array
 
+        steps = ["transitions.arrow"] if self._transitions is not None else []
         files = ([f"{name}.npy" for name in arrays] + [f"{name}.arrow" for name in written]
-                 + ["stats.arrow", "result.json"])
+                 + steps + ["stats.arrow", "result.json"])
 
         stats    = self.stats or {}
         manifest = dict(format=FORMAT, version=_version(),
@@ -1060,6 +1097,8 @@ class Result:
             for name in written:
                 _ipc.write(folder / f"{name}.arrow.partial", _stored(self._table(name)),
                            {})
+            if steps:
+                self._transitions.export("arrow", folder / "transitions.arrow.partial")
             _ipc.write(folder / "stats.arrow.partial",
                        [(key, "int64" if key in COUNTS else "float",
                          np.array([stats[key]] if stats else [],
@@ -1073,8 +1112,9 @@ class Result:
             raise
 
         (folder / "result.json").unlink(missing_ok=True)
-        stale = ["policy.npy"] + [f"{name}.arrow" for name in SCHEMAS
-                                  if name not in written]
+        stale = (["policy.npy"] + [f"{name}.arrow" for name in SCHEMAS
+                                   if name not in written]
+                 + ([] if steps else ["transitions.arrow"]))
         for name in stale:
             (folder / name).unlink(missing_ok=True)
 
@@ -1113,7 +1153,8 @@ class Result:
                 or not isinstance(manifest.get("bust"), bool)
                 or manifest.get("policy", "") not in (None, "array")
                 or not _described(manifest["provenance"])
-                or _recorded(manifest["provenance"]) not in ("full", "account")):
+                or _recorded(manifest["provenance"]) not in ("full", "account",
+                                                              "transitions")):
             raise ProbatumValueError(f"path: {str(path)!r}'s result.json is not a "
                                      f"manifest save writes; {fix}")
 
@@ -1169,7 +1210,20 @@ class Result:
                                      f"count the fills and the round trips its tables "
                                      f"hold; {fix}")
 
-        loaded = cls(time, equity, tables, stats, policy, manifest["bust"], provenance)
+        steps = (_stepped(path, folder, fix) if _recorded(provenance) == "transitions"
+                 else None)
+        # an agent's rows are its run's from its first close, each paid what its spec's
+        # reward pays on the run's own equity
+        if steps is not None and (
+                steps.metadata["spec"] != provenance.get("spec")
+                or steps["reward"].tolist() != _earned(steps.metadata["reward"],
+                                                       equity[:len(steps) + 1].tolist())):
+            raise ProbatumValueError(f"path: {str(path)!r}'s transitions.arrow does not "
+                                     f"hold the steps of the agent its result.json "
+                                     f"describes; {fix}")
+
+        loaded = cls(time, equity, tables, stats, policy, manifest["bust"], provenance,
+                     transitions=steps)
         if not np.array_equal(loaded.returns, arrays["returns"]):
             raise ProbatumValueError(f"path: {str(path)!r}'s returns.npy does not hold "
                                      f"the returns its equity.npy gives; {fix}")
@@ -1241,6 +1295,43 @@ def _read(path, folder, name, fix):
                                  f"{fix}") from None
 
     return columns
+
+
+def _earned(reward, equity):
+    """What each step from one value of ``equity`` to the next pays under ``reward``, an
+    agent spec's record of a builtin reward, as an environment works it (Specification,
+    Reward and termination)."""
+    floor, eta = reward["floor"] * equity[0], reward.get("eta")
+    a = b = 0.0
+    paid = []
+
+    for before, after in zip(equity[:-1], equity[1:]):
+        r = ln(max(after, floor) / before)
+        if eta is None:
+            paid.append(r)
+            continue
+
+        da, db = r - a, r * r - b
+        spread = b - a * a
+        paid.append((b * da - a * db / 2.0) / (spread * math.sqrt(spread))
+                    if spread > 0.0 else 0.0)
+        a, b = a + eta * da, b + eta * db
+
+    return paid
+
+
+def _stepped(path, folder, fix):
+    """The transitions ``transitions.arrow`` of ``folder`` holds, the directory ``path``
+    names, refused where it is missing or holds none export writes."""
+    file = folder / "transitions.arrow"
+    if not file.is_file():
+        raise ProbatumValueError(f"path: {str(path)!r} holds no transitions.arrow; {fix}")
+
+    try:
+        return Transitions._read(file)
+    except ProbatumValueError as error:
+        raise ProbatumValueError(f"path: {str(path)!r}'s transitions.arrow {error}; "
+                                 f"{fix}") from None
 
 
 def _loaded(path, folder, name, book, fix):

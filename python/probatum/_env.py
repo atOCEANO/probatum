@@ -15,13 +15,14 @@ from . import _agent, _assumptions, _probatum
 from ._agent import STATE, State
 from ._backtest import _annualised, _kind, _markets, _number, _real
 from ._data import Data, _chosen, _count, _when, features as _features
-from ._errors import (DataError, MissingDependency, ProbatumKeyError,
-                      ProbatumNotImplementedError, ProbatumRuntimeError, ProbatumTypeError,
+from ._errors import (DataError, MissingDependency, ProbatumAttributeError,
+                      ProbatumKeyError, ProbatumRuntimeError, ProbatumTypeError,
                       ProbatumValueError, SpecError, VenueError)
-from ._result import Assumptions, _Record, _provenance
+from ._result import Assumptions, _Record, _provenance, _version
 from ._search import _counted
 from ._space import _flag
 from ._streams import stream
+from ._transitions import _metadata, _Recorder
 from ._venue import _run, _venue_of
 
 try:
@@ -50,6 +51,8 @@ DRAWN   = {
     "slippage": "slippage_bps_per_env",
     "impact":   "impact_per_env",
 }
+UNPICKLED = ("pickle: an environment, which holds the functions it was given, does not "
+             "pickle; build it in the process that steps it, or clone() it in this one")
 
 
 def env(data, venue, window=64, features=None, layout="flat", max_leverage=1.0,
@@ -92,8 +95,11 @@ def env(data, venue, window=64, features=None, layout="flat", max_leverage=1.0,
     observations hold and at most half the CPUs, no result depending on it;
     ``autoreset`` is Gymnasium's mode, ``"next_step"``, ``"same_step"`` or
     ``"disabled"``; ``copy=False`` hands out one observation array that the next step
-    writes over; and ``seed`` names every stream the environments draw from, a fresh one
-    where it is None. Not done yet is ``record="transitions"``.
+    writes over; ``record="transitions"`` keeps a row for each step each environment
+    takes, which ``transitions`` hands out and ``export("arrow", path)`` writes; and
+    ``seed`` names every stream the environments draw from, a fresh one where it is
+    None. ``clone()`` copies the environments as they stand, or ``clone(env=i, n=k)``
+    forks environment ``i`` into ``k``, each stepping on as it would.
     """
     return VectorEnv(**locals())
 
@@ -349,18 +355,22 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         self._first  = first
 
         # each Engine row from the Data's first is the Data's row of this index
-        self._rows    = np.flatnonzero(data.available.any(axis=1))
-        self._streams = [stream(seed, f"episodes {i}") for i in range(n)]
-        self._episode = np.full(n, -1, dtype=np.int64)
-        self._start   = np.full(n, starts[0] if record is None else first, dtype=np.int64)
-        self._slots   = np.tile(np.arange(k, dtype=np.int64), (n, 1))
-        self._out     = np.zeros((n, size), dtype=np.float32)
-        self._account = False
-        self._ended   = None
-        self._state   = None
-        self._ranges  = ranges
-        self._record  = _Record(held, data, run, seed=seed if record is None else None)
-        streams       = {"episodes {i}": "PCG64"}
+        self._rows     = np.flatnonzero(data.available.any(axis=1))
+        self._streams  = [stream(seed, f"episodes {i}") for i in range(n)]
+        self._episode  = np.full(n, -1, dtype=np.int64)
+        self._begun    = np.full(n, -1, dtype=np.int64)
+        self._start    = np.full(n, starts[0] if record is None else first, dtype=np.int64)
+        self._slots    = np.tile(np.arange(k, dtype=np.int64), (n, 1))
+        self._out      = np.zeros((n, size), dtype=np.float32)
+        self._account  = False
+        self._ended    = None
+        self._state    = None
+        self._ranges   = ranges
+        self._record   = _Record(held, data, run, seed=seed if record is None else None)
+        self._flat     = self._out
+        self._recorder = self._recording() if given["record"] == "transitions" else None
+
+        streams = {"episodes {i}": "PCG64"}
         if ranges:
             streams["costs"] = "PCG64"
         if held._intrabar == "random":
@@ -409,7 +419,11 @@ class VectorEnv(gymnasium.vector.VectorEnv):
             self._ended = np.zeros(n, dtype=bool)
         self._ended[mask] = False
 
-        return self._observed(), self._info()
+        obs = self._observed()
+        if self._recorder is not None:
+            self._recorder.opened(mask, self._flat)
+
+        return obs, self._info()
 
 
     def step(self, actions):
@@ -420,6 +434,11 @@ class VectorEnv(gymnasium.vector.VectorEnv):
             raise ProbatumRuntimeError("step: before any reset; call reset first")
 
         n, mode = self.num_envs, self.autoreset_mode
+        given   = actions
+        if self._recorder is not None and self._decode is not None:
+            # kept as given before a decode, which may write over them, reads them
+            given = self._kept(self._recorder, actions)
+
         decided = self._decided(actions)
 
         # an episode that ended is never stepped again; under same_step one is left
@@ -434,10 +453,20 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         self._ended = ended
 
         if callable(self._reward):
-            rewards = np.where(active, self._rewarded(active), 0.0)
+            try:
+                rewards = np.where(active, self._rewarded(active), 0.0)
+            except BaseException:
+                if self._recorder is not None:
+                    # the engines stepped, so each environment's next row opens there
+                    self._observed()
+                    self._recorder.opened(np.ones(n, dtype=bool), self._flat)
+                raise
 
         obs  = self._observed()
         info = self._info()
+        if self._recorder is not None:
+            self._recorder.stepped(active, self._begun, info["step"] - 1, given,
+                                   rewards, terminated, truncated, self._flat)
 
         if mode == gymnasium.vector.AutoresetMode.SAME_STEP and ended.any():
             final = np.full(n, None, dtype=object)
@@ -452,6 +481,8 @@ class VectorEnv(gymnasium.vector.VectorEnv):
             obs         = self._observed()
             info        = {**self._info(), "final_obs": final, "_final_obs": ended.copy(),
                            "final_info": told, "_final_info": ended.copy()}
+            if self._recorder is not None:
+                self._recorder.opened(ended, self._flat)
 
         return obs, rewards, terminated, truncated, info
 
@@ -464,9 +495,138 @@ class VectorEnv(gymnasium.vector.VectorEnv):
         return Assumptions._of(_assumptions.environment(self._record, self._ranges))
 
 
+    @property
+    def transitions(self):
+        """Every step the environments have taken since they were built, one row a step
+        of each, as `Transitions` (Specification, Transitions), which only an
+        environment built with ``record="transitions"`` keeps."""
+        if self._recorder is None:
+            raise ProbatumAttributeError("env.transitions: an environment recorded at "
+                                         "'none' keeps no transitions; build it with "
+                                         "record=\"transitions\"")
+
+        return self._recorder.transitions(_metadata(self.agent_spec, _version()))
+
+
+    def export(self, format, path):
+        """Write the transitions as one Arrow IPC file at ``path``, as
+        `Transitions.export` writes them."""
+        self.transitions.export(format, path)
+
+
+    def clone(self, env=None, n=None):
+        """A copy of the environments as they stand, or with ``env`` environments of
+        ``n`` copies of that one, a single copy where ``n`` is left out, each stepping on
+        as it would: the engines, the episodes, their streams and the transitions
+        recorded copied, a fork's environments drawing from copies of ``env``'s stream
+        and recording afresh, and the Data and the functions it was given shared
+        (Specification, Clones and pickles)."""
+        if env is None and n is not None:
+            raise ProbatumValueError(f"n: {n} without env; name the environment to fork "
+                                     f"with env=, or leave n out")
+
+        if env is None:
+            inner = self._inner.clone()
+        else:
+            _counted("env", env, 0)
+            if env >= self.num_envs:
+                raise ProbatumValueError(f"env: {env} of {self.num_envs} environments; "
+                                         f"give one from 0 to {self.num_envs - 1}")
+            n = 1 if n is None else n
+            _counted("n", n, 1, "copies")
+            inner = self._inner.clone(int(env), int(n))
+
+        twin = VectorEnv.__new__(VectorEnv)
+        twin.__dict__.update(self.__dict__)
+        twin._inner     = inner
+        twin._spec      = copy.deepcopy(self._spec)
+        twin.provenance = copy.deepcopy(self.provenance)
+        twin._np_random = copy.deepcopy(self._np_random)
+
+        # the spaces with their generators, so a copy samples them as its original
+        # would next and a fork batches copies of the single ones
+        twin.single_observation_space = _spaced(self.single_observation_space)
+        twin.single_action_space      = _spaced(self.single_action_space)
+        twin.observation_space        = _spaced(self.observation_space)
+        twin.action_space             = _spaced(self.action_space)
+
+        if env is None:
+            twin._streams  = [copy.deepcopy(stream) for stream in self._streams]
+            twin._recorder = None if self._recorder is None else self._recorder.cloned()
+            taken          = slice(None)
+        else:
+            taken          = [int(env)] * len(inner)
+            twin._streams  = [copy.deepcopy(self._streams[env]) for _ in taken]
+            twin._recorder = (None if self._recorder is None
+                              else self._recorder.cloned(env=int(env), n=len(inner)))
+            twin.num_envs          = len(inner)
+            twin.observation_space = gymnasium.vector.utils.batch_space(
+                twin.single_observation_space, len(inner))
+            twin.action_space      = gymnasium.vector.utils.batch_space(
+                twin.single_action_space, len(inner))
+            twin._grid             = (len(inner),) + self._grid[1:]
+            twin.provenance["settings"]["num_envs"] = len(inner)
+            twin.provenance["forked"]               = int(env)
+
+        twin._episode = self._episode[taken].copy()
+        twin._begun   = self._begun[taken].copy()
+        twin._start   = self._start[taken].copy()
+        twin._slots   = self._slots[taken].copy()
+        twin._ended   = None if self._ended is None else self._ended[taken].copy()
+        twin._out     = np.zeros((len(inner), inner.size), dtype=np.float32)
+        twin._flat    = twin._out
+        twin._state   = None
+
+        # a copy is its own environment, whatever took this one over
+        twin._copy, twin._account = self.provenance["settings"]["copy"], False
+
+        return twin
+
+
+    def __copy__(self):
+        return self.clone()
+
+
+    def __deepcopy__(self, memo):
+        return self.clone()
+
+
+    def __reduce__(self):
+        raise ProbatumTypeError(UNPICKLED)
+
+
+    def _recording(self):
+        """A recorder of this environment's steps, each action kept flat, as int64
+        choices for a discrete space."""
+        dtype = np.int64 if self._kind == "discrete" else np.float32
+        return _Recorder(self.num_envs, self._inner.size,
+                         int(np.prod(self.single_action_space.shape)), dtype)
+
+
+    def _kept(self, recorder, actions):
+        """``actions`` copied as ``recorder``'s rows keep them, one flat row an
+        environment, refused where they are not one action of the space for each."""
+        n, shape = self.num_envs, self.action_space.shape
+
+        try:
+            kept = np.array(actions, dtype=recorder.dtype)
+        except (TypeError, ValueError):
+            raise ProbatumValueError(f"actions: {_kind(actions)}, which numpy reads as no "
+                                     f"one array; give {shape}") from None
+
+        if kept.shape[:1] != (n,) or kept.size != n * recorder.width:
+            raise ProbatumValueError(f"actions: shape {kept.shape} for {n} environments, "
+                                     f"which a transition keeps as one action of the "
+                                     f"space each; give {shape}")
+
+        return kept.reshape(n, recorder.width)
+
+
     def _begin(self, mask):
         """Draw the next episode of each environment ``mask`` names from its stream,
-        its start and then its slots, and open it."""
+        its start and then its slots, and open it, counted among the episodes the
+        environment has begun, which number its transitions whatever a seeded reset
+        starts again."""
         for i in np.flatnonzero(mask):
             rng   = self._streams[i]
             start = self._starts[rng.integers(len(self._starts))]
@@ -475,18 +635,21 @@ class VectorEnv(gymnasium.vector.VectorEnv):
                 self._slots[i] = np.sort(rng.choice(held, self._k, replace=False))
             self._start[i]    = start
             self._episode[i] += 1
+            self._begun[i]   += 1
 
         self._inner.reset(mask, self._start, self._slots)
         self._state = None
 
 
-    def _played(self, act, rows):
+    def _played(self, act, rows, recorded=False):
         """The run of an agent's backtest, from the Data's first bar to its last: at each
         close ``act`` is handed the observation and returns the action, decoded and
         placed as a step places it, until the account's equity is at or below zero,
         after which no slot is named, or with orders none placed. Returns what it
         decided on the Data's ``rows``, each close's weights or each slot's size and
-        offset, NaN where nothing was decided or a slot was not shown."""
+        offset, NaN where nothing was decided or a slot was not shown. With
+        ``recorded`` it keeps, as ``_recorder``, a row for each close the agent is asked
+        at until its episode ends."""
         inner, k, first = self._inner, self._k, self._first
         orders = self._kind == "orders"
         one    = np.ones(1, dtype=bool)
@@ -495,30 +658,47 @@ class VectorEnv(gymnasium.vector.VectorEnv):
 
         inner.reset(one, self._start, self._slots)
         self._state = None
+        recorder    = self._recording() if recorded else None
+        obs         = self._observed()
+        if recorder is not None:
+            recorder.opened(one, self._flat)
 
         for step in range(len(self._record.settings["times"]) - 1 - first):
+            action = given = None
             if inner.is_bust(0):
                 decided = idle
             else:
-                decided = self._decided(act(self._observed()))
+                action = act(obs)
+                given  = (self._kept(recorder, action)
+                          if recorded and self._decode is not None else action)
+                decided = self._decided(action)
                 shown   = inner.shown()
                 out[self._rows[step]] = np.where(shown[..., None] if orders else shown,
                                                  decided, np.nan)[0]
 
-            inner.step(decided, one)
+            rewards, terminated, truncated = inner.step(decided, one)
             self._state = None
+            obs         = self._observed()
+            if recorded and action is not None:
+                recorder.stepped(one, [0], [step], given, rewards, terminated,
+                                 truncated, self._flat)
+                recorded = not (terminated[0] or truncated[0])
 
+        self._recorder = recorder
         return out
 
 
     def _observed(self):
         """The observations, in an array of their own unless ``copy`` is off, or the
-        account blocks alone where a device writes the market block itself."""
+        account blocks alone where a device writes the market block itself; the flat
+        array written is kept as ``_flat`` for the transitions."""
         if self._account:
             return self._inner.observe_account(self._out)
 
         out = np.empty_like(self._out) if self._copy else self._out
         self._inner.observe(out)
+        self._flat = out
+
         if self._layout == "flat":
             return out
         return {
@@ -701,6 +881,45 @@ class Env(gymnasium.Env):
         return self._batch.describe()
 
 
+    @property
+    def transitions(self):
+        """Every step the environment has taken, as `VectorEnv.transitions` keeps
+        them."""
+        return self._batch.transitions
+
+
+    def export(self, format, path):
+        """Write the transitions as `VectorEnv.export` writes them."""
+        self._batch.export(format, path)
+
+
+    def clone(self):
+        """A copy of the environment as it stands, stepping on as it would
+        (Specification, Clones and pickles)."""
+        twin = Env.__new__(Env)
+        twin.__dict__.update(self.__dict__)
+        twin._batch            = self._batch.clone()
+        twin.observation_space = twin._batch.single_observation_space
+        twin.action_space      = twin._batch.single_action_space
+
+        # the generator Gymnasium keeps from reset(seed=)
+        twin._np_random = copy.deepcopy(self._np_random)
+
+        return twin
+
+
+    def __copy__(self):
+        return self.clone()
+
+
+    def __deepcopy__(self, memo):
+        return self.clone()
+
+
+    def __reduce__(self):
+        raise ProbatumTypeError(UNPICKLED)
+
+
 def _checked(given):
     """Refuse each of `env`'s arguments ``given``, by name, that is wrong in itself."""
     _counted("num_envs", given["num_envs"], 1, "environments")
@@ -756,13 +975,8 @@ def _checked(given):
                 "give \"next_step\", \"same_step\" or \"disabled\"")
 
     _flag("copy", given["copy"])
-
-    record = given["record"]
-    if isinstance(record, str) and record == "transitions":
-        raise ProbatumNotImplementedError("record: 'transitions', which an environment "
-                                          "does not record yet; leave it \"none\"")
-    _chosen("record", record, ("none",), "leave it \"none\"")
-
+    _chosen("record", given["record"], ("none", "transitions"),
+            "give \"none\" or \"transitions\"")
     if given["seed"] is not None:
         _counted("seed", given["seed"], 0)
 
@@ -882,6 +1096,17 @@ def _settings(given):
         shown[name] = value
 
     return shown
+
+
+def _spaced(space):
+    """``space`` with a copy of its generator, and of each part's for a dict, sharing
+    its bounds, which no draw changes and a batch holds for each environment."""
+    twin = copy.copy(space)
+    twin._np_random = copy.deepcopy(space.np_random)
+    if isinstance(space, gymnasium.spaces.Dict):
+        twin.spaces = {key: _spaced(part) for key, part in space.spaces.items()}
+
+    return twin
 
 
 def _first(batched):

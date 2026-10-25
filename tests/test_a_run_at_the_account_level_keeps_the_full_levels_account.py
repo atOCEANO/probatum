@@ -14,8 +14,7 @@ import numpy as np
 import pytest
 
 import probatum
-from probatum import (ProbatumAttributeError, ProbatumNotImplementedError,
-                      ProbatumTypeError, ProbatumValueError)
+from probatum import ProbatumAttributeError, ProbatumTypeError, ProbatumValueError
 from probatum._venue import _run
 from test_a_policy_is_read_one_way_and_an_array_runs_in_one_call import (
     VENUE, bars, one, pair, same, weights)
@@ -229,9 +228,6 @@ def test_a_result_at_the_account_level_crosses_a_pickle_a_copy_and_a_save(tmp_pa
 
 
 @pytest.mark.parametrize("record, kind, said", [
-    ("transitions", ProbatumNotImplementedError,
-     "record: 'transitions', which backtest does not record yet; use \"full\" or "
-     "\"account\""),
     ("none", ProbatumValueError,
      "record: 'none', which keeps nothing a Result holds; use \"full\" or \"account\""),
     ("Account", ProbatumValueError, "record: 'Account'; use \"full\" or \"account\""),
@@ -242,3 +238,12 @@ def test_backtest_refuses_a_level_it_does_not_keep(record, kind, said):
         with pytest.raises(kind) as caught:
             probatum.backtest(policy, one(), VENUE, record=record)
         assert type(caught.value) is kind and str(caught.value) == said
+
+
+def test_the_transitions_level_is_an_agent_s_alone():
+    for policy, what in ((weights(width=1), "an array"), (Cross(), "a Strategy")):
+        with pytest.raises(ProbatumValueError) as caught:
+            probatum.backtest(policy, one(), VENUE, record="transitions")
+        assert str(caught.value) == (f"record: 'transitions' beside {what}, which takes "
+                                     f"no steps of an environment; use \"full\" or "
+                                     f"\"account\", or backtest an agent")

@@ -7,6 +7,7 @@ backtest)."""
 
 import contextlib
 import copy
+import functools
 import hashlib
 import inspect
 import itertools
@@ -26,6 +27,7 @@ from ._errors import (DataError, ProbatumTypeError, ProbatumValueError, Probatum
                       SpecError)
 from ._result import Result, _provenance, _version
 from ._storage import _given as _decoded_json, _plain
+from ._transitions import _metadata
 from ._venue import Venue, _changes, _market
 
 PACKAGE = (os.path.dirname(__file__),)
@@ -347,8 +349,9 @@ def _backtested(agent, data, venue, sizing, stop, take_profit, tolerance, record
                                  f"with the tolerance its spec holds; leave it out")
 
     _rate(risk_free)
-    spec = _found(agent, spec)
-    held = _repeatable(venue)
+    spec  = _found(agent, spec)
+    held  = _repeatable(venue)
+    whole = data
     rows, n = len(data), len(data.names)
     data, columns = _slotted(data, spec, instruments, held)
 
@@ -362,6 +365,19 @@ def _backtested(agent, data, venue, sizing, stop, take_profit, tolerance, record
         features = given[:, columns]
 
     _held(spec, features, decode)
+
+    if callable(features) and spec["sample"] is not None:
+        # a sampled agent's features were worked over the universe it sampled from,
+        # which the Data given stands for here, as it does for an array of them
+        features = _over(features, whole, columns)
+
+    stepped = record == "transitions"
+    if stepped and "custom" in spec["reward"]:
+        raise SpecError(f"record: 'transitions' for an agent whose spec records a reward "
+                        f"of its own, {spec['reward']['custom']}, which a backtest has no "
+                        f"function to work; record its transitions in its environment, "
+                        f"built with record=\"transitions\"")
+
     overlap, trained = _told(spec, data, held)
 
     # the environment loads Gymnasium, which no other backtest does
@@ -375,6 +391,7 @@ def _backtested(agent, data, venue, sizing, stop, take_profit, tolerance, record
         actions      = actions["space"],
         max_offset   = actions.get("max_offset", 20),
         decode       = decode,
+        reward       = spec["reward"].get("builtin", "log"),
         fill         = spec["fill"],
         tolerance    = spec["tolerance"],
         autoreset    = "disabled",
@@ -384,12 +401,14 @@ def _backtested(agent, data, venue, sizing, stop, take_profit, tolerance, record
     normal = spec["normalisation"]
     scale  = None if normal is None else list(zip(normal["mean"], normal["deviation"]))
     shape  = spec["observation"]["shape"]
+    # the transitions keep the account level's records beside the steps
+    level = "account" if stepped else record
 
     def run(change=None):
-        env = VectorEnv._of(data, held, record, scale, shape, balance, costs, change,
+        env = VectorEnv._of(data, held, level, scale, shape, balance, costs, change,
                             **settings)
         with _evaluated(agent):
-            decided = env._played(_acting(agent, spec), len(data))
+            decided = env._played(_acting(agent, spec), len(data), recorded=stepped)
         return env, decided
 
     env, decided = run()
@@ -412,18 +431,24 @@ def _backtested(agent, data, venue, sizing, stop, take_profit, tolerance, record
         env._record.policy = again
         _baselines.computed(env._record)
 
+    steps = (env._recorder.transitions(_metadata(spec, _version())) if stepped
+             else None)
     return Result._of(inner.tables(0, env._first, list(data.names)), stats,
                       decided if full else None, inner.is_bust(0), provenance,
-                      env._record)
+                      env._record, transitions=steps)
 
 
 def _found(agent, spec):
     """The agent spec ``spec`` gives: the spec itself, a path to its JSON or to a
     directory holding ``spec.json``, or the environment the agent trained in, and where
     it is None the one an SB3 agent carries on its action space; refused where there is
-    none, or its schema is not the one this probatum reads."""
+    none, or its schema is not the one this probatum reads. An SB3 agent that carries a
+    spec reads its statistics from it whatever ``spec`` is given, as they are the
+    model's own."""
+    own = getattr(agent.action_space, "agent_spec", None) if _sb3(agent) else None
+
     if spec is None:
-        spec = getattr(agent.action_space, "agent_spec", None) if _sb3(agent) else None
+        spec = own
         if spec is None:
             raise SpecError("spec: this agent carries no spec; pass spec= with the env it "
                             "trained on or its JSON")
@@ -441,6 +466,9 @@ def _found(agent, spec):
                             f"spec.json probatum.save wrote") from None
     elif hasattr(spec, "agent_spec"):
         spec = spec.agent_spec
+    elif hasattr(getattr(spec, "unwrapped", None), "agent_spec"):
+        # an environment gymnasium.make built, beneath the wrappers it puts on it
+        spec = spec.unwrapped.agent_spec
     elif not isinstance(spec, dict):
         raise ProbatumTypeError(f"spec: {_kind(spec)}; pass the agent spec, a path to its "
                                 f"JSON or the environment the agent trained in")
@@ -450,7 +478,11 @@ def _found(agent, spec):
         raise SpecError(f"spec: schema {schema!r}, and this probatum reads schema "
                         f"{SCHEMA}; pass a spec env.agent_spec recorded")
 
-    return copy.deepcopy(spec)
+    spec = copy.deepcopy(spec)
+    if own is not None:
+        spec["sb3"] = copy.deepcopy(own.get("sb3"))
+
+    return spec
 
 
 def _slotted(data, spec, instruments, venue):
@@ -496,6 +528,19 @@ def _same(name, instrument, trained):
     symbol = instrument.symbol
     return name == trained or symbol is not None and (
         trained == symbol or name == symbol and trained.endswith(f":{symbol}"))
+
+
+def _over(function, data, columns):
+    """``function``, a sampled agent's features, as a function of its slots' Data that
+    works it over every instrument of ``data``, the Data its backtest is given, on the
+    same bars, and returns the slots' ``columns`` of what it gives."""
+    @functools.wraps(function)
+    def slotted(held):
+        _, stop = held._rows
+        values  = function(Data._of(data._root, (0, stop), data._cols))
+        return np.asarray(values, dtype=np.float64)[:, columns]
+
+    return slotted
 
 
 def _told(spec, data, venue):
