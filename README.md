@@ -100,21 +100,20 @@ print(engine.equity, engine.position)          # account value and position at t
 
 ## Ways to drive it
 
-Every surface below takes the same eleven engine knobs. `probatum.Market` holds them once so they cannot drift apart, and hands out the surfaces itself:
+The raw engine and the strategy runner below take the same eleven engine knobs. `probatum.Market` holds them once so they cannot drift apart, and hands out both itself:
 
 ```python
 binance = probatum.Market(kind="perp", fee_taker=0.0004, slippage_bps=2.0,
                       leverage=5.0, funding_rate=0.0001, funding_interval=8)
 
 result = binance.backtest(candles).run(MyStrategy())
-env = binance.env(candles, num_envs=4096, window=60)
 ```
 
 Each method takes only what is not the venue, so a cost cannot be passed twice. Writing the knobs out per call still works and is the right thing for a one-off.
 
 ### Raw engine
 
-The Backtester and the RL env drive the compiled engine, `probatum._probatum.Engine`, built over a candle array with the engine's settings as keywords. Its candles are readable as named zero-copy views, `engine.opens`, `engine.highs`, `engine.lows`, `engine.closes` and `engine.volumes`, so nothing has to remember that the close is column 3. `engine.data` is still the whole `(T, 5)` array.
+The Backtester drives the compiled engine, `probatum._probatum.Engine`, built over a candle array with the engine's settings as keywords. Its candles are readable as named zero-copy views, `engine.opens`, `engine.highs`, `engine.lows`, `engine.closes` and `engine.volumes`, so nothing has to remember that the close is column 3. `engine.data` is still the whole `(T, 5)` array.
 
 The order verbs mirror a real exchange, so a strategy is written against the same calls it would use live. `market_buy` / `market_sell` (taker, fills at the next open), `limit_buy` / `limit_sell` (rests until a candle reaches it, a maker unless its first bar opens at or through it), `stop(side, size, trigger)`, `close()`, `cancel(order_id)`, and `cancel_all()`. The full `order(side, size, type=, price=, trigger=, reduce_only=, post_only=, tif=)` primitive sets the flags the shortcuts leave default (a reduce-only stop-loss, a post-only limit, an IOC or FOK fill), and `qty_from_weight` / `qty_from_quote` size an order from a fraction of equity or a cash amount. One netted position: net long, net short, or flat, never both, and never short on spot. Every `step` returns the state as a typed record, read by attribute or by key; see the [Python API](.Documentation/Python_API.md) for the full field list and order semantics.
 
@@ -164,27 +163,20 @@ An indicator library is mostly somebody's opinion about warm-up and smoothing, s
 
 ### Reinforcement learning
 
-A Gymnasium-compatible vectorized env. You control the observation (a window of your own features), the reward (a function over the batched state), and the action decoding. Thousands of envs step in parallel, each starting at a random offset so they walk decorrelated stretches of history, sharing one read-only copy of the data.
+A Gymnasium vector environment of accounts at a venue on a Data, stepped together in Rust. Each account is a backtest's, through the same fills, costs, funding and liquidation, and each environment draws its episodes from a stream of its own, so an episode runs again as a backtest from its start. You choose what the agent sees (the candles, or your own features), how it is rewarded (the log return, a differential Sharpe, or a function over the batched state) and what its actions are (target weights, discrete positions, or limit orders).
 
 ```python
-import numpy as np
-from probatum.rl import VectorEnv
+def reward(state):                                 # batched, one value per env
+    return state.log_return - 0.5 * state.drawdown ** 2
 
-def reward_fn(state, prev):                       # batched, one value per env
-    return (state.equity - prev.equity) - 0.01 * np.abs(state.position)
-
-env = VectorEnv(
-    data=ohlcv,                                    # (T, 5) fills orders
-    features=my_indicators,                        # (T, F) what the agent sees
-    reward_fn=reward_fn,
-    num_envs=4096, window=60, market="perp", slippage_bps=2.0,
-)
-obs, info = env.reset(seed=0)                      # (4096, 60, F) float32
+env = probatum.env(data, "binance_perp", window=64, features=my_features,
+                   reward=reward, num_envs=4096, seed=0)
+obs, info = env.reset(seed=0)                      # (4096, D) float32
 for _ in range(1000):
-    actions = policy(obs)                          # (4096,) Discrete(3)
-    obs, rewards, terminations, truncations, infos = env.step(actions)
-    # 4096 envs stepped in parallel, GIL released; finished ones auto-reset,
-    # their final obs and equity in infos
+    actions = policy(obs)                          # (4096, N) target weights
+    obs, reward, terminated, truncated, info = env.step(actions)
+    # 4096 envs stepped in parallel, GIL released; an ended episode resets
+    # on the next step, its start and number in info
 ```
 
 Or skip the loop and hand it to Stable-Baselines3, which trains on the same env in three lines:
@@ -193,7 +185,7 @@ Or skip the loop and hand it to Stable-Baselines3, which trains on the same env 
 from stable_baselines3 import PPO
 from probatum.sb3 import ProbatumVecEnv
 
-PPO("MlpPolicy", ProbatumVecEnv(env)).learn(total_timesteps=100_000)   # A2C, DQN, SAC swap in
+PPO("MlpPolicy", ProbatumVecEnv(env)).learn(total_timesteps=100_000)   # A2C and SAC swap in
 ```
 
 The observation, reward, action, and autoreset contract, and the full training examples, are in the [RL Guide](.Documentation/RL_Guide.md).
@@ -325,7 +317,7 @@ Throughput depends on which path you drive, and they differ by orders of magnitu
 | :--- | :--- | :--- |
 | Single-env raw step | ~358K steps/s | the Python-to-Rust boundary, crossed on every `step` |
 | Single-env with a Python strategy | ~77K steps/s | your per-bar Python, not the engine |
-| Batched RL step | ~110-200K env-steps/s | building the observation, GIL released |
+| Batched RL step | ~770K-1.6M env-steps/s | writing the observation, GIL released |
 
 The single-env rows say something worth internalizing: the engine steps at about 358K per second with nothing attached, and a strategy that recomputes indicators with numpy on every bar drops that to about 77K, so a single backtest is bound by your own per-bar code, not by probatum. Vectorize the indicators once and the rate climbs back toward the engine. The batched RL step releases the GIL and moves every env together, bound by building the observation rather than by the fill. A parameter search scales the other way, across processes rather than per bar, so its rate is trials per second and it grows with the cores you give it.
 

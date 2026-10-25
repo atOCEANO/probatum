@@ -61,7 +61,8 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
 | `probatum.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
 | `probatum.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
-| `probatum.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
+| `probatum.env` | Step accounts at a venue on a Data together in Rust as a Gymnasium vector environment, each environment drawing its episodes from a stream of its own. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
+| `probatum.rl` | `VectorEnv`, the environment `probatum.env` returns, `Env`, one environment of it, both registered as `probatum/Trading-v0`, and `Batch`, the raw batch. [Below](#reinforcement-learning). |
 | `probatum.sb3` | `ProbatumVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
 | `probatum.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
 | `probatum.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
@@ -227,13 +228,13 @@ A frame carrying a real (datetime) index must be sorted ascending and unique; a 
 
 **Every row has to be a bar**: `low <= open <= high` and `low <= close <= high`, checked per row alongside finiteness ([ADR 0007](Decisions.md)). The fill model bounds a taker to what the bar traded, and on an unordered row that bound moves the fill toward the account instead, so a dead flat market pays out. The realistic cause is a positional slice of a feed that ships its columns in another order, which is why the message names the order it wants: a venue returning `low, high, open, close` satisfies `high >= low` on every row and still mints money. A bar that never moved, every price equal, is a bar. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
 
-The wrappers call it for you, so a DataFrame can go straight into `Backtester` or `VectorEnv`. Handing the `Backtester` a datetime index is also what stamps each round trip with `open_time` and `close_time` ([Trades](#trades)).
+The wrappers call it for you, so a DataFrame can go straight into `Backtester`. Handing the `Backtester` a datetime index is also what stamps each round trip with `open_time` and `close_time` ([Trades](#trades)).
 
 <br>
 
 ## The market
 
-A backtest, a search and an RL rollout each take the same eleven of the engine's knobs, and leave its `window`, `spread`, `impact_model`, `limit` and `sizes` at their defaults: a window of 24 bars, no spread, linear impact, limits filled on touch and sizes off. Written out at three call sites they are three chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `probatum.Market` holds them once and hands out the surfaces itself.
+The engine and a backtest each take the same eleven of the engine's knobs, and leave its `window`, `spread`, `impact_model`, `limit` and `sizes` at their defaults: a window of 24 bars, no spread, linear impact, limits filled on touch and sizes off. Written out at two call sites they are two chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `probatum.Market` holds them once and hands out the surfaces itself.
 
 ```python
 import probatum
@@ -249,8 +250,7 @@ binance = probatum.Market(
 )
 
 result = binance.backtest(candles).run(MyStrategy())
-env = binance.env(candles, num_envs=4096, window=60)
-engine = binance.engine(candles)          # takes a frame like its siblings
+engine = binance.engine(candles)          # takes a frame like its sibling
 ```
 
 Each method takes only the arguments that are **not** the venue, so a knob cannot be passed twice and no rule about which copy wins is needed: there is only ever one copy. Passing one anyway is refused rather than merged ([ADR 0002](Decisions.md)).
@@ -259,7 +259,6 @@ Each method takes only the arguments that are **not** the venue, so a knob canno
 | :--- | :--- |
 | `engine(candles, report=False)` | [the engine](#the-engine-it-drives) the strategy runner drives. |
 | `backtest(candles, periods_per_year=None, risk_free=0.0)` | a `Backtester`. |
-| `env(data, **rest)` | a `VectorEnv`; `rest` is the RL arguments only. |
 | `replace(**changes)` | a copy with some knobs changed. |
 | `as_dict()` | the knobs as the keyword arguments the engine takes. |
 
@@ -318,9 +317,9 @@ states = b.step_all(actions)                 # positive buys, negative sells, ze
 | `done()` | bool | True when the envs have reached the last bar (they step in lockstep here). |
 | `num_envs` | int | Number of envs (also `len(batch)`). |
 
-Because the envs are independent, batched stepping is bit-identical to stepping each in a loop, but under `intrabar="random"`, where env k draws from a stream named with its index as well, which the engine built on its own does not ([Specification](Specification.md#what-a-bar-cannot-show)). The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) used by [`probatum.rl.VectorEnv`](RL_Guide.md); most users drive RL through that env rather than these directly.
+Because the envs are independent, batched stepping is bit-identical to stepping each in a loop, but under `intrabar="random"`, where env k draws from a stream named with its index as well, which the engine built on its own does not ([Specification](Specification.md#what-a-bar-cannot-show)). The `Batch` also carries a lower-level RL surface (random-start reset, masked autoreset, batched feature observation, and per-env equity/done/bust arrays) for a loop of your own; [`probatum.env`](#reinforcement-learning) builds its environments over the same engines and steps them itself. `probatum.rl.Batch` is the same class.
 
-Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer; a fee override replaces the venue's rate and leaves alone a rate an instrument charges of its own. This is the primitive [`VectorEnv`](RL_Guide.md) uses for cost domain randomization ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
+Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer; a fee override replaces the venue's rate and leaves alone a rate an instrument charges of its own. This is what an environment's `costs` draws into, every instrument's own rate set aside for a fee it draws ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
 
 **A batch over a universe** takes `(T, N, 5)` candles and the same `instruments` and `funding_instruments` as [the engine](#the-engine-it-drives), and steps each env through `target`; the signed sizes `step_all` and `advance` take trade the first instrument. Its `observe(window)` is `(num_envs, window, N, 5)`, zero where an instrument printed no bar, and `snapshot()` adds every instrument's `positions` and `marks` as `(num_envs, N)` arrays beside its `(num_envs,)` fields, whose position, unrealized PnL and mark read the first instrument.
 
@@ -330,17 +329,18 @@ Under `intrabar="random"` each env draws from its own stream, named from `seed` 
 
 ## Reinforcement learning
 
-`probatum.rl.VectorEnv` is a Gymnasium-compatible vectorized env over the `Batch`: `num_envs` independent envs share one copy of the series, each starting at a random offset, all stepped in parallel with the GIL released. You supply what the agent sees (`features`), how it is rewarded (`reward_fn`), and what its actions mean (`action_fn`, `action_space`).
+`probatum.env(data, venue, window=64, ...)` steps `num_envs` accounts at `venue` on `data` together in Rust, as a Gymnasium vector environment, `probatum.rl.VectorEnv`. Each account is a backtest's, through the same fills, costs, funding, caps and liquidation, and each environment draws its episodes from a stream of its own, so an episode runs again as a backtest from the start its info gives ([Specification](Specification.md#the-environment), [ADR 0038](Decisions.md)).
 
 ```python
-from probatum.rl import VectorEnv
-
-env = VectorEnv(candles, features=indicators, num_envs=4096, window=60, market="perp")
-obs, info = env.reset(seed=0)                  # (4096, 60, F) float32
-obs, rewards, terminations, truncations, infos = env.step(actions)
+env = probatum.env(data, "binance_perp", window=64, features=features, num_envs=4096,
+                   seed=0)
+obs, info = env.reset(seed=0)                  # (4096, D) float32
+obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 ```
 
-Stable-Baselines3 will not take a Gymnasium vector env directly, so `probatum.sb3.ProbatumVecEnv` presents it as an SB3 `VecEnv`, which keeps the batch intact under PPO, A2C, DQN, and SAC:
+The observation is the market block of each instrument's features, or its candles, on the window's bars beside the account block, what the account holds and owes. Actions are target weights scaled by `max_leverage` by default, or `"simplex"`, `"discrete"` or `"orders"`, and the reward is the step's log return, its differential Sharpe or `reward(state)` over the whole batch at once. `env.describe()` lists what its runs assume, as a backtest's assumptions, and `env.provenance` records what they run on. `probatum.rl.Env` is one environment as Gymnasium's single API steps it, and `gymnasium.make` and `gymnasium.make_vec` build both as `probatum/Trading-v0` once `probatum.rl` or `probatum.env` has loaded; a plain `import probatum` never loads Gymnasium.
+
+Stable-Baselines3 will not take a Gymnasium vector env directly, so `probatum.sb3.ProbatumVecEnv` presents it as an SB3 `VecEnv`, switched to same-step autoreset and to an observation of its own each step, which keeps the batch intact under PPO, A2C and SAC, and DQN on one instrument's discrete actions:
 
 ```python
 from stable_baselines3 import PPO
@@ -349,7 +349,7 @@ from probatum.sb3 import ProbatumVecEnv
 PPO("MlpPolicy", ProbatumVecEnv(env)).learn(total_timesteps=100_000)
 ```
 
-The full contract, every constructor argument, the observation and reward shapes, the action decoder, cost randomization, and the autoreset rules, is in the [RL Guide](RL_Guide.md).
+Every setting, the observation, the actions, the rewards, the episodes and the autoreset modes are in the [RL Guide](RL_Guide.md).
 
 <br>
 
@@ -1380,7 +1380,7 @@ Every error probatum raises is one of its own classes and the built-in it means,
 
 A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which follows what arrived: a value of a type the argument does not take raises a `TypeError`, and one of its type that the call cannot take a `ValueError`, so `tolerance="0.01"` is a `ProbatumTypeError` and `tolerance=-0.01` a `ProbatumValueError`. So a Data's wrong value is a `DataError` and its wrong type a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a Venue built in Python splits the same way between `VenueError` and `ProbatumTypeError`, while every wrong setting in a preset's file is a `VenueError`. A policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
 
-What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `metrics`, `chart`, `plot`, `rl`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
+What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `metrics`, `chart`, `plot`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
 
 Every warning probatum gives is a `probatum.ProbatumWarning`, a `UserWarning`, named at the line of your code that caused it, so a test can make probatum's warnings errors without touching anyone else's. Outside those modules probatum prints nothing: long work is logged to the `probatum` logger, `Data.from_router` logging each instrument it built at INFO and each call to the router at DEBUG, which Python's `logging` turns on.
 

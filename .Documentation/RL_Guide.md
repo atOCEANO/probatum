@@ -27,236 +27,213 @@
 
 ## RL Guide
 
-`probatum.rl.VectorEnv` is a Gymnasium-compatible vectorized env over the Rust batch. `num_envs` independent envs share one read-only copy of the data; each starts at a random offset and steps in parallel with the GIL released, so the batch walks decorrelated stretches of history. You control three things: what the agent sees, how it is rewarded, and what its actions do.
+`probatum.env` steps `num_envs` accounts at a venue on a Data's bars together in Rust, as a Gymnasium vector environment, `probatum.rl.VectorEnv`. Each account is a backtest's: a step takes each environment's action at the close of its bar, decides from it at that close, and returns the observation and the reward at the next, through the same fills, costs, funding, caps and liquidation a backtest runs. Each environment draws its episodes from a stream of its own, so an episode is found again from its environment and its number whatever `num_envs` is, and runs again as a backtest from its start ([Specification](Specification.md#the-environment), [ADR 0038](Decisions.md)).
 
 <br>
 
 <div align="center">
   <img src="imgs/205318.png" alt="The RL step and autoreset cycle" width="100%" />
-  <p style="margin: 0;"><i>The vectorized loop: observe, act, step every env at once with the GIL released, read the reward; a finished env resets on the same step (ADR 0038).</i></p>
+  <p style="margin: 0;"><i>The vectorized loop: observe, act, step every environment at once with the GIL released, read the reward; an episode that ends resets as autoreset says, on the next step by default (ADR 0038).</i></p>
 </div>
 
 <br>
 
 ```python
-import numpy as np
-from probatum.rl import VectorEnv
+import probatum
 
-def reward_fn(state, prev):
-    return (state.equity - prev.equity) - 0.01 * np.abs(state.position)
-
-env = VectorEnv(
-    data=ohlcv,              # (T, 5) fills orders
-    features=indicators,     # (T, F) what the agent sees; omit for raw candles
-    reward_fn=reward_fn,     # omit for change in equity
-    num_envs=4096, window=60, market="perp", slippage_bps=2.0,
-)
-
-obs, info = env.reset(seed=0)                      # (4096, 60, F) float32
-for _ in range(1000):
-    actions = policy(obs)                          # (4096,) Discrete(3)
-    obs, rewards, terminations, truncations, infos = env.step(actions)
+env = probatum.env(data, "binance_perp", window=64, num_envs=8, seed=0)
+print(env.single_observation_space)             # Box(-inf, inf, (328,), float32)
+print(env.single_action_space)                  # Box(-1.0, 1.0, (1,), float32)
+obs, info = env.reset(seed=0)                   # (8, 328) float32
+for _ in range(1_000):
+    actions = env.action_space.sample()         # (8, 1), a target weight each
+    obs, reward, terminated, truncated, info = env.step(actions)
+env.close()
 ```
+
+`data` is a Data of one instrument's bars, from the router or a frame. With no features the market block is the candles: 64 bars of five values, then four account values for the instrument and four for the account, 328 in all. An action is a target weight, scaled by `max_leverage`. A plain `import probatum` never loads Gymnasium; `probatum.env` and `probatum.rl` load it when first reached.
 
 <br>
 
 ## Training
 
-You build a cost-accurate, vectorized trading env in one line; training it takes a few more. The env carries the real fill model, fees, funding, and slippage, so an off-the-shelf agent trains against honest costs with no wiring on your part.
-
-The quick path is Stable-Baselines3. `probatum.sb3.ProbatumVecEnv` presents the batch as an SB3 `VecEnv`, so a stock PPO trains in three lines:
+The quick path is Stable-Baselines3. `probatum.sb3.ProbatumVecEnv` presents the environment as an SB3 `VecEnv` and switches it to same-step autoreset and to an observation of its own each step, which SB3 expects, so a stock PPO trains on it:
 
 ```python
-from stable_baselines3 import PPO
-from probatum.rl import VectorEnv
-from probatum.sb3 import ProbatumVecEnv
+import stable_baselines3
 
-venv = ProbatumVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, market="perp", seed=0))
-PPO("MlpPolicy", venv).learn(total_timesteps=100_000)
+env = probatum.env(train, "binance_perp", window=32, num_envs=8, seed=0)
+venv = probatum.sb3.ProbatumVecEnv(env)
+stable_baselines3.PPO("MlpPolicy", venv).learn(total_timesteps=100_000)
 ```
 
-One adapter serves every SB3 algorithm, so switching is a one-word change:
+One adapter serves every SB3 algorithm: PPO, A2C and SAC on the default `Box`, and DQN on `actions="discrete"` over one instrument, whose space is a `Discrete`. SB3's vector wrappers compose on top unchanged, to log episodes and normalise the observation and reward:
 
 ```python
-from stable_baselines3 import A2C, DQN, SAC
+import stable_baselines3.common.vec_env
 
-model = A2C("MlpPolicy", venv)     # DQN(...) works too on the Discrete(3) action;
-                                   # SAC and continuous PPO want a Box action space (see Actions)
+venv = stable_baselines3.common.vec_env.VecNormalize(
+    stable_baselines3.common.vec_env.VecMonitor(probatum.sb3.ProbatumVecEnv(env)))
 ```
 
-The standard SB3 vector wrappers compose on top unchanged, to log episodes and normalize the observation and reward:
-
-```python
-from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
-
-venv = VecNormalize(VecMonitor(ProbatumVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, seed=0))))
-PPO("MlpPolicy", venv).learn(total_timesteps=100_000)
-```
-
-`evaluate_policy` runs a trained model over a fresh env the same way. `probatum.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (probatum is not on PyPI, so install from a release as the [README](../README.md#install) shows); because probatum's same-step autoreset already matches SB3's `VecEnv` contract, the adapter is a straight remap, so the GIL-free batch stays intact and an SB3 seed reaches the env.
-
-Save a trained model and reload it later, the usual SB3 way:
-
-```python
-model.save("agent")                       # writes agent.zip
-model = PPO.load("agent")                 # reload; no env needed to predict
-action, _ = model.predict(venv.reset(), deterministic=True)
-```
+`probatum.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (probatum is not on PyPI, so install from a release as the [README](../README.md#install) shows). A trained model saves and loads the usual SB3 way.
 
 <br>
 
 ### Own the loop
 
-If you would rather write the training loop, the env is a plain Gymnasium vector env, so a single-file policy-gradient or actor-critic loop (the CleanRL shape) reads the batched observation and writes a batched action with no adapter at all. A minimal REINFORCE, PyTorch yours to bring (`pip install torch`):
+The environment is a plain Gymnasium vector environment, so a single-file policy-gradient or actor-critic loop, the CleanRL shape, reads the batched observation and writes a batched action with no adapter at all. A minimal REINFORCE on discrete actions, PyTorch yours to bring:
 
 ```python
+import numpy
 import torch
-import torch.nn as nn
 
-n_actions, hidden, gamma = 3, 128, 0.99
-env = VectorEnv(ohlcv, num_envs=512, window=32, market="perp", seed=0)
+env = probatum.env(train, "binance_perp", window=32, actions="discrete", num_envs=512,
+                   seed=0)
 obs, _ = env.reset(seed=0)
-
-n_in = int(np.prod(env.single_observation_space.shape))    # window * features
-policy = nn.Sequential(nn.Flatten(), nn.Linear(n_in, hidden), nn.Tanh(), nn.Linear(hidden, n_actions))
-opt = torch.optim.Adam(policy.parameters(), lr=3e-4)
+policy = torch.nn.Sequential(torch.nn.Linear(obs.shape[1], 128), torch.nn.Tanh(),
+                             torch.nn.Linear(128, 3))
+optimiser = torch.optim.Adam(policy.parameters(), lr=3e-4)
+restarted = numpy.zeros(env.num_envs, dtype=bool)
 
 for _ in range(200):
-    logps, rewards, masks = [], [], []
+    logps, rewards, alive, kept = [], [], [], []
     for _ in range(32):                                    # a short rollout
         dist = torch.distributions.Categorical(logits=policy(torch.as_tensor(obs)))
         actions = dist.sample()
-        obs, reward, term, trunc, _ = env.step(actions.numpy())
+        obs, reward, terminated, truncated, _ = env.step(actions.numpy())
+        ended = terminated | truncated
         logps.append(dist.log_prob(actions))
-        rewards.append(torch.as_tensor(reward))
-        masks.append(torch.as_tensor(~(term | trunc), dtype=torch.float32))
+        rewards.append(torch.as_tensor(reward, dtype=torch.float32))
+        alive.append(torch.as_tensor(~ended, dtype=torch.float32))
+        kept.append(torch.as_tensor(~restarted, dtype=torch.float32))
+        restarted = ended
 
-    returns, running = [], torch.zeros(env.num_envs)       # discounted, cut at each episode end
-    for reward, mask in zip(reversed(rewards), reversed(masks)):
-        running = reward + gamma * running * mask
+    returns, running = [], torch.zeros(env.num_envs)       # cut at each episode's end
+    for reward, mask in zip(reversed(rewards), reversed(alive)):
+        running = reward + 0.99 * running * mask
         returns.insert(0, running)
     returns = torch.stack(returns)
     returns = (returns - returns.mean()) / (returns.std() + 1e-8)
-
-    loss = -(torch.stack(logps) * returns).mean()
-    opt.zero_grad()
+    loss = -(torch.stack(logps) * returns * torch.stack(kept)).mean()
+    optimiser.zero_grad()
     loss.backward()
-    opt.step()
+    optimiser.step()
 ```
 
-The same-step autoreset puts a finished env's next observation at the start of a fresh episode, so the `~(term | trunc)` mask is what keeps a discounted return from leaking across the boundary.
+Under the default next-step autoreset the step after an episode ends resets that environment and ignores its action, so `kept` leaves that step out of the loss, and `alive` keeps a discounted return from running across an episode's end.
 
 <br>
 
-## Constructor
+## The settings
 
-Only `data` has no default.
+Only `data` and `venue`, a Venue or a preset's name, have no default.
 
-| Argument | Default | Meaning |
+| Argument | Default | What it sets |
 | :--- | :--- | :--- |
-| `data` | required | `(T, 5)` OHLCV array; fills orders. |
-| `features` | `None` | `(T, F)` array the agent observes; `None` observes the raw `(window, 5)` candles. |
-| `num_envs` | `8` | Independent envs stepped together. |
-| `window` | `32` | Rows per observation; warmup is `window - 1`. |
-| `market` | `"spot"` | `"spot"` or `"perp"`. |
-| `quote` | `10_000.0` | Starting quote balance per env. |
-| `fee_taker`, `fee_maker` | `0.0006`, `0.0002` | Fees, fraction of notional. Scalar, or `(low, high)` sampled per env. |
-| `slippage_bps` | `0.0` | Slippage on market fills, basis points. Scalar, or `(low, high)` per env. |
-| `impact` | `0.0` | Market-impact coefficient (ADR 0013), scaled by the volatility of the bars before the fill and its share of their mean volume. Scalar, or `(low, high)` per env. |
-| `budget` | `1.0` | The share of the trailing volume a bar's fills may take, shared by every order on it. |
-| `max_open_orders` | `8` | Resting-order slots per env. |
-| `leverage` | `10.0` | Perp margin cap on notional; the 10x default bounds a fresh perp, `0.0` disables it. |
-| `funding_rate` | `0.0` | Perp funding per event on the position notional; a long pays, a short receives. |
-| `funding_interval` | `0` | Bars between funding events; `0` disables funding ([ADR 0020](Decisions.md)). |
-| `trade_size` | `1.0` | Base size a buy or sell action places. |
-| `reward_fn` | `None` | Reward function; `None` uses change in equity. |
-| `action_fn` | `None` | Decoder from actions (and state) to per-env sizes; `None` uses the `Discrete(3)` default. |
-| `action_space` | `None` | Gymnasium action space; `None` uses `Discrete(3)`. |
-| `episode_len` | `None` | Steps before an env truncates and resets; `None` truncates only at the last bar. |
-| `seed` | `None` | Seeds the random start offsets and the per-env cost draw. |
+| `window` | `64` | The bars of the market block, up to the close. |
+| `features` | `None` | A `(T, N, F)` array or a function of a Data that returns one, read as `probatum.Data.features` reads them; the candles over their last close without them. |
+| `fill` | `None` | What a NaN feature on a bar its instrument printed past its warm-up becomes: a number, or `"previous"`; such a NaN is refused without it. |
+| `layout` | `"flat"` | One float32 vector, or `"dict"` of `market` and `account`. |
+| `actions` | `"box"` | `"box"`, `"simplex"`, `"discrete"` or `"orders"`. |
+| `max_leverage` | `1.0` | The gross weight a box action reaches, and a discrete action's step times the slots. |
+| `max_offset` | `20` | The ticks from the close an order's offset reaches. |
+| `decode` | `None` | `decode(actions, state)`, the `(B, N)` weights in place of the decoding `actions` names. |
+| `reward` | `"log"` | `"log"`, `"sharpe"`, or `reward(state)`, the `(B,)` rewards. |
+| `episode_length` | `None` | The steps after which an episode is cut; without it only the last bar cuts one. |
+| `sample` | `None` | The instruments each episode trades, drawn among those shown at its start; without it every instrument. |
+| `costs` | `None` | The `(low, high)` range of `"maker"`, `"taker"`, `"slippage"` and `"impact"` each environment draws its own from once. |
+| `tolerance` | `0.0` | The fraction of equity a target leaves a leg undone below. |
+| `num_envs` | `1` | The environments stepped together. |
+| `threads` | `None` | The threads a step runs on; by default one for each 2^17 floats its observations hold, at most half the CPUs. No result depends on it. |
+| `autoreset` | `"next_step"` | Gymnasium's mode: `"next_step"`, `"same_step"` or `"disabled"`. |
+| `copy` | `True` | Each observation its own array; `False` hands out one array the next step writes over. |
+| `normalise` | `False` | Not done yet. |
+| `record` | `"none"` | `"transitions"` is not done yet. |
+| `seed` | `None` | The seed every stream is named from, drawn and recorded where it is left out. |
+
+A setting the environment cannot take is refused as it is built, from probatum's tree of errors, naming the setting, what arrived and the fix.
+
+<br>
+
+## Episodes
+
+An episode starts at a bar drawn uniformly among those at which an instrument is shown: one it has entered, printed and not delisted. An instrument enters once a whole window of its features lies past the first bar it printed with every feature finite, so its market cells never hold a value from before it listed or from a feature's warm-up. Before then, after it delists and on any bar it did not print, its cells hold 0.0, never NaN, its shown flag is 0 and its action is ignored.
+
+An episode ends at a liquidation, or where equity falls to the floor, 1% of the opening balance, which makes a liquidation a large finite penalty rather than an infinite one; it is cut at the last bar, or after `episode_length` steps. `sample=k` gives each episode `k` slots drawn among the instruments shown at its start, kept in the Data's order, so one agent trains across many instruments at a fixed shape; a universe of spot and perpetual instruments together is not sampled, since its slots would change kind between episodes.
+
+Each environment `i` draws its episodes from the stream named `episodes i` of the seed, and its costs once from the stream named `costs`, four draws for each environment. Its `k`-th episode and its costs are the same whatever `num_envs` is, and `reset(seed=)` starts the streams of the environments it resets again from that seed, leaving the costs as they were drawn. Every step's info holds each environment's `episode`, `step` and `start`, the Data's row it opened on, and with `sample` its `instruments`, so an episode runs again through `probatum.backtest(weights, data[start:], venue)`.
 
 <br>
 
 ## Observation
 
-The observation is a window of numeric rows, shape `(num_envs, window, F)`, dtype float32. Pass `features` `(T, F)` and the agent sees a window of your indicators, one row per bar; omit it and it sees the raw `(window, 5)` candles, so `F` is 5. The observation space is `Box(shape=(window, F))`, batched across envs.
+The observation is float32, the market block and then the account block.
+- **Market**, `(W, N, F)` over the window's bars, the slots and their features: with the candles as features, a bar's open, high, low and close each over the instrument's last close, and its volume over the mean of the window's bars it printed.
+- **Account**, for each slot its weight, its unrealized PnL over equity, its distance from its entry and whether it is shown; then the account's log return over the step, its leverage, its margin ratio and its cash weight. With `actions="orders"` each slot also reports how many of its orders rest and the nearest one's distance from the close in ticks.
 
-A window of `window` rows needs that many rows to exist first, so an env's first usable step is at index `window - 1`. Each env starts at a random offset at or after that point, so its window is always full. The series must hold at least `window + 1` rows, a full window plus one bar to step into; a shorter series is a configuration error, so the constructor raises `ValueError` rather than pad the window with zeros.
-
-The observation is a fresh array each step (the batched windows differ once envs sit at different offsets), so it is yours to keep. This differs from the compiled engine's `observation`, which is a zero-copy view.
-
-<br>
-
-## Reward
-
-Pass `reward_fn(state, prev)` and it is called once per step, after the step, with the current and previous batched state. Both arguments expose the per-env account fields as `(num_envs,)` arrays: `equity`, `position`, `unrealized_pnl`, `realized_pnl`, `mark_price`, `funding_paid`, the position, its unrealized PnL and the mark read on the first instrument, and every instrument's `positions` and `marks` as `(num_envs, N)` arrays. Return one value per env. `funding_paid` is cumulative since that env's reset, positive when paid away, so a reward that wants to price the carry reads the difference between the two arguments.
-
-```python
-def reward_fn(state, prev):
-    return (state.equity - prev.equity) - 0.01 * np.abs(state.position)   # equity change, minus a size penalty
-```
-
-Because it runs once over arrays rather than once per env, it does not add a Python call per env to the batched step. Omit it and the reward is the change in equity. On the first step after an env resets, its previous equity is that new episode's starting equity, so a delta-equity reward does not spike across the boundary. The engine never computes a reward itself; that is what keeps the core usable outside RL.
+The default layout is one flat `Box`, which SB3's `MlpPolicy`, TorchRL and CleanRL-style scripts take; `layout="dict"` splits the two blocks for a `MultiInputPolicy`. Every value over equity is 0.0 where equity is at or below zero, so no cell is NaN or infinite.
 
 <br>
 
 ## Actions
 
-By default the action space is `Discrete(3)`: `0` hold, `1` buy `trade_size`, `2` sell `trade_size`, decoded in the env and applied through the batch's GIL-free step. Pass `action_fn(actions, state)` to decode your own: it receives the raw action array and the pre-step batched state (the same snapshot the reward later sees as `prev`) and returns one signed size per env, so like the reward it runs once over arrays, not once per env. Pair it with `action_space` (a Gymnasium space, for example a `Box` for a continuous action) to set what the agent emits.
+| `actions` | Space | Weight |
+| :--- | :--- | :--- |
+| `"box"` | `Box(-1, 1, (N,))`, a spot slot from 0 | `max_leverage * a / max(1, sum(abs(a)))` over the shown slots, so the gross never passes `max_leverage`. |
+| `"simplex"` | `Box(0, 1, (N + 1,))`, the last a cash slot | Each action over the sum of the shown slots' and the cash slot's. |
+| `"discrete"` | `Discrete` for one slot, of three choices or two on spot, `MultiDiscrete` for several | Short, flat or long at `max_leverage / N`, a spot slot flat or long. |
+| `"orders"` | `Box` of `(N, 2)` | A limit for `abs(size) * max_leverage` of equity, `round(offset * max_offset)` ticks from the close on the passive side, replacing the slot's last; a buy that would be priced at or below zero places none. |
+
+The decision at each close is a target of each shown slot's weight with `tolerance`, so a weight fills at the next open as a backtest's would. `decode(actions, state)` returns the weights itself, once a step for the whole batch over the same state a reward reads, a NaN leaving a slot unnamed. Orders are placed in Rust, so no Python runs per order inside the step.
+
+<br>
+
+## Reward
+
+`reward="log"` pays the step's log return of equity, its equity floored at 1% of the opening balance, so a takeover that leaves nothing after a step from 2,000, on a balance of 10,000, is rewarded `log(100 / 2,000) = -3.00`, and a sale on the book that leaves 1,500 `log(1,500 / 2,000) = -0.29`. `reward="sharpe"` pays the differential Sharpe of those returns, its moments moving at `2 / (window + 1)`, which needs a window of two bars or more.
+
+`reward(state)` is called once a step for the whole batch, so no Python runs per environment. Its `state` holds `(B,)` arrays of `equity`, `previous_equity`, `log_return`, `drawdown`, `leverage`, `turnover`, `fees`, `funding` and `liquidated`, and `(B, N)` arrays of `weights` and `positions`, all read-only:
 
 ```python
-def action_fn(actions, state):                 # a continuous target position in [-1, 1]
-    target = np.clip(actions.reshape(-1), -1.0, 1.0)
-    return target - state.position             # trade the difference toward the target
+def reward(state):
+    return state.log_return - 0.5 * state.drawdown ** 2 - 0.0005 * state.turnover
+
+env = probatum.env(train, "binance_perp", window=48, reward=reward, num_envs=256)
 ```
 
 <br>
 
-## Cost randomization
+## Autoreset
 
-Give a cost knob a `(low, high)` pair instead of a scalar and each env draws its own value uniformly from that range, so the batch trains across a spread of cost regimes rather than one exact setting. It applies to `fee_taker`, `fee_maker`, `slippage_bps`, and `impact`.
-
-```python
-env = VectorEnv(
-    data=ohlcv, num_envs=4096, window=60, market="perp",
-    fee_taker=(0.0002, 0.0008),        # each env a different taker fee
-    slippage_bps=(0.0, 4.0),           # and a different slippage
-    seed=0,                            # reproduces the draw
-)
-```
-
-The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning is in [ADR 0038](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`probatum.Batch`](Python_API.md#batch) directly.
-
-The per-env cost draw and the start offsets come from two random streams named for what they draw, each derived from the `seed` through a NumPy `SeedSequence` ([ADR 0021](Decisions.md)), so a given `seed` produces the same start offsets whether or not a cost range is passed, and `reset(seed=...)` starts the episodes where the same `seed` given to the constructor does. The cost draw is fixed for the env's life; `reset(seed=...)` re-seeds only the offset stream.
-
-<br>
-
-## Episodes and autoreset
-
-An env ends in one of two ways, reported as separate `(num_envs,)` boolean arrays:
-
-- **`terminations[i]`** is true when env `i`'s equity, both wallets together, fell to zero or below, a true terminal. On a perp a takeover does that unless the spot wallet holds cash; on either market an account otherwise drained to zero at the close terminates too ([ADR 0008](Decisions.md)).
-- **`truncations[i]`** is true when env `i` reached the last bar, or `episode_len` steps if that is set, a time limit.
-
-Finished envs auto-reset on the same step: the observation returned for a done env is already the first observation of its next episode, at a fresh random offset. The true final observation and equity of the episode that ended are placed in `infos`:
-
-| infos key | What it holds |
+| `autoreset` | An episode that ends |
 | :--- | :--- |
-| `final_observation` | object array; the final observation at done indices, `None` elsewhere. |
-| `_final_observation` | boolean mask of which entries are set. |
-| `final_equity` | float array; the final equity at done indices, `NaN` elsewhere. |
-| `_final_equity` | boolean mask. |
+| `"next_step"`, the default | Resets on the next step, which ignores its action and returns its first observation, a reward of 0.0 and neither flag. |
+| `"same_step"` | Resets on the step that ended it, which returns the next episode's first observation, the last one and its info under `final_obs` and `final_info`. |
+| `"disabled"` | Stays as it ended, each later step returning its last observation and flags with a reward of 0.0, until `reset(options={"reset_mask": mask})` names it. |
 
-This is the pre-1.0 Gymnasium vector autoreset, the same-step convention the large body of single-file RL code was written against. The env implements it itself, so it holds even on Gymnasium 1.x, whose newer next-step autoreset is deliberately not used; the choice is recorded in [ADR 0038](Decisions.md). On Gymnasium versions that tag autoreset style, the env declares `SAME_STEP` in its metadata, so a vector wrapper handles it correctly instead of assuming the next-step default.
-
-<br>
-
-## Gymnasium surface
-
-`VectorEnv` subclasses `gymnasium.vector.VectorEnv` and exposes `num_envs`, `single_observation_space` (`Box(window, F)`), `single_action_space` (`Discrete(3)`), and their batched forms. `reset(seed=None, options=None)` returns `(obs, info)`; `step(actions)` returns `(obs, rewards, terminations, truncations, infos)`.
+The mode is declared in `metadata["autoreset_mode"]` and as `autoreset_mode`, the `gymnasium.vector.AutoresetMode` member, so a vector wrapper reads it rather than assuming one.
 
 <br>
 
-## On the cost hook
+## What an environment says
 
-The spec sketched a per-fill `cost_fn(fill, state)` callback. It is deliberately not offered: a Python callback cannot run inside the GIL-free batched step without dragging the engine back under the GIL and down to Python speed. Its size-dependent intent lives instead in the `impact` coefficient (a worse fill for a larger share of the trailing volume), and its cross-env variety in the cost ranges above. The reasoning is in [ADR 0013](Decisions.md).
+`env.describe()` lists what its runs assume, as a backtest's assumptions at its venue on its Data list them, each cost an environment draws shown with its range and marked as set by the user. `env.provenance` records the Data's provenance, the venue, every setting, the seed, drawn where none was given, and the streams each environment draws from.
+
+<br>
+
+## Gymnasium's constructors
+
+`probatum.rl.Env` is one environment as Gymnasium's single API steps it, for Tianshou and CleanRL-style scripts: an episode that ends waits for the next `reset`. Both are registered as `probatum/Trading-v0` once `probatum.rl` or `probatum.env` has loaded:
+
+```python
+import gymnasium
+import probatum.rl
+
+single = gymnasium.make("probatum/Trading-v0", data=train, venue="binance_perp",
+                        window=64)
+vector = gymnasium.make_vec("probatum/Trading-v0", num_envs=512, data=train,
+                            venue="binance_perp", window=64)
+```
+
+`make_vec` builds the same batch `probatum.env` returns. `probatum.rl.Batch` is the raw batch underneath, for a loop of your own ([Python API](Python_API.md#batch)).

@@ -872,7 +872,7 @@ A negative displacement needs nothing at all: Chikou is `close.shift(-26)`, whic
 - **No intrabar path.** A bar is four numbers; the fill happened somewhere inside it and there is nothing honest to draw between them.
 - **No individual fills.** The trade log holds closed round trips, so an entry built from three adds is one arrow at the weighted average price.
 - **No order book, queue position or latency.** The engine models none.
-- **No RL training rollout.** `VectorEnv` runs with reporting off, so no trade log exists. Chart the evaluation rollout, which is an ordinary engine loop.
+- **No RL training rollout.** An environment runs with reporting off, so no trade log exists. Chart the evaluation rollout, which is an ordinary engine loop.
 - **No non-time axis.** Every chart here is over bars. A feature against forward return, or an average path after an event, is a scatter and belongs in whatever you already use for one.
 - **No protection from your own lookahead.** Everything is computed once from fixed arrays, so a chart cannot repaint. But `rolling(20, center=True)` knows the future and will be drawn happily. What is guaranteed is narrower: the *fills* obey the engine's no-lookahead rule even when your signal does not.
 - **No substituted price frame.** Passing a transformed frame, Heikin-Ashi candles for instance, alongside a result run on the real one passes every check, because the length is unchanged. The fills then land at prices that never traded: an exit arrow at 94,180 on a candle whose range is 93,050 to 93,900. Chart the frame the run was produced on, and put the transform on its own panel.
