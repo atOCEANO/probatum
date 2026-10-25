@@ -128,6 +128,27 @@ Under the default next-step autoreset the step after an episode ends resets that
 
 <br>
 
+## Tensors and the GPU
+
+`probatum.torch.TensorEnv` hands the environment's observation, rewards and flags out as torch tensors on a device, each the numpy path's to the bit, and keeps the environment's spaces ([Specification](Specification.md#tensors-on-a-device), [ADR 0040](Decisions.md)). It needs torch, which you install for your own device:
+
+```python
+import probatum.torch
+import torch
+
+env = probatum.torch.TensorEnv(
+    probatum.env(train, "binance_perp", window=64, num_envs=4096), device="cuda")
+obs, info = env.reset(seed=0)                    # (4096, D) float32 on the card
+actions = policy(obs)                            # a tensor on the card
+obs, reward, terminated, truncated, info = env.step(actions)
+```
+
+On a CUDA device each step's observation, rewards and flags are written into pinned host buffers that take turns and copied to the card without blocking the host; a buffer is written again only once an event says its last copy has finished, so every tensor handed out is a fresh one that no later step changes, and the host runs on while the card works. Actions come back to the host once a step. The info stays numpy, as the environment gives it. The wrap takes the environment over, as `probatum.sb3.wrap` does: from then on it writes into TensorEnv's buffers, so step it through the wrapper alone.
+
+`resident=True` copies the market's cells to the card once, a function's features as the observation writes them or the candles in float64, and writes each window's market block there from each environment's row and slots, so of the observation only those and the account block cross the link each step. It pays where the observation is wide: 4,096 environments of ten instruments, eight features and a 64-bar window move 84.6 MB of observation a step on the host path and 1.08 MB resident. The device works the candles' ratios in float64 before rounding them, so its observation is the host's to the bit. It is refused under `same_step` autoreset, whose final observations are written on the host.
+
+<br>
+
 ## The settings
 
 Only `data` and `venue`, a Venue or a preset's name, have no default.

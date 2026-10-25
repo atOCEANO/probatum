@@ -100,10 +100,19 @@ The gate does not run the stages below. The first four are tests that CI runs on
 
 ```bash
 docker build --target test-browser .    # the chart's javascript, in chromium
-docker build --target test-sb3 .        # the Stable-Baselines3 adapter, with torch
+docker build --target test-sb3 .        # the Stable-Baselines3 adapter and TensorEnv, with torch
 docker build --target test-sdist .      # the source archive, built and tested
 docker build --target miri .            # the zero-copy views' and the tables' memory, under Miri
 ```
+
+The gpu stage runs apart from CI, whose runners have no card, after any change to the device code. A build cannot reach a GPU, so its image is built and then run with the card handed in:
+
+```bash
+docker build --target test-gpu -t probatum-test-gpu .
+docker run --rm --gpus all probatum-test-gpu
+```
+
+It prints the card, its driver, its load and torch's version, then runs `tests/test_tensors_on_the_device_match_the_numpy_path.py` on the card: every tensor `TensorEnv` hands out, host path and resident, held to the numpy path's to the bit over a run of 400 steps whose policy keeps the card busy and the host waiting at random, so a buffer written again before its copy has run would show, and a loop of 4,096 environments whose queued work on the card is still running after every step, so the host never waited for it. The same file's tests on the CPU run in the SB3 stage. A test marked `gpu` needs a CUDA device and is skipped where none is found.
 
 The coverage cells run apart from all of them, at each stage that changes a statistic:
 

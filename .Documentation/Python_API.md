@@ -65,6 +65,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.rl` | `VectorEnv`, the environment `probatum.env` returns, `Env`, one environment of it, both registered as `probatum/Trading-v0`, and `Batch`, the raw batch. [Below](#reinforcement-learning). |
 | `probatum.sb3` | `wrap`, which presents an environment as a Stable-Baselines3 `VecEnv`, a `ProbatumVecEnv` carrying its agent spec, and `SpecCallback`, which copies `VecNormalize`'s statistics into the spec. [RL Guide](RL_Guide.md#training). |
 | `probatum.save` | Write a trained agent beside the spec it trained with: a torch module's state dict or an SB3 model's own zip, and `spec.json`. [Below](#an-agent). |
+| `probatum.torch` | `TensorEnv`, which hands an environment's observation, rewards and flags out as tensors on a device, and in its resident mode writes the market block on the device itself. [RL Guide](RL_Guide.md#tensors-and-the-gpu). |
 | `probatum.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
 | `probatum.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
 | `probatum.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Markers`, `Background`, `Panel`, `Recorder`, `ramp`, `at_bar` and `at_next`: the marks a chart carries and the helpers that record and align them. [Plotting](Plotting.md#the-marks). |
@@ -351,7 +352,9 @@ agent.learn(total_timesteps=100_000)
 result = probatum.backtest(agent, test, "binance_perp", features=features)
 ```
 
-Every setting, the observation, the actions, the rewards, the episodes, the autoreset modes and the backtest of an agent are in the [RL Guide](RL_Guide.md).
+`probatum.torch.TensorEnv(env, device="cpu", resident=False)` takes the environment over and hands its observation, rewards and flags out as torch tensors on `device`, each the numpy path's to the bit, through pinned buffers whose copies never block the host on a CUDA device; `resident=True` copies the market's cells to the device once and writes each window's market block there, so of the observation only each environment's row, its slots and its account block cross the link each step ([Specification](Specification.md#tensors-on-a-device)).
+
+Every setting, the observation, the actions, the rewards, the episodes, the autoreset modes, the tensors on a device and the backtest of an agent are in the [RL Guide](RL_Guide.md).
 
 <br>
 
