@@ -14,6 +14,7 @@ use crate::engine::{Engine, EngineConfig, TargetError};
 use crate::reporter::Record;
 
 /// A batch of independent engines over one shared candle series.
+#[derive(Clone)]
 pub struct EnvBatch {
     engines: Vec<Engine>,
     width: usize,
@@ -76,6 +77,38 @@ impl EnvBatch {
             engines: std::mem::take(&mut self.engines),
             width: self.width,
         }
+    }
+
+    /// Env `env` copied into a batch of `n`, each copy stepping on as it would
+    /// (ADR 0040).
+    pub fn fork(&self, env: usize, n: usize) -> EnvBatch {
+        EnvBatch {
+            engines: vec![self.engines[env].clone(); n],
+            width: self.width,
+        }
+    }
+
+    /// The batch as bytes, the bars its engines share once and then each engine,
+    /// which a build of this version reads back with `from_bytes` (ADR 0040).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let series = self.engines.first().map(Engine::series);
+        postcard::to_stdvec(&(self.width, series, &self.engines))
+            .expect("every part of a batch serializes")
+    }
+
+    /// The batch `to_bytes` wrote, or postcard's reason the bytes hold none.
+    pub fn from_bytes(bytes: &[u8]) -> Result<EnvBatch, postcard::Error> {
+        let (width, series, engines): (usize, Option<Candles>, Vec<Engine>) =
+            postcard::from_bytes(bytes)?;
+        let engines = match series {
+            Some(candles) => engines
+                .into_iter()
+                .map(|engine| engine.over(candles.clone()))
+                .collect(),
+            None if engines.is_empty() => engines,
+            None => return Err(postcard::Error::DeserializeBadEncoding),
+        };
+        Ok(EnvBatch { engines, width })
     }
 
     /// Number of bars in the shared series, zero when there are no envs.
@@ -532,6 +565,93 @@ mod tests {
         assert_eq!((taken.len(), batch.len(), batch.width()), (2, 0, 1));
         assert!(batch.observe_all(3).is_empty());
         assert!(batch.target_all(&[], 0.0, false).is_ok());
+    }
+
+    /// Twenty bars from 100, every other one reaching 20 either way, and a config
+    /// that draws which of a stop and a take-profit such a bar fills first.
+    fn drawn() -> (Candles, EngineConfig) {
+        let candles = Candles::new(
+            (0..20)
+                .map(|t| {
+                    let reach = if t % 2 == 1 { 20.0 } else { 1.0 };
+                    Candle {
+                        open: 100.0,
+                        high: 100.0 + reach,
+                        low: 100.0 - reach,
+                        close: 100.0,
+                        volume: 1000.0,
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
+        let config = EngineConfig {
+            intrabar: Intrabar::Random(7),
+            ..cfg()
+        };
+        (candles, config)
+    }
+
+    /// A buy of `size` where the env is flat, else a stop and a take-profit on the
+    /// long where none rests, and a step.
+    fn bracketed(e: &mut Engine, size: f64) -> State {
+        if e.position(0) == 0.0 {
+            e.market_buy(size);
+        } else if e.resting().next().is_none() {
+            e.stop(Side::Sell, size, 90.0, true);
+            e.limit_sell(size, 110.0);
+        }
+        e.step()
+    }
+
+    #[test]
+    fn a_fork_of_an_env_steps_each_copy_as_that_env_steps_on() {
+        // env k trades k + 1 units, so the envs differ whatever their streams draw
+        let (candles, config) = drawn();
+        let mut batch = EnvBatch::new(3, candles, config);
+        batch.reset_all();
+        for _ in 0..6 {
+            for (k, e) in batch.engines_mut().iter_mut().enumerate() {
+                bracketed(e, 1.0 + k as f64);
+            }
+        }
+        let mut fork = batch.fork(1, 4);
+        assert_eq!((fork.len(), fork.width()), (4, 1));
+        let on = |e: &mut Engine| -> Vec<State> { (0..12).map(|_| bracketed(e, 2.0)).collect() };
+        let ahead = on(&mut batch.engines_mut()[1]);
+        for e in fork.engines_mut() {
+            assert_eq!(on(e), ahead);
+        }
+        assert_ne!(on(&mut batch.engines_mut()[0]), ahead);
+    }
+
+    #[test]
+    fn a_batch_read_back_from_its_bytes_steps_on_as_it_would() {
+        let (candles, config) = drawn();
+        let mut batch = EnvBatch::new(3, candles, config);
+        batch.reset_all();
+        let each = |b: &mut EnvBatch| -> Vec<State> {
+            b.engines_mut()
+                .iter_mut()
+                .enumerate()
+                .map(|(k, e)| bracketed(e, 1.0 + k as f64))
+                .collect()
+        };
+        for _ in 0..6 {
+            each(&mut batch);
+        }
+        let mut back = EnvBatch::from_bytes(&batch.to_bytes()).expect("its own bytes");
+        let shared = |b: &EnvBatch| b.engines()[0].candles_all().as_ptr();
+        assert_eq!(back.engines()[2].candles_all().as_ptr(), shared(&back));
+        assert_ne!(shared(&back), shared(&batch));
+        for _ in 0..12 {
+            assert_eq!(each(&mut back), each(&mut batch));
+        }
+        let none = EnvBatch::from_bytes(&EnvBatch::new(0, three(), both()).to_bytes());
+        assert_eq!(none.map(|b| (b.len(), b.width())).ok(), Some((0, 3)));
+        assert!(EnvBatch::from_bytes(&[]).is_err());
+        // engines written without the bars they share hold none to step on
+        let bare = postcard::to_stdvec(&(1usize, None::<Candles>, batch.engines()));
+        assert!(EnvBatch::from_bytes(&bare.expect("bytes")).is_err());
     }
 
     #[test]

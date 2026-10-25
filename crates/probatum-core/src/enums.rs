@@ -1,8 +1,10 @@
 //! Small plain enums shared across the engine: order side, type, time in force,
 //! market kind and wallet.
 
+use serde::{Deserialize, Serialize};
+
 /// The direction of an order or a position change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     Buy,
     Sell,
@@ -30,7 +32,7 @@ impl Side {
 }
 
 /// How an order is matched.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderType {
     /// Crosses the spread, fills at the next bar open, pays the taker fee.
     Market,
@@ -41,7 +43,7 @@ pub enum OrderType {
 }
 
 /// How long an order stays live.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimeInForce {
     /// Good til canceled: rests until filled or canceled.
     Gtc,
@@ -52,7 +54,7 @@ pub enum TimeInForce {
 }
 
 /// The market a position trades in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Market {
     /// Spot: hold the base asset; equity is quote plus base times price.
     Spot,
@@ -73,7 +75,7 @@ impl Market {
 }
 
 /// One of the account's two wallets (ADR 0008).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Wallet {
     /// Cash and spot holdings. It never borrows and is never liquidated.
     Spot,

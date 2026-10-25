@@ -9,11 +9,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use probatum_core::Candle;
+use serde::{Deserialize, Serialize};
 
 use crate::candles::printed;
 
 /// What the window before a row shows of one instrument.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Trailing {
     /// The mean volume of its bars, zero with none.
     pub volume: f64,
@@ -28,7 +29,7 @@ pub struct Trailing {
 /// Each row's window of the last `bars` bars for every instrument of a series held
 /// row by row: the mean volume, and the deviation and the spread where a fill model
 /// reads them, none where no fill model does.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Windows {
     pub(crate) bars: usize,
     pub(crate) volume: Arc<[f64]>,

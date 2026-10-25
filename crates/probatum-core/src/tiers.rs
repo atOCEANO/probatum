@@ -2,8 +2,10 @@
 //! may be levered and the maintenance it keeps, the tier chosen by the position's
 //! notional or, on a quantity table, by its size (Specification, Margin).
 
+use serde::{Deserialize, Serialize};
+
 /// One row of a tier table.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tier {
     /// The tier's upper bound, of notional or of size.
     pub up_to: f64,
@@ -16,7 +18,7 @@ pub struct Tier {
 }
 
 /// What a table's bounds measure.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TierBasis {
     #[default]
     Notional,
@@ -62,7 +64,7 @@ pub enum TierError {
 
 /// A tier table, checked as the Specification's loader checks it. An empty table
 /// stands for none: the venue's leverage, and no maintenance.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tiers {
     basis: TierBasis,
     rows: Vec<Tier>,

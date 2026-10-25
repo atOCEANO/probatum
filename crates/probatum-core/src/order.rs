@@ -1,15 +1,17 @@
 //! Order identity and the order record. Price and trigger are optional because a
 //! market order needs neither and a stop needs only a trigger.
 
+use serde::{Deserialize, Serialize};
+
 use crate::enums::{OrderType, Side, TimeInForce};
 use crate::units::{Price, Qty};
 
 /// An opaque handle to a resting order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OrderId(pub u64);
 
 /// A single order: its identity, terms, and fill progress.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Order {
     pub id: OrderId,
     /// The instrument it trades, by its place in the universe.
@@ -40,7 +42,7 @@ pub struct Order {
 
 /// A bracket's leg: a reduce-only exit placed beside another as one OCO pair
 /// (ADR 0010).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
     /// The other leg of its pair, which its first fill cancels.
     pub pair: Option<OrderId>,

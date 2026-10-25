@@ -4,10 +4,12 @@
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+use serde::{Deserialize, Serialize};
+
 macro_rules! scalar_newtype {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
-        #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
+        #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd, Serialize, Deserialize)]
         #[repr(transparent)]
         pub struct $name(pub f64);
 

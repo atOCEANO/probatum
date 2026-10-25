@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use probatum_core::{Candle, FlatCostModel, Market, Tiers};
+use serde::{Deserialize, Serialize};
 
 use crate::clock::Clock;
 use crate::inverse::Units;
@@ -13,7 +14,7 @@ use crate::sizes::Sizes;
 use crate::window::{Trailing, Windows};
 
 /// What the venue says about one instrument of a universe.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Instrument {
     /// Spot or a perpetual, or `None` for the engine's own market, which the one
     /// instrument of a series built without it trades in.
@@ -32,7 +33,7 @@ pub struct Instrument {
 }
 
 /// An immutable OHLCV series, or a universe of them, shared cheaply across envs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Candles {
     // row by row, `width` bars to a row, one per instrument; a row an instrument
     // printed no bar on holds five NaNs for it. An inverse series keeps the bars as
@@ -85,6 +86,12 @@ impl Candles {
             instruments: vec![Instrument::default(); width].into(),
             windows: None,
         }
+    }
+
+    /// A series of no bars, which an engine read from its bytes holds only until its
+    /// own are put back.
+    pub(crate) fn placeholder() -> Candles {
+        Candles::new(Vec::new())
     }
 
     /// The same universe with what the venue says about each instrument. Panics

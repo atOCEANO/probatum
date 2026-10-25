@@ -5,6 +5,8 @@
 //! the open position is marked separately. A wallet no instrument settles in holds
 //! cash that backs nothing until a transfer moves it across (ADR 0008).
 
+use serde::{Deserialize, Serialize};
+
 use crate::enums::{Market, Wallet};
 use crate::fill::Fill;
 use crate::position::{moves_position, Position, POS_EPS};
@@ -19,7 +21,7 @@ fn tradeable(price: Price) -> bool {
 }
 
 /// The two wallets' cash and the position each instrument holds against them.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Account {
     /// The spot wallet's cash, in the quote asset.
     pub spot_cash: f64,

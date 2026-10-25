@@ -6,6 +6,7 @@
 //! 0011, 0013).
 
 use probatum_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
+use serde::{Deserialize, Serialize};
 
 use crate::window::Trailing;
 
@@ -15,7 +16,7 @@ use crate::window::Trailing;
 const MAX_SLIP: f64 = 0.99;
 
 /// How a taker's impact grows with its share of the trailing volume.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Impact {
     /// `k * sigma * q / V`.
     #[default]
@@ -25,7 +26,7 @@ pub enum Impact {
 }
 
 /// When a resting limit fills.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Limit {
     /// When its bar reaches its price.
     #[default]
@@ -35,7 +36,7 @@ pub enum Limit {
 }
 
 /// The spread a taker crosses half of.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Spread {
     #[default]
     None,
@@ -48,7 +49,7 @@ pub enum Spread {
 
 /// The cost side of execution: what a taker pays beyond its reference. What a fill
 /// may take of a bar is the engine's budget, which every order on the bar shares.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FillModel {
     /// Adverse slippage on a taker fill, in basis points off the reference price.
     pub slippage_bps: Bps,
@@ -61,7 +62,7 @@ pub struct FillModel {
 
 /// What a fill is measured against and what it paid beyond that, each per unit of
 /// size and in price, as the fill log records it (ADR 0022).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FillCosts {
     /// The price the fill is measured from: the open for a market order, the worse
     /// of the open and the trigger for a stop, and a limit's own price, or the

@@ -6,6 +6,7 @@
 //! leg's notional crosses, where the reference bisects (Decision 0043).
 
 use probatum_core::{Market, TierBasis};
+use serde::{Deserialize, Serialize};
 
 use super::Engine;
 use crate::candles::printed;
@@ -14,7 +15,7 @@ use crate::candles::printed;
 pub(super) const DUST: f64 = 1e-9;
 
 /// One position, or a part of it, moving from `start` to `end` along a piece.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(super) struct PathLeg {
     pub(super) i: usize,
     /// Signed: positive for a long.
@@ -25,14 +26,14 @@ pub(super) struct PathLeg {
 }
 
 /// A path: its pieces, each a run of `legs`, the legs of one instrument together.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct Path {
     pub(super) legs: Vec<PathLeg>,
     pub(super) pieces: Vec<(usize, usize)>,
 }
 
 /// A point on a path: a piece, and the fraction of the way along it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Point {
     pub(super) piece: usize,
     pub(super) at: f64,
@@ -42,7 +43,7 @@ pub(super) struct Point {
 /// (`start` none, priced from the open) or opened during it at `start`, joining the
 /// path at fraction `join`, and for the old side of a flip the fraction it left at,
 /// its entry then the flip's price, since the wallet holds what it realized.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(super) struct HeldLeg {
     pub(super) size: f64,
     pub(super) entry: f64,
@@ -54,7 +55,7 @@ pub(super) struct HeldLeg {
 
 /// What a perp fill on instrument `i` did: its position from `before`, at average
 /// entry `entry`, to `after`, at `price`, `opened` of it a new side.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(super) struct FillNote {
     pub(super) i: usize,
     pub(super) before: f64,
@@ -66,7 +67,7 @@ pub(super) struct FillNote {
 
 /// A leg of the check's path: its instrument and signed size, and where along the
 /// bar it joins and leaves.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(super) struct CheckLeg {
     pub(super) i: usize,
     pub(super) q: f64,

@@ -3,6 +3,8 @@
 //! is rejected and handed back. Orders keep the id the engine assigned them, so
 //! id assignment lives in one place, the engine.
 
+use serde::{Deserialize, Serialize};
+
 use crate::order::{Order, OrderId};
 
 /// A bounded set of resting orders held in a fixed number of slots, so the book
@@ -10,7 +12,7 @@ use crate::order::{Order, OrderId};
 /// and `place` reuses the first free slot, so a cancelled slot hands its priority
 /// to the next order placed (ADR 0011). Slots are allocated up front, so the
 /// caller's capacity is bounded at the Python boundary (ADR 0007).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RestingOrderBook {
     slots: Vec<Option<Order>>,
     // the slots taken, kept as orders come and go so a step with nothing resting

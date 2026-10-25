@@ -5,6 +5,7 @@
 //! dollars its contracts are worth and its tick on the reciprocal of the price.
 
 use probatum_core::Side;
+use serde::{Deserialize, Serialize};
 
 use crate::inverse::quoted;
 
@@ -30,7 +31,7 @@ pub fn lots(size: f64, lot: f64) -> f64 {
 }
 
 /// The grid an instrument's prices sit on.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum PriceRule {
     /// None: a price stands as given, and `through` is `touch`.
     #[default]
@@ -100,7 +101,7 @@ impl PriceRule {
 }
 
 /// The rules a venue's sizes hold one instrument's orders to.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sizes {
     /// The lot every size is a whole number of, none at zero.
     pub lot: f64,

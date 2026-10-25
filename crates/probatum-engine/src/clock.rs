@@ -5,12 +5,14 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 /// A day in nanoseconds.
 const DAY: i64 = 86_400 * 1_000_000_000;
 
 /// The open times of a series' bars, strictly increasing, and the interval a bar
 /// spans.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Clock {
     times: Arc<[i64]>,
     interval: i64,

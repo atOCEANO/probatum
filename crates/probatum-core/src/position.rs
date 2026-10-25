@@ -2,6 +2,8 @@
 //! and cumulative realized PnL. A single fill can add to, reduce, close, or flip
 //! the position. The booking rule is ADR 0014 in `.Documentation/Decisions.md`.
 
+use serde::{Deserialize, Serialize};
+
 use crate::fill::Fill;
 use crate::units::{Price, Qty};
 
@@ -22,7 +24,7 @@ pub fn moves_position(fill: &Fill) -> bool {
 
 /// A net long, net short, or flat position. There is never a simultaneous long
 /// and short (no hedge mode).
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Position {
     /// Signed size in base units: positive long, negative short, zero flat.
     pub qty: Qty,

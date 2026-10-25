@@ -19,6 +19,8 @@ numpy = "0.29"
 rayon = "1"
 libm = "0.2"
 rand_chacha = "0.9"
+serde = { version = "1", features = ["derive", "rc"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 criterion = "0.5"
 proptest = "1"
 

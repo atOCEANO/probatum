@@ -1,6 +1,8 @@
 //! The per-bar OHLCV record. The bar engine owns the time series and the
 //! zero-copy windows; this is just one bar.
 
+use serde::{Deserialize, Serialize};
+
 /// One OHLCV bar. Plain `f64` fields, so a series maps directly onto a numpy
 /// `(T, 5)` array with no per-field conversion.
 ///
@@ -10,7 +12,7 @@
 /// buffer and hand it back as a zero-copy numpy view (ADR 0040). The layout test
 /// below guards that contract.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Candle {
     pub open: f64,
     pub high: f64,

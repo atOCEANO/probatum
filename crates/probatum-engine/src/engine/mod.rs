@@ -51,6 +51,7 @@ use probatum_core::{
 };
 use rand_chacha::rand_core::RngCore;
 use rand_chacha::ChaCha20Rng;
+use serde::{Deserialize, Serialize};
 
 use crate::candles::{printed, Candles};
 use crate::clock::Clock;
@@ -65,7 +66,7 @@ use crate::streams;
 const CLOSE_EPS: f64 = 1e-9;
 
 /// How a venue decides every event a bar's four prices cannot order (ADR 0012).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Intrabar {
     /// The worse way for the account, every time: the default everywhere.
     Pessimistic,
@@ -77,7 +78,7 @@ pub enum Intrabar {
 }
 
 /// How a venue closes out an account that reaches its trigger (ADR 0019).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Liquidation {
     /// Every leg closed at its price at the clip point, and what the margin wallet
     /// still holds booked as the liquidation charge: the default everywhere.
@@ -91,7 +92,7 @@ pub enum Liquidation {
 
 /// How the bar on hand decides each event its prices cannot order, true where it
 /// takes the worse way (Specification, What a bar cannot show).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Unseen {
     /// The way of a fixed setting, which every event takes.
     worse: bool,
@@ -133,7 +134,7 @@ impl Unseen {
 }
 
 /// Construction parameters for an engine.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct EngineConfig {
     pub market: Market,
     /// Opening cash of the wallet the market settles in: the spot wallet on spot,
@@ -217,7 +218,7 @@ impl Default for EngineConfig {
 /// paid and the notional they traded, in the account's currency, and whether one was
 /// a liquidation, which an environment's reward reads (Specification, Reward and
 /// termination).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tally {
     pub fees: f64,
     pub traded: f64,
@@ -237,11 +238,14 @@ pub struct Reading {
 
 /// The single-env bar engine: candles, an account, a resting book, the fill and
 /// cost models, and an optional reporter.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Engine {
-    // Set once in `new` and never reassigned or mutated. probatum-py hands out
-    // zero-copy, read-only numpy views into this buffer (ADR 0040), so its
-    // address and contents must stay stable for the engine's whole life; do not
-    // add a method that reallocates it or vends a mutable candle view.
+    // Set once in `new`, or in `from_bytes` before the engine is handed out, and never
+    // reassigned or mutated after. probatum-py hands out zero-copy, read-only numpy
+    // views into this buffer (ADR 0040), so its address and contents must stay stable
+    // for the engine's whole life; do not add a method that reallocates it or vends a
+    // mutable candle view. Its bytes are written apart, once for a whole batch.
+    #[serde(skip, default = "Candles::placeholder")]
     candles: Candles,
     config: EngineConfig,
     fill_model: FillModel,
@@ -633,6 +637,30 @@ impl Engine {
         Engine::new(self.candles.clone(), self.config).recording(level)
     }
 
+    /// The engine as bytes, its bars and then the rest of its state, which a build of
+    /// this version reads back with `from_bytes` into an engine that steps on as this
+    /// one would (ADR 0040).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        postcard::to_stdvec(&(&self.candles, self)).expect("every part of an engine serializes")
+    }
+
+    /// The engine `to_bytes` wrote, or postcard's reason the bytes hold none.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Engine, postcard::Error> {
+        let (candles, engine): (Candles, Engine) = postcard::from_bytes(bytes)?;
+        Ok(engine.over(candles))
+    }
+
+    /// The engine over `candles`, the bars its bytes were written without.
+    pub(crate) fn over(mut self, candles: Candles) -> Engine {
+        self.candles = candles;
+        self
+    }
+
+    /// The bars the engine shares with every engine built over them.
+    pub(crate) fn series(&self) -> &Candles {
+        &self.candles
+    }
+
     /// True when the account died since the last reset: its equity, both wallets
     /// together, reached zero, on either market. A takeover does that unless the
     /// spot wallet holds cash. The RL env's terminal signal (ADR 0008).
@@ -736,13 +764,13 @@ impl Engine {
     /// Advance one bar and resolve the bar, then mark and return the state. At the
     /// end of the data the tick does not advance and the state is returned as is.
     pub fn step(&mut self) -> State {
-        self.advance();
-        self.state()
+        let equity = self.advance();
+        self.state_at(equity)
     }
 
     /// `step` without the State it returns, for a driver that reads what it needs of
-    /// the account itself, as an environment does.
-    pub fn advance(&mut self) {
+    /// the account itself, as an environment does: the equity it marked at the close.
+    pub fn advance(&mut self) -> f64 {
         let advanced = self.tick + 1 < self.candles.len();
         self.tally = Tally::default();
         if advanced {
@@ -888,6 +916,7 @@ impl Engine {
                 reporter.record_equity(equity, held);
             }
         }
+        equity
     }
 
     /// The reporter, or `None` when `report` was false at construction. It cannot
@@ -1028,6 +1057,13 @@ impl Engine {
     /// instrument's position and bar.
     #[inline(always)]
     fn state(&self) -> State {
+        self.state_at(self.account.equity(&self.marks))
+    }
+
+    /// `state` with the account's `equity` at the close already worked, as a step marks
+    /// it.
+    #[inline(always)]
+    fn state_at(&self, equity: f64) -> State {
         let bar = self.candles.bar(self.tick, 0);
         let mark = Price(self.marks[0]);
         let position = self.account.positions[0].qty.get();
@@ -1043,7 +1079,7 @@ impl Engine {
             margin_cash: self.account.margin_cash,
             position,
             avg_entry: self.account.positions[0].avg_entry.get(),
-            equity: self.account.equity(&self.marks),
+            equity,
             mark_price: mark.get(),
             bar_open: bar.open,
             bar_high: bar.high,
@@ -1132,6 +1168,118 @@ mod tests {
         assert_eq!(stats(&fresh), stats(&anew));
         let reporter = fresh.reporter().expect("reporting is on");
         assert!(reporter.ledger().is_empty());
+    }
+
+    /// Thirty bars from 100, every other one reaching 20 either way, so a stop at 90
+    /// and a take-profit at 110 both trigger on it and the random setting draws which
+    /// fills first.
+    fn drawn() -> Candles {
+        Candles::new(
+            (0..30)
+                .map(|t| {
+                    let reach = if t % 2 == 1 { 20.0 } else { 1.0 };
+                    ohlc(100.0, 100.0 + reach, 100.0 - reach, 100.0, 1000.0)
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// One close's decision: a buy where the account is flat, else a stop and a
+    /// take-profit on the long where none rests.
+    fn bracketed(e: &mut Engine) {
+        if e.position(0) == 0.0 {
+            e.market_buy(1.0);
+        } else if e.resting().next().is_none() {
+            e.stop(Side::Sell, 1.0, 90.0, true);
+            e.limit_sell(1.0, 110.0);
+        }
+    }
+
+    /// What `e` has recorded and holds, each part as its Debug text.
+    fn kept(e: &Engine) -> Vec<String> {
+        let reporter = e.reporter().expect("reporting is on");
+        vec![
+            format!("{:?}", e.current_state()),
+            format!("{:?}", reporter.ledger()),
+            format!("{:?}", reporter.fills()),
+            format!("{:?}", reporter.events()),
+            format!("{:?}", e.round_trips()),
+            format!("{:?}", e.stats(8_760.0, 0.0)),
+        ]
+    }
+
+    fn random() -> EngineConfig {
+        EngineConfig {
+            intrabar: Intrabar::Random(7),
+            ..report_cfg()
+        }
+    }
+
+    #[test]
+    fn a_clone_steps_on_as_its_original_does_and_apart_from_it() {
+        let mut e = Engine::new(drawn(), random());
+        e.reset();
+        for _ in 0..10 {
+            bracketed(&mut e);
+            e.step();
+        }
+        let mut twin = e.clone();
+        assert_eq!(twin.candles_all().as_ptr(), e.candles_all().as_ptr());
+        assert_eq!(kept(&twin), kept(&e));
+        let before = kept(&e);
+        for _ in 0..19 {
+            bracketed(&mut twin);
+            twin.step();
+        }
+        // the clone's steps leave the original where it was
+        assert_eq!(kept(&e), before);
+        for _ in 0..19 {
+            bracketed(&mut e);
+            e.step();
+        }
+        assert_eq!(kept(&twin), kept(&e));
+        // the stream decided the bars both ways, so a stream drawn again would differ
+        let reasons = format!("{:?}", e.reporter().expect("reporting is on").fills());
+        assert!(
+            reasons.contains("Stop") && reasons.contains("Limit"),
+            "{reasons}"
+        );
+    }
+
+    #[test]
+    fn an_engine_read_back_from_its_bytes_steps_on_as_it_would() {
+        let mut e = Engine::new(drawn(), random());
+        e.reset();
+        for _ in 0..10 {
+            bracketed(&mut e);
+            e.step();
+        }
+        let mut back = Engine::from_bytes(&e.to_bytes()).expect("its own bytes");
+        assert_eq!(kept(&back), kept(&e));
+        for engine in [&mut e, &mut back] {
+            for _ in 0..19 {
+                bracketed(engine);
+                engine.step();
+            }
+        }
+        assert_eq!(kept(&back), kept(&e));
+        // a universe's absent bars come back as the NaNs they were, bit for bit
+        let rows = vec![vec![ohlc(100.0, 101.0, 99.0, 100.0, 5.0), ABSENT]; 3];
+        let held = Engine::new(universe(&[Market::Spot; 2], rows), cfg());
+        let again = Engine::from_bytes(&held.to_bytes()).expect("its own bytes");
+        let bits = |e: &Engine| -> Vec<u64> {
+            let bars = e.candles_all().iter();
+            bars.flat_map(|b| [b.open, b.high, b.low, b.close, b.volume].map(f64::to_bits))
+                .collect()
+        };
+        assert_eq!(bits(&again), bits(&held));
+    }
+
+    #[test]
+    fn bytes_that_hold_no_engine_are_refused() {
+        let bytes = Engine::new(drawn(), random()).to_bytes();
+        assert!(Engine::from_bytes(&[]).is_err());
+        assert!(Engine::from_bytes(&bytes[..bytes.len() / 2]).is_err());
     }
 
     #[test]

@@ -4,13 +4,15 @@
 //! across a closure or a hole in the data, is charged at the start of that next row.
 //! A stamp within a second of a row boundary is taken as that boundary (ADR 0020).
 
+use serde::{Deserialize, Serialize};
+
 use crate::clock::Clock;
 
 /// A stamp within this many nanoseconds of a row boundary is on it.
 const SNAP: i64 = 1_000_000_000;
 
 /// Each row's funding events, placed once and shared by every env on the series.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Schedule {
     // per row, the rate of each event it owns, whether its stamp falls inside the row
     // rather than at its end, and the instrument it charges, `None` for every perp

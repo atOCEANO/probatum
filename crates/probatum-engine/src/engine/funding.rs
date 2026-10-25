@@ -6,6 +6,7 @@
 //! result (ADR 0020).
 
 use probatum_core::{Market, Price};
+use serde::{Deserialize, Serialize};
 
 use super::Engine;
 use crate::candles::printed;
@@ -14,7 +15,7 @@ use crate::reporter::Reporter;
 /// A total reported over many bars, summed with Neumaier's compensation so that what
 /// rounding drops from each addition is carried rather than lost (Specification,
 /// Numbers that are the same everywhere).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(super) struct Total {
     sum: f64,
     carry: f64,

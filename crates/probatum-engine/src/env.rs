@@ -5,6 +5,8 @@
 //! and its slots, the Python layer draws from that environment's own stream and hands
 //! in.
 
+use std::sync::Arc;
+
 use probatum_core::{Candle, Market, OrderId, OrderType, Side, TimeInForce};
 use rayon::prelude::*;
 
@@ -37,8 +39,9 @@ pub enum Decision<'a> {
 pub struct Settings {
     pub window: usize,
     /// The features, row-major over the rows, the instruments and `width` features
-    /// each, or None for the candles.
-    pub features: Option<Vec<f64>>,
+    /// each, or None for the candles; a clone or a fork shares them, as it shares the
+    /// bars.
+    pub features: Option<Arc<[f64]>>,
     pub width: usize,
     /// Each feature's mean and deviation, which a market value is written over, or
     /// None to write it as it is.
@@ -105,6 +108,17 @@ pub struct Environment {
     episodes: Vec<Episode>,
     // None steps in the caller's own thread
     pool: Option<rayon::ThreadPool>,
+}
+
+impl Clone for Environment {
+    /// Every environment copied, its engine and its episode, on a pool of its own.
+    fn clone(&self) -> Environment {
+        Environment::over(
+            self.batch.clone(),
+            self.settings.clone(),
+            self.episodes.clone(),
+        )
+    }
 }
 
 /// One environment's share of a step: its index, its engine and episode, and its
@@ -216,9 +230,8 @@ fn place(s: &Settings, engine: &mut Engine, episode: &mut Episode, row: &[f64]) 
 fn advance(s: &Settings, engine: &mut Engine, episode: &mut Episode) -> f64 {
     let before = engine.equity();
     let paid = engine.funding_paid();
-    engine.advance();
+    let equity = engine.advance();
     let tally = engine.tally();
-    let equity = engine.equity();
     let returned = libm::log(equity.max(s.floor) / before);
     episode.steps += 1;
     episode.peak = episode.peak.max(equity);
@@ -394,6 +407,22 @@ impl Environment {
     /// Environments over `batch`'s engines, none in an episode until `reset`.
     pub fn new(batch: EnvBatch, settings: Settings) -> Environment {
         let episodes = vec![Episode::default(); batch.len()];
+        Environment::over(batch, settings, episodes)
+    }
+
+    /// Environment `env` copied `n` times into environments of their own, each
+    /// stepping on as it would (ADR 0040).
+    pub fn fork(&self, env: usize, n: usize) -> Environment {
+        Environment::over(
+            self.batch.fork(env, n),
+            self.settings.clone(),
+            vec![self.episodes[env].clone(); n],
+        )
+    }
+
+    /// Environments over `batch`'s engines in `episodes`, stepping on a pool as large
+    /// as their work pays for.
+    fn over(batch: EnvBatch, settings: Settings, episodes: Vec<Episode>) -> Environment {
         let mut env = Environment {
             batch,
             settings,
@@ -1712,7 +1741,7 @@ mod tests {
         assert_eq!(candles.cells(), None);
         let values: Vec<f64> = (0..4 * 2 * 2).map(|v| v as f64).collect();
         let featured = Settings {
-            features: Some(values),
+            features: Some(values.into()),
             width: 2,
             scale: Some(vec![(1.0, 2.0), (0.0, 4.0)]),
             ..settings(2)
@@ -1725,5 +1754,73 @@ mod tests {
         let row = observed(&env);
         let window = [&cells[8..12], &cells[12..16]].concat();
         assert_eq!(&row[..8], &window[..]);
+    }
+
+    #[test]
+    fn a_clone_or_a_fork_of_environments_steps_on_as_they_do() {
+        let rows: Vec<Vec<Candle>> = (0..12)
+            .map(|t| {
+                let p = 100.0 + 5.0 * (t as f64 * 0.9).sin();
+                vec![
+                    bar(p, p + 2.0, p - 1.0, p + 1.0, 500.0),
+                    flat(50.0 + t as f64),
+                ]
+            })
+            .collect();
+        let mut env = pair(rows, 3, settings(2));
+        env.reset(&[true; 3], &[2, 3, 4], &[0, 1, 1, 0, 0, 1]);
+        // each environment's weights at step k, so a fork's copies take environment 1's
+        let weights = |e: usize, k: usize| {
+            [
+                ((e + k) % 5) as f64 / 5.0 - 0.4,
+                ((2 * e + k) % 3) as f64 / 3.0 - 0.3,
+            ]
+        };
+        let step = |env: &mut Environment, of: &[usize], k: usize| {
+            let n = env.len();
+            let decision: Vec<f64> = of.iter().flat_map(|&e| weights(e, k)).collect();
+            let (mut rewards, mut ended, mut cut) = (vec![0.0; n], vec![false; n], vec![false; n]);
+            env.step(
+                Decision::Weights(&decision),
+                &vec![true; n],
+                &mut rewards,
+                &mut ended,
+                &mut cut,
+            )
+            .unwrap();
+            (rewards, ended, cut, observed(env))
+        };
+        step(&mut env, &[0, 1, 2], 0);
+        let (mut twin, mut fork) = (env.clone(), env.fork(1, 2));
+        assert_eq!((fork.len(), fork.ticks()), (2, vec![4, 4]));
+        let size = env.size();
+        for k in 1..6 {
+            let ahead = step(&mut env, &[0, 1, 2], k);
+            assert_eq!(step(&mut twin, &[0, 1, 2], k), ahead);
+            let (rewards, ended, cut, rows) = step(&mut fork, &[1, 1], k);
+            for copy in 0..2 {
+                assert_eq!(
+                    (rewards[copy], ended[copy], cut[copy]),
+                    (ahead.0[1], ahead.1[1], ahead.2[1])
+                );
+                assert_eq!(
+                    &rows[copy * size..(copy + 1) * size],
+                    &ahead.3[size..2 * size]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_clone_or_a_fork_of_environments_shares_their_features_as_it_shares_the_bars() {
+        let featured = Settings {
+            features: Some((0..4 * 2 * 2).map(|v| v as f64).collect()),
+            width: 2,
+            ..settings(2)
+        };
+        let env = pair(vec![vec![flat(100.0), flat(50.0)]; 4], 3, featured);
+        let held = |e: &Environment| e.settings().features.as_deref().map(<[f64]>::as_ptr);
+        assert_eq!(held(&env.clone()), held(&env));
+        assert_eq!(held(&env.fork(1, 2)), held(&env));
     }
 }

@@ -6,6 +6,7 @@
 //! them (Specification, Target; An array; ADR 0009).
 
 use probatum_core::{Market, Order, OrderId, Side, TimeInForce, Wallet};
+use serde::{Deserialize, Serialize};
 
 use super::path::DUST;
 use super::Engine;
@@ -19,7 +20,7 @@ pub enum TargetError {
 }
 
 /// What `target` keeps between decisions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Targets {
     /// The weight the latest target asked of each instrument, NaN where none has.
     pub(super) asked: Vec<f64>,

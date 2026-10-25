@@ -1,6 +1,8 @@
 //! The trading-fee schedule. A `CostModel` charges a fee on a fill; slippage is
 //! applied separately at the fill stage (a worse fill price), not here.
 
+use serde::{Deserialize, Serialize};
+
 use crate::fill::Fill;
 
 /// Computes the fee on a fill, in the quote asset. `Send + Sync` so one model can
@@ -12,7 +14,7 @@ pub trait CostModel: Send + Sync {
 }
 
 /// A flat maker/taker schedule: a fixed fraction of notional per side.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlatCostModel {
     /// Taker fee as a fraction of notional (0.0006 is 6 bps).
     pub fee_taker: f64,

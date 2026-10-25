@@ -4,12 +4,13 @@
 //! the backtester turns it on. Stats are derived from these later.
 
 use probatum_core::{OrderId, Side, TimeInForce, Wallet};
+use serde::{Deserialize, Serialize};
 
 use crate::execution::FillCosts;
 use crate::stats::Stats;
 
 /// What made a fill, as the fill log names it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FillReason {
     Market,
     Limit,
@@ -46,7 +47,7 @@ impl FillReason {
 
 /// One fill, with the reference it is measured from and what it paid beyond it
 /// (ADR 0022).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FillRecord {
     /// The bar the fill landed on.
     pub tick: usize,
@@ -74,7 +75,7 @@ pub struct FillRecord {
 }
 
 /// What happened to an order, as the order log names it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
     Placed,
     Refused,
@@ -104,7 +105,7 @@ impl EventKind {
 }
 
 /// Why a placement was refused, with what it quotes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Refusal {
     /// The pending queue already holds `max_open_orders`.
     Waiting(usize),
@@ -138,7 +139,7 @@ pub enum Refusal {
 /// last clamp that reduced the size before the lot rounded it, a bar that printed no
 /// volume before every clamp, and a size below what a fill can book after them
 /// (Specification, The fill log and the order log).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Cause {
     /// The share of the trailing volume the bar's fills may take.
     Budget,
@@ -158,7 +159,7 @@ pub enum Cause {
 }
 
 /// Why an event happened, with the numbers its text quotes (ADR 0022).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EventReason {
     /// Placed or filled as its own type.
     Market,
@@ -230,7 +231,7 @@ pub enum EventReason {
 }
 
 /// One event in an order's life (ADR 0022).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OrderEvent {
     /// The bar it happened on: the decision's for a placement, the fill's for a fill.
     pub tick: usize,
@@ -255,7 +256,7 @@ pub struct OrderEvent {
 /// off zero to the fill that returns it to zero or flips it. Resizing inside it does
 /// not end it, so a strategy that scales in and out reads as one long trade, and a
 /// count of them counts decisions rather than fills (ADR 0023).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RoundTrip {
     /// The instrument it traded.
     pub instrument: usize,
@@ -405,7 +406,7 @@ impl RoundTrip {
 
 /// What a bar cost, in quote, each term computed on its own so that the ledger
 /// identity is a check rather than a residual (ADR 0022).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct BarCosts {
     pub fees: f64,
     /// Funding paid, positive when paid away.
@@ -423,7 +424,7 @@ pub struct BarCosts {
 
 /// One row of the ledger: the account marked at a bar's close, and what that bar
 /// cost (ADR 0022).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LedgerRow {
     pub tick: usize,
     pub equity: f64,
@@ -443,7 +444,7 @@ pub struct LedgerRow {
 
 /// One instrument's line of a ledger row, marked at its close, or at its last mark
 /// on a row it printed no bar on.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
     pub position: f64,
     pub entry: f64,
@@ -462,7 +463,7 @@ pub struct Leg {
 }
 
 /// What a reporter books, a recording level (ADR 0022).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Record {
     /// The ledger and its legs, the round trips, the fill log and the order log.
     #[default]
@@ -478,7 +479,7 @@ pub enum Record {
 
 /// Side buffers for the equity curve, the ledger, the round trips and the logs.
 /// Never part of the hot-path state or the RL observation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Reporter {
     /// What it books, which a reset keeps.
     level: Record,

@@ -11,6 +11,7 @@
 use probatum_core::{
     Candle, Order, OrderType, Price, Qty, Side, State, Tier, TierBasis, TierError, Tiers,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::execution::{positive, FillCosts};
 use crate::reporter::{EventReason, FillRecord, LedgerRow, Leg, OrderEvent, Refusal, RoundTrip};
@@ -33,7 +34,7 @@ pub(crate) fn quoted(price: f64) -> f64 {
 /// How an account's prices and sizes meet the engine's: as they are for spot and
 /// linear contracts, and for an inverse contract each price's reciprocal, each size
 /// in the dollars its contracts are worth and each side the other way round.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Units {
     #[default]
     Linear,
