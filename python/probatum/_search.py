@@ -1187,6 +1187,16 @@ class Study:
         return _written("report", path, "study", self, null)
 
 
+    def figure(self, name):
+        """One figure of the Study's report alone, as a matplotlib Figure to save as PNG,
+        SVG or PDF, drawn as ``report`` draws it: a search's ``"trials"`` or
+        ``"importance"``, or a validation's ``"paths"`` or ``"windows"``, one that draws
+        nothing of this Study refused. It needs matplotlib, which the plot extra
+        installs (ADR 0041)."""
+        from .report import _figure
+        return _figure(name, self.kind, self)
+
+
     def summary(self, null=None, plateau=None):
         """The Study in a few lines of text. A search's: what it searched, at which venue
         and on what bars, its in-sample span and holdout, the winner's parameters and

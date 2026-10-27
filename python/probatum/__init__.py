@@ -33,7 +33,8 @@ statistics over time, its round trips and where its money went, with ``compare``
 setting runs side by side; and how far a search's winner can, judged across all its
 trials. ``Result.report`` and ``Study.report`` write a run's tear sheet and a search's
 or a validation's report, each one HTML file of static figures that ``report`` draws
-from what they hold, with the plot extra's matplotlib.
+from what they hold, with the plot extra's matplotlib, and ``figure`` hands out each
+figure alone.
 Every error probatum raises is a ``ProbatumError`` and the built-in it means, and
 every warning a ``ProbatumWarning``, outside the modules still carried from emsl,
 which raise the built-ins and warn with ``UserWarning`` or ``RuntimeWarning``.

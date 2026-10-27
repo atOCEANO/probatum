@@ -5,6 +5,7 @@ at several venues added into one (ADR 0026)."""
 import collections.abc
 import copy
 import functools
+import html
 import importlib
 import importlib.metadata
 import json
@@ -659,6 +660,25 @@ class Result:
         its costs and its optimistic assumptions; a book names its accounts, margined
         apart with no capital moving between them, and a run below the full level names
         its level (Specification, Summaries)."""
+        head, rows = self._summarised()
+        return "\n".join(head + [_row(*row) for row in rows])
+
+
+    def _repr_html_(self):
+        """The summary as a notebook shows a Result: its first two lines over a table of
+        the rest, each row its label, its value and its words."""
+        head, rows = self._summarised()
+        cells = "".join(f"<tr><td style=\"text-align: left\">{html.escape(label)}</td>"
+                        f"<td style=\"text-align: right\">{html.escape(value)}</td>"
+                        f"<td style=\"text-align: left\">{html.escape(said)}</td></tr>"
+                        for label, value, said in rows)
+        return (f"<div><p><b>{html.escape(head[0])}</b><br>{html.escape(head[1])}</p>"
+                f"<table>{cells}</table></div>")
+
+
+    def _summarised(self):
+        """The summary's first two lines, and each line after them as its label, its
+        value and its words."""
         given    = self.provenance
         book     = given.get("results")
         accounts = list(book.values()) if book else [given]
@@ -673,7 +693,6 @@ class Result:
                 else f"{given['policy']}, {given['venue_name'] or 'a venue built by hand'}")
         where    = names[0] if len(names) == 1 else f"{len(names)} instruments"
         interval = (accounts[0].get("data") or {}).get("interval", "")
-        lines    = [f"{what}, {where} {interval}".rstrip()]
 
         first, last = (np.datetime64(int(self.time[at]), "ns").astype("datetime64[D]")
                        for at in (0, -1))
@@ -682,32 +701,30 @@ class Result:
         span += f" {given['settlement']}" if given.get("settlement") else ""
         if _recorded(given) != "full":
             span += f", recorded at the {_recorded(given)} level"
-        lines.append(span)
 
+        head  = [f"{what}, {where} {interval}".rstrip(), span]
         stats = self.stats
-        if stats is None:
-            lines.append(_row("statistics", "", "none, the clock too short to annualise"))
-        else:
-            lines.extend(self._rows(stats))
+        rows  = ([("statistics", "", "none, the clock too short to annualise")]
+                 if stats is None else self._rows(stats))
 
         paid = sorted(((name, value) for name, value in self.costs.items() if value),
                       key=lambda item: -abs(item[1]))
-        lines.append(_row("costs", _money(-sum(self.costs.values())),
-                          ", ".join(f"{name} {_money(-value)}"
-                                    for name, value in paid) or "none"))
+        rows.append(("costs", _money(-sum(self.costs.values())),
+                     ", ".join(f"{name} {_money(-value)}" for name, value in paid)
+                     or "none"))
 
         table = self.assumptions
         named = [f"{row['name']} {row['value']}"
                  + (f" at {row['venue']}" if "venue" in row else "")
                  for row in table[table.grade == "optimistic"]]
-        lines.append(_row("assumptions", "", f"{len(named)} optimistic: {', '.join(named)}"
-                          if named else "none optimistic"))
+        rows.append(("assumptions", "", f"{len(named)} optimistic: {', '.join(named)}"
+                     if named else "none optimistic"))
 
         if book:
-            lines.append(_row("accounts", "", f"{' and '.join(book)}, margined apart; no "
-                              f"capital moves between them"))
+            rows.append(("accounts", "", f"{' and '.join(book)}, margined apart; no "
+                         f"capital moves between them"))
 
-        return "\n".join(lines)
+        return head, rows
 
 
     def report(self, path):
@@ -722,6 +739,17 @@ class Result:
         which the plot extra installs (ADR 0041)."""
         from .report import _written
         return _written("report", path, "sheet", self)
+
+
+    def figure(self, name):
+        """One figure of the run's tear sheet alone, as a matplotlib Figure to save as
+        PNG, SVG or PDF, drawn as ``report`` draws it: ``"equity"``, ``"drawdown"``,
+        ``"returns"``, ``"monthly"``, ``"rolling_sharpe"``, ``"rolling_volatility"``,
+        ``"exposure"``, ``"weights"``, ``"pnl"``, ``"costs"`` or ``"trips"``, one that
+        draws nothing of this run, as weights for a run of one instrument, refused. It
+        needs matplotlib, which the plot extra installs (ADR 0041)."""
+        from .report import _figure
+        return _figure(name, "sheet", self)
 
 
     def chart(self, *marks, instrument=None, data=None, panels=None, focus=None,
@@ -765,12 +793,13 @@ class Result:
 
 
     def _rows(self, stats):
-        """The summary's lines that read the run's record of statistics."""
-        lines = []
-        lines.append(_row("return", f"{stats['total_return_pct']:+.1f}%",
-                          f"CAGR {stats['cagr_pct']:+.1f}%, volatility "
-                          f"{stats['volatility_pct']:.1f}%, in the market "
-                          f"{stats['exposure_pct']:.0f}% of bars"))
+        """The summary's rows that read the run's record of statistics, each its label,
+        its value and its words."""
+        rows = []
+        rows.append(("return", f"{stats['total_return_pct']:+.1f}%",
+                     f"CAGR {stats['cagr_pct']:+.1f}%, volatility "
+                     f"{stats['volatility_pct']:.1f}%, in the market "
+                     f"{stats['exposure_pct']:.0f}% of bars"))
 
         held = stats.interval("sharpe")
         if held is None:
@@ -784,21 +813,21 @@ class Result:
                     f"delta method, Newey-West lag {held.lag}"
                     + (" floored at lag zero" if held.floored else ""))
 
-        lines.append(_row("sharpe", f"{stats['sharpe']:.2f}", told))
+        rows.append(("sharpe", f"{stats['sharpe']:.2f}", told))
 
         longer = sharpe(self, long_run=True)
         if abs(longer - stats["sharpe"]) > 0.1:
-            lines.append(_row("long-run sharpe", f"{longer:.2f}",
-                              "the mean over the returns' long-run deviation, which "
-                              "their autocorrelation moves"))
+            rows.append(("long-run sharpe", f"{longer:.2f}",
+                         "the mean over the returns' long-run deviation, which their "
+                         "autocorrelation moves"))
 
-        lines.append(_row("max drawdown", f"{-stats['max_drawdown_pct'] + 0.0:.1f}%",
-                          f"{time_under_water(self).longest_days:,.0f} days under water"))
-        lines.append(_row("round trips", f"{stats['num_trades']:,}",
-                          f"win rate {stats['win_rate']:.0%}, profit factor "
-                          f"{stats['profit_factor']:.2f}"))
+        rows.append(("max drawdown", f"{-stats['max_drawdown_pct'] + 0.0:.1f}%",
+                     f"{time_under_water(self).longest_days:,.0f} days under water"))
+        rows.append(("round trips", f"{stats['num_trades']:,}",
+                     f"win rate {stats['win_rate']:.0%}, profit factor "
+                     f"{stats['profit_factor']:.2f}"))
 
-        return lines
+        return rows
 
 
     @property

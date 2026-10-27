@@ -4,8 +4,11 @@ none, beside the long-run Sharpe where the two differ by more than 0.1, its maxi
 drawdown as a loss with the longest time under water, its round trips, its costs, each
 whole from a hundred and to three figures below, and its optimistic assumptions, and it
 names a book's accounts as margined apart and a level below the full one (Specification,
-Summaries).
+Summaries). A notebook shows it as its first two lines over a table of the rest.
 """
+
+import html
+import re
 
 import numpy as np
 import pandas as pd
@@ -13,7 +16,7 @@ import pytest
 
 import probatum
 from probatum import stats
-from probatum._result import _money
+from probatum._result import _money, _row
 
 HOUR  = 3_600_000_000_000
 VENUE = probatum.venues.binance_perp.replace(funding="none")
@@ -188,6 +191,37 @@ def test_an_amount_is_whole_from_a_hundred_three_figures_below_and_never_minus_0
     }
 
     assert {amount: _money(amount) for amount in printed} == printed
+
+
+TABLED = re.compile(r"<div><p><b>(.*?)</b><br>(.*?)</p><table>(.*)</table></div>")
+CELLS  = re.compile(r'<tr><td style="text-align: left">(.*?)</td>'
+                    r'<td style="text-align: right">(.*?)</td>'
+                    r'<td style="text-align: left">(.*?)</td></tr>')
+
+
+class Marked(probatum.Strategy):
+    """A strategy that decides nothing, named with markup."""
+
+
+    def __repr__(self):
+        return "Marked<&>"
+
+
+    def next(self, bar, account):
+        pass
+
+
+def test_a_notebook_shows_the_summary_as_its_first_lines_over_a_table(traded):
+    for result in (traded, probatum.backtest(Marked(), data(60), VENUE)):
+        shown = TABLED.fullmatch(result._repr_html_())
+        rows  = [tuple(html.unescape(cell) for cell in row)
+                 for row in CELLS.findall(shown[3])]
+
+        assert CELLS.sub("", shown[3]) == ""
+        assert "\n".join([html.unescape(shown[1]), html.unescape(shown[2])]
+                         + [_row(*row) for row in rows]) == result.summary()
+
+    assert shown[1].startswith("Marked&lt;&amp;&gt;, binance_perp")
 
 
 def test_a_book_names_its_accounts_and_a_run_its_level_below_the_full_one(traded):

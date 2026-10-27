@@ -981,7 +981,8 @@ def _render(payload, title):
 
 
 class Chart:
-    """One built chart: the document, and the spec it was built from."""
+    """One built chart: the document, and the spec it was built from. A notebook draws
+    it where it is a cell's last expression, and ``show()`` anywhere in a cell."""
 
 
     def __init__(self, spec, title):
@@ -1058,17 +1059,25 @@ class Chart:
                                        "chart to a file with save(path)")
 
         display, HTML = _ipython()
-        srcdoc = html.escape(self._html(), quote=True)
-        height = self._spec["height"] if height is None else _height(height)
+        display(HTML(self._framed(
+            self._spec["height"] if height is None else _height(height)
+        )))
 
+
+    def _repr_html_(self):
+        """The chart as a notebook draws it where it is a cell's last expression, in the
+        frame ``show()`` draws it in, at the chart's own height."""
+        return self._framed(self._spec["height"])
+
+
+    def _framed(self, height):
         # wrapped, because IPython warns on output that opens with a bare iframe
         # and points at IPython.display.IFrame, which takes a src url and so
         # cannot carry its document inline, which is the whole point of this one
-        display(HTML(
-            f'<div class="probatum-chart">'
-            f'<iframe srcdoc="{srcdoc}" style="width:100%;height:{height}px;'
-            f'border:0"></iframe></div>'
-        ))
+        srcdoc = html.escape(self._html(), quote=True)
+        return (f'<div class="probatum-chart">'
+                f'<iframe srcdoc="{srcdoc}" style="width:100%;height:{height}px;'
+                f'border:0"></iframe></div>')
 
 
     def _html(self):

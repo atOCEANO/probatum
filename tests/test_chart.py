@@ -7,6 +7,7 @@ and a spec assertion is the sharper test anyway: it says what is drawn, where a
 screenshot only says it looked the same.
 """
 
+import html.parser
 import json
 import pathlib
 import re
@@ -1217,6 +1218,35 @@ def test_save_returns_the_path_it_was_given(tmp_path):
     target = tmp_path / "nested" / "run.html"
 
     assert bars(8).chart().save(target) == target
+
+
+class Tags(html.parser.HTMLParser):
+    """The start tags of what it is fed, each with its attributes as a browser reads
+    them."""
+
+
+    def __init__(self):
+        super().__init__()
+        self.tags = []
+
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append((tag, dict(attrs)))
+
+
+def test_a_chart_left_as_a_cell_s_last_line_draws_its_own_document_in_a_frame():
+    # a notebook calls _repr_html_ on what a cell leaves, and the frame carries the
+    # whole document inline, at the chart's own height. Parsed rather than matched,
+    # because a quote left unescaped ends the attribute inside the document
+    built = run().chart(height=480)
+    read  = Tags()
+    read.feed(built._repr_html_())
+
+    assert read.tags == [
+        ("div",    {"class": "probatum-chart"}),
+        ("iframe", {"srcdoc": built._html(),
+                    "style":  "width:100%;height:480px;border:0"}),
+    ]
 
 
 def test_show_outside_a_notebook_points_at_save():
