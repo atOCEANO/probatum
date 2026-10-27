@@ -13,7 +13,7 @@ import pathlib
 import re
 
 import probatum
-from probatum import metrics, stats, ta
+from probatum import stats, ta
 from probatum import Backtester
 from probatum.chart import marks
 
@@ -84,12 +84,10 @@ _API = {
 # every public function of the two modules whose examples are all calls. Listed by
 # reflection rather than by hand: the hand-written dict above had gone four
 # releases without gaining an entry, so the newest examples were the least checked
-_API.update({name: getattr(metrics, name) for name in metrics.__all__
-             if callable(getattr(metrics, name))})
 _API.update({name: getattr(ta, name) for name in ta.__all__
              if callable(getattr(ta, name)) and not isinstance(getattr(ta, name), type)})
-# stats shares five names with metrics, sharpe_interval among them, on other
-# signatures, so its functions are keyed by the module they are called through
+# stats' functions are keyed by the module they are called through, as an example
+# calls them
 _API.update({f"stats.{name}": getattr(stats, name) for name in stats.__all__
              if not isinstance(getattr(stats, name), type)})
 
@@ -97,7 +95,7 @@ _API.update({f"stats.{name}": getattr(stats, name) for name in stats.__all__
 # the library function. self.log.at_bar is Recorder.at_bar, which takes **values
 # and shares its name with the module-level helper, so matching on the last word
 # alone is wrong
-_ROOTS = {"probatum", "chart", "marks", "metrics", "ta"}
+_ROOTS = {"probatum", "chart", "marks", "ta"}
 
 
 def pages():
@@ -408,8 +406,8 @@ def test_nothing_a_module_exports_is_undocumented_either():
     text    = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     missing = []
 
-    for name, module in (("metrics", metrics), ("ta", ta), ("chart", probatum.chart),
-                         ("marks", marks), ("cv", probatum.cv), ("stats", stats)):
+    for name, module in (("ta", ta), ("chart", probatum.chart), ("marks", marks),
+                         ("cv", probatum.cv), ("stats", stats)):
         for export in module.__all__:
             # named in prose as `export`, called in an example as export(, or
             # reached through its module either way

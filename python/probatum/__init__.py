@@ -49,7 +49,7 @@ from ._probatum import Batch
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
 from ._space import Categorical, Float, Int
-from . import cv, metrics, stats, ta, venues
+from . import cv, stats, ta, venues
 from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
 from ._engine import Engine
@@ -70,7 +70,7 @@ __all__ = [
     "Strategy", "Study", "Venue",
     "backtest", "breakeven_bps", "capacity", "combine", "compare", "cost_curve",
     "labels", "save", "search", "to_ohlcv", "validate",
-    "chart", "cv", "metrics", "stats", "ta", "venues",
+    "chart", "cv", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
     "ProbatumNotImplementedError", "DataError", "VenueError", "SpecError",

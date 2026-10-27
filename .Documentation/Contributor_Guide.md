@@ -51,7 +51,6 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | How an engine, a batch or an environment clones or pickles | the bytes and the forks in `crates/probatum-engine/src/engine/mod.rs`, `batch.rs` and `env.rs`, the pickles in `crates/probatum-py/src/lib.rs`, and the Python state they carry in `_engine.py`, `_strategy.py` and `_env.py` |
 | How transitions are recorded or exported | `python/probatum/_transitions.py` for the rows and the export, the recording in `_env.py`, the Result's in `_result.py`, and the Arrow lists in `_ipc.py` |
 | How a backtest runs an agent, or how the spec travels with it | `python/probatum/_agent.py` for the spec found, the slots, the warnings and `save`, the episode it plays in `_env.py`, and the SB3 adapter and its callback in `sb3.py` |
-| One of emsl's statistics of a `BacktestResult` | `python/probatum/metrics.py` |
 | An indicator, which is a function of arrays and never sees the engine | `python/probatum/ta.py` |
 | Anything a chart draws (a mark, a guard, a panel rule) | `python/probatum/chart/__init__.py`, and the marks in `chart/marks.py` |
 | How a chart is painted (a primitive, the legend, the controls) | `python/probatum/_static` |

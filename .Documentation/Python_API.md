@@ -60,7 +60,6 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
 | `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
 | `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
-| `probatum.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
 | `probatum.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
 | `probatum.env` | Step accounts at a venue on a Data together in Rust as a Gymnasium vector environment, each environment drawing its episodes from a stream of its own. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `probatum.rl` | `VectorEnv`, the environment `probatum.env` returns, `Env`, one environment of it, both registered as `probatum/Trading-v0`, and `Batch`, the raw batch. [Below](#reinforcement-learning). |
@@ -1241,89 +1240,6 @@ print(probatum.breakeven_bps(trend, data, venue))   # where it stops making mone
 
 <br>
 
-## Metrics
-
-The fifteen [statistics](#statistics) come back from the engine. `probatum.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
-
-```python
-from probatum import metrics
-
-result = Backtester(candles, market="perp", funding_rate=0.0001, funding_interval=8).run(MyStrategy())
-
-metrics.summary(result, candles)          # the headline, printed
-metrics.decompose(result)                 # gross, fees, funding, still open, net
-metrics.long_short_split(result)          # the same trade stats, by side
-metrics.drawdown_table(result, top=5)     # the five worst falls, with durations
-metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zero
-```
-
-`returns(result)` is the per-period return series everything else here is built on, and it is worth knowing the rule because two of this library's bugs came from a second reading of it. It is seeded from the opening balance, so a strategy that loses on its first bar shows that loss: the engine records an equity point only on a real advance, so the balance a run opened with is not in `equity_curve` and anything reading that array alone cannot see the first bar's move. A bar following a non-positive equity contributes zero rather than a ratio through zero. That is the identical rule the engine uses, which is what lets `metrics.sharpe` reproduce `result.stats["sharpe"]` exactly, and a test pins the two together.
-
-### Where the money went
-
-`decompose(result)` splits the change in equity into `gross_pnl`, `fees`, `funding`, and `unrealized`: gross less fees less funding plus unrealized is `net`, by construction. The two costs are reported as **positive amounts paid away**, the convention `funding_paid` already uses, so they subtract. On a perp this is the first thing to look at: a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea. `unrealized` is what a position still open at the end holds at the last close; it is zero on a run that ends flat.
-
-`decompose` also carries `fee_share`, the costs as a fraction of the gross edge, and `turnover`, the notional every fill moved, both sides of every round trip, over the opening balance. Read together they say whether you have a cost problem or an idea problem, which neither says alone.
-
-`long_short_split(result)` gives trades, net PnL, fees, win rate and average holding time for each side separately, because almost every naive crypto rule earns long and bleeds short, and one win rate averages the two into something describing neither.
-
-`trade_stats(result)` is the shape of the trade distribution, which a win rate hides completely: `avg_win`, `avg_loss`, `payoff` (the two divided), `expectancy` per trade, `largest_win`, `largest_loss` and `max_consecutive_losses`. A 70% win rate at a payoff of 0.3 is a losing rule, and a win rate and a profit factor are the same pair for a strategy that grinds out small wins and for one that is short gamma waiting for the bar that ends it. `summary` prints the win rate and the payoff on adjacent lines for this reason and never one without the other.
-
-### The shape of the ride
-
-`drawdown(result)` is the fall from the running peak at every bar, seeded from the opening balance so a loss on the first bar shows on the first bar. `drawdown_table(result, top=5)` gives the worst falls with where each began, bottomed and recovered, as **bar indices**, the same numbering as a round trip's `open_bar`, so one goes straight to the candle or onto a chart; `recovered_bar` is `None` for a fall the run never came back from. `time_under_water(result)` reports the longest and average stretch below a previous high, and the share of the run spent there: five shallow dips and one long one are the same `max_drawdown_pct` and not remotely the same thing to hold. `ulcer_index(result)` charges for depth and duration together, so a year spent down 15% scores worse than a week at 30%, which is the right way round for anybody who has to hold it.
-
-`skew(result)` and `kurtosis(result)` describe the return distribution's third and fourth moments; negative skew means the losses are the fat tail. `kurtosis` is **not** excess by default, so a normal distribution scores 3.0, because that is the convention the probabilistic Sharpe below wants and handing it an excess figure is the standard way to get a confidently wrong answer. `value_at_risk(result, alpha=0.95)` is the per-period loss only one bar in twenty is worse than, and `conditional_value_at_risk` the mean across those bars, which is the one to read: the quantile says where the bad days start and this says how bad they are. `alpha` is a **confidence**, so it is at least 0.5; passing 0.05 asks about the top of the gains and is refused rather than answered. Both are historical, with no normal assumption, and `value_at_risk` comes back negative when even the worst bar in twenty made money.
-
-`omega(result)` is the total gain above a threshold over the total loss below it, which reads the whole distribution rather than its first two moments, so a fat left tail cannot hide behind a tidy standard deviation. `tail_ratio(result)` is the size of the right tail over the left: below one, the run makes its money in small pieces and gives it back in large ones.
-
-### Over time rather than in total
-
-`segment(result, start, stop)` restricts a finished run to a range of bars and computes the engine's own statistics over it, seeded from the balance the account carried into that range rather than a fresh one, so consecutive segments compound to the run. `exposure_pct` and `num_fills` are absent from it, because a finished result does not carry what they are computed from.
-
-```python
-metrics.period_returns(result, candles, by="month")   # or "quarter", "year"
-metrics.rolling_sharpe(result, window=720)            # length T, aligned, NaN warm-up
-```
-
-`period_returns` is the first stability question anybody asks of a crypto backtest, which is whether the whole edge sits in one quarter, and a single number cannot answer it. `rolling_sharpe` is the same question as a shape: aligned and padded on the same rule `probatum.ta` uses, so it drops straight into [`probatum.chart`](#plotting) beside the equity curve.
-
-### The three that need the candles
-
-`buy_and_hold(result, frame)` answers the first question anyone asks, with the excess return, the beta against holding, and the information ratio.
-
-`excursions(result, frame=None)` gives the worst and best each closed round trip went while it was open, in percent of its entry: the round trip's own `worst` and `best`, which the engine measures as it runs. A trade log says what a rule earned; this says what it lived through, and it is the direct answer to where a stop belongs. Both are a **bound rather than an exact figure, and neither overstates**: a bar prints its open first and its close last and nothing else in it is ordered, so the bar a trade entered on counts only from the fill forward to its close, the bar it left on only from its open up to the fill, a bar it was closed out of before the open not at all, and the bars strictly between count whole ([ADR 0023](Decisions.md)). A market entry at the open is counted the same way, from its fill to the close. `session_buckets(result, frame, by="hour")` groups trade PnL by hour of day or day of week, booked at the exit bar; it needs the DataFrame rather than the array, because only a real clock can be bucketed by hour. Crypto trades around the clock and an hourly strategy routinely has its whole edge inside the few hours a day funding is stamped, which one bucket holding the entire result will show faster than any statistic. Hours are UTC, and **weekdays run Monday 0 to Sunday 6**, matching `datetime.weekday` and pandas' `dayofweek` so a key reads against any other clock you are holding.
-
-**Each of the three checks that the frame is the one the run saw, and they do not check the same thing** ([ADR 0030](Decisions.md)). `session_buckets` reads the run's own bar indices straight into these bars, and `excursions` hands them back, so both need the *identical* series and compare its fingerprint against `result.data_hash`; another asset of the same length made a losing trade report both of its excursions as gains. `buy_and_hold` needs only the same *number* of bars, because a different asset there is the whole point: `beta` and `information_ratio` are benchmark statistics and are only interesting against something other than what you traded, so benchmarking an ETH strategy against holding BTC is a supported question. All three used to absorb a mismatch silently, which is how a 2,000-bar slice of a 100,000-bar frame returned 35 excursion rows out of 1,516 and said nothing.
-
-### What the number is worth
-
-`probabilistic_sharpe(result, benchmark=0.0)` is the probability the true Sharpe is above the benchmark, given the sample length and how far the returns are from normal. `min_track_record_length(result)` is how many bars it would take to distinguish the two at 95%.
-
-`sharpe_interval(result)` is the same estimator read as an interval instead of a tail, which is usually the sentence you want: "sharpe 1.4, 95% interval 0.2 to 2.6". A `low` at or below zero says the run does not distinguish itself from nothing, however good the point estimate looks.
-
-Three things to know before quoting any of them. The benchmark is stated **annualized**, like everything else here, and de-annualized internally, because handing the estimator an annualized figure is the standard way to get a confidently wrong answer.
-
-The published estimators count bars and assume each is an independent bet, which a strategy holding a position for two days on hourly candles badly violates. These, emsl's, count the sample as `effective_sample(result)`, the standard `n (1 - r) / (1 + r)` at the first autocorrelation, and not the bar count. `probatum.stats` reads the whole autocorrelation instead, through the long-run variance of the Sharpe's influence series, and keeps `effective_sample` and `autocorrelation` by name ([ADR 0031](Decisions.md), [Inference](#inference)). The library used to report `autocorrelation(result)` beside these, say in its own docstring that every confidence figure computed from the bar count was therefore overstated, and then compute them from the bar count anyway. Pass `independent=True` for the unadjusted formula. Read `num_trades` too: forty round trips over three thousand bars is forty bets and it is the bets that carry the information.
-
-And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0030](Decisions.md)).
-
-None of them corrects for having searched; a search's [Study](#the-study) does, deflating its winner's Sharpe against a random search of the same ground. `deflation_threshold(spread, looks)` is the Sharpe the best of `looks` independent draws spread `spread` apart reaches by luck alone.
-
-`report(result, frame=None)` returns everything above as one flat dict, for storing or comparing runs; `summary(result, frame=None)` prints the headline and returns the same dict.
-
-### Telling two runs apart
-
-A `BacktestResult` carries `config` (the engine settings it ran under), `data_hash` (eight characters over the candles it saw), `strategy` (the class name plus its `repr`), `version`, `bust`, `periods_per_year` and `risk_free`. `to_dict()` returns all of it plus the stats as plain data, without the equity curve or the trade log, since neither distinguishes anything and both are large.
-
-```python
-metrics.compare({"cheap": cheap_run, "dear": expensive_run})
-```
-
-prints one row per run, leading with the data fingerprint, and returns the rows. `keys=` picks the columns, and a key no result reports is refused rather than printed as the word `None` in every row, which reads as a run that scored nothing instead of a column that does not exist. A notebook accumulates a great many backtests and nothing on a bare result says which bars or which fees produced it, so "was Tuesday's 2.1 sharpe on the same costs as today's 1.9" had no answer at all ([ADR 0026](Decisions.md)). Defining `__repr__` on a tunable strategy is worth it here: two rows both reading `SmaCross` tell you nothing.
-
-<br>
-
 ## Indicators
 
 30 functions, chosen to cover what a bar-level strategy usually reaches for and stopped there. This is not an attempt to be ta-lib: an indicator library is mostly somebody's opinion about warm-up and smoothing, and a hundred of those opinions is a hundred chances to disagree with the chart you have read for years.
@@ -1479,7 +1395,7 @@ Every error probatum raises is one of its own classes and the built-in it means,
 
 A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which follows what arrived: a value of a type the argument does not take raises a `TypeError`, and one of its type that the call cannot take a `ValueError`, so `tolerance="0.01"` is a `ProbatumTypeError` and `tolerance=-0.01` a `ProbatumValueError`. So a Data's wrong value is a `DataError` and its wrong type a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a Venue built in Python splits the same way between `VenueError` and `ProbatumTypeError`, while every wrong setting in a preset's file is a `VenueError`. A policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
 
-What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `metrics`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`; `metrics.summary` and `metrics.compare` print their tables.
+What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`.
 
 Every warning probatum gives is a `probatum.ProbatumWarning`, a `UserWarning`, named at the line of your code that caused it, so a test can make probatum's warnings errors without touching anyone else's. Outside those modules probatum prints nothing: long work is logged to the `probatum` logger, `Data.from_router` logging each instrument it built at INFO and each call to the router at DEBUG, which Python's `logging` turns on.
 

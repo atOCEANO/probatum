@@ -922,8 +922,8 @@ def keltner(high, low, close, length=20, atr_length=10, multiplier=2.0, axis=0):
     side. Where ``bbands`` measures the spread of the closes, this measures the
     spread of the BARS, so a session of wide ranges closing in one place widens
     this and not that. It is also the band an ATR-sized stop belongs on, which is
-    the question ``atr`` and ``metrics.excursions`` both point at and neither
-    could answer.
+    the question ``atr`` and a round trip's ``worst`` excursion both point at and
+    neither could answer.
     """
     length, atr_length = _length(length, "length"), _length(atr_length, "atr_length")
     multiplier = _width(multiplier, "multiplier")
