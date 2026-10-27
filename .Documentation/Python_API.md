@@ -1404,6 +1404,21 @@ Three behaviours worth knowing. `vwap` is rolling over `length` bars rather than
 
 <br>
 
+## Reports
+
+`result.report(path)` writes a run's tear sheet, and `study.report(path, null=None)` a search's or a validation's report, each one HTML file of static figures, text and tables with no JavaScript, its folders made where they are missing, and returns `path` ([ADR 0041](Decisions.md)). They need matplotlib, which `pip install "probatum[plot]"` installs, and without it each is refused as a `MissingDependency` that names that line.
+
+- **The tear sheet** holds the headline numbers with their intervals, each naming its method or saying why it has none; the equity on a log scale beside the [three baselines](#transparency) and the drawdown beside buying and holding's; the returns a row and each calendar month's; the rolling Sharpe and volatility over a quarter of a year of bars; the gross and net exposure over the equity; each instrument's weight and pnl where the run holds several; the costs; the round trips, by side; each baseline's return, Sharpe and maximum drawdown, with the Sharpe difference against buying and holding by both its tests; the assumptions, the optimistic ones named at the top; and the provenance. A run kept at the account level keeps no baselines, holdings or fill log, and its sheet leaves out what reads them.
+- **The study report** holds the summary, with `null` as `summary` reads it; each trial's score with the winner marked, the parameter importance beside what chance gives, the overfitting probability and, with `null`, the deflated Sharpe; or each path's score and a validation's windows in sample against out of sample with its decay and consistency; and the looks taken at the held-out bars.
+- **A report computes nothing.** Each figure draws a field of the Result or the Study, or what `probatum.stats` reads of it, so a report can be redesigned without moving a number. The figures are drawn with matplotlib's own DejaVu Sans as paths, so every viewer sees one font, and their ids are salted by a constant, so a run writes the same bytes every time.
+
+```python
+result.report("reports/hundred.html")          # the Quickstart's run
+study.report("reports/crossing.html", null=null)
+```
+
+<br>
+
 ## Plotting
 
 `probatum.chart` draws a frame, your own arrays and a run. `show()` puts the chart in the notebook cell, and it is stored in the `.ipynb`, so reopening that notebook shows the same charts with no kernel running. `save(path)` writes one HTML file that opens in a browser instead.

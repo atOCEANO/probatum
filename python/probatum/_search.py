@@ -1175,6 +1175,18 @@ class Study:
         return self._holdout
 
 
+    def report(self, path, null=None):
+        """Write the Study's report to ``path`` as one HTML file with no JavaScript, its
+        folders made where they are missing, and return ``path``: its summary, with
+        ``null`` as ``summary`` reads it; each trial's score, a search's parameter
+        importance and overfitting probability and, with ``null``, its deflated Sharpe,
+        or each path's score and a validation's windows in sample against out of sample;
+        and the looks taken at the held-out bars, its figures static. It needs
+        matplotlib, which the plot extra installs (ADR 0041)."""
+        from .report import _written
+        return _written("report", path, "study", self, null)
+
+
     def summary(self, null=None, plateau=None):
         """The Study in a few lines of text. A search's: what it searched, at which venue
         and on what bars, its in-sample span and holdout, the winner's parameters and

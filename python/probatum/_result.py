@@ -710,6 +710,20 @@ class Result:
         return "\n".join(lines)
 
 
+    def report(self, path):
+        """Write the run's tear sheet to ``path`` as one HTML file with no JavaScript,
+        its folders made where they are missing, and return ``path``: its headline
+        numbers with their intervals, each naming its method; its equity and drawdown
+        beside its baselines, its returns and each month's, its rolling Sharpe and
+        volatility, its exposure, each instrument's weight and pnl where it holds
+        several, its costs and its round trips, as static figures; the three baselines
+        with the Sharpe difference against buying and holding; its assumptions, the
+        optimistic ones named at the top; and its provenance. It needs matplotlib,
+        which the plot extra installs (ADR 0041)."""
+        from .report import _written
+        return _written("report", path, "sheet", self)
+
+
     def _rows(self, stats):
         """The summary's lines that read the run's record of statistics."""
         lines = []
