@@ -1,7 +1,8 @@
-"""Tests for probatum.plot: the marks are value objects that copy their arrays, check
-what they can check without knowing the frame, and compute nothing.
+"""Tests for probatum.chart.marks: the marks are value objects that copy their arrays,
+check what they can check without knowing the bars, and compute nothing, and every
+refusal is one of probatum's classes.
 
-No pandas here, so this file always runs. Anything needing a frame lives in
+No pandas here, so this file always runs. Anything needing the bars lives in
 test_chart.py, because the length of a series is the one thing a mark cannot know
 about itself.
 """
@@ -9,7 +10,9 @@ about itself.
 import numpy as np
 import pytest
 
-from probatum.plot import (
+import probatum
+from probatum import ProbatumKeyError, ProbatumTypeError, ProbatumValueError
+from probatum.chart.marks import (
     Background, Band, Histogram, Level, Line, Marker, Panel, Recorder, at_bar,
     at_next, ramp,
 )
@@ -29,30 +32,35 @@ def test_a_line_copies_its_values_so_a_later_mutation_does_not_change_it():
 
 
 def test_a_line_rejects_a_two_dimensional_array():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Line(np.zeros((3, 2)))
 
 
 def test_a_line_rejects_an_empty_array():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Line(np.array([]))
 
 
 def test_a_line_rejects_values_that_are_not_numbers():
-    with pytest.raises(TypeError):
-        Line(["a", "b", "c"])
+    with pytest.raises(ProbatumTypeError) as excinfo:
+        Line(["a", "b", "c"], "sma")
+
+    assert str(excinfo.value).startswith("Line 'sma' values:")
 
 
 def test_a_line_rejects_an_unknown_style_and_names_what_it_was_given():
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ProbatumValueError) as excinfo:
         Line(values(), style="dotdash")
 
     assert "dotdash" in str(excinfo.value)
 
 
 def test_a_line_rejects_a_width_below_one():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Line(values(), width=0)
+
+    with pytest.raises(ProbatumTypeError):
+        Line(values(), width="2")
 
 
 def test_a_line_keeps_a_per_bar_colour_array_as_strings_and_nones():
@@ -70,18 +78,23 @@ def test_a_line_reads_a_numpy_string_array_of_colours():
 
 
 def test_a_line_rejects_a_colour_array_holding_something_that_is_not_a_colour():
-    with pytest.raises(TypeError):
+    with pytest.raises(ProbatumTypeError):
         Line(values(), color=[1, 2, 3])
 
 
 def test_level_refuses_a_nan_value():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Level(float("nan"))
 
 
 def test_level_refuses_an_infinite_value():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Level(float("inf"))
+
+
+def test_level_refuses_a_value_that_is_no_number():
+    with pytest.raises(ProbatumTypeError):
+        Level("70")
 
 
 def test_level_accepts_a_numpy_float():
@@ -103,14 +116,14 @@ def test_a_band_keeps_a_numpy_scalar_lower_edge_as_a_level():
 
 
 def test_a_band_refuses_two_edges_of_different_lengths():
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ProbatumValueError) as excinfo:
         Band(values(), np.array([1.0, 2.0]))
 
     assert "3" in str(excinfo.value) and "2" in str(excinfo.value)
 
 
 def test_a_band_rejects_an_unknown_only():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Band(values(), 70, only="over")
 
 
@@ -126,22 +139,31 @@ def test_a_band_fill_of_more_than_three_entries_is_read_as_one_per_bar():
 
     assert band.fill == ["#ff0000", None, "#ff0000", None]
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ProbatumTypeError):
         Band(values(), 70, fill=("#ff0000", None))
 
 
 def test_a_band_rejects_an_empty_fill():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Band(values(), 70, fill=[])
 
 
+def test_a_fill_that_is_no_colour_and_no_stops_is_refused():
+    with pytest.raises(ProbatumTypeError):
+        Band(values(), 70, fill=5)
+
+
 def test_a_panel_refuses_a_range_whose_low_is_not_below_its_high():
-    with pytest.raises(ValueError):
-        Panel("momentum", range=(100, 0))
+    for bounds in ((100, 0), (50, 50)):
+        with pytest.raises(ProbatumValueError):
+            Panel("momentum", range=bounds)
+
+    with pytest.raises(ProbatumTypeError):
+        Panel("momentum", range=(0, 50, 100))
 
 
 def test_a_panel_refuses_a_negative_weight():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Panel("momentum", weight=-1)
 
 
@@ -152,14 +174,14 @@ def test_a_panel_is_hidden_by_a_word_rather_than_by_a_number():
 
 def test_a_zero_weight_names_the_word_that_replaced_it():
     # it used to mean hidden, and somebody's old code still says it
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ProbatumValueError) as excinfo:
         Panel("volume", weight=0)
 
     assert "show=False" in str(excinfo.value)
 
 
 def test_a_panel_rejects_an_unknown_scale():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Panel("equity", scale="logarithmic")
 
 
@@ -172,12 +194,19 @@ def test_a_marker_accepts_a_numpy_integer_bar():
 
 
 def test_a_marker_rejects_a_negative_bar():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Marker(-1)
 
 
+def test_a_marker_rejects_a_bar_that_is_not_a_whole_number():
+    # 2.5 truncated would draw the shape on bar 2, which nobody asked for
+    for bar in (2.5, float("inf"), float("nan")):
+        with pytest.raises(ProbatumValueError):
+            Marker(bar)
+
+
 def test_a_marker_rejects_an_unknown_shape_and_names_the_legal_set():
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ProbatumValueError) as excinfo:
         Marker(10, shape="triangleup")
 
     message = str(excinfo.value)
@@ -186,7 +215,7 @@ def test_a_marker_rejects_an_unknown_shape_and_names_the_legal_set():
 
 
 def test_a_histogram_refuses_a_non_finite_base():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Histogram(values(), base=float("nan"))
 
 
@@ -217,7 +246,7 @@ def test_ramp_takes_its_stops_as_a_named_list():
 
 
 def test_ramp_refuses_stops_given_both_ways():
-    with pytest.raises(TypeError):
+    with pytest.raises(ProbatumTypeError):
         ramp([0.0, 1.0], "#000000", "#ffffff", colors=["#000000", "#ffffff"])
 
 
@@ -251,13 +280,16 @@ def test_ramp_clamps_a_value_outside_a_pinned_domain():
 
 
 def test_ramp_needs_at_least_two_stops():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         ramp([0.0, 1.0], "#000000")
 
 
 def test_ramp_rejects_a_stop_that_is_not_hex():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         ramp([0.0, 1.0], "black", "#ffffff")
+
+    with pytest.raises(ProbatumTypeError):
+        ramp([0.0, 1.0], 0, "#ffffff")
 
 
 def test_ramp_carries_alpha_through_when_a_stop_has_it():
@@ -269,7 +301,7 @@ def test_ramp_carries_alpha_through_when_a_stop_has_it():
 
 def test_ramp_produces_no_more_colours_than_it_has_steps():
     # the palette encoder depends on this bound: a continuous ramp over a long
-    # frame must not produce one palette entry per bar
+    # series must not produce one palette entry per bar
     out = ramp(np.linspace(0.0, 1.0, 5000), "#000000", "#ffffff")
 
     assert len(set(out)) <= 128
@@ -288,7 +320,7 @@ def test_ramp_over_an_all_nan_series_colours_nothing():
 
 
 def test_ramp_rejects_a_domain_whose_low_is_not_below_its_high():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         ramp([0.0, 1.0], "#000000", "#ffffff", domain=(1.0, 0.0))
 
 
@@ -299,49 +331,52 @@ def test_a_mark_repr_names_its_type_and_panel():
 def test_a_fill_map_is_refused_on_a_mark_that_is_not_a_background():
     # list(dict) is the keys, every one of them a string, so this would otherwise
     # pass every check and shade the panel in a colour named "trend"
-    with pytest.raises(TypeError):
+    with pytest.raises(ProbatumTypeError):
         Line(values(), fill={"trend": "#4d9fff1f", "chop": "#ff54701f"})
 
 
 def test_an_empty_panel_name_is_refused():
     # Panel("") raises, so accepting one here builds a panel that can never be
     # weighted, scaled or hidden
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Line(values(), panel="")
+
+    with pytest.raises(ProbatumValueError):
+        Panel("")
 
 
 def test_level_refuses_a_zero_width_the_way_line_does():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Level(70.0, width=0)
 
 
 def test_level_refuses_a_per_bar_colour_and_names_the_substitute():
     # str() on an array gives its repr, numpy's truncating ellipsis and all,
     # which nothing downstream can tell apart from a colour
-    with pytest.raises(TypeError) as excinfo:
+    with pytest.raises(ProbatumTypeError) as excinfo:
         Level(70.0, color=np.array(["#ff0000", "#00ff00", "#ff0000"]))
 
     assert "Line" in str(excinfo.value)
 
 
 def test_marker_refuses_a_per_bar_colour():
-    with pytest.raises(TypeError):
+    with pytest.raises(ProbatumTypeError):
         Marker(3, color=["#ff0000", "#00ff00"])
 
 
 def test_level_refuses_a_colour_that_is_not_a_colour():
-    with pytest.raises(TypeError):
+    with pytest.raises(ProbatumTypeError):
         Level(70.0, color=object())
 
 
 def test_marker_refuses_an_array_of_bars_and_names_the_idiom():
     # the first thing a plotshape() port reaches for; numpy's own message names
     # neither Marker nor the repair
-    with pytest.raises(TypeError) as excinfo:
+    with pytest.raises(ProbatumTypeError) as excinfo:
         Marker(np.flatnonzero(np.array([False, True, True])))
 
     message = str(excinfo.value)
-    assert "Marker takes one bar" in message
+    assert message.startswith("Marker bar:") and "give one bar" in message
     assert "Markers(mask=" in message
 
 
@@ -377,7 +412,7 @@ def test_a_recorder_places_at_bar_values_on_the_bar_they_were_recorded_on():
     log = Recorder(5)
 
     for bar in range(4):                      # next runs on every bar but the last
-        log.at_bar({"tick_index": bar}, lev=float(bar))
+        log.at_bar(bar, lev=float(bar))
 
     assert log["lev"].tolist()[:4] == [0.0, 1.0, 2.0, 3.0]
     assert np.isnan(log["lev"][4])
@@ -387,7 +422,7 @@ def test_a_recorder_places_at_next_values_one_bar_later():
     log = Recorder(5)
 
     for bar in range(4):
-        log.at_next({"tick_index": bar}, liq=float(bar))
+        log.at_next(bar, liq=float(bar))
 
     assert np.isnan(log["liq"][0])
     assert log["liq"].tolist()[1:] == [0.0, 1.0, 2.0, 3.0]
@@ -407,18 +442,58 @@ def test_a_recorder_leaves_a_bar_it_never_reached_as_a_gap():
     assert log["value"].tolist()[2:5] == [2.0, 3.0, 4.0]
 
 
-def test_a_recorder_reads_the_bar_off_a_state_or_takes_it_as_a_number():
-    from probatum._probatum import Engine
+class Logged(probatum.Strategy):
+    """Its position at each close, and the close it is tested against at the next."""
 
-    engine = Engine(np.full((4, 5), 100.0))
-    engine.reset()
-    log = Recorder(engine)
 
-    log.at_bar(engine.step(), value=1.0)
-    log.at_bar({"tick_index": 2}, value=2.0)
-    log.at_bar(np.float64(3.0), value=3.0)
+    def __init__(self):
+        self.warmup = 2
+
+
+    def init(self, data):
+        self.log = Recorder(data)
+
+
+    def next(self, bar, account):
+        self.log.at_bar(bar, position=account.position)
+        self.log.at_next(bar, close=bar.close)
+        if bar.i == 3:
+            account.buy(1.0)
+
+
+def test_a_recorder_reads_the_row_off_the_bar_a_strategy_is_handed():
+    close = 100.0 + np.arange(8, dtype=np.float64)
+    data  = probatum.Data(np.column_stack([close, close + 1.0, close - 1.0, close,
+                                           np.full(8, 1e3)]),
+                          symbol="BTCUSDT", market="linear",
+                          time=1_704_067_200 * 10**9
+                          + np.arange(8, dtype=np.int64) * 3_600 * 10**9)
+    result = probatum.backtest(Logged(), data, "frictionless")
+    log    = result.policy.log
+
+    # a row before the warm-up is a gap, and the run decides with a copy, so the
+    # values are on its policy, one a bar of the Data
+    position = log["position"]
+    assert len(position) == 8 and np.isnan(position[:2]).all()
+    # the buy decided at row 3 fills at row 4's open
+    assert position[2:7].tolist() == [0.0, 0.0, 1.0, 1.0, 1.0]
+    assert np.isnan(position[7])
+    assert log["close"][3:8].tolist() == close[2:7].tolist()
+
+
+def test_a_recorder_takes_a_bar_its_row_or_a_whole_number():
+    log = Recorder(4)
+
+    log.at_bar(1, value=1.0)
+    log.at_bar(np.float64(2.0), value=2.0)
+    log.at_bar(np.int64(3), value=3.0)
 
     assert log["value"].tolist()[1:] == [1.0, 2.0, 3.0]
+
+    with pytest.raises(ProbatumTypeError) as excinfo:
+        log.at_bar({"tick_index": 2}, value=2.0)
+
+    assert "the bar next was handed" in str(excinfo.value)
 
 
 def test_a_recorder_gives_one_value_per_bar_whatever_was_recorded():
@@ -446,7 +521,7 @@ def test_a_recorder_refuses_to_change_a_keys_alignment():
     log = Recorder(5)
     log.at_bar(0, lev=1.0)
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ProbatumValueError) as excinfo:
         log.at_next(1, lev=2.0)
 
     assert "at_bar" in str(excinfo.value) and "at_next" in str(excinfo.value)
@@ -456,18 +531,32 @@ def test_a_recorder_refuses_to_change_a_keys_kind():
     log = Recorder(5)
     log.at_bar(0, flag=True)
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ProbatumTypeError):
         log.at_bar(1, flag=0.5)
+
+
+def test_a_recorder_takes_numbers_and_booleans_alone():
+    log = Recorder(5)
+
+    for value in ("calm", None):
+        with pytest.raises(ProbatumTypeError):
+            log.at_bar(1, regime=value)
 
 
 def test_a_recorder_names_what_it_has_when_a_key_is_missing():
     log = Recorder(5)
+
+    with pytest.raises(ProbatumKeyError) as excinfo:
+        log["lev"]
+
+    assert "record a value under it first" in str(excinfo.value)
+
     log.at_bar(0, lev=1.0)
 
-    with pytest.raises(KeyError) as excinfo:
+    with pytest.raises(ProbatumKeyError) as excinfo:
         log["leverage"]
 
-    assert "lev" in str(excinfo.value)
+    assert "use one of lev" in str(excinfo.value)
     assert "lev" in log and "leverage" not in log
     assert log.keys() == ["lev"] and len(log) == 1
 
@@ -481,25 +570,27 @@ def test_a_recorder_hands_back_a_copy():
     assert log["lev"][0] == 1.0
 
 
-def test_a_recorder_takes_an_engine_or_a_bar_count():
-    class FakeEngine:
-        data = np.zeros((7, 5))
+def test_a_recorder_takes_a_data_or_a_bar_count():
+    close = np.linspace(100.0, 107.0, 7)
+    data  = probatum.Data(np.column_stack([close, close + 1.0, close - 1.0, close,
+                                           np.full(7, 1e3)]),
+                          symbol="BTCUSDT", market="linear",
+                          time=np.arange(7, dtype=np.int64) * 3_600 * 10**9)
 
+    from_data = Recorder(data)
+    from_data.at_bar(0, v=1.0)
 
-        def reset(self):
-            pass
-
-    from_engine = Recorder(FakeEngine())
-    from_engine.at_bar(0, v=1.0)
-
-    assert len(from_engine["v"]) == 7
+    assert len(from_data["v"]) == 7
 
     from_count = Recorder(7)
     from_count.at_bar(0, v=1.0)
 
     assert len(from_count["v"]) == 7
 
+    with pytest.raises(ProbatumTypeError):
+        Recorder("7")
+
 
 def test_a_recorder_needs_at_least_one_bar():
-    with pytest.raises(ValueError):
+    with pytest.raises(ProbatumValueError):
         Recorder(0)

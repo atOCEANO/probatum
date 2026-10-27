@@ -2,8 +2,9 @@
 
 The pictures in the guide are the output of the snippets printed beside them, so
 this is where those snippets run for real. No simulation logic lives here and
-nothing is drawn by hand: it loads a frozen parquet, works the features out the
-way a reader would, and calls ``probatum.chart``.
+nothing is drawn by hand: it loads a frozen parquet as a Data, works the features
+out the way a reader would, runs the strategies through ``probatum.backtest`` and
+calls ``Result.chart`` and ``Data.chart``.
 
 The frozen part is the point. The chart on the front page of the
 README used to come from a year of live candles pulled off the router, so a
@@ -21,8 +22,6 @@ being fussy about. Run it through the charts stage, which also takes the shots:
       -v "${PWD}/.Documentation:/out" probatum-charts
 """
 
-from __future__ import annotations
-
 import json
 import pathlib
 
@@ -30,7 +29,7 @@ import numpy
 import pandas
 
 import probatum
-from probatum.plot import (
+from probatum.chart.marks import (
     Background, Band, Histogram, Level, Line, Markers, Panel, Recorder, ramp,
 )
 
@@ -50,33 +49,26 @@ NARROW = 1180
 SHOTS = {}
 
 
-def resample_to(bars, rule):
-    grouped = bars.resample(rule)
-    frame   = grouped.last()
-
-    frame["open"]   = grouped.open.first()
-    frame["high"]   = grouped.high.max()
-    frame["low"]    = grouped.low.min()
-    frame["volume"] = grouped.volume.sum()
-
-    return frame.dropna()
-
-
-def relative_strength(close, length):
-    change = close.diff()
-    gain   = change.clip(lower=0.0).ewm(alpha=1.0 / length, adjust=False).mean()
-    loss   = (-change.clip(upper=0.0)).ewm(alpha=1.0 / length, adjust=False).mean()
-
-    return 100.0 - 100.0 / (1.0 + gain / loss)
-
-
 def vam(close, n):
-    logret = numpy.log(close / close.shift(1))
-    return numpy.log(close / close.shift(n)) / (logret.rolling(n).std() * numpy.sqrt(n))
+    logret = numpy.log(close / probatum.ta.shift(close))
+    return numpy.log(close / probatum.ta.shift(close, n)) / (
+        probatum.ta.stdev(logret, n) * numpy.sqrt(n))
 
 
-def midpoint(frame, n):
-    return (frame.high.rolling(n).max() + frame.low.rolling(n).min()) / 2
+def midpoint(data, n):
+    return (probatum.ta.highest(data.high, n) + probatum.ta.lowest(data.low, n)) / 2.0
+
+
+def held_by(result, data):
+    # the bars the run was in the market, a round trip still open at the end running
+    # to the last, its bars the run's placed on the Data's rows
+    rows = numpy.searchsorted(data.time, result.time)
+    held = numpy.zeros(len(data), dtype=bool)
+    for trade in result.trades:
+        last = rows[-1] if trade["open"] else rows[trade["close_bar"]]
+        held[rows[trade["open_bar"]]:last + 1] = True
+
+    return held
 
 
 def keep(name, chart, width, caption, below=0, open_table=False):
@@ -85,7 +77,7 @@ def keep(name, chart, width, caption, below=0, open_table=False):
     # itself to its window, so a shot taken at a height the chart was not built
     # for is either padded with empty plot or squeezed
     OUT.mkdir(parents=True, exist_ok=True)
-    chart.save(path=str(OUT / f"{name}.html"))
+    chart.save(str(OUT / f"{name}.html"))
 
     SHOTS[name] = {
         "height":  chart.spec()["height"],
@@ -104,82 +96,56 @@ def keep(name, chart, width, caption, below=0, open_table=False):
 
 
 def load():
-    raw     = pandas.read_parquet(DATA)
-    stamped = pandas.to_datetime(raw.pop("timestamp"), unit="ms")
-
-    return raw.set_index(stamped).sort_index()
+    return probatum.Data(pandas.read_parquet(DATA), symbol="BTCUSDT", market="spot")
 
 
 class Channel(probatum.Strategy):
-    """The README's strategy: hold above the channel basis while MACD agrees.
-
-    Every indicator is shifted a bar before it is read, so a decision on bar `i`
-    sees only what closed at `i - 1` and fills at the open of `i + 1`.
-    """
+    """The README's strategy: hold above the channel basis while MACD agrees."""
 
 
-    def __init__(self, length, fast, slow, signal, trend):
-        self.length   = length
-        self.fast_n   = fast
-        self.slow_n   = slow
-        self.signal_n = signal
-        self.trend_n  = trend
+    def __init__(self, length=96, fast=12, slow=26, signal=9, trend=480):
+        self.length, self.fast, self.slow = length, fast, slow
+        self.signal, self.trend = signal, trend
 
 
-    def init(self, engine):
-        close      = pandas.Series(engine.data[:, 3])
-        basis      = close.rolling(self.length).mean()
-        width      = close.rolling(self.length).std()
-        self.basis = basis.shift(1).to_numpy()
-        self.upper = (basis + 2.0 * width).shift(1).to_numpy()
-        self.lower = (basis - 2.0 * width).shift(1).to_numpy()
-
-        slower       = close.rolling(self.trend_n).mean().shift(1)
-        self.uptrend = (close.shift(1) > slower).fillna(False).to_numpy()
-
-        macd = (close.ewm(span=self.fast_n, adjust=False).mean()
-                - close.ewm(span=self.slow_n, adjust=False).mean())
-        self.hist = (macd - macd.ewm(span=self.signal_n, adjust=False).mean()) \
-            .shift(1).to_numpy()
-
-        self.close   = close.shift(1).to_numpy()
-        self.blocked = numpy.zeros(len(close), dtype=bool)
+    def init(self, data):
+        close        = data.close
+        bands        = probatum.ta.bbands(close, self.length, 2.0)
+        self.basis   = bands.middle
+        self.upper   = bands.upper
+        self.lower   = bands.lower
+        self.uptrend = close > probatum.ta.sma(close, self.trend)
+        self.hist    = probatum.ta.macd(close, self.fast, self.slow, self.signal).histogram
+        self.blocked = numpy.zeros(len(data), dtype=bool)
+        self.warmup  = self.trend
 
 
-    def next(self, state, engine):
-        bar = state["tick_index"]
-        if bar < self.length + 1:
-            return
+    def next(self, bar, account):
+        i = bar.i
 
         # in on a break of the upper edge, out on a loss of the basis. The two
-        # thresholds are deliberately different: entering and leaving on the same
-        # line whipsaws on every bar that straddles it, which on hourly candles
-        # was 181 trades in a year and a chart nobody could read
-        if state["position"] == 0.0 and self.uptrend[bar] \
-                and self.close[bar] > self.upper[bar]:
-            if self.hist[bar] > 0.0:
-                engine.market_buy(engine.qty_from_weight(1.0))
+        # thresholds are apart on purpose: entering and leaving on one line whipsaws
+        # on every bar that straddles it
+        if account.position == 0.0 and self.uptrend[i] and bar.close > self.upper[i]:
+            if self.hist[i] > 0.0:
+                account.target(1.0)
             else:
-                self.blocked[bar] = True
-        elif state["position"] > 0.0 and self.close[bar] < self.basis[bar]:
-            engine.close()
+                self.blocked[i] = True
+        elif account.position > 0.0 and bar.close < self.basis[i]:
+            account.close()
 
 
     def marks(self):
         return [
-            Background(values=self.uptrend, fill="#2fe0a814"),
-            Band(upper=self.upper, lower=self.lower, name=f"channel {self.length}",
-                 fill="#8b97a514"),
-            Line(values=self.basis, name=f"basis {self.length}", color=GREY,
-                 width=1, style="dashed"),
-            Markers(mask=self.blocked, shape="arrow_down", offset=22),
-            Histogram(
-                values=self.hist,
-                name=f"MACD {self.fast_n}/{self.slow_n}/{self.signal_n}",
-                panel="momentum",
-                color=numpy.where(self.hist >= 0.0, GREEN, RED),
-            ),
-            Level(value=0.0, panel="momentum", style="dotted"),
+            Background(self.uptrend, fill="#2fe0a814"),
+            Band(self.upper, self.lower, f"channel {self.length}", fill="#8b97a514"),
+            Line(self.basis, f"basis {self.length}", color=GREY, width=1,
+                 style="dashed"),
+            Markers(self.blocked, shape="arrow_down", offset=22),
+            Histogram(self.hist, f"MACD {self.fast}/{self.slow}/{self.signal}",
+                      panel="momentum",
+                      color=numpy.where(self.hist >= 0.0, GREEN, RED)),
+            Level(0.0, panel="momentum", style="dotted"),
         ]
 
 
@@ -188,148 +154,111 @@ class CloudBreak(probatum.Strategy):
 
 
     def __init__(self, top, low):
-        self.top = top
-        self.low = low
+        self.top, self.low = top, low
 
 
-    def init(self, engine):
-        self.log = Recorder(bars=engine)
+    def init(self, data):
+        self.log = Recorder(data)
 
 
-    def next(self, state, engine):
-        bar   = state["tick_index"]
-        close = state["bar_close"]
-        edge  = self.top[bar]
-        above = bool(close > edge) if numpy.isfinite(edge) else False
+    def next(self, bar, account):
+        edge  = self.top[bar.i]
+        above = bool(bar.close > edge) if numpy.isfinite(edge) else False
 
-        self.log.at_bar(state, above=above, edge=edge)
+        self.log.at_bar(bar, above=above, edge=edge)
         if not numpy.isfinite(edge):
             return
 
-        if state["position"] == 0.0 and above:
-            engine.market_buy(engine.qty_from_weight(1.0))
-        elif state["position"] > 0.0 and close < self.low[bar]:
-            engine.close()
+        if account.position == 0.0 and above:
+            account.target(1.0)
+        elif account.position > 0.0 and bar.close < self.low[bar.i]:
+            account.close()
 
 
     def marks(self):
-        return [Background(values=self.log["above"], fill=BLUE + "14")]
+        return [Background(self.log["above"], fill=BLUE + "14")]
 
 
 class ExampleCross(probatum.Strategy):
     """The plain cross the guide's examples are drawn against."""
 
 
-    def __init__(self, fast, slow):
-        self.fast_n = fast
-        self.slow_n = slow
+    def __init__(self, fast=20, slow=50):
+        self.fast, self.slow = fast, slow
 
 
-    def init(self, engine):
-        prices    = pandas.Series(engine.data[:, 3])
-        self.fast = prices.rolling(self.fast_n).mean().shift(1).to_numpy()
-        self.slow = prices.rolling(self.slow_n).mean().shift(1).to_numpy()
+    def init(self, data):
+        self.fast_line = probatum.ta.sma(data.close, self.fast)
+        self.slow_line = probatum.ta.sma(data.close, self.slow)
+        self.warmup    = self.slow
 
 
-    def next(self, state, engine):
-        bar = state["tick_index"]
-        if bar < self.slow_n + 1:
-            return
-
-        if state["position"] == 0.0 and self.fast[bar] > self.slow[bar]:
-            engine.market_buy(engine.qty_from_weight(1.0))
-        elif state["position"] > 0.0 and self.fast[bar] < self.slow[bar]:
-            engine.close()
+    def next(self, bar, account):
+        up = self.fast_line[bar.i] > self.slow_line[bar.i]
+        if account.position == 0.0 and up:
+            account.target(1.0)
+        elif account.position > 0.0 and not up:
+            account.close()
 
 
     def marks(self):
         return [
-            Line(values=self.fast, name=f"SMA {self.fast_n}"),
-            Line(values=self.slow, name=f"SMA {self.slow_n}", style="dashed"),
+            Line(self.fast_line, f"SMA {self.fast}"),
+            Line(self.slow_line, f"SMA {self.slow}", style="dashed"),
         ]
 
 
 def start_here(raw):
-    frame = resample_to(bars=raw, rule="1h").loc["2025"]
+    data     = raw.resample("1h")["2025":"2025"]
+    result   = probatum.backtest(Channel(), data, "binance_spot")
+    strategy = result.policy
+    held     = held_by(result, data)
 
-    strategy = Channel(length=96, fast=12, slow=26, signal=9, trend=480)
-    result   = probatum.Backtester(
-        candles          = frame,
-        market           = "spot",
-        quote            = 10_000.0,
-        fee_taker        = 0.0005,
-        fee_maker        = 0.0002,
-        slippage_bps     = 2.0,
-        periods_per_year = 8760,
-    ).run(strategy)
-
-    held = numpy.zeros(len(frame), dtype=bool)
-    for trade in result.trades:
-        last = len(frame) - 1 if trade["open"] else trade["close_bar"]
-        held[trade["open_bar"]:last + 1] = True
-
-    keep("chart-backtest", probatum.chart(
-        frame=frame,
-        marks=strategy.marks(),
-        run=result,
+    keep("chart-backtest", result.chart(
+        strategy.marks(),
         candle_color=numpy.where(held, BLUE, None),
         # deliberately no `panels=`. The README prints this call and claims the
         # placement is the library's, so the claim has to be true of the picture
-        # beside it: five panels, their order and their weights are all chosen here
+        # beside it: four panels, their order and their weights are all chosen here
         title="A channel breakout with a MACD filter, BTCUSDT 1h, binance spot, 2025",
         height=760,
     ), WIDE, "a channel, a momentum histogram, and the bars it was holding")
 
-    return frame, result, strategy
-
 
 def cloud_break(raw):
-    frame = resample_to(bars=raw, rule="4h").loc["2024":"2025"]
+    data = raw.resample("4h")["2024":"2025"]
 
-    tenkan = midpoint(frame=frame, n=9)
-    kijun  = midpoint(frame=frame, n=26)
-    base   = (tenkan + kijun) / 2
-    wide   = midpoint(frame=frame, n=52)
+    tenkan = midpoint(data, 9)
+    kijun  = midpoint(data, 26)
 
     # senkou a and b belong AHEAD bars later than they were computed, so the
-    # shift is done here and the array is simply longer than the frame
+    # shift is done here and the array is simply longer than the bars
     lead     = numpy.full(AHEAD, numpy.nan)
-    senkou_a = numpy.concatenate([lead, base.to_numpy()])
-    senkou_b = numpy.concatenate([lead, wide.to_numpy()])
+    senkou_a = numpy.concatenate([lead, (tenkan + kijun) / 2.0])
+    senkou_b = numpy.concatenate([lead, midpoint(data, 52)])
 
     cloud = numpy.where(senkou_a >= senkou_b, GREEN + "33", RED + "33")
 
-    strategy = CloudBreak(
-        top = numpy.maximum(senkou_a[:len(frame)], senkou_b[:len(frame)]),
-        low = numpy.minimum(senkou_a[:len(frame)], senkou_b[:len(frame)]),
-    )
-    result = probatum.Backtester(
-        candles          = frame,
-        market           = "spot",
-        quote            = 10_000.0,
-        fee_taker        = 0.0005,
-        periods_per_year = 2190,
-    ).run(strategy)
+    result = probatum.backtest(CloudBreak(
+        top = numpy.maximum(senkou_a[:len(data)], senkou_b[:len(data)]),
+        low = numpy.minimum(senkou_a[:len(data)], senkou_b[:len(data)]),
+    ), data, "binance_spot")
 
-    keep("chart-projection", probatum.chart(
-        frame=frame,
-        marks=strategy.marks() + [
-            Line(values=tenkan, name="tenkan", color=BLUE, width=1),
-            Line(values=kijun, name="kijun", color=RED, width=1),
-            Band(upper=senkou_a, lower=senkou_b, name="cloud", fill=cloud),
-        ],
-        run=result,
+    keep("chart-projection", result.chart(
+        result.policy.marks(),
+        Line(tenkan, "tenkan", color=BLUE, width=1),
+        Line(kijun, "kijun", color=RED, width=1),
+        Band(senkou_a, senkou_b, "cloud", fill=cloud),
         panels=[
-            Panel(name="equity", weight=1.6),
-            Panel(name="volume", show=False),
+            Panel("equity", weight=1.6),
+            Panel("volume", show=False),
         ],
         future=AHEAD,
         # framed on the tail, because that is the whole point of the picture. Over
         # two years of 4h candles the twenty-six projected bars are one percent of
-        # the width, so the image demonstrating `future=` did not show it. The
-        # integer form rather than a pair: it means the last N bars PLUS whatever
-        # was projected past them, and a pair ending on the last bar caps the
-        # window there and clips off exactly the projection being demonstrated
+        # the width, so the whole span would not show them. The integer form rather
+        # than a pair: it means the last N bars PLUS whatever was projected past
+        # them, where a pair ending on the last bar would clip the projection off
         focus=180,
         title="Ichimoku cloud break, BTCUSDT 4h, the cloud projected past the last candle",
         height=780,
@@ -337,161 +266,114 @@ def cloud_break(raw):
 
 
 def documented_examples(raw):
-    frame = resample_to(bars=raw, rule="1h").loc["2025-01":"2025-06"]
+    data  = raw.resample("1h")["2025-01":"2025-06"]
+    close = data.close
 
-    close = frame.close
-    rsi   = relative_strength(close=close, length=14)
-    mid   = close.rolling(20).mean()
-    sd    = close.rolling(20).std()
-    upper = mid + 2 * sd
-    lower = mid - 2 * sd
+    rsi          = probatum.ta.rsi(close, 14)
+    bands        = probatum.ta.bbands(close, 20, 2.0)
+    upper, lower = bands.upper, bands.lower
 
-    atr      = (frame.high - frame.low).rolling(14).mean()
-    risk_off = (atr > atr.rolling(100).mean()).to_numpy()
+    atr      = probatum.ta.atr(data.high, data.low, close, 14)
+    risk_off = atr > probatum.ta.sma(atr, 100)
 
-    fast    = close.rolling(20).mean().to_numpy()
-    slow    = close.rolling(50).mean().to_numpy()
-    crossed = numpy.zeros(len(frame), dtype=bool)
-    crossed[1:] = (fast[1:] > slow[1:]) & (fast[:-1] <= slow[:-1])
+    fast, slow = probatum.ta.sma(close, 20), probatum.ta.sma(close, 50)
+    crossed    = probatum.ta.crossover(fast, slow)
+    trending   = close > probatum.ta.sma(close, 50)
 
-    trending = (close > close.rolling(50).mean()).to_numpy()
+    fast_z = vam(close, 24)
+    slow_z = vam(close, 168)
 
-    fast_z = vam(close=close, n=24)
-    slow_z = vam(close=close, n=168)
+    vam72 = vam(close, 72)
+    shade = ramp(vam72, colors=[RED, GREY, GREEN], domain=(-3.0, 3.0))
 
-    vam72 = vam(close=close, n=72)
-    shade = ramp(values=vam72, colors=[RED, GREY, GREEN], domain=(-3.0, 3.0))
+    # two sigma either way, so both halves of the label map fire on this window
+    regime  = numpy.where(vam72 > 2.0, "hi", numpy.where(vam72 < -2.0, "lo", "flat"))
+    forward = numpy.concatenate([close[4:] / close[:-4] - 1.0, numpy.full(4, numpy.nan)])
 
-    # two sigma either way. It was 2.5, and over this window vam 72 runs -2.46 to
-    # +2.75, so the "lo" half of the fill map fired on none of the 4,344 bars: the
-    # picture teaching a two-colour label map could only ever show one colour
-    regime = numpy.where(
-        vam72 > 2.0, "hi", numpy.where(vam72 < -2.0, "lo", "flat")
-    ).astype(object)
+    result   = probatum.backtest(ExampleCross(fast=20, slow=50), data, "binance_spot")
+    strategy = result.policy
+    held     = held_by(result, data)
+    worst    = min(result.trades, key=lambda trade: trade["pnl"])
+    first, last = (numpy.datetime64(int(data.time[at]), "ns").astype("M8[D]")
+                   for at in (0, -1))
 
-    hours   = 4
-    prices  = close.to_numpy()
-    forward = numpy.concatenate([
-        prices[hours:] / prices[:-hours] - 1.0, numpy.full(hours, numpy.nan),
-    ])
-
-    strategy = ExampleCross(fast=20, slow=50)
-    result   = probatum.Backtester(
-        candles          = frame,
-        market           = "spot",
-        quote            = 10_000.0,
-        fee_taker        = 0.0005,
-        periods_per_year = 8760,
-    ).run(strategy)
-
-    held = numpy.zeros(len(frame), dtype=bool)
-    for trade in result.trades:
-        last = len(frame) - 1 if trade["open"] else trade["close_bar"]
-        held[trade["open_bar"]:last + 1] = True
-
-    worst = min(result.trades, key=lambda trade: trade["pnl"])
-
-    keep("ex-line", probatum.chart(
-        frame=frame,
-        marks=Line(values=frame.close.rolling(50).mean(), name="SMA 50"),
+    keep("ex-line", data.chart(
+        Line(probatum.ta.sma(data.close, 50), "SMA 50"),
         height=520,
     ), NARROW, "a moving average over the candles")
-    keep("ex-oscillator", probatum.chart(frame=frame, marks=[
-        Line(values=rsi, name="RSI 14", panel="rsi"),
-        Level(value=70.0, panel="rsi", style="dotted"),
-        Level(value=30.0, panel="rsi", style="dotted"),
-    ], height=620), NARROW, "an oscillator on its own panel")
-    keep("ex-band", probatum.chart(
-        frame=frame,
-        marks=Band(upper=upper, lower=lower, name="bollinger", fill="#8b97a51a"),
+    keep("ex-oscillator", data.chart(
+        Line(rsi, "RSI 14", panel="rsi"),
+        Level(70.0, panel="rsi", style="dotted"),
+        Level(30.0, panel="rsi", style="dotted"),
+        height=620,
+    ), NARROW, "an oscillator on its own panel")
+    keep("ex-band", data.chart(
+        Band(upper, lower, "bollinger", fill="#8b97a51a"),
         height=520,
     ), NARROW, "a band between two arrays")
-    keep("ex-background", probatum.chart(
-        frame=frame,
-        marks=Background(values=risk_off, name="risk off", fill="#ff547026"),
+    keep("ex-background", data.chart(
+        Background(risk_off, "risk off", fill="#ff547026"),
         height=520,
     ), NARROW, "a shaded regime behind the candles, named in the legend")
-    keep("ex-markers", probatum.chart(
-        frame=frame,
-        marks=Markers(mask=crossed, shape="arrow_up", offset=-16),
+    keep("ex-markers", data.chart(
+        Markers(crossed, shape="arrow_up", offset=-16),
         height=520,
     ), NARROW, "one marker per bar a mask is true on")
-    keep("ex-candle-color", probatum.chart(
-        frame=frame,
+    keep("ex-candle-color", data.chart(
         candle_color=numpy.where(trending, "#4d9fff", None),
         height=520,
     ), NARROW, "the candles tinted by a condition")
-    keep("ex-panels", probatum.chart(frame=frame, marks=[
-        Line(values=fast_z, name="z 24", panel="z24"),
-        Line(values=slow_z, name="z 168", panel="z168"),
-    ], panels=[
-        Panel(name="z24", range=(-5.0, 5.0)),
-        Panel(name="z168", range=(-5.0, 5.0)),
-    ], height=760), NARROW, "two panels pinned to the same range")
-    keep("ex-feature", probatum.chart(
-        frame=frame,
-        marks=[
-            Line(values=vam(close=frame.close, n=72), name="vam 72", panel="vam"),
-            Level(value=0.0, panel="vam", style="dotted"),
-        ],
+    keep("ex-panels", data.chart(
+        Line(fast_z, "z 24", panel="z24"),
+        Line(slow_z, "z 168", panel="z168"),
+        panels=[Panel("z24", range=(-5.0, 5.0)), Panel("z168", range=(-5.0, 5.0))],
+        height=760,
+    ), NARROW, "two panels pinned to the same range")
+    keep("ex-feature", data.chart(
+        Line(vam(data.close, 72), "vam 72", panel="vam"),
+        Level(0.0, panel="vam", style="dotted"),
         height=620,
     ), NARROW, "your own feature beside the price")
-    keep("ex-verdict", probatum.chart(
-        frame=frame,
-        marks=[
-            Background(values=regime, fill={"hi": "#2fe0a81f", "lo": "#ff54701f"}),
-            Line(values=vam72, name="vam 72", panel="vam", color=shade),
-            Band(upper=vam72, lower=2.0, only="above", panel="vam",
-                 fill=("#2fe0a800", "#2fe0a859")),
-            Line(values=forward, name="fwd 4h", panel="fwd"),
-            Level(value=0.0, panel="fwd", style="dotted"),
-        ],
+    keep("ex-verdict", data.chart(
+        Background(regime, fill={"hi": "#2fe0a81f", "lo": "#ff54701f"}),
+        Line(vam72, "vam 72", panel="vam", color=shade),
+        Band(vam72, 2.0, only="above", panel="vam", fill=("#2fe0a800", "#2fe0a859")),
+        Line(forward, "fwd 4h", panel="fwd"),
+        Level(0.0, panel="fwd", style="dotted"),
         candle_color=numpy.where(numpy.abs(vam72) > 2.0, "#4d9fff", None),
         title="vam 72 extremes against the next four hours",
         height=820,
     ), NARROW, "a feature judged against what came next")
-    keep("ex-zones", probatum.chart(
-        frame=frame,
-        marks=[
-            Line(values=rsi, name="RSI 14", panel="momentum"),
-            Level(value=70.0, panel="momentum", style="dotted"),
-            Band(upper=rsi, lower=70.0, only="above", panel="momentum",
-                 fill=("#ff547000", "#ff547059")),
-            Band(upper=rsi, lower=30.0, only="below", panel="momentum",
-                 fill=("#2fe0a800", "#2fe0a859")),
-        ],
-        run=result,
+    keep("ex-zones", result.chart(
+        Line(rsi, "RSI 14", panel="momentum"),
+        Level(70.0, panel="momentum", style="dotted"),
+        Band(rsi, 70.0, only="above", panel="momentum", fill=("#ff547000", "#ff547059")),
+        Band(rsi, 30.0, only="below", panel="momentum", fill=("#2fe0a800", "#2fe0a859")),
         height=820,
     ), NARROW, "conditional fills where a line passes its level")
-    keep("ex-held", probatum.chart(
-        frame=frame,
-        marks=strategy.marks(),
-        run=result,
+    keep("ex-held", result.chart(
+        strategy.marks(),
         candle_color=numpy.where(held, "#4d9fff", None),
         height=720,
     ), NARROW, "the bars the strategy was holding, tinted")
-    keep("ex-focus", probatum.chart(
-        frame=frame,
-        marks=strategy.marks(),
-        run=result,
+    keep("ex-focus", result.chart(
+        strategy.marks(),
         focus=worst,
         title=f"worst trade, net {worst['pnl']:,.0f}",
         height=660,
     ), NARROW, "the worst trade framed")
-    keep("ex-notes", probatum.chart(
-        frame=frame,
-        marks=strategy.marks(),
-        run=result,
+    keep("ex-notes", result.chart(
+        strategy.marks(),
         trades=False,
-        panels=[Panel(name="volume", show=False)],
+        panels=[Panel("volume", show=False)],
         title="what produced this picture, carried by the file itself",
         notes=[
             ["setting", "value"],
-            ["fast", strategy.fast_n],
-            ["slow", strategy.slow_n],
-            ["market", "spot, 5 bp taker"],
-            ["bars", f"{len(frame):,} at 1h"],
-            ["window", f"{frame.index[0]:%Y-%m-%d} to {frame.index[-1]:%Y-%m-%d}"],
+            ["fast", strategy.fast],
+            ["slow", strategy.slow],
+            ["venue", "binance spot"],
+            ["bars", f"{len(data):,} at 1h"],
+            ["window", f"{first} to {last}"],
         ],
         height=440,
     ), NARROW, "the settings behind the chart, in the document rather than the cell",
@@ -499,12 +381,13 @@ def documented_examples(raw):
 
 
 def main():
-    raw = load()
-    print(f"{len(raw):,} five-minute bars, {raw.index[0]} to {raw.index[-1]}\n")
+    raw  = load()
+    seen = raw.provenance
+    print(f"{len(raw):,} five-minute bars, {seen['first']} to {seen['last']}\n")
 
-    start_here(raw=raw)
-    cloud_break(raw=raw)
-    documented_examples(raw=raw)
+    start_here(raw)
+    cloud_break(raw)
+    documented_examples(raw)
 
     (OUT / "manifest.json").write_text(
         json.dumps(SHOTS, indent=2, sort_keys=True), encoding="utf-8"

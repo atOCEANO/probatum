@@ -164,6 +164,14 @@ const mountTrades = function () {
   };
   SPEC.trades.forEach(function (tr) { claim(SPEC.t[tr.out], tr); });
   SPEC.trades.forEach(function (tr) { claim(SPEC.t[tr.in], tr); });
+  // an exit on a bar its instrument never printed, a delisting's, is drawn on the
+  // last bar it did print, as the renderer places a marker with no bar under it, so
+  // that bar reaches the trade too where no trade of its own claims it
+  SPEC.trades.forEach(function (tr) {
+    let at = tr.out;
+    while (at > 0 && SPEC.ohlc[at] === null) at -= 1;
+    claim(SPEC.t[at], tr);
+  });
 
   document.getElementById("tbody").innerHTML = SPEC.trades.map(function (tr) {
     // a forced close reads as an ordinary exit otherwise, so the side says which

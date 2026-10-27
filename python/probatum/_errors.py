@@ -39,7 +39,9 @@ class ProbatumAttributeError(ProbatumError, AttributeError):
 class ProbatumRuntimeError(ProbatumError, RuntimeError):
     """A search or a validation that cannot go on: its workers lost, every trial of a
     search or every path of a validation failed, or its winner run again not matching
-    its trial."""
+    its trial; an environment stepped before any reset, or given a reset_mask before
+    every environment has had an episode; and a chart shown where there is no notebook
+    to draw it in."""
 
 
 class ProbatumNotImplementedError(ProbatumRuntimeError, NotImplementedError):

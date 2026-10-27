@@ -19,11 +19,14 @@ import re
 import numpy as np
 import pytest
 
-pd         = pytest.importorskip("pandas")
 playwright = pytest.importorskip("playwright.sync_api")
 
 import probatum
-from probatum.plot import Background, Band, Level, Line, Marker, Panel
+from probatum.chart.marks import Background, Band, Level, Line, Marker, Panel
+
+HOUR = 3_600 * 10**9
+# 2024-01-01 at midnight, UTC
+START = 1_704_067_200 * 10**9
 
 
 # distinct colours per canvas: a canvas nothing drew on carries one, and a chart
@@ -85,33 +88,40 @@ def stamp_under(page, at):
     return found[0] if found else None
 
 
-def frame(n=60):
+def table(n=60, scale=1.0):
     step  = np.sin(np.arange(n, dtype=np.float64) / 4.0) * 5.0
-    close = 100.0 + np.arange(n, dtype=np.float64) * 0.4 + step
+    close = (100.0 + np.arange(n, dtype=np.float64) * 0.4 + step) * scale
 
-    return pd.DataFrame(
-        {
-            "open":   close - 0.2,
-            "high":   close + 1.0,
-            "low":    close - 1.0,
-            "close":  close,
-            "volume": 1000.0 + np.arange(n, dtype=np.float64),
-        },
-        index=pd.date_range("2024-01-01", periods=n, freq="1h"),
-    )
+    return np.column_stack([close - 0.2 * scale, close + scale, close - scale, close,
+                            1000.0 + np.arange(n, dtype=np.float64)])
+
+
+def bars(n=60, scale=1.0):
+    """``n`` hourly bars from 2024-01-01 of one instrument swinging up a slope, its
+    prices ``scale`` times their own."""
+    return probatum.Data(table(n, scale), symbol="BTCUSDT", market="linear",
+                         time=START + np.arange(n, dtype=np.int64) * HOUR)
+
+
+def stamps(data):
+    """Each bar's time as the chart's legend and its table write it."""
+    return [str(when).replace("T", " ") for when in data.time.astype("M8[ns]")
+            .astype("M8[m]")]
 
 
 class Swing(probatum.Strategy):
-
-    def next(self, state, engine):
-        if state["tick_index"] % 12 == 1:
-            engine.market_buy(1.0)
-        elif state["tick_index"] % 12 == 7:
-            engine.close()
+    """A buy of one at every twelfth close from the second, closed six later."""
 
 
-def run(candles):
-    return probatum.Backtester(candles).run(Swing())
+    def next(self, bar, account):
+        if bar.i % 12 == 1:
+            account.buy(1.0)
+        elif bar.i % 12 == 7:
+            account.close()
+
+
+def run(data):
+    return probatum.backtest(Swing(), data, "frictionless")
 
 
 def observe(built, tmp_path, name="chart.html", act=None):
@@ -169,32 +179,48 @@ def observe(built, tmp_path, name="chart.html", act=None):
 
 
 def test_the_shipped_bundle_runs_in_a_browser_without_throwing(tmp_path):
-    candles = frame()
-    seen    = observe(probatum.chart(candles, run(candles)), tmp_path)
+    seen = observe(run(bars()).chart(), tmp_path)
 
     assert seen["errors"] == []
 
 
 def test_the_renderer_draws_rather_than_mounting_an_empty_canvas(tmp_path):
     # a chart that throws nothing and paints nothing passes every other check here
-    candles = frame()
-    seen    = observe(probatum.chart(candles, run(candles)), tmp_path)
+    seen = observe(run(bars()).chart(), tmp_path)
 
     assert seen["canvases"] > 0
     assert max(seen["colours"]) > 20
 
 
+def test_the_renderer_shows_its_attribution_and_links_it(tmp_path):
+    # the library's licence asks for its attribution, which record 0042 shows
+    path = bars().chart().save(str(tmp_path / "attribution.html"))
+
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page    = browser.new_page(viewport={"width": 1280, "height": 900})
+
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(400)
+
+        logo = page.locator("#tv-attr-logo")
+        seen = (logo.count(), logo.first.get_attribute("href"))
+        browser.close()
+
+    assert seen[0] == 1
+    assert seen[1].startswith("https://www.tradingview.com/")
+
+
 def test_every_panel_becomes_a_pane_carrying_its_own_name(tmp_path):
-    candles = frame()
-    close   = candles["close"].to_numpy()
-    built   = probatum.chart(
-        candles,
+    data  = bars()
+    close = data.close
+    built = run(data).chart(
         [
             Line(close, "trend"),
             Line(close - 100.0, "momentum", panel="momentum"),
             Level(0.0, panel="momentum"),
         ],
-        run(candles),
         panels=[Panel("momentum", weight=1.0)],
     )
 
@@ -208,11 +234,11 @@ def test_every_panel_becomes_a_pane_carrying_its_own_name(tmp_path):
 
 
 def test_every_closed_trade_becomes_a_row_carrying_its_numbers(tmp_path):
-    candles = frame()
-    result  = run(candles)
-    built   = probatum.chart(candles, result)
-    seen    = observe(built, tmp_path)
-    closed  = [trade for trade in result.trades if not trade["open"]]
+    data   = bars()
+    result = run(data)
+    seen   = observe(result.chart(), tmp_path)
+    closed = [trade for trade in result.trades if not trade["open"]]
+    times  = stamps(data)
 
     assert seen["errors"]    == []
     assert len(seen["rows"]) == len(closed)
@@ -223,18 +249,17 @@ def test_every_closed_trade_becomes_a_row_carrying_its_numbers(tmp_path):
     # hand. The tick is still reachable, in the cell's title
     for row, title, trade in zip(seen["rows"], seen["titles"], closed):
         assert row[1]   == trade["side"]
-        assert row[2]   == candles.index[trade["open_bar"]].strftime("%Y-%m-%d %H:%M")
-        assert row[3]   == candles.index[trade["close_bar"]].strftime("%Y-%m-%d %H:%M")
+        assert row[2]   == times[trade["open_bar"]]
+        assert row[3]   == times[trade["close_bar"]]
         assert title[2] == "bar " + str(trade["open_bar"])
         assert title[3] == "bar " + str(trade["close_bar"])
         assert row[9]   == str(trade["close_bar"] - trade["open_bar"])
 
 
 def test_clicking_a_trade_row_selects_it_and_says_which(tmp_path):
-    candles = frame()
-    result  = run(candles)
-    seen    = observe(
-        probatum.chart(candles, result),
+    result = run(bars())
+    seen   = observe(
+        result.chart(),
         tmp_path,
         act=lambda page: (
             page.click("#tbl"),
@@ -256,15 +281,23 @@ def test_clicking_the_chart_at_a_trade_reveals_its_row(tmp_path):
     # the other half of the two-way link, and the untested one. You do not click
     # the arrow: it is painted on canvas and the handler fires for a click anywhere
     # in that bar's column, so the x comes from the axis rather than from the glyph
-    candles = frame(24)
-    result  = run(candles)
+    data   = bars(24)
+    result = run(data)
 
     assert len(result.trades) > 0
 
-    entry = result.trades[0]["open_bar"]
-    bars  = len(candles)
+    seen = clicked(result.chart().save(str(tmp_path / "click.html")),
+                   result.trades[0]["open_bar"], len(data))
 
-    path = probatum.chart(candles, result).save(str(tmp_path / "click.html"))
+    # the table opening without anyone touching #tbl is the signature of this path
+    assert seen["open"]
+    assert seen["selected"] == "1"
+    assert seen["hint"].startswith("trade 1")
+
+
+def clicked(path, bar, count):
+    """What the trade table shows after a click in the column of bar ``bar`` of the
+    ``count`` the chart saved at ``path`` holds."""
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page    = browser.new_page(viewport={"width": 1280, "height": 900})
@@ -288,7 +321,7 @@ def test_clicking_the_chart_at_a_trade_reveals_its_row(tmp_path):
             """
         )
 
-        x = box["left"] + (entry + 0.5) * box["width"] / bars
+        x = box["left"] + (bar + 0.5) * box["width"] / count
         y = box["top"] + box["height"] / 2
         page.mouse.move(x, y)
         page.mouse.click(x, y)
@@ -301,24 +334,20 @@ def test_clicking_the_chart_at_a_trade_reveals_its_row(tmp_path):
         }
         browser.close()
 
-    # the table opening without anyone touching #tbl is the signature of this path
-    assert seen["open"]
-    assert seen["selected"] == "1"
-    assert seen["hint"].startswith("trade 1")
+    return seen
 
 
 def test_a_legend_too_wide_for_its_panel_counts_what_it_dropped(tmp_path):
     # the legend is painted on canvas, so there is no text to read: the drawing
     # calls are recorded instead. A series it cannot fit has to be counted, because
     # a legend that quietly drops one lies about what is plotted
-    candles = frame()
-    close   = candles["close"].to_numpy()
-    marks   = [
+    close = bars().close
+    marks = [
         Line(close - 100.0 + i, f"a rather long series name number {i}", panel="crowded")
         for i in range(8)
     ]
 
-    built = probatum.chart(candles, marks, panels=[Panel("crowded", weight=0.35)])
+    built = bars().chart(marks, panels=[Panel("crowded", weight=0.35)])
     path  = built.save(str(tmp_path / "legend.html"))
 
     with playwright.sync_playwright() as driver:
@@ -352,11 +381,11 @@ def test_a_gap_in_a_series_leaves_the_legend_quiet_rather_than_reporting_a_fault
     #
     # The cursor sits on the last bar until something moves it, so a series whose
     # tail is a gap is in that state the moment it mounts and needs no gesture
-    candles = frame()
-    stop    = candles["close"].to_numpy() - 5.0
+    data = bars()
+    stop = data.close - 5.0
     stop[30:] = np.nan
 
-    built = probatum.chart(candles, Line(stop, "trailing stop"))
+    built = data.chart(Line(stop, "trailing stop"))
     path  = built.save(str(tmp_path / "gap.html"))
 
     with playwright.sync_playwright() as driver:
@@ -385,10 +414,10 @@ def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp
     # index while the candle beside it is now a group of bars, so if the renderer
     # started answering with a conflated index the legend would report a bar
     # nowhere near the one under the pointer, quietly and on every dense chart
-    n       = 4000
-    candles = frame(n)
-    stamps  = [t.strftime("%Y-%m-%d %H:%M") for t in candles.index]
-    path    = probatum.chart(candles).save(str(tmp_path / "dense.html"))
+    n     = 4000
+    data  = bars(n)
+    times = stamps(data)
+    path  = data.chart().save(str(tmp_path / "dense.html"))
 
     read = {}
     with playwright.sync_playwright() as driver:
@@ -409,7 +438,7 @@ def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp
     # tighter than the aggregation and far looser than a rounding
     for at, printed in read.items():
         assert printed, f"no bar was stamped at {at}; nothing reached the legend"
-        landed = stamps.index(printed)
+        landed = times.index(printed)
         assert abs(landed - at * n) < n * 0.02, (
             f"the pointer was {at:.0%} across and the legend said bar {landed} of {n}"
         )
@@ -420,9 +449,8 @@ def test_a_resize_leaves_the_chart_drawing_and_the_axis_measured(tmp_path):
     # change of its own: remeasureAxis is what tells it the width moved, and it
     # runs from inside a size-change callback, which is the time scale calling
     # back into itself and the place this would throw if it were going to
-    candles = frame(3000)
-    seen    = observe(
-        probatum.chart(candles),
+    seen = observe(
+        bars(3000).chart(),
         tmp_path,
         act=lambda page: (
             page.set_viewport_size({"width": 620, "height": 520}),
@@ -438,8 +466,7 @@ def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_pat
     # what stops a saved file carrying a claim and not the evidence for it. Every
     # cell is written with textContent, so the second row here is a cell rather
     # than a decision anybody has to think about
-    candles = frame()
-    built   = probatum.chart(candles, run(candles), notes=[
+    built = run(bars()).chart(notes=[
         ["window", "traded", "sharpe"],
         ["1", "<script>alert(1)</script>", 1.94],
         ["2", "2024-01-02 to 2024-01-03", -0.31],
@@ -496,7 +523,7 @@ def test_notes_keep_the_table_button_on_a_chart_that_never_traded(tmp_path):
     # the button is hidden when there are no fills, because opening an empty
     # trade log reads as a chart that lost its data. A chart with notes and no
     # run has something to show and had no way to show it
-    built = probatum.chart(frame(), notes=[["what", "value"], ["bars", 60]])
+    built = bars().chart(notes=[["what", "value"], ["bars", 60]])
     path  = built.save(str(tmp_path / "onlynotes.html"))
 
     with playwright.sync_playwright() as driver:
@@ -526,14 +553,14 @@ def test_fit_puts_the_whole_series_back_after_a_row_framed_one_trade(tmp_path):
     # FIT had never been pressed by anything. It is the one control that undoes
     # every other gesture, so a chart whose FIT is broken is a chart a reader can
     # get lost in with no way back
-    candles = frame(400)
-    result  = run(candles)
+    data   = bars(400)
+    result = run(data)
 
     assert len(result.trades) > 4
 
-    stamps = [t.strftime("%Y-%m-%d %H:%M") for t in candles.index]
+    times = stamps(data)
 
-    path = probatum.chart(candles, result).save(str(tmp_path / "fit.html"))
+    path = result.chart().save(str(tmp_path / "fit.html"))
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page    = browser.new_page(viewport={"width": 1100, "height": 700})
@@ -558,7 +585,7 @@ def test_fit_puts_the_whole_series_back_after_a_row_framed_one_trade(tmp_path):
 
     # two percent across a fitted 400 bar chart is bar 8, not bar 0, so this is
     # about where the viewport sits rather than about an exact bar
-    assert stamps.index(whole) < len(stamps) * 0.05, "the chart did not open fitted"
+    assert times.index(whole) < len(times) * 0.05, "the chart did not open fitted"
     assert framed != whole, "clicking the row framed nothing, so FIT is untested"
     assert back == whole, "FIT left the chart where the row had put it"
 
@@ -566,8 +593,8 @@ def test_fit_puts_the_whole_series_back_after_a_row_framed_one_trade(tmp_path):
 def test_the_wheel_zooms_the_time_axis(tmp_path):
     # the renderer's own handler, which a synthetic event never reaches and no
     # test had ever driven with a real one
-    candles = frame(400)
-    path    = probatum.chart(candles).save(str(tmp_path / "wheel.html"))
+    data = bars(400)
+    path = data.chart().save(str(tmp_path / "wheel.html"))
 
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
@@ -591,20 +618,19 @@ def test_the_wheel_zooms_the_time_axis(tmp_path):
         after = stamp_under(page, 0.02)
         browser.close()
 
-    stamps = [t.strftime("%Y-%m-%d %H:%M") for t in candles.index]
+    times = stamps(data)
     assert before is not None and after is not None, "the legend stopped reporting"
 
     # zooming in at the middle walks the left edge forward through the series, so
     # the bar two percent across the plot is a later one than it was
-    assert stamps.index(after) > stamps.index(before), "the wheel moved nothing"
+    assert times.index(after) > times.index(before), "the wheel moved nothing"
 
 
 def test_dragging_a_pane_separator_resizes_the_panes_and_moves_their_controls(tmp_path):
     # the separator drag fires no event of its own, which is why controls.js
     # catches it on mouseup; that arrangement had never been exercised, so a
     # dragged chart could have left its per-pane buttons behind
-    candles = frame(200)
-    built   = probatum.chart(candles, run(candles))
+    built = run(bars(200)).chart()
     path    = built.save(str(tmp_path / "drag.html"))
     tops    = "gs => gs.map(g => g.style.top)"
 
@@ -657,10 +683,10 @@ def test_the_candles_put_no_badge_on_the_price_axis(tmp_path):
     # Prices are scaled up because the two formats only differ above a thousand:
     # the badge goes through the series price format and carries no separator,
     # while the legend's C is a locale string and does
-    candles = frame() * 1000.0
-    built   = probatum.chart(candles)
-    digits  = built.spec()["panels"][0]["digits"]
-    last    = float(candles["close"].to_numpy()[-1])
+    data   = bars(scale=1000.0)
+    built  = data.chart()
+    digits = built.spec()["panels"][0]["digits"]
+    last   = float(data.close[-1])
     badge   = f"{last:.{digits}f}"
     legend  = f"{last:,.{digits}f}"
 
@@ -687,11 +713,10 @@ def test_a_caption_near_the_top_moves_rather_than_printing_through_the_legend(tm
     # scale's top margin. A caption is placed from a price and knew nothing about
     # that reservation, so a Marker with a large offset anchored near the high
     # printed its words straight across the OHLC row
-    candles = frame()
-    high    = candles["high"].to_numpy()
-    peak    = int(np.argmax(high))
-    built   = probatum.chart(
-        candles,
+    data  = bars()
+    high  = data.high
+    peak  = int(np.argmax(high))
+    built = data.chart(
         Marker(peak, value=float(high[peak]), text="the high", shape="arrow_down",
                offset=30),
     )
@@ -731,8 +756,8 @@ def test_the_axis_drops_a_grain_the_span_does_not_deserve_and_keeps_one_it_does(
     # mistake is taking away detail that was doing its job. Three days of hourly
     # candles want their hours, and an empty label is how a tick is dropped, so
     # its presence is what says the formatter is engaged at all
-    def labels(candles, name):
-        path = probatum.chart(candles).save(str(tmp_path / name))
+    def labels(data, name):
+        path = data.chart().save(str(tmp_path / name))
         page = browser.new_page(viewport={"width": 1280, "height": 700})
 
         page.add_init_script(_RECORDER)
@@ -747,8 +772,8 @@ def test_the_axis_drops_a_grain_the_span_does_not_deserve_and_keeps_one_it_does(
         browser = driver.chromium.launch(args=["--no-sandbox"])
 
         # 3000 hourly bars is four months, past every threshold in the rule
-        wide = labels(frame(3000), "wide.html")
-        near = labels(frame(72), "near.html")
+        wide = labels(bars(3000), "wide.html")
+        near = labels(bars(72), "near.html")
         browser.close()
 
     clock = re.compile(r"\d\d:\d\d")
@@ -768,7 +793,7 @@ def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
     # The button is checked in the same breath because it names the mode it will
     # switch TO, and it was named once in the markup and then only on a click, so
     # a chart that opened light announced LIGHT and went on announcing it
-    path = probatum.chart(frame(), theme="auto").save(str(tmp_path / "auto.html"))
+    path = bars().chart(theme="auto").save(str(tmp_path / "auto.html"))
     seen = {}
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
@@ -795,10 +820,9 @@ def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
 
 
 def test_a_named_background_names_the_region_under_the_crosshair(tmp_path):
-    candles = frame()
-    labels  = np.where(np.arange(len(candles)) % 20 < 10, "calm", "wild")
-    built   = probatum.chart(
-        candles,
+    data   = bars()
+    labels = np.where(np.arange(len(data)) % 20 < 10, "calm", "wild")
+    built  = data.chart(
         Background(labels, "regime",
                    fill={"calm": "#2fe0a822", "wild": "#ff547022"}),
     )
@@ -825,9 +849,8 @@ def test_a_named_background_names_the_region_under_the_crosshair(tmp_path):
 def test_the_log_button_toggles_its_panel_and_says_so(tmp_path):
     # the controls are invisible until the pointer is inside their pane's band, so
     # a plain click fails the actionability check: the hover is part of the feature
-    candles = frame()
-    built   = probatum.chart(candles, run(candles))
-    path    = built.save(str(tmp_path / "log.html"))
+    built = run(bars()).chart()
+    path  = built.save(str(tmp_path / "log.html"))
 
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
@@ -882,10 +905,9 @@ def test_the_theme_toggle_rewrites_the_palette_in_a_saved_file(tmp_path):
     # a saved chart carries both palettes so the toggle works with no process
     # behind it (ADR 0042), and the toggle writes the css variables the stylesheet
     # reads, which is what keeps the chart and its frame from drifting apart
-    candles = frame()
-    built   = probatum.chart(candles, run(candles))
-    dark    = observe(built, tmp_path, name="dark.html")
-    light   = observe(built, tmp_path, name="light.html", act=lambda page: page.click("#theme"))
+    built = run(bars()).chart()
+    dark  = observe(built, tmp_path, name="dark.html")
+    light = observe(built, tmp_path, name="light.html", act=lambda page: page.click("#theme"))
 
     assert dark["theme"]  == "dark"
     assert light["theme"] == "light"
@@ -894,9 +916,8 @@ def test_the_theme_toggle_rewrites_the_palette_in_a_saved_file(tmp_path):
 
 
 def test_a_title_reaches_the_document_and_survives_angle_brackets(tmp_path):
-    candles = frame()
-    built   = probatum.chart(candles, run(candles), title="BTC <perp> 10x")
-    seen    = observe(built, tmp_path)
+    built = run(bars()).chart(title="BTC <perp> 10x")
+    seen  = observe(built, tmp_path)
 
     assert seen["errors"] == []
     assert seen["title"]  == "BTC <perp> 10x"
@@ -936,8 +957,8 @@ def drawn_colours(built, tmp_path, name, want):
 
 
 def test_a_level_alone_on_the_price_panel_is_actually_drawn(tmp_path):
-    candles = frame()
-    built   = probatum.chart(candles, Level(float(candles["close"].mean()), "mid", color="#ff00ff"))
+    data  = bars()
+    built = data.chart(Level(float(data.close.mean()), "mid", color="#ff00ff"))
 
     assert drawn_colours(built, tmp_path, "level.html", [255, 0, 255]) > 50
 
@@ -946,10 +967,9 @@ def test_a_band_alone_on_its_own_panel_is_actually_drawn(tmp_path):
     # a primitive converts prices through a series, and a panel drawn only by
     # primitives has none carrying values, so it mounted cleanly and painted
     # nothing. The anchor now takes the panel's own extent
-    candles = frame()
-    close   = candles["close"].to_numpy()
-    built   = probatum.chart(
-        candles,
+    data  = bars()
+    close = data.close
+    built = data.chart(
         Band(close - 100.0 + 2.0, close - 100.0 - 2.0, "channel",
              panel="spread", fill="#00ff00"),
         panels=[Panel("spread", weight=1.0)],
@@ -964,10 +984,10 @@ def test_a_ramped_line_never_shows_the_vendored_default_colour(tmp_path):
     # left uncoloured was painted library blue while the legend reported it grey.
     # The asset grep for colours cannot see that, because the literal is in the
     # vendored bundle rather than in ours (ADR 0042)
-    candles = frame()
-    close   = candles["close"].to_numpy()
-    tint    = np.where(np.arange(len(close)) % 2 == 0, "#ff00ff", None).astype(object)
-    built   = probatum.chart(candles, Line(close, "tinted", color=tint))
+    data  = bars()
+    close = data.close
+    tint  = np.where(np.arange(len(close)) % 2 == 0, "#ff00ff", None).astype(object)
+    built = data.chart(Line(close, "tinted", color=tint))
 
     assert drawn_colours(built, tmp_path, "ramp.html", [33, 150, 243]) == 0
 
@@ -980,21 +1000,15 @@ def test_a_gap_is_drawn_as_whitespace_rather_than_bridged(tmp_path):
     # per third, because the plot area is inset by the price axis and the thirds of
     # a canvas are not the thirds of a series
     n    = 60
-    flat = pd.DataFrame(
-        {
-            "open":   np.full(n, 100.0),
-            "high":   np.full(n, 100.0),
-            "low":    np.full(n, 100.0),
-            "close":  np.full(n, 100.0),
-            "volume": np.full(n, 1000.0),
-        },
-        index=pd.date_range("2024-01-01", periods=n, freq="1h"),
-    )
+    flat = probatum.Data(np.column_stack([np.full((n, 4), 100.0),
+                                          1000.0 + np.arange(n, dtype=np.float64)]),
+                         symbol="BTCUSDT", market="linear",
+                         time=START + np.arange(n, dtype=np.int64) * HOUR)
 
     values = np.full(n, 100.0)
     values[20:40] = np.nan
 
-    built = probatum.chart(flat, Line(values, "gapped", color="#ff00ff", width=3))
+    built = flat.chart(Line(values, "gapped", color="#ff00ff", width=3))
     path  = built.save(str(tmp_path / "gap.html"))
 
     with playwright.sync_playwright() as driver:
@@ -1051,12 +1065,9 @@ def test_a_gap_is_drawn_as_whitespace_rather_than_bridged(tmp_path):
 
 
 def test_a_level_on_the_engines_own_panels_is_actually_drawn(tmp_path):
-    candles = frame()
-    result  = run(candles)
-    built   = probatum.chart(
-        candles,
-        [Level(float(result.initial), "start", panel="equity", color="#ff00ff")],
-        result,
+    result = run(bars())
+    built  = result.chart(
+        Level(float(result.equity[0]), "start", panel="equity", color="#ff00ff"),
     )
 
     assert drawn_colours(built, tmp_path, "level-equity.html", [255, 0, 255]) > 50
@@ -1066,17 +1077,12 @@ def test_a_level_on_the_drawdown_panel_is_actually_drawn(tmp_path):
     # halfway down this run's own worst fall, so the reference is inside the panel
     # it is drawn on: a price line off the visible range paints nothing either,
     # and that would pass for the defect without testing it
-    candles = frame()
-    result  = run(candles)
-    depth   = result.stats["max_drawdown_pct"]
+    result = run(bars())
+    depth  = result.stats["max_drawdown_pct"]
 
     assert depth > 0.0
 
-    built = probatum.chart(
-        candles,
-        [Level(-depth / 2.0, "watch", panel="drawdown", color="#ff00ff")],
-        result,
-    )
+    built = result.chart(Level(-depth / 2.0, "watch", panel="drawdown", color="#ff00ff"))
 
     assert drawn_colours(built, tmp_path, "level-drawdown.html", [255, 0, 255]) > 50
 
@@ -1086,12 +1092,7 @@ def test_an_equity_panel_asked_for_as_a_percent_mounts_clean(tmp_path):
     # opening balance now rather than the first advance. The labels are
     # painted into a canvas and cannot be read back, so what a browser can add
     # here is that the documented composition still mounts and paints
-    candles = frame()
-    result  = run(candles)
-    built   = probatum.chart(
-        candles, result,
-        panels=[Panel("equity", weight=2.0, scale="percent")],
-    )
+    built = run(bars()).chart(panels=[Panel("equity", weight=2.0, scale="percent")])
 
     seen = observe(built, tmp_path, "percent-equity.html")
 
@@ -1106,20 +1107,16 @@ def test_the_room_asked_for_with_future_is_on_screen_on_first_paint(tmp_path):
     # right edge with nothing on screen saying it was there. The band
     # here exists ONLY past the last candle, so any pixel of it is proof the
     # viewport reached that far
-    candles = frame(40)
-    ahead   = 6
-    n       = len(candles) + ahead
-    upper   = np.full(n, np.nan)
-    lower   = np.full(n, np.nan)
-    last    = float(candles["close"].iloc[-1])
-    upper[len(candles):] = last + 4.0
-    lower[len(candles):] = last - 4.0
+    data  = bars(40)
+    ahead = 6
+    n     = len(data) + ahead
+    upper = np.full(n, np.nan)
+    lower = np.full(n, np.nan)
+    last  = float(data.close[-1])
+    upper[len(data):] = last + 4.0
+    lower[len(data):] = last - 4.0
 
-    built = probatum.chart(
-        candles,
-        [Band(upper, lower, "projected", fill="#ff00ff")],
-        future=ahead,
-    )
+    built = data.chart([Band(upper, lower, "projected", fill="#ff00ff")], future=ahead)
 
     assert drawn_colours(built, tmp_path, "future.html", [255, 0, 255]) > 50
 
@@ -1127,8 +1124,7 @@ def test_the_room_asked_for_with_future_is_on_screen_on_first_paint(tmp_path):
 def test_asking_for_no_room_still_frames_on_the_data(tmp_path):
     # the reservation is conditional, so a chart with no projection must frame
     # exactly as it always did rather than growing a margin of empty bars
-    candles = frame(40)
-    seen    = observe(probatum.chart(candles, run(candles)), tmp_path, "nofuture.html")
+    seen = observe(run(bars(40)).chart(), tmp_path, "nofuture.html")
 
     assert seen["errors"] == []
     assert max(seen["colours"]) > 20
@@ -1139,12 +1135,11 @@ def test_a_background_span_covers_the_bars_its_mask_is_true_on(tmp_path):
     # whole bars, so painting centre to centre put the shading half a candle right
     # of the bars it belongs to. The width was always correct, which is why it
     # read as right until someone looked at an edge
-    n       = 40
-    candles = frame(n)
-    mask    = np.zeros(n, dtype=bool)
+    n    = 40
+    mask = np.zeros(n, dtype=bool)
     mask[20:30] = True
 
-    built = probatum.chart(candles, [Background(mask, fill="#ff00ff")])
+    built = bars(n).chart([Background(mask, fill="#ff00ff")])
     path  = built.save(str(tmp_path / "span.html"))
 
     with playwright.sync_playwright() as driver:
@@ -1191,3 +1186,81 @@ def test_a_background_span_covers_the_bars_its_mask_is_true_on(tmp_path):
     # the two apart and passes either way
     assert (seen["hi"] - seen["lo"]) / bar == pytest.approx(10.0, abs=0.2)
     assert seen["lo"] / bar == pytest.approx(20.0, abs=0.2)
+
+
+def test_bars_an_instrument_never_printed_mount_clean_and_read_as_no_bar(tmp_path):
+    # ETHUSDT lists a third of the way in, so its first candles are whitespace that
+    # keeps their slots on the axis, and the legend over one of them says so rather
+    # than reading a price off a bar that did not trade
+    btc  = table(60)
+    eth  = table(60) / 10.0
+    eth[:20] = np.nan
+    wide = probatum.Data(np.stack([btc, eth], axis=1), symbol=["BTCUSDT", "ETHUSDT"],
+                         market="linear",
+                         time=START + np.arange(60, dtype=np.int64) * HOUR)
+    path   = wide.chart(instrument="ETHUSDT").save(str(tmp_path / "late.html"))
+    errors = []
+
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page    = browser.new_page(viewport={"width": 1280, "height": 700})
+
+        page.on("pageerror", lambda e: errors.append("pageerror: " + str(e)))
+        page.add_init_script(_RECORDER)
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(500)
+
+        early   = stamp_under(page, 0.1)
+        drawn   = page.evaluate("window.__text")
+        colours = page.evaluate(_COLOURS)
+        browser.close()
+
+    assert errors == []
+    assert max(colours) > 20
+    assert early in stamps(wide)[:20], f"the pointer read {early}, past the listing"
+    assert "no bar" in drawn
+
+
+def delisted():
+    """A quarter of the balance in each of BTCUSDT and ETHUSDT over 60 hourly bars, at
+    a venue that delists ETHUSDT at 06:00 on the second day, an hour after its last
+    bar."""
+    btc  = table(60)
+    eth  = table(60) / 10.0
+    eth[30:] = np.nan
+    data = probatum.Data(np.stack([btc, eth], axis=1), symbol=["BTCUSDT", "ETHUSDT"],
+                         market="linear",
+                         time=START + np.arange(60, dtype=np.int64) * HOUR)
+    venue = probatum.Venue(kind="linear",
+                           instruments={"ETHUSDT": {"delist": "2024-01-02 06:00"}})
+    return probatum.backtest(np.full((60, 2), 0.25), data, venue)
+
+
+def test_an_exit_on_a_bar_its_instrument_never_printed_is_still_drawn(tmp_path):
+    # a delisting closes the trip at its last close on the first row at or after its
+    # time, where the instrument printed no bar, and the renderer draws that exit on
+    # the last bar it did print rather than dropping it. Exits are given a colour of
+    # their own, and the chart without its trips counts that colour everywhere else
+    result = delisted()
+    tint   = {"dark": {"win": "#ff00ff", "loss": "#ff00ff"}}
+
+    assert [(trip["close_bar"], trip["reason"]) for trip in result.trades
+            if trip["instrument"] == "ETHUSDT"] == [(30, "delist")]
+
+    trips = drawn_colours(result.chart(instrument="ETHUSDT", palette=tint), tmp_path,
+                          "trips.html", [255, 0, 255])
+    none  = drawn_colours(result.chart(instrument="ETHUSDT", palette=tint, trades=False),
+                          tmp_path, "none.html", [255, 0, 255])
+
+    assert trips - none > 20
+
+
+def test_clicking_a_delisted_trip_s_exit_arrow_reveals_its_row(tmp_path):
+    # the arrow stands on bar 29, the last ETHUSDT printed, a bar before the row the
+    # trip closed on, and a click in that bar's column reaches the trip
+    path = delisted().chart(instrument="ETHUSDT").save(str(tmp_path / "delisted.html"))
+    seen = clicked(path, 29, 60)
+
+    assert seen["open"]
+    assert seen["selected"] == "1"

@@ -54,14 +54,14 @@ const legendRows = function (index) {
   const rows = [{ label: panel.name, strong: true }];
 
   // a bar past the last candle exists on the axis but has no OHLC, because
-  // future= lengthens the axis and never invents a bar that traded
-  const traded = i < SPEC.n;
+  // future= lengthens the axis and never invents a bar that traded, and a bar the
+  // instrument printed no bar on has none either
+  const bar = i < SPEC.n ? SPEC.ohlc[i] : null;
 
   if (panel.candles) {
     if (SPEC.interval) rows.push({ label: SPEC.interval });
     rows.push({ label: stamp(i) });
-    if (traded) {
-      const bar = SPEC.ohlc[i];
+    if (bar !== null) {
       const up = bar[3] >= bar[0];
       rows.push({
         swatch: up ? T().up : T().down, hollow: up,
@@ -74,12 +74,11 @@ const legendRows = function (index) {
         valueColor: up ? T().up : T().down,
       });
     } else {
-      rows.push({ label: "projected" });
+      rows.push({ label: i < SPEC.n ? "no bar" : "projected" });
     }
   }
 
-  if (panel.volume && SPEC.vol && traded) {
-    const bar = SPEC.ohlc[i];
+  if (panel.volume && SPEC.vol && bar !== null) {
     rows.push({
       swatch: bar[3] >= bar[0] ? T().volUp : T().volDown,
       label: "Volume", value: legendValue(legendValueAt(SPEC.vol, i), panel.digits),

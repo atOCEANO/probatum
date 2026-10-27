@@ -336,6 +336,12 @@ const paintCandles = function () {
   const rows = new Array(SPEC.n);
   for (let i = 0; i < SPEC.n; i++) {
     const o = SPEC.ohlc[i];
+    // a bar the instrument printed no bar on is whitespace, so its slot stays on
+    // the axis and its neighbours keep their places
+    if (o === null) {
+      rows[i] = { time: SPEC.t[i] };
+      continue;
+    }
     const row = { time: SPEC.t[i], open: o[0], high: o[1], low: o[2], close: o[3] };
     const c = colorAt(tint, i);
     if (c !== null) {
@@ -352,8 +358,8 @@ const paintVolume = function () {
   if (!VOLUME) return;
   const rows = track(SPEC.vol);
   for (let j = 0; j < rows.length; j++) {
-    const i = SPEC.vol.i0 + j;
-    rows[j].color = SPEC.ohlc[i][3] >= SPEC.ohlc[i][0] ? T().volUp : T().volDown;
+    const o = SPEC.ohlc[SPEC.vol.i0 + j];
+    if (o !== null) rows[j].color = o[3] >= o[0] ? T().volUp : T().volDown;
   }
   VOLUME.setData(rows);
 };
@@ -501,7 +507,7 @@ const mount = function (spec, root) {
     autoSize: true,
     layout: {
       background: { type: LWC.ColorType.Solid, color: t.surface },
-      textColor: t.ink2, fontFamily: spec.theme.font || FONT, attributionLogo: false,
+      textColor: t.ink2, fontFamily: spec.theme.font || FONT, attributionLogo: true,
       panes: { separatorColor: t.axis, separatorHoverColor: t.grid, enableResize: true },
     },
     grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },

@@ -27,109 +27,90 @@
 
 ## Plotting
 
-`probatum.chart` turns a frame, your own arrays and a run into a picture. It computes nothing: you bring the numbers.
+`result.chart()` draws a run and `data.chart()` draws bars, each with any arrays of your own beside them. The chart computes nothing: every number on it is the Data's, the Result's, or what `probatum.stats` reads of the Result ([ADR 0042](Decisions.md)).
 
-**`show()` draws it in the notebook cell.** Inline, where you are already working, zoomable and pannable in place. No second window, no server, no viewer to launch, and nothing to configure for your particular frontend.
+**`show()` draws it in the notebook cell**, zoomable and pannable in place, with no server and no viewer to launch.
 
-**It stays there.** The chart is stored inside the `.ipynb`, so the notebook you open next year shows the same charts, still interactive, with no kernel running and nothing re-executed. A notebook you send somebody shows them what you saw.
+**It stays there.** The chart is stored inside the `.ipynb`, so a notebook opened next year shows the same charts, still interactive, with no kernel running.
 
-**`save()` writes one HTML file** instead, which opens in a browser by double-clicking it, for the people who want the picture without the notebook.
+**`save(path)` writes one HTML file** that opens in a browser offline, for a reader with no notebook.
 
-Every example that draws here ends in `.show()` and appears in the cell below the code. There are three things you can give it, and each one alone is already a chart.
-
-**A frame** is candles, volume, a crosshair readout, zoom and pan:
+Each of these is already a chart. **Bars** are candles, volume, a crosshair readout, zoom and pan:
 
 ```python
-probatum.chart(frame=frame).show()
+data.chart().show()
 ```
 
-**An array** finds itself a home, over the candles or on a panel of its own:
+**An array** goes over the candles, or on a panel of its own where it would flatten them:
 
 ```python
-probatum.chart(frame=frame, marks=squeeze).show()
+data.chart(squeeze).show()
 ```
 
-**A run** draws itself, with no configuration at all:
+**A run** draws its fills, its equity and its trade log:
 
 ```python
-probatum.chart(frame=frame, run=result).show()
+result.chart().show()
 ```
 
-That last one is entry and exit arrows on the exact bars they filled on, an equity curve with its drawdown shaded onto it, and a trade log under the chart. Click a row and the chart frames that trade; click an arrow and the row reveals itself.
+That last one puts an arrow at each end of every round trip on the bars it filled on, the account's equity with its drawdown shaded from the running peak, four of its statistics above the plot, and the round trips in a table under it. Clicking a row frames that trade, and clicking an arrow opens its row.
 
-All three together is the chart most people are actually after:
+All three together:
 
 ```python
-strategy = SmaCross(fast=20, slow=50)
+result = probatum.backtest(SmaCross(fast=20, slow=50), data, "binance_spot")
+strategy = result.policy
 
-result = probatum.Backtester(
-    candles=frame,
-    market="perp",
-    fee_taker=0.0005,
-).run(strategy)
-
-probatum.chart(
-    frame=frame,
-    marks=[
-        Line(values=strategy.fast, name="SMA 20"),
-        Line(values=strategy.slow, name="SMA 50", style="dashed"),
-    ],
-    run=result,
+result.chart(
+    Line(strategy.fast_line, "SMA 20"),
+    Line(strategy.slow_line, "SMA 50", style="dashed"),
     title="SMA 20/50",
 ).show()
 ```
 
-Everything but the two `Line`s came out of the `BacktestResult`, and those two are the arrays the strategy itself decided on.
+`result.policy` is the copy of the strategy the run decided with, so the two lines are the arrays the fills were decided on. The README's channel breakout, drawn the same way:
 
 <div align="center">
   <img src="imgs/charts/chart-backtest.png" alt="A backtest drawn" width="100%" />
-  <p style="margin: 0;"><i>One call, a year of hourly candles: nothing above it names a panel, an axis, a colour or a scale</i></p>
+  <p style="margin: 0;"><i>One call over a year of hourly candles; nothing in it names a panel, an axis, a colour or a scale</i></p>
 </div>
 
 <br>
 
-Every image on this page is produced by `dev/charts/build.py` against a frozen parquet, so none of them can drift from what the library draws today; the [Contributor Guide](Contributor_Guide.md) carries the `charts` stage that runs it.
-
-Every argument here is named, and this guide keeps it that way throughout. `chart` also accepts them positionally and matches by type, which is convenient once you know it and invisible until you do:
-
-```python
-probatum.chart(frame, [Line(strategy.fast, "SMA 20"), Line(strategy.slow, "SMA 50")], result).show()
-```
-
-Naming buys more than clarity. `run=` is checked, so an array passed to it by mistake is refused; positionally, the same mistake is silently drawn as a line.
+Every image on this page is drawn by `dev/charts/build.py` from a frozen dataset, so none of them can drift from what the library draws; the [Contributor Guide](Contributor_Guide.md) has the `charts` stage that runs it.
 
 <br>
 
 ### Small charts, whole
 
-Every one of these is complete. Nothing is elided and nothing needs a strategy, and every picture below is the output of the snippet above it, on six months of hourly BTCUSDT.
+Each of these is complete, and each picture is the output of the call above it, on six months of hourly BTCUSDT.
 
 **A moving average over the candles.**
 
 ```python
-probatum.chart(frame=frame, marks=Line(values=frame.close.rolling(50).mean(), name="SMA 50")).show()
+data.chart(Line(probatum.ta.sma(data.close, 50), "SMA 50")).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-line.png" alt="a moving average over the candles" width="100%" />
-  <p style="margin: 0;"><i>One array and no panel asked for: it overlaid the candles because it sits in their range</i></p>
+  <p style="margin: 0;"><i>One array and no panel asked for: it overlays the candles because it sits in their range</i></p>
 </div>
 
 <br>
 
-**An oscillator**, given a panel of its own, with the levels that make it readable.
+**An oscillator** on a panel of its own, with the levels that make it readable.
 
 ```python
-probatum.chart(frame=frame, marks=[
-    Line(values=rsi, name="RSI 14", panel="rsi"),
-    Level(value=70.0, panel="rsi", style="dotted"),
-    Level(value=30.0, panel="rsi", style="dotted"),
-]).show()
+data.chart(
+    Line(rsi, "RSI 14", panel="rsi"),
+    Level(70.0, panel="rsi", style="dotted"),
+    Level(30.0, panel="rsi", style="dotted"),
+).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-oscillator.png" alt="an RSI on its own panel with dotted levels at 70 and 30" width="100%" />
-  <p style="margin: 0;"><i>The RSI took a panel of its own, because laying 0 to 100 over a price in the tens of thousands would have flattened the candles to a line</i></p>
+  <p style="margin: 0;"><i>The RSI takes a panel of its own, since 0 to 100 over a price in the tens of thousands would flatten the candles</i></p>
 </div>
 
 <br>
@@ -137,144 +118,130 @@ probatum.chart(frame=frame, marks=[
 **A channel**, shaded between its edges.
 
 ```python
-probatum.chart(frame=frame, marks=Band(upper=upper, lower=lower, name="bollinger",
-                                   fill="#8b97a51a")).show()
+data.chart(Band(upper, lower, "bollinger", fill="#8b97a51a")).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-band.png" alt="a bollinger channel shaded between its edges" width="100%" />
-  <p style="margin: 0;"><i>One mark holding two edges; a single number as the lower edge makes the same mark a threshold instead</i></p>
+  <p style="margin: 0;"><i>One mark holding two edges; a single number as the lower edge makes it a threshold instead</i></p>
 </div>
 
 <br>
 
-**Shade the bars** a filter says are risk-off.
+**The bars a filter calls risk-off**, shaded.
 
 ```python
-probatum.chart(frame=frame, marks=Background(values=risk_off, fill="#ff547026")).show()
+data.chart(Background(risk_off, "risk off", fill="#ff547026")).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-background.png" alt="bars shaded where a volatility filter says risk-off" width="100%" />
-  <p style="margin: 0;"><i>A boolean array painted behind the bars, which keep their own colours on top of it, and a name so the legend says which region the crosshair is over</i></p>
+  <p style="margin: 0;"><i>A boolean array painted behind the bars, named so the legend says which region the crosshair is over</i></p>
 </div>
 
 <br>
 
-**A glyph wherever a condition fires**, which is Pine's `plotshape`.
+**A glyph wherever a condition holds**, which is Pine's `plotshape`.
 
 ```python
-probatum.chart(frame=frame, marks=Markers(mask=crossed, shape="arrow_up", offset=-16)).show()
+data.chart(Markers(crossed, shape="arrow_up", offset=-16)).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-markers.png" alt="an arrow on every bar where the fast average crossed the slow one" width="100%" />
-  <p style="margin: 0;"><i>One Markers rather than one Marker per bar, which is also one thing for the renderer to draw rather than sixty</i></p>
+  <p style="margin: 0;"><i>One Markers rather than one Marker a bar, which is also one thing for the renderer to draw</i></p>
 </div>
 
 <br>
 
-**Colour the candles themselves** by anything you like.
+**The candles tinted** by a condition.
 
 ```python
-probatum.chart(frame=frame, candle_color=numpy.where(trending, "#4d9fff", None)).show()
+data.chart(candle_color=numpy.where(trending, "#4d9fff", None)).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-candle-color.png" alt="candles tinted where price is above its fifty bar average" width="100%" />
-  <p style="margin: 0;"><i>The candle_color argument is Pine barcolor; None at a bar leaves that bar alone, so the untinted ones are not a colour choice</i></p>
+  <p style="margin: 0;"><i>candle_color is Pine's barcolor; None leaves a bar its own colour</i></p>
 </div>
 
 <br>
 
-**Two features, one panel each**, both pinned so they are comparable.
+**Two features, a panel each**, pinned to one range so they compare.
 
 ```python
-probatum.chart(frame=frame, marks=[
-    Line(values=fast_z, name="z 24", panel="z24"),
-    Line(values=slow_z, name="z 168", panel="z168"),
-], panels=[
-    Panel(name="z24", range=(-5.0, 5.0)),
-    Panel(name="z168", range=(-5.0, 5.0)),
-]).show()
+data.chart(
+    Line(fast_z, "z 24", panel="z24"),
+    Line(slow_z, "z 168", panel="z168"),
+    panels=[Panel("z24", range=(-5.0, 5.0)), Panel("z168", range=(-5.0, 5.0))],
+).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-panels.png" alt="two features on their own panels, both pinned to the same window" width="100%" />
-  <p style="margin: 0;"><i>Both panels pinned to the same range, which is the only reason the two readings can be compared by eye</i></p>
+  <p style="margin: 0;"><i>Both panels pinned to the same range, without which the two readings cannot be compared by eye</i></p>
 </div>
 
 <br>
 
-**A file to send to somebody with no Python.**
+**A file for someone with no Python.**
 
 ```python
-probatum.chart(frame=frame, run=result, title="SMA 20/50, BTCUSDT 1h").save(path="run.html")
+result.chart(title="SMA 20/50, BTCUSDT 1h").save("run.html")
 ```
 
 <br>
 
 ## Before there is a strategy
 
-Most research hours go somewhere there is no backtest to draw: you have a frame, you have an idea, and you want to know whether the idea says anything. Nothing on this page needs a `BacktestResult`, and this is the part of the guide worth reading first if you have not written a strategy yet.
-
-Start with the feature against the price it is supposed to explain.
+`data.chart` needs no run, which is where most research starts: bars, an idea, and the question of whether the idea says anything. Start with the feature beside the price it should explain.
 
 ```python
 def vam(close, n):
-    logret = numpy.log(close / close.shift(1))
-    return numpy.log(close / close.shift(n)) / (logret.rolling(n).std() * numpy.sqrt(n))
+    logret = numpy.log(close / probatum.ta.shift(close))
+    return numpy.log(close / probatum.ta.shift(close, n)) / (
+        probatum.ta.stdev(logret, n) * numpy.sqrt(n))
 
 
-probatum.chart(
-    frame=frame,
-    marks=[
-        Line(values=vam(close=frame.close, n=72), name="vam 72", panel="vam"),
-        Level(value=0.0, panel="vam", style="dotted"),
-    ],
+data.chart(
+    Line(vam(data.close, 72), "vam 72", panel="vam"),
+    Level(0.0, panel="vam", style="dotted"),
 ).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-feature.png" alt="volatility adjusted momentum on its own panel, with a zero line" width="100%" />
-  <p style="margin: 0;"><i>The feature against the price it is supposed to explain, which is where every idea starts</i></p>
+  <p style="margin: 0;"><i>A feature beside the price it should explain</i></p>
 </div>
 
 <br>
 
-Then the same feature at several lookbacks, one panel each, **all pinned to the same window**. Autoscaled panels are not comparable, and three of them side by side will happily tell you three parameterisations behave identically when they do not.
+Then the same feature at several lookbacks, a panel each, **all pinned to one range**: panels scaled to their own data are not comparable, and three of them side by side look alike when they are not.
 
 ```python
-probatum.chart(
-    frame=frame,
-    marks=[
-        Line(values=vam24, name="vam 24", panel="vam24"),
-        Line(values=vam72, name="vam 72", panel="vam72"),
-        Line(values=vam168, name="vam 168", panel="vam168"),
-    ],
+data.chart(
+    Line(vam24, "vam 24", panel="vam24"),
+    Line(vam72, "vam 72", panel="vam72"),
+    Line(vam168, "vam 168", panel="vam168"),
     panels=[
-        Panel(name="vam24", range=(-5.0, 5.0)),
-        Panel(name="vam72", range=(-5.0, 5.0)),
-        Panel(name="vam168", range=(-5.0, 5.0)),
-        Panel(name="volume", show=False),
+        Panel("vam24", range=(-5.0, 5.0)),
+        Panel("vam72", range=(-5.0, 5.0)),
+        Panel("vam168", range=(-5.0, 5.0)),
+        Panel("volume", show=False),
     ],
     height=940,
 ).show()
 ```
 
-Then the chart that answers the question, which is the feature's extremes against whatever you think they predict:
+Then the feature's extremes against what they are meant to predict:
 
 ```python
-probatum.chart(
-    frame=frame,
-    marks=[
-        Background(values=regime, fill={"hi": "#2fe0a81f", "lo": "#ff54701f"}),
-        Line(values=vam72, name="vam 72", panel="vam", color=shade),
-        Band(upper=vam72, lower=2.0, only="above", panel="vam",
-             fill=("#2fe0a800", "#2fe0a859")),
-        Line(values=forward, name="fwd 4h", panel="fwd"),
-        Level(value=0.0, panel="fwd", style="dotted"),
-    ],
+data.chart(
+    Background(regime, fill={"hi": "#2fe0a81f", "lo": "#ff54701f"}),
+    Line(vam72, "vam 72", panel="vam", color=shade),
+    Band(vam72, 2.0, only="above", panel="vam", fill=("#2fe0a800", "#2fe0a859")),
+    Line(forward, "fwd 4h", panel="fwd"),
+    Level(0.0, panel="fwd", style="dotted"),
     candle_color=numpy.where(numpy.abs(vam72) > 2.0, "#4d9fff", None),
     title="vam 72 extremes against the next four hours",
 ).show()
@@ -282,68 +249,37 @@ probatum.chart(
 
 <div align="center">
   <img src="imgs/charts/ex-verdict.png" alt="the feature's extremes shaded, against the next four hours of return" width="100%" />
-  <p style="margin: 0;"><i>The extremes shaded, the candles tinted, and the next four hours on its own panel underneath; the question and the answer on one picture</i></p>
+  <p style="margin: 0;"><i>The extremes shaded, the candles tinted, and the next four hours on a panel of their own</i></p>
 </div>
 
 <br>
 
-**A forward return is where this goes wrong.** It is shorter than the frame, so it raises, and the message offers a front pad. Taking that offer is the mistake: `forward[k]` is the return that *starts* at bar `k`, so padding the head puts it at bar `k + 4` and draws the **trailing** return under a label saying forward. Nothing raises and nothing on screen says so. Pad the tail instead.
+**A forward return belongs to the bar it starts on.** It is four values short, and padding its head, which the length rule would also accept, puts `forward[k]` at bar `k + 4`: the trailing return drawn under a label saying forward. Pad the tail:
 
 ```python
-# numpy.asarray first: on a pandas Series the division aligns on the INDEX
-# rather than by position, so it returns a full-length series of NaN in the
-# wrong places and the concatenate lands T + 4 values that the length check
-# cannot tell from a mistake
-close = numpy.asarray(frame.close, dtype=float)
 forward = numpy.concatenate([close[4:] / close[:-4] - 1.0, numpy.full(4, numpy.nan)])
 ```
 
-The rule is about when a value belongs, never about making a number fit.
-
-**What this will not draw**, and should not: a feature against its forward return as a scatter, a histogram of trade returns, an autocorrelation. None of those has a time axis, and a chart whose x axis is bars is the wrong instrument for them. They belong wherever you already draw scatters.
+A chart over bars is the wrong instrument for a feature against its forward return as a scatter, a histogram of trade returns or an autocorrelation: none of them has a time axis.
 
 <br>
 
 ## The one rule
 
-The layer computes nothing and knows no indicator names ([ADR 0042](Decisions.md)). There is no `sma` here, no `rsi`, no registry and no way to ask for one. You bring arrays; it turns them into marks.
-
-That is the one rule worth knowing before you write anything. Everything is computed once, in Python, before a pixel is drawn, which is also why a chart keeps working when the kernel is gone: there is no live process to ask ([ADR 0042](Decisions.md)).
+The chart computes nothing and knows no indicator names ([ADR 0042](Decisions.md)). There is no `sma` here and no registry: you bring arrays, from `probatum.ta` or anywhere, and it draws them. Everything is computed once in Python before a pixel is drawn, which is also why a chart keeps working once the kernel is gone ([ADR 0042](Decisions.md)).
 
 <br>
 
 ## Your own arrays
 
-```python
-fast = frame.close.rolling(20).mean()
-slow = frame.close.rolling(50).mean()
+A numpy array, a pandas Series or a list all work, and all are read **by position**, one value a bar of the Data. A Series' index is never read, so align it yourself.
 
-probatum.chart(
-    frame=frame,
-    marks=[
-        Line(values=fast, name="SMA 20"),
-        Line(values=slow, name="SMA 50", style="dashed"),
-    ],
-    run=result,
-).show()
-```
-
-A pandas Series, a numpy array or a plain list all work, and all are read **by position**. A Series index is never consulted, so align it yourself: an index on a feature is a promise the library cannot check, and a `reindex` is exactly where lookahead gets introduced.
-
-**Pass the strategy's own arrays, not a fresh copy.** A strategy's arrays are plain attributes, so `Line(values=strategy.fast)` draws the values the fills were decided on. Recompute a moving average outside the strategy and the picture is of a rule that was never executed, differing from the traded one by a warm-up convention or an off-by-one nobody will find. They are usually identical, which is the worst version of this bug.
+**Draw the strategy's own arrays, not a fresh copy.** `result.policy` is the copy of the strategy the run used, so its arrays are the values the fills were decided on. A moving average recomputed outside the strategy is a picture of a rule that was never run, apart from the traded one by a warm-up or an off-by-one.
 
 ```python
-strategy = SmaCross(fast=20, slow=50)
-
-result = probatum.Backtester(candles=frame).run(strategy)
-
-probatum.chart(
-    frame=frame,
-    marks=[
-        Line(values=strategy.fast, name="SMA 20"),
-        Line(values=strategy.slow, name="SMA 50"),
-    ],
-    run=result,
+result.chart(
+    Line(strategy.fast_line, "SMA 20"),
+    Line(strategy.slow_line, "SMA 50"),
 ).show()
 ```
 
@@ -351,46 +287,40 @@ probatum.chart(
 
 ### Naming the window once
 
-The call above writes `20` twice: once as the parameter the strategy trades on, once as prose in the legend. Under [`search`](Python_API.md#search) that legend is wrong on every trial but one, because each trial builds a fresh strategy with a different window and nothing rewrites the string.
-
-A `marks()` method fixes it, and it is an ordinary method rather than anything the library knows about. Nothing calls it during a run, so a sweep pays nothing for it.
+The call above writes `20` twice, as the parameter and in the legend. A `marks()` method on the strategy says it once, and it is an ordinary method: nothing calls it during a run, so a search pays nothing for it.
 
 ```python
 class SmaCross(probatum.Strategy):
     def __init__(self, fast=20, slow=50):
-        self.fast_n = fast
-        self.slow_n = slow
+        self.fast, self.slow = fast, slow
 
-    def init(self, engine):
-        close = pandas.Series(engine.data[:, 3])
-        self.fast = close.rolling(self.fast_n).mean().shift(1).to_numpy()
-        self.slow = close.rolling(self.slow_n).mean().shift(1).to_numpy()
+    def init(self, data):
+        self.fast_line = probatum.ta.sma(data.close, self.fast)
+        self.slow_line = probatum.ta.sma(data.close, self.slow)
+        self.warmup = self.slow
 
-    def next(self, state, engine):
+    def next(self, bar, account):
         ...
 
     def marks(self):
         return [
-            Line(values=self.fast, name=f"SMA {self.fast_n}"),
-            Line(values=self.slow, name=f"SMA {self.slow_n}", style="dashed"),
+            Line(self.fast_line, f"SMA {self.fast}"),
+            Line(self.slow_line, f"SMA {self.slow}", style="dashed"),
         ]
 ```
 
 ```python
-probatum.chart(frame=frame, marks=strategy.marks(), run=result).show()
+result.chart(strategy.marks()).show()
 ```
 
-A list of marks is flattened like any other, so what the strategy declares and what you add at the call site compose. The strategy says what it traded on; the chart cell adds whatever you are comparing it against today, without editing the class or re-running anything.
+A list of marks is flattened like any other, so what the strategy declares and what you add at the call compose:
 
 ```python
-probatum.chart(
-    frame=frame,
-    marks=strategy.marks() + [Line(values=buy_and_hold, name="buy and hold")],
-    run=result,
+result.chart(
+    strategy.marks(),
+    Line(result.baselines["buy_and_hold"], "buy and hold", panel="equity"),
 ).show()
 ```
-
-This is the whole of the organisational answer. There is no registration hook, no `Strategy.plot`, and nothing to switch off, for the reasons in [ADR 0042](Decisions.md).
 
 <br>
 
@@ -400,56 +330,57 @@ Two lengths are accepted, and they mean different things ([ADR 0042](Decisions.m
 
 | Length | Drawn from |
 | :--- | :--- |
-| `T` | bar 0. Entry `i` is bar `i`. |
-| `T - 1` | bar 1. Entry `i` is bar `i + 1`. |
+| `T` | bar 0: entry `i` is bar `i`. |
+| `T - 1` | bar 1: entry `i` is bar `i + 1`, as `numpy.diff` gives it. |
 
-A third, `T + future`, is accepted only when `future=` has given the axis room for it; see [Drawing past the last candle](#drawing-past-the-last-candle).
-
-Anything else raises and names both numbers, because a silent trim or pad is a chart that is off by an amount nobody can see.
+A third, `T + future`, is accepted where `future=` has given the axis room for it; see [Drawing past the last candle](#drawing-past-the-last-candle). Any other length raises a `ProbatumValueError` that names both numbers, since a silent trim or pad draws a chart off by an amount no one can see:
 
 ```text
-ValueError: series 1 has 4000 values, frame has 8760; expected 8760, one per bar,
-or 8759, drawn from bar 1 like an equity curve or a diff
+Line 'f': 4000 values for 8760 bars; give 8760, one a bar, or 8759, drawn from bar 1 as a diff is
 ```
 
-`T - 1` draws late because drawing a short array early is the visual signature of lookahead, and because the engine records an equity point only on a real advance, so `equity_curve[i]` is the account at tick `i + 1`. `numpy.diff` and `close.pct_change().dropna()` are the same shape.
+A `T - 1` array draws late because drawing a short array early is what lookahead looks like on a chart. It is not a claim about when a value could first be known: a number read inside `next` was known **on** its bar, and passed one short it draws one bar right of the candles it explains, which raises nothing, since both lengths are legal.
 
-**It is not because `i + 1` is the earliest bar such a value could be known.** That reading is wrong and it costs people an afternoon. A number you read off `state` inside `next` was known **on** bar `i`, and passing it short draws your whole exposure story one bar right of the candles it is supposed to explain. Two arrays accumulated in the same loop can want opposite treatments:
-
-**The best fix is to say which you meant while you are writing the loop**, because that is where the meaning is obvious. `Recorder` collects values under a name and an alignment, and hands back one value per bar:
+**`Recorder` says which you meant where the meaning is plain**, while writing `next`. It collects values under a name and an alignment, and hands back one value a bar of the Data:
 
 ```python
 class Carry(probatum.Strategy):
-    def init(self, engine):
-        self.log = Recorder(bars=engine)
+    def init(self, data):
+        self.log = Recorder(data)
 
-    def next(self, state, engine):
-        self.log.at_bar(state, lev=..., flat=state["position"] == 0.0)
-        self.log.at_next(state, liq=...)
+    def next(self, bar, account):
+        self.log.at_bar(bar, leverage=account.leverage, flat=account.position == 0.0)
+        self.log.at_next(bar, close=bar.close)
 
 
-probatum.chart(
-    frame=frame,
-    marks=Line(values=strategy.log["lev"], name="leverage", panel="risk"),
-    run=result,
-).show()
+result = probatum.backtest(Carry(), data, "binance_spot")
+result.chart(Line(result.policy.log["leverage"], "leverage", panel="risk")).show()
 ```
 
-A bar you returned early from is a gap, and a boolean one is `False`, so a warm-up needs no padding at all. One key holds one kind and one alignment; changing either raises rather than converting. It costs one array write per value per bar, so leave it out of a strategy you mean to sweep across hundreds of trials.
+`at_bar` records a value already true on the bar `next` was handed, and `at_next` one the next bar is tested against, such as a stop level. A bar `next` never reached is a gap, and a boolean one is `False`, so a warm-up needs no padding. One key holds one kind and one alignment, and changing either raises. It costs an array write per value per bar, so leave it out of a strategy you mean to search over.
 
-`probatum.plot.at_bar` and `at_next` are the same two rules as plain functions, for when you already have a list. Both pad a boolean with `False` rather than NaN, which matters: `numpy.array([numpy.nan]).astype(bool)` is `True`, so a mask padded the way a float is padded reports the event it was looking for on its last bar. A risk report built by hand that way printed one liquidation on a run that never had one.
+`at_bar` and `at_next` are the same two rules as functions of an array you already have. Both pad a boolean with `False` rather than NaN, since `numpy.array([numpy.nan]).astype(bool)` is `True`, and a mask padded the way a float is reports its condition on the one bar it knows nothing about. A `Background` mask is read the same way: a NaN or a `pandas.NA` shades nothing.
 
-A `Background` mask is guarded for you too: a NaN or a `pandas.NA` shades nothing rather than shading everything. A mask you cast yourself, before it reaches the chart, is your own.
+```python
+data.chart(Line(at_bar(recorded), "recorded")).show()
+```
+
+**A run's own arrays are on the rows it recorded**: its equity, its baselines and its round trips' bars. Those are all the Data's unless a row printed no bar of the run's instruments, as one of a selection from a universe can, or the Result was taken part way through its run. There an array as long as the run's rows is refused rather than drawn off its bars, and where that is one row short a diff is refused with it, since the two cannot be told apart by length; give a diff as `numpy.diff(x, prepend=numpy.nan)`, and put a run's array on the Data's rows first:
+
+```python
+# the Data's row of each of the run's
+rows   = numpy.searchsorted(data.time, result.time)
+placed = numpy.full(len(data), numpy.nan)
+placed[rows] = result.baselines["buy_and_hold"]
+
+result.chart(Line(placed, "buy and hold", panel="equity")).show()
+```
 
 <br>
 
 ### A NaN is a gap
 
-A value that does not exist stops the line ([ADR 0042](Decisions.md)). It is never dropped, because dropping it makes the two neighbours adjacent: a trailing stop that existed on bars 0 to 40 and again on bars 900 to 940 would appear as a smooth line through 860 bars where there was no stop at all. Pine users know this as `plot.style_linebr` rather than `plot()`, which joins across `na`.
-
-Not dropping the row is necessary and it is not sufficient, which took a browser to find out. The document carries a null for every missing bar, exactly as it should, and lightweight-charts joins straight across that too, on both the line and the area series. So the hole is cut rather than merely marked: a gapped series is drawn as one renderer series per contiguous run. The cost is one of those per hole, so a mask that alternates every few bars is a real payload rather than a cosmetic one, and a rolling warm-up still costs nothing, because a leading run of non-finite values is carried as an offset rather than as data.
-
-Infinities are gaps too.
+A value that does not exist stops the line ([ADR 0042](Decisions.md)). It is never dropped, since dropping it would make its two neighbours adjacent: a trailing stop on bars 0 to 40 and again on bars 900 to 940 would draw a line through the 860 bars it was not there. The renderer joins across a missing value on its own, so a gapped series is drawn as one renderer series per run of values: each hole costs one, and a leading run of NaN costs nothing, since it is carried as an offset. Infinities are gaps too.
 
 <br>
 
@@ -457,125 +388,100 @@ Infinities are gaps too.
 
 **`color`** is the mark itself: a line's stroke, a histogram's columns, a band's edges, a marker's glyph. **`fill`** is an area: under a line, between a band's edges, behind the bars for a background.
 
-`color` takes one value **or one per bar**, so a line can carry a second variable in its own colour. A per-bar colour obeys the same length contract as any other array, and `None` at a bar leaves it alone. The two marks that draw one shape rather than one per bar, `Level` and `Marker`, take a single colour and refuse an array, naming the substitute: a flat `Line` carrying the colour you wanted.
+`color` takes one value **or one a bar**, so a line can carry a second variable in its own colour. One a bar follows the length contract, and `None` leaves that bar alone. `Level` and `Marker`, which draw one shape, take one colour and refuse an array, naming the substitute.
 
-`fill` takes **one colour or a gradient**, never one per bar. For a fill whose colour changes with a condition, draw two conditional bands, one per state:
-
-```python
-Band(upper=senkou_a, lower=senkou_b, only="above", fill=GREEN + "33"),   # A over B
-Band(upper=senkou_b, lower=senkou_a, only="above", fill=RED + "33"),     # B over A
-```
-
-The edges swap places in the second, and that is the whole trick. It is not guessable, which is why it is written down here. `Background` is the exception that does vary per bar, through a `{label: colour}` map.
+`fill` takes **one colour or a gradient**, never one a bar. For a fill whose colour changes with a condition, draw two conditional bands, one for each state, their edges swapped:
 
 ```python
-Line(
-    values=fast,
-    name="SMA 20",
-    color=numpy.where(fast >= slow, "#2fe0a8", "#ff5470"),
-)
-```
-
-`ramp` turns numbers into colours, so the line becomes a gradient in which every shade is a real value:
-
-```python
-Line(
-    values=fast,
-    name="SMA 20",
-    color=ramp(
-        values=fast.diff() / fast,
-        colors=["#ff5470", "#8b97a5", "#2fe0a8"],
-    ),
-)
-```
-
-The domain is the data's own finite range unless you pin it with `domain=`, so a ramp is comparable inside one chart but not across two slices. Non-finite values are ignored when the domain is computed and return `None`, which every colour argument reads as "leave this bar alone". Pin the domain when two charts have to speak the same language.
-
-`candle_color=` on `chart` is Pine's `barcolor()`. It is a chart argument rather than a mark, because the candles came out of the frame rather than out of a list you built.
-
-```python
-held = numpy.zeros(len(frame), dtype=bool)
-
-for trade in result.trades:
-    last = len(frame) - 1 if trade["open"] else trade["close_bar"]
-    held[trade["open_bar"]:last + 1] = True
-
-probatum.chart(
-    frame=frame,
-    marks=strategy.marks(),
-    run=result,
-    candle_color=numpy.where(held, "#4d9fff", None),
+data.chart(
+    Band(senkou_a, senkou_b, only="above", fill=GREEN + "33"),   # a over b
+    Band(senkou_b, senkou_a, only="above", fill=RED + "33"),     # b over a
+    future=26,
 ).show()
+```
+
+`Background` is the exception, with a colour for each label through a `{label: colour}` map.
+
+```python
+data.chart(Line(fast, "SMA 20", color=numpy.where(fast >= slow, "#2fe0a8", "#ff5470"))).show()
+```
+
+`ramp` turns numbers into colours, so the line becomes a gradient in which every shade is a value:
+
+```python
+data.chart(Line(fast, "SMA 20", color=ramp(probatum.ta.roc(fast, 1), colors=["#ff5470", "#8b97a5", "#2fe0a8"]))).show()
+```
+
+The domain is the values' own finite range unless `domain=` pins it, so a ramp compares inside one chart but not across two; pin it when two charts have to agree. A non-finite value is left out of the domain and returns `None`.
+
+`candle_color=` is Pine's `barcolor()`, a keyword of the chart rather than a mark, since the candles are the Data's. Here it tints the bars the run held:
+
+```python
+# the Data's row of each of the run's
+rows = numpy.searchsorted(data.time, result.time)
+held = numpy.zeros(len(data), dtype=bool)
+for trade in result.trades:
+    last = rows[-1] if trade["open"] else rows[trade["close_bar"]]
+    held[rows[trade["open_bar"]]:last + 1] = True
+
+result.chart(strategy.marks(), candle_color=numpy.where(held, "#4d9fff", None)).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-held.png" alt="the bars the strategy was holding, tinted" width="100%" />
-  <p style="margin: 0;"><i>The bars the strategy was actually holding, which the equity curve alone never tells you</i></p>
+  <p style="margin: 0;"><i>The bars the run held, which the equity curve alone does not show</i></p>
 </div>
 
 <br>
 
 ## Panels
 
-`"price"` always exists, comes first and carries the candles. `"volume"` appears when the frame has a usable volume column, `"equity"` when a result is passed, and any other name is created the first time a `panel=` mentions it. `"drawdown"` is shaded onto the equity panel rather than given one of its own, unless you ask for one with `drawdown="panel"`.
+`"price"` always exists, comes first and carries the candles. `"volume"` appears where the volume is not dead, `"equity"` on a run's chart, and any other name the first time a mark's `panel=` gives it. The drawdown is shaded onto the equity panel rather than given a panel, unless `drawdown="panel"` asks for one.
 
-**A bare array overlays the candles unless doing so would cost them more than half the price panel** ([ADR 0042](Decisions.md)). Otherwise it gets its own panel. That is a guess about the picture, never about your intent: it may put a series somewhere you would not have, but it can never quietly flatten the candles to get it there. Override it with `panel=`, including `panel="price"`.
+**A bare array overlays the candles unless that costs them more than half the price panel** ([ADR 0042](Decisions.md)); otherwise it gets a panel of its own. The rule is about the picture, never your intent, and it cannot flatten the candles. `panel=` overrides it, `panel="price"` included.
 
-`panels=` **configures** panels; it never creates or removes one. A name it does not recognise configures nothing, so a typo costs you nothing rather than manufacturing a blank pane. Listing panels also fixes their order relative to each other, without moving them relative to the panels you did not list.
+`panels=` **configures** panels, and never creates or removes one, so a name it does not know configures nothing. Listing panels fixes their order relative to each other, and never moves them relative to the panels left out.
 
 ```python
-probatum.chart(
-    frame=frame,
-    marks=marks,
-    run=result,
+result.chart(
+    Line(rsi, "RSI 14", panel="momentum"),
     panels=[
-        Panel(name="momentum", weight=1.6, range=(0.0, 100.0)),
-        Panel(name="equity", weight=2.0, scale="log"),
+        Panel("momentum", weight=1.6, range=(0.0, 100.0)),
+        Panel("equity", weight=2.0, scale="log"),
     ],
 ).show()
 ```
 
-`show=False` removes a panel and everything on it, and a hidden panel ships no data at all rather than merely going unpainted. `weight` is a stretch factor rather than pixels, so a layout holds at any size: the numbers only matter against each other, and you only need one when you want a panel bigger or smaller than it comes out by default. `scale` is `"linear"`, `"log"` or `"percent"`, matching the **A / L / %** buttons every panel draws in its own axis, so a reader can change any of it without re-running anything. Log on the equity panel turns compounding into a straight line, which is the honest way to look at a long run.
+`show=False` removes a panel and everything on it, and a hidden panel ships no data. `weight` is a stretch against the other panels rather than pixels, so a layout holds at any size. `scale` is `"linear"`, `"log"` or `"percent"`, the **A / L / %** buttons every panel draws on its axis, so a reader can change it in the saved file. Log on the equity panel draws compounding as a straight line.
 
 <br>
 
 ### Turning off what a run brings
 
-A `BacktestResult` brings three things: the arrows, the trade log, and an equity panel with the fall from its own running peak shaded onto it. All three are optional.
+A run brings its arrows, its trade log, and an equity panel with the fall from its running peak shaded onto it. Each can be turned off.
 
-The shading **is** the drawdown. The band runs from the equity curve up to the highest equity the run had seen by that bar, so it closes to nothing on every new high, is at its widest at the worst bar, and puts the trough directly beneath the peak that caused it. The legend prints the percentage beside the balance, and it is the same number the engine reports as `max_drawdown_pct`.
+The shading **is** the drawdown, as `probatum.stats.drawdown` reads it: it runs from the equity up to the highest equity the run had reached by that bar, so it closes on every new high and is widest at the worst bar, and its deepest point is the record's `max_drawdown_pct`. The legend prints it beside the balance.
 
 ```python
-probatum.chart(
-    frame=frame,
-    run=result,
+result.chart(
     trades=False,                               # no arrows, no table
     drawdown="panel",                           # a pane of its own instead
-    panels=[
-        Panel(name="equity", scale="percent"),  # the same curve, as a return
-    ],
+    panels=[Panel("equity", scale="percent")],  # the same curve, as a return
 ).show()
 ```
 
-`drawdown` takes `"under"`, `"panel"` or `False`. A pane of its own is worth having on a **linear** equity axis, where the shading is drawn in quote currency and a late twenty percent therefore draws taller than an early one; on a log axis, which the **L** button gives you without re-running anything, equal percentages are equal distances and the shading is faithful. `chart_defaults(drawdown="panel")` sets it for a whole session rather than at every call. `Panel(name="equity", show=False)` removes the panel and the shading with it.
+`drawdown` is `"under"`, `"panel"` or `False`. A pane of its own suits a **linear** equity axis, on which a shaded fall is in the quote currency and a late twenty percent draws taller than an early one; on a log axis equal percentages are equal distances. `probatum.chart.defaults(drawdown="panel")` sets it for every later chart, and `Panel("equity", show=False)` removes the panel with its shading.
 
-One thing to know before reading a percent axis, because it is the one scale whose meaning depends on where you are looking. Percent is per series, not per panel: the renderer baselines each one at its own first **visible** point. So two series that start on different bars are measured from different anchors while the viewport sits left of the later one, and both the baseline and the numbers move as you pan. On a panel carrying one series that is exactly what you want. On a panel carrying a curve and a benchmark that begins two hundred bars in, the two percentages are not comparable until you scroll past the later start. The `%` button puts any panel into that mode, so it is reachable without ever passing `scale="percent"`.
+A percent axis is read per series, from each one's first **visible** point, so two series that start on different bars are measured from different anchors until the view is past the later start.
 
-**The drawdown is not the equity curve as a percentage**, which is the usual reason people reach to turn it off. Percent rescales the axis and leaves the curve identical, so it tells you nothing new. Drawdown measures the fall from the running peak, so it pins to zero on every new high and only moves when you are below one. On a run that ends up 23%, the two answer different questions at the same bar:
-
-| Measure | At the worst bar |
-| :--- | :--- |
-| equity, as a return | **+3.72%** |
-| drawdown | **-8.55%** |
-
-Up on the year and eight percent below the high, on the same bar. The curve alone cannot show you the second number, which is what the shading is there to draw.
+**The drawdown is not the equity as a percentage.** A percent axis rescales the same curve; the drawdown measures the fall from the running peak, zero on every new high. On one bar a run can be up since its first and eight percent below its high, and only the drawdown shows the second.
 
 <br>
 
 ## The marks
 
 ```python
-from probatum.plot import (
+from probatum.chart.marks import (
     Panel, Line, Histogram, Band, Level, Marker, Markers, Background, Recorder,
     ramp, at_bar, at_next,
 )
@@ -583,302 +489,273 @@ from probatum.plot import (
 
 | Mark | What it draws |
 | :--- | :--- |
-| `Line(values, name, ...)` | a line through your values. `step=True` holds each value until the next, which is right for a position or a discrete action. |
+| `Line(values, name, ...)` | a line through your values. `step=True` holds each value until the next, which suits a position or a discrete action. |
 | `Histogram(values, name, ...)` | columns from `base` to your values. |
-| `Band(upper, lower, name, ...)` | a shaded region between two edges. `lower` may be a single number, so a channel and a threshold are one mark. |
+| `Band(upper, lower, name, ...)` | a shaded region between two edges. `lower` may be one number, so a channel and a threshold are one mark. |
 | `Level(value, name, ...)` | a horizontal line across the panel. |
 | `Marker(bar, ...)` | one annotation at one bar. |
-| `Markers(mask, ...)` | a glyph on every bar a condition holds, which is what `plotshape` does. |
-| `Background(values, name, ...)` | shading behind the bars, on a condition of your choosing. A `name` puts the region under the crosshair in the legend. |
-| `ramp(values, *stops, colors=, domain=)` | numbers to colours, one per value. |
-| `Recorder(bars)` | collect values inside `Strategy.next` with their alignment declared. |
-| `at_bar(values)`, `at_next(values)` | the same two rules as plain functions, for a list you already have. |
+| `Markers(mask, ...)` | a glyph on every bar a condition holds, Pine's `plotshape`. |
+| `Background(values, name, ...)` | shading behind the bars on a condition; a `name` puts the region under the crosshair in the legend. |
+| `ramp(values, *stops, colors=, domain=)` | numbers to colours, one a value. |
+| `Recorder(bars)` | values collected inside `Strategy.next` with their alignment declared, `bars` a Data or its length. |
+| `at_bar(values)`, `at_next(values)` | the same two rules as functions of an array you already have. |
 
-`Band` with `only="above"` or `"below"` is the conditional fill an overbought shading actually is: it exists solely where the upper edge is past the reference, and its gradient runs from that edge toward each excursion's own extreme, so a brief poke past the level shades faintly and a deep one shades hard.
+`Band` with `only="above"` or `"below"` is the conditional fill an overbought shading is: it exists only where the upper edge is past the lower, and its gradient runs from that edge toward each excursion's own extreme, so a brief poke past the level shades faintly and a deep one shades hard.
 
 ```python
-probatum.chart(
-    frame=frame,
-    marks=[
-        Line(values=rsi, name="RSI 14", panel="momentum"),
-        Level(value=70.0, panel="momentum", style="dotted"),
-        Band(upper=rsi, lower=70.0, only="above", panel="momentum",
-             fill=("#ff547000", "#ff547059")),
-        Band(upper=rsi, lower=30.0, only="below", panel="momentum",
-             fill=("#2fe0a800", "#2fe0a859")),
-    ],
-    run=result,
+result.chart(
+    Line(rsi, "RSI 14", panel="momentum"),
+    Level(70.0, panel="momentum", style="dotted"),
+    Band(rsi, 70.0, only="above", panel="momentum", fill=("#ff547000", "#ff547059")),
+    Band(rsi, 30.0, only="below", panel="momentum", fill=("#2fe0a800", "#2fe0a859")),
 ).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-zones.png" alt="conditional shading above seventy and below thirty, gradient toward each excursion's extreme" width="100%" />
-  <p style="margin: 0;"><i>Two zones on one oscillator: each exists only where the reading is past its own level, so the panel between them is left clear</i></p>
+  <p style="margin: 0;"><i>Two zones on one oscillator, each only where the reading is past its level</i></p>
 </div>
 
 <br>
 
-`Background` takes a boolean mask for one region, or an array of labels for as many as you like, with a `{label: colour}` map in which an absent label shades nothing. That absence is what keeps a three-state background readable.
+`Background` takes a boolean mask for one region, or an array of labels for several, with a `{label: colour}` map in which a label it leaves out shades nothing, which keeps a three-state background readable.
 
 ```python
-Background(
-    values=regime,
-    name="volatility",
-    fill={"elevated": "#4d9fff29", "extreme": "#ff547033"},
-)
+data.chart(Background(regime, "volatility", fill={"hi": "#4d9fff29", "lo": "#ff547033"})).show()
 ```
 
-Give it a `name` and it takes a legend row reading the region under the crosshair, so three shaded stretches stop being three washes and a guess. Leave the name out and it draws exactly as before and stays out of the legend, which is right for shading that is scene rather than subject. A mask has no region names to report, so its row is the swatch and the name you gave the whole shading.
+With a `name` it takes a legend row reading the region under the crosshair; without one it draws and stays out of the legend. A mask has no region names, so its row is the swatch and the name.
 
-`Marker`'s **`offset` is a signed distance in pixels**, positive upward, so the glyph holds its distance from the bar at every zoom level instead of drifting as the scale changes. That is the one thing the engine's own trade arrows cannot express, which is why they are drawn by a different mechanism. Its `shape` is one of `"circle"`, `"square"`, `"arrow_up"` or `"arrow_down"`, and anything else raises. To anchor on the panel's own scale rather than in pixels, pass `value=`, which is a price only on a price panel; leave it out and the marker sits at the bar's own extreme.
+`Marker`'s **`offset` is a signed distance in pixels**, positive upward, so the glyph keeps its distance from the bar at every zoom. Its `shape` is `"circle"`, `"square"`, `"arrow_up"` or `"arrow_down"`. To anchor on the panel's own scale, pass `value=`, a price only on the price panel; without one the marker sits at the bar's own extreme.
 
-`Markers` is the same glyph on every bar a boolean says so, which is `plotshape`:
+`Markers` is the same glyph on every bar a mask is true on:
 
 ```python
-# probatum.ta.crossover, not a hand-rolled comparison: it pads with False rather
-# than NaN, because bool(nan) is True and a float warm-up fires the rule on
-# precisely the bars where nothing is known (ADR 0037). Hand-rolling it also
-# aligns two pandas slices on their index rather than by position, which is a
-# different array of a different length
-crossed = probatum.ta.crossover(fast, slow)
-
-probatum.chart(frame=frame, marks=[Markers(mask=crossed, shape="arrow_up", offset=-16)]).show()
+data.chart(Markers(probatum.ta.crossover(fast, slow), shape="arrow_up", offset=-16)).show()
 ```
 
-It takes the same keywords as `Marker`, and `value=` additionally accepts an array, so each glyph can sit on its own bar's reading of something rather than on the bar's extreme. One `Markers` is one thing the renderer draws, where a list comprehension over `flatnonzero` is one for every glyph.
-
-**The mask must be boolean.** A comparison that has passed through a warm-up arrives as floats carrying NaN, and `astype(bool)` reads NaN as `True`, which puts a glyph on the one bar the condition could not be evaluated on. That raises rather than drawing it.
+`probatum.ta.crossover` pads its warm-up with `False`, since `bool(nan)` is `True` and a float warm-up would fire on the bars where nothing is known. `Markers` takes `Marker`'s keywords, and its `value=` can be an array, so each glyph sits on its own bar's reading. **The mask must be boolean**: a float mask is how a comparison arrives after a NaN, and it is refused.
 
 <br>
 
 ## What raises
 
-Four inputs depend on the frame, so only `chart` can check them, and all four refuse rather than draw something plausible.
+What depends on the bars only the chart can check, and it refuses rather than draws something plausible. Every refusal is one of probatum's errors, named for the argument as you typed it.
 
 | Refused | Because |
 | :--- | :--- |
-| a result from a different number of bars | trade rows carry bar indices into the original series, so every marker would land on the wrong bar. |
-| a series of an unaccepted length | the lengths are "The length contract" above, and the message names both numbers. |
-| a logarithmic panel whose data reaches zero | the offending bar is named. |
-| a frame with no timestamps, duplicate timestamps, or a non-finite price | a chart cannot fabricate its x axis, the renderer keys on time, and a candle missing one of its four numbers cannot be drawn. |
+| a series of a length the contract does not accept | the message names both numbers. |
+| a logarithmic panel whose data reaches zero | the bar is named. |
+| a Result among the marks | another run's equity is a `Line` on the equity panel. |
+| an array as long as the rows a run recorded, where those are not all the Data's | drawn as the Data's it would land off its bars; see [the length contract](#the-length-contract). |
+| `data=` with bars of another fingerprint | the run's round trips would land on bars it never read. |
+| no `instrument` on a Data of several | the candles are one instrument's. |
+| a book of several accounts | its accounts ran on bars of their own. |
 
-Beyond those, a keyword given a value outside its own published vocabulary is an ordinary `ValueError` where you wrote it, the same as `Level(nan)`. Everything else degrades in the open and says so.
-
-A missing volume column draws no volume panel. A volume column that is all zero, all NaN or constant draws no panel **and warns**, because that is what a dead feed looks like and it renders as a perfectly plausible flat chart. A `Level` with no `panel=` goes on the price panel, and if its value is nowhere near the candles it **warns**, because the renderer draws a level as a price line and a price line is not something the axis autoscales to: `Level(70)` beside a coin at 61,000 is off screen, which is the most common oscillator idiom in the world failing in silence. A second `BacktestResult` warns and the first is used.
+A keyword given a value outside its own vocabulary raises where you wrote it, as `Level(nan)` does. Everything else degrades in the open, with a `probatum.ProbatumWarning`. A volume that is all zero or constant draws no volume panel **and warns**, since a dead feed draws as a plausible flat chart. A `Level` with no `panel=` goes on the price panel, and **warns** where its value is far from the candles, since the axis does not scale to a level and `Level(70)` beside a coin at 61,000 is off screen.
 
 <br>
 
 ## `focus`
 
-A round trip from `result.trades`, a `(start, end)` pair of bar indices, or an integer `N` meaning the last `N` bars. It moves the viewport and never slices the data, so every marker stays on its own bar, and its bounds are clamped to the frame rather than refused.
+A round trip of the run's, from `result.trades`, a `(start, end)` pair of bars, or `N`, the last `N` bars. It moves the view and never slices the bars, so every marker stays on its own bar, and its bounds are clamped rather than refused.
 
 ```python
 worst = min(result.trades, key=lambda trade: trade["pnl"])
 
-probatum.chart(frame=frame, marks=strategy.marks(), run=result, focus=worst).show()
+result.chart(strategy.marks(), focus=worst).show()
 ```
 
 <div align="center">
   <img src="imgs/charts/ex-focus.png" alt="the worst trade framed, with the captions that only appear when few trades are in view" width="100%" />
-  <p style="margin: 0;"><i>The focus argument moves the viewport and never slices the data, so every marker stays on the bar it belongs to</i></p>
+  <p style="margin: 0;"><i>focus moves the view and never slices the bars</i></p>
 </div>
+
+<br>
+
+## One instrument of several
+
+On a Data of several instruments, `instrument=` names whose candles are drawn. On a run, only the round trips the run closed on that instrument are drawn, and the equity panel is the whole account's.
+
+```python
+universe.chart(instrument="ETHUSDT").show()
+
+pair = probatum.backtest(numpy.full((len(universe), 2), 0.4), universe, "binance_spot")
+pair.chart(
+    Line(pair["ETHUSDT"].weight, "weight", panel="weight", step=True),
+    instrument="ETHUSDT",
+).show()
+```
+
+A bar the instrument printed none on keeps its slot on the axis with no candle, and the legend over it says `no bar`. A run on a selection of the instruments sees only the rows they printed, so its equity and its round trips are drawn on the Data's rows they belong to, and its marks stay one value a bar of the Data.
+
+<br>
+
+## A Result that keeps no Data
+
+A Result loaded with `Result.load`, unpickled, or recorded below the full level keeps no Data, so `data=` gives it. It is held to the fingerprint the run recorded, so a chart can only be of the bars the run read.
+
+```python
+kept = probatum.backtest(SmaCross(), data, "binance_spot", record="account")
+kept.chart(data=data).show()
+```
 
 <br>
 
 ## Output
 
 ```python
-chart = probatum.chart(frame=frame, run=result, title="SMA cross 20/50, BTCUSDT 1h")
+chart = result.chart(title="SMA cross 20/50, BTCUSDT 1h")
 
 chart.show()                            # inline in a notebook cell
-chart.save(path="reports/run.html")     # one self-contained file
+chart.save("reports/run.html")          # one self-contained file
 chart.spec()                            # the underlying document, for tests
 ```
 
-`show` embeds an iframe whose content is stored in the `.ipynb`, so the chart survives the notebook being saved, closed and reopened with **no kernel and no network**. Outside a notebook `show` raises and points at `save`, because there is nothing to draw into and a silent no-op is the expensive kind of nothing.
+`show` embeds an iframe whose content is stored in the `.ipynb`, so the chart survives the notebook being saved and reopened with **no kernel and no network**. Outside a notebook `show` raises and points at `save`.
 
 <br>
 
 ### Where it renders
 
-There is nothing to configure and no renderer to select. Libraries that need to be told their environment need it because their JavaScript has to be loaded into the frontend, and every frontend loads scripts differently. A chart here is an iframe carrying its whole document inline: the cell output holds one `<iframe>`, no script tag, no module loader and no URL, so the host only has to render an iframe. That is the same job in every frontend.
+There is nothing to configure. A chart is an iframe carrying its whole document inline, with no script tag, module loader or URL in the cell's output, so every frontend that renders an iframe draws it.
 
-Two places it will not draw, both because the host removes the iframe before it ever runs:
+Two places it will not draw, since the host removes the iframe first:
 
-- **An untrusted notebook.** JupyterLab and Notebook 7 sanitise HTML output in a notebook you did not execute yourself, which strips the iframe. Click Trust Notebook once. This applies to every JavaScript charting library, not only this one.
-- **GitHub's notebook viewer.** It strips iframes and scripts, so a notebook browsed on github.com shows the prose and the printed output but blank where the charts are. Export with `nbconvert --to html`, or `save` the charts as files and link them.
+- **An untrusted notebook.** JupyterLab and Notebook 7 strip HTML output from a notebook you did not run yourself; Trust Notebook once.
+- **GitHub's notebook viewer**, which strips iframes and scripts. Export with `nbconvert --to html`, or save the charts as files and link them.
 
-`title=` and `stats=` are drawn above the plot, the title on the left and the numbers on the right, which is what turns a saved file into a document rather than a picture. A file arrives in someone's inbox with only its filename, and a chart that cannot say which strategy over which period is an untitled squiggle.
+`title=` and `stats=` are drawn above the plot, the title on the left and the numbers on the right, so a saved file says which run over which period it is.
 
 ```python
-probatum.chart(
-    frame=frame,
-    run=result,
-    title="Carry 24/168 at 3x, BTCUSDT perp, 2025",
+result.chart(
+    title="SMA cross 20/50, BTCUSDT 1h, binance spot",
     stats=["total_return_pct", "sharpe", "max_drawdown_pct", "exposure_pct"],
-).save(path="reports/carry-2025.html")
+).save("reports/cross.html")
 ```
 
-Passing a run gives you four by default: return, sharpe, max drawdown and trade count. `stats=[]` shows none. The formatting is decided in Python, so the renderer only draws the pairs it is handed.
+A run shows four by default, its return, Sharpe, maximum drawdown and round trips, named as `result.stats` names them, and `stats=[]` shows none. The numbers are formatted in Python, so the renderer only draws the pairs it is given.
 
 <br>
 
 ### The evidence, not just the claim
 
-`notes=` puts a table of your own in the panel under the plot, above the trade log and behind the same button. It takes a DataFrame, or a list of rows whose first row is the header.
+`notes=` puts a table of your own under the plot, above the trade log and behind the same button: a pandas or polars DataFrame, a pyarrow Table, or rows whose first names the columns.
 
 ```python
-probatum.chart(
-    frame=frame,
-    run=result,
+result.chart(
     title="each stretch traded on parameters fitted only on the bars before it",
     notes=[
         ["window", "fitted on", "traded", "sharpe"],
         [1, "2025-01-01 to 2025-06-30", "2025-07-01 to 2025-09-30", 1.94],
         [2, "2025-04-01 to 2025-09-30", "2025-10-01 to 2025-12-31", 0.71],
     ],
-).save(path="reports/walk-2025.html")
+).save("reports/walk.html")
 ```
 
-A DataFrame goes in the same place, which is usually what you already have, such as a validation's `study.windows.to_pandas()`, a row each stretch one fit traded.
+A probatum Table goes in as `table.to_pandas()`, such as a validation's `study.windows`, a row each stretch one fit traded.
 
 <div align="center">
   <img src="imgs/charts/ex-notes.png" alt="the settings behind the chart, carried in the document" width="100%" />
-  <p style="margin: 0;"><i>What produced the picture, under the picture, in the file rather than in the cell that made it</i></p>
+  <p style="margin: 0;"><i>What produced the picture, carried by the file rather than the cell that made it</i></p>
 </div>
 
-This is what stops a saved file carrying a claim and not the evidence for it. A walk-forward chart asserts that each stretch traded on parameters fitted only on the bars before it, and the windows that say so were printed by the cell rather than by the chart, so `save` dropped them and the first person to forward the file is looking at an assertion.
-
-A DataFrame's index is **not** drawn, so `reset_index()` if you want it as a column. Nothing caps the length, the same as the trade log, and this is meant for context rather than for data: a few rows saying what produced the picture, not a second copy of the picture's inputs. Cells are written as text, so one carrying angle brackets is a cell.
+The settings that produced a picture are printed by the cell, so a saved file without them carries the claim and not the evidence for it. A DataFrame's index is not drawn, so `reset_index()` keeps it as a column, and every cell is written as text.
 
 <br>
 
 ### Comparing runs
 
-One run is rich and the others are curves, and that asymmetry is on purpose: two sets of trade arrows on one chart is unreadable. So pass the run you are studying, and the rest as equity lines.
+One run is drawn in full and the others as curves, since two sets of trade arrows on one chart cannot be read. Chart the run you are studying, with the others' equity on its equity panel:
 
 ```python
-# neighbours is a dict of {label: BacktestResult}: a run carries what produced
-# it (ADR 0026) but not what you decided to call it, so the name comes from your
-# own bookkeeping rather than off the result
-stack = numpy.stack([run.equity_curve for run in neighbours.values()])
+# neighbours maps your name for each run to its Result
+stack = numpy.stack([run.equity for run in neighbours.values()])
 
-probatum.chart(
-    frame=frame,
-    marks=[
-        Band(
-            upper=stack.max(axis=0),
-            lower=stack.min(axis=0),
-            name="neighbours",
-            panel="equity",
-            fill="#8b97a51f",
-        ),
-    ] + [
-        Line(
-            values=run.equity_curve,
-            name=label,
-            panel="equity",
-            color="#8b97a5",
-            width=1,
-        )
-        for label, run in neighbours.items()
-    ],
-    run=win,
-    panels=[Panel(name="equity", weight=3.0, scale="log")],
+win.chart(
+    Band(stack.max(axis=0), stack.min(axis=0), "neighbours", panel="equity", fill="#8b97a51f"),
+    [Line(run.equity, label, panel="equity", color="#8b97a5", width=1)
+     for label, run in neighbours.items()],
+    panels=[Panel("equity", weight=3.0, scale="log")],
 ).show()
 ```
 
-**Do not also pass a `Line` for the winner's own equity.** Passing `win` as the run already draws it, and adding one puts the same series in the legend twice and reports it twice on the crosshair. Passing a second `BacktestResult` warns and uses the first.
+A Result passed among the marks is refused, with the `Line` that draws its equity.
 
 <br>
 
 ### Size
 
-`height` is the height of a **notebook cell**, in pixels, and `show(height=)` overrides it for one display without rebuilding anything. A **saved file sizes itself to the window** instead, which is what makes one file right on a laptop and on a wide monitor, and what lets another page embed it in an iframe of the page's own choosing.
+`height` is a **notebook cell's**, in pixels, and `show(height=)` overrides it for one display without rebuilding anything. A **saved file sizes itself to its window**, so one file is right on a laptop and on a wide monitor, and another page can embed it in an iframe of its own size.
 
 ```python
-chart = probatum.chart(frame=frame, run=result, height=420)
+chart = result.chart(height=420)
 
 chart.show()                      # a 420px cell
 chart.show(height=900)            # the same document, drawn taller
-chart.save(path="run.html")       # fills whatever window opens it
+chart.save("run.html")            # fills whatever window opens it
 ```
 
-There is no width, anywhere. A chart fills whatever contains it. A notebook cell is a container of unknown size, so a pinned width is how a chart ends up cut off on one screen and short of the edge on another, and it is the one place the layout would stop holding at any size. Panels are sized with `weight`, a stretch factor, for the same reason.
+There is no width: a chart fills whatever contains it, and panels are sized by `weight` for the same reason.
 
-A year of hourly candles is 8760 bars, and a notebook cell gives each of them about a fifth of a pixel. Every bar is still fitted, because framing a quarter of the data and saying nothing is worse than a crowded one, and below one device pixel of bar spacing the candles are **aggregated to the column**: one drawn candle per pixel, opening at the first of its group and closing at the last, reaching the extremes of all of them. Zooming in un-aggregates as the spacing grows. The legend reads a real bar rather than the aggregate, so nothing you hover is a summary of several; under conflation the bar it reports can be a neighbour of the drawn column rather than the group's own first bar, which the render test holds to within two percent of where the pointer is. The time axis holds one grain at a time for the same reason: at a year it names months, and a lone day number between two of them is noise rather than detail.
+A year of hourly candles in a notebook cell is a fraction of a pixel a bar. Every bar is still fitted, and below one device pixel of bar spacing the candles are **aggregated to the column**, one drawn candle a pixel, from the first bar's open to the last's close and reaching the extremes of all of them; zooming in undoes it. The legend reads a real bar rather than the aggregate. The time axis holds one grain at a time, so at a year it names months.
 
 <br>
 
 ### What it costs
 
-Every chart embeds its own copy of the renderer, the vendored library plus the stylesheet, the shell and the seven files of the bundle, about 300 KB once escaped, plus its data. Twenty charts in one notebook is therefore roughly 6 MB of identical JavaScript, paid once into the `.ipynb` and again into every copy of it.
+Every chart carries its own copy of the renderer, about 300 KB, beside its data, so twenty charts in one notebook are about 6 MB of the same JavaScript, paid into the `.ipynb` and into every copy of it. Sharing one copy would have the iframes reach into the page around them, which is what would stop a saved file working on its own. Fewer charts with more panels cost less: a chart of five panels carries one renderer.
 
-That is not an oversight and it is not worth engineering around. Sharing one copy would mean the iframes reaching into the parent document, which is exactly the coupling that makes a saved file stop working when it leaves the notebook it came from. The advice is fewer, richer charts: a chart with five panels on it costs one renderer, and five charts cost five.
-
-Set the look once and forget it:
+Set the look once:
 
 ```python
-probatum.chart_defaults(theme="dark", height=560)
+probatum.chart.defaults(theme="dark", height=560)
 ```
 
-Both palettes travel in every document, so a saved file toggles light and dark offline and `theme` names the one it opens on rather than the only one it holds. `palette` overrides individual colours inside either.
-
-`theme` and `palette` are on `chart` as well, and mean the same thing there, so one report can be branded without a global that then applies to every chart drawn after it. A palette given on the call replaces the session's rather than merging with it, the same way its theme does.
+Both palettes travel in every document, so a saved file switches between light and dark offline and `theme` names the one it opens on. `palette` overrides colours inside either, and `theme` and `palette` given on a chart replace the session's for that chart rather than merging with them.
 
 ```python
-probatum.chart(frame=frame, run=result, theme="auto",
-           palette={"light": {"s1": "#00695c"}}).save("report.html")
+result.chart(theme="auto", palette={"light": {"s1": "#00695c"}}).save("report.html")
 ```
 
-`theme="auto"` opens on whichever the reader's system asks for, which is the one appearance setting the author of a chart cannot know: a chart drawn on a light machine otherwise opens light inside a dark JupyterLab, with the right palette already sitting in the file. It reads the operating system rather than the notebook, so it is a good proxy and not the truth.
+`theme="auto"` opens on whichever the reader's system asks for, which the author of a chart cannot know.
 
-Nothing is painted over the plot. There is no watermark and no way to add one: a chart is somebody's evidence about their own strategy, and a mark across it serves the library rather than the reader.
+The renderer's attribution, which its licence asks for, is shown in the corner of the plot ([ADR 0042](Decisions.md)). Nothing else is painted over it.
 
 <br>
 
 ## Drawing past the last candle
 
-Some series are computed from real bars but belong ahead of them: an Ichimoku cloud sits 26 bars in the future, and so does a projected pivot or a regression carried forward. `future=` gives the axis room for them.
+Some series are computed from real bars but belong ahead of them: an Ichimoku cloud sits 26 bars ahead, as does a projected pivot or a regression carried forward. `future=` gives the axis room for them, by the Data's own interval.
 
 ```python
-lead = numpy.full(26, numpy.nan)
-senkou_a = numpy.concatenate([lead, ((tenkan + kijun) / 2).to_numpy()])   # T + 26
-
-probatum.chart(
-    frame=frame,
-    marks=Band(upper=senkou_a, lower=senkou_b, name="cloud", fill=GREEN + "33"),
-    future=26,
-).show()
+data.chart(Band(senkou_a, senkou_b, "cloud", fill=GREEN + "33"), future=26).show()
 ```
 
-The axis grows and the candles do not, so nothing that never traded appears; only a series can reach out there. With `future=` set, a third length is accepted, `T + future`, drawn from bar 0.
+The axis grows and the candles do not, so only a series reaches past the last bar. With `future=` set, a third length is accepted, `T + future`, drawn from bar 0.
 
 <div align="center">
   <img src="imgs/charts/chart-projection.png" alt="An Ichimoku cloud drawn past the last candle" width="100%" />
-  <p style="margin: 0;"><i>The cloud runs on past the last candle, over axis that carries no bar; nothing out there is a candle, because only a series can reach into that room</i></p>
+  <p style="margin: 0;"><i>The cloud runs on past the last candle, over axis that carries no bar</i></p>
 </div>
 
 <br>
 
-There is deliberately **no `offset=` on a mark.** In Pine, `plot(offset=26)` makes one identifier mean the displaced value inside `plot()` and the undisplaced value inside an expression, so `close > leadLine1` is a rule that does not match the picture you are looking at, and nothing tells you. Here one array has one meaning and the axis is what changes. Shifting is your own `shift(26)`, and the offset shows up in the series' own start bar where you can read it.
-
-A negative displacement needs nothing at all: Chikou is `close.shift(-26)`, which is `T` long and draws where it should.
+There is **no `offset=` on a mark.** In Pine, `plot(offset=26)` makes one name mean the displaced value inside `plot()` and the undisplaced one inside an expression, so a rule can disagree with its picture. Here one array has one meaning, and the axis is what grows: the lead is your own, in the series' start bar where it can be read. A negative displacement needs nothing: a lagging line such as the Chikou is `T` long and draws where it is.
 
 <br>
 
 ## What cannot be charted
 
-- **No intrabar path.** A bar is four numbers; the fill happened somewhere inside it and there is nothing honest to draw between them.
-- **No individual fills.** The trade log holds closed round trips, so an entry built from three adds is one arrow at the weighted average price.
+- **No intrabar path.** A bar is four numbers; a fill happened somewhere inside it, and there is nothing honest to draw between them.
+- **No single fills.** The arrows are round trips, so an entry built from three adds is one arrow at their average price; the fill log is `result.fills`.
 - **No order book, queue position or latency.** The engine models none.
-- **No RL training rollout.** An environment runs with reporting off, so no trade log exists. Chart the evaluation rollout, which is an ordinary engine loop.
-- **No non-time axis.** Every chart here is over bars. A feature against forward return, or an average path after an event, is a scatter and belongs in whatever you already use for one.
-- **No protection from your own lookahead.** Everything is computed once from fixed arrays, so a chart cannot repaint. But `rolling(20, center=True)` knows the future and will be drawn happily. What is guaranteed is narrower: the *fills* obey the engine's no-lookahead rule even when your signal does not.
-- **No substituted price frame.** Passing a transformed frame, Heikin-Ashi candles for instance, alongside a result run on the real one passes every check, because the length is unchanged. The fills then land at prices that never traded: an exit arrow at 94,180 on a candle whose range is 93,050 to 93,900. Chart the frame the run was produced on, and put the transform on its own panel.
+- **No training rollout.** An environment keeps no trade log while it trains; chart the agent's backtest, an ordinary Result.
+- **No axis but time.** A feature against its forward return, or the average path after an event, is a scatter.
+- **No guard against your own lookahead.** Everything is computed once from fixed arrays, so a chart cannot repaint, but a centred rolling window knows the future and is drawn as given. The fills obey the engine's rule even where a signal does not, and `search` checks a strategy's decisions against cut bars ([Python API](Python_API.md#search)).
 
 <br>
 
 ## Where it sits
 
-One module, `python/probatum/_chart.py`, the marks in `python/probatum/plot.py`, and a vendored renderer under `python/probatum/_static/`. No new dependency: everything it needs is the standard library plus numpy, pandas is duck-typed and never imported unless you pass a DataFrame, and IPython is imported only inside `show`. `BacktestResult` gained one field, `initial`, the balance the run opened with, because the drawn fall and the reported `max_drawdown_pct` have to be the same number ([ADR 0042](Decisions.md)); nothing else that already existed was touched.
+`python/probatum/chart/__init__.py` builds the document, `python/probatum/chart/marks.py` holds the marks, and the vendored renderer is under `python/probatum/_static/`. It needs the standard library and numpy alone: pandas is read by duck typing and never imported, and IPython is imported only inside `show`.

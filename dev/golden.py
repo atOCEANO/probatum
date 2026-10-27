@@ -2,12 +2,12 @@
 
 The renderer is JavaScript and the gate has no browser, so the one thing that
 cannot be asserted there is the contract between the two halves: a key renamed in
-``_chart.py`` passes every Python test and draws a blank chart. The golden closes
-that by recording every key path the spec carries, which makes a rename a visible
-one-line diff in the same commit.
+``chart/__init__.py`` passes every Python test and draws a blank chart. The golden
+closes that by recording every key path the spec carries, which makes a rename a
+visible one-line diff in the same commit.
 
 Run it whenever the spec gains, loses, or renames a key, and bump ``schema`` in
-``_chart.py`` in the same commit. It imports the test module rather than
+``chart/__init__.py`` in the same commit. It imports the test module rather than
 rebuilding the fixture, so the golden can never be recorded against a different
 chart from the one the test checks:
 

@@ -175,43 +175,42 @@ def test_a_pandas_series_works_without_pandas_being_a_dependency():
     assert np.allclose(ta.sma(pd.Series(RAMP), 5), ta.sma(RAMP, 5), equal_nan=True)
 
 
+class Cross(probatum.Strategy):
+    """Long while the fast average is over the slow one."""
+
+
+    def init(self, data):
+        self.fast   = ta.ema(data.close, 5)
+        self.slow   = ta.ema(data.close, 15)
+        self.warmup = 15
+
+
+    def next(self, bar, account):
+        i = bar.i
+        if account.position == 0.0 and self.fast[i] > self.slow[i]:
+            account.buy(1.0)
+        elif account.position > 0.0 and self.fast[i] < self.slow[i]:
+            account.close()
+
+
 def test_an_indicator_drives_a_strategy_and_draws_on_the_chart():
-    pd = pytest.importorskip("pandas")
-
-    class Cross(probatum.Strategy):
-
-        def init(self, engine):
-            self.fast   = ta.ema(engine.closes, 5)
-            self.slow   = ta.ema(engine.closes, 15)
-            self.warmup = 15
-
-
-        def next(self, state, engine):
-            i = state["tick_index"]
-            if state["position"] == 0.0 and self.fast[i] > self.slow[i]:
-                engine.market_buy(1.0)
-            elif state["position"] > 0.0 and self.fast[i] < self.slow[i]:
-                engine.close()
-
     rng   = np.random.default_rng(1)
     close = 100.0 + np.cumsum(rng.normal(0.1, 1.0, 120))
-    frame = pd.DataFrame(
-        {"open": close, "high": close + 1.0, "low": close - 1.0,
-         "close": close, "volume": rng.uniform(500.0, 1500.0, 120)},
-        index=pd.date_range("2025-01-01", periods=120, freq="1h", tz="UTC"),
-    )
+    data  = probatum.Data(np.column_stack([close, close + 1.0, close - 1.0, close,
+                                           rng.uniform(500.0, 1500.0, 120)]),
+                          symbol="BTCUSDT", market="linear",
+                          time=1_735_689_600 * 10**9
+                          + np.arange(120, dtype=np.int64) * 3_600 * 10**9)
 
-    strategy = Cross()
-    result   = probatum.Backtester(frame).run(strategy)
+    result = probatum.backtest(Cross(), data, "frictionless")
+    fast   = result.policy.fast
 
     # the same array the rule traded on goes straight onto the chart, no padding
-    chart = probatum.chart(frame=frame, marks=probatum.plot.Line(
-        values = strategy.fast,
-        name   = "EMA 5",
-    ), run=result)
+    chart = result.chart(probatum.chart.marks.Line(fast, "EMA 5"))
 
-    assert len(strategy.fast) == len(frame)
+    assert len(fast) == len(data)
     assert chart.spec()["series"][0]["kind"] == "line"
+    assert chart.spec()["series"][0]["v"][-1] == pytest.approx(fast[-1])
 
 
 def test_ta_is_exported_from_the_package():

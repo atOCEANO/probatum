@@ -927,6 +927,21 @@ class Data:
         return out
 
 
+    def chart(self, *marks, instrument=None, panels=None, focus=None, candle_color=None,
+              theme=None, palette=None, height=None, title=None, future=0, notes=None):
+        """The interactive chart of these bars, a `probatum.chart.Chart` to ``show()``
+        in a notebook cell or ``save(path)`` as one HTML file that opens offline: the
+        candles of ``instrument``, the Data's one where it holds one, a bar it printed
+        none on left empty, their volume, and the ``marks`` given, each a mark of
+        `probatum.chart.marks` or an array drawn as a `Line`, one value a bar, a list
+        of them flattened. The other keywords are `Result.chart`'s that read no run, and
+        nothing is computed (ADR 0042)."""
+        from .chart import _drawn
+        return _drawn(self, marks, instrument, panels=panels, focus=focus,
+                      candle_color=candle_color, theme=theme, palette=palette,
+                      height=height, title=title, future=future, notes=notes)
+
+
     def join(self, other):
         """This Data's instruments and ``other``'s on one clock, for a universe that
         holds both, such as a venue's spot and perpetual markets."""

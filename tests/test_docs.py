@@ -13,8 +13,9 @@ import pathlib
 import re
 
 import probatum
-from probatum import metrics, plot, stats, ta
+from probatum import metrics, stats, ta
 from probatum import Backtester
+from probatum.chart import marks
 
 # the gate copies the pages to /docs; a source checkout has them beside tests
 _CANDIDATES = (
@@ -42,25 +43,29 @@ _GATE = (
 _INTERNAL_STAGES = {"builder"}
 
 _API = {
-    "chart": probatum.chart,
-    "chart_defaults": probatum.chart_defaults,
+    # a chart is drawn by a method of whatever holds the bars, so a .chart( is read
+    # against the Result's, whose keywords are the Data's and a run's, but on the
+    # names every page gives a Data alone, where a run's keyword would raise
+    "chart": probatum.Result.chart,
+    "Data.chart": probatum.Data.chart,
+    "defaults": probatum.chart.defaults,
     "to_ohlcv": probatum.to_ohlcv,
     "Backtester": Backtester,
     "backtest": probatum.backtest,
     "env": probatum.env,
     "Engine": probatum.Engine,
-    "Line": plot.Line,
-    "Histogram": plot.Histogram,
-    "Band": plot.Band,
-    "Level": plot.Level,
-    "Marker": plot.Marker,
-    "Markers": plot.Markers,
-    "Background": plot.Background,
-    "Panel": plot.Panel,
-    "Recorder": plot.Recorder,
-    "ramp": plot.ramp,
-    "at_bar": plot.at_bar,
-    "at_next": plot.at_next,
+    "Line": marks.Line,
+    "Histogram": marks.Histogram,
+    "Band": marks.Band,
+    "Level": marks.Level,
+    "Marker": marks.Marker,
+    "Markers": marks.Markers,
+    "Background": marks.Background,
+    "Panel": marks.Panel,
+    "Recorder": marks.Recorder,
+    "ramp": marks.ramp,
+    "at_bar": marks.at_bar,
+    "at_next": marks.at_next,
     "Market": probatum.Market,
     "Data": probatum.Data,
     "from_router": probatum.Data.from_router,
@@ -92,7 +97,7 @@ _API.update({f"stats.{name}": getattr(stats, name) for name in stats.__all__
 # the library function. self.log.at_bar is Recorder.at_bar, which takes **values
 # and shares its name with the module-level helper, so matching on the last word
 # alone is wrong
-_ROOTS = {"probatum", "plot", "metrics", "ta"}
+_ROOTS = {"probatum", "chart", "marks", "metrics", "ta"}
 
 
 def pages():
@@ -151,6 +156,11 @@ def called(func):
     if (func.attr == "replace" and isinstance(base, ast.Attribute)
             and isinstance(base.value, ast.Attribute) and base.value.attr == "venues"):
         return "Venue"
+
+    # a chart is a method of whatever holds the bars, so any receiver will do
+    if func.attr == "chart":
+        bars = isinstance(base, ast.Name) and base.id in ("data", "universe")
+        return "Data.chart" if bars else "chart"
 
     return None
 
@@ -398,8 +408,9 @@ def test_nothing_a_module_exports_is_undocumented_either():
     text    = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     missing = []
 
-    for name in ("metrics", "ta", "plot", "cv", "stats"):
-        for export in getattr(probatum, name).__all__:
+    for name, module in (("metrics", metrics), ("ta", ta), ("chart", probatum.chart),
+                         ("marks", marks), ("cv", probatum.cv), ("stats", stats)):
+        for export in module.__all__:
             # named in prose as `export`, called in an example as export(, or
             # reached through its module either way
             if not any(mark in text for mark in

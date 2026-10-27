@@ -724,6 +724,46 @@ class Result:
         return _written("report", path, "sheet", self)
 
 
+    def chart(self, *marks, instrument=None, data=None, panels=None, focus=None,
+              candle_color=None, theme=None, palette=None, height=None, title=None,
+              future=0, stats=None, trades=True, drawdown=None, notes=None):
+        """The interactive chart of the run, a `probatum.chart.Chart` to ``show()`` in a
+        notebook cell or ``save(path)`` as one HTML file that opens offline (ADR 0042):
+        the candles of ``instrument``, the run's one where it holds one, a bar it
+        printed none on left empty, with their volume; the round trips the run closed
+        on it, an arrow at each end and a row each in the table under the plot; the
+        account's equity, with its drawdown shaded from the running peak; four of its
+        statistics above the plot; and the ``marks`` given, each a mark of
+        `probatum.chart.marks` or an array drawn as a `Line`, one value a bar of the
+        Data, a list of them flattened. It computes nothing: every number on it is the
+        Result's, its Data's or what `probatum.stats` reads of it. A Result loaded,
+        unpickled or recorded below the full level keeps no Data, so ``data`` gives
+        it, held to the fingerprint the run recorded; a book is refused.
+
+        ``panels`` takes `Panel` objects and configures the panels the chart has:
+        price, volume where it is not dead, equity, and one for each name a mark
+        gives, naming two fixing their order. ``focus`` moves the view and never
+        slices the bars: a round trip, a ``(start, end)`` pair of bars, or ``N``, the
+        last ``N``. ``candle_color`` is one colour or one a bar, None leaving a bar its
+        own. ``theme`` is ``"dark"``, ``"light"`` or ``"auto"``, whichever the reader's
+        system asks for, and ``palette`` overrides colours inside either, as
+        ``{"dark": {"s1": "#4d9fff"}}``. ``height`` is a notebook cell's, in pixels, a
+        saved file filling its window. ``title`` heads the plot, and ``stats`` names
+        the statistics beside it, from those ``result.stats`` holds, ``[]`` none.
+        ``future`` lengthens the time axis that many bars past the last, for a series
+        of ``T + future`` values drawn from bar 0. ``trades=False`` leaves out the
+        arrows and the table, and ``drawdown`` is ``"under"``, ``"panel"`` for a pane
+        of its own, or False. ``notes`` is a table of your own under the plot, a
+        DataFrame or rows whose first names the columns. `probatum.chart.defaults`
+        sets the theme, height, palette and drawdown of every later chart."""
+        from .chart import _drawn, _ran
+        data, rows = _ran(self, data)
+        return _drawn(data, marks, instrument, self, rows, panels=panels, focus=focus,
+                      candle_color=candle_color, theme=theme, palette=palette,
+                      height=height, title=title, future=future, stats=stats,
+                      trades=trades, drawdown=drawdown, notes=notes)
+
+
     def _rows(self, stats):
         """The summary's lines that read the run's record of statistics."""
         lines = []

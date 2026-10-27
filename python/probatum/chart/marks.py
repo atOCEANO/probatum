@@ -3,7 +3,7 @@
 Every mark, meaning ``Line``, ``Histogram``, ``Band``, ``Level``, ``Marker``,
 ``Markers`` and ``Background``, is a plain value object: it copies its arrays so a
 later mutation cannot change the picture, checks what it can check without knowing
-the frame, and holds no reference to a chart. ``Panel`` holds no arrays at all; it
+the bars, and holds no reference to a chart. ``Panel`` holds no arrays at all; it
 is the configuration of one panel, how tall it is, what scale it draws on and
 whether its axis is pinned. ``Recorder`` is the one mutable thing here, a collector
 a strategy writes to on every bar, which allocates its own arrays and hands them
@@ -12,7 +12,7 @@ back already aligned.
 Nothing in this module computes anything. There is no ``sma``, no ``rsi``, no
 ``zscore`` and no indicator registry, because a chart that computes is a chart that
 can disagree with the run it is drawing (ADR 0042). It also does not know how many
-bars the frame has, so the length of a series is checked by ``chart`` rather than
+bars the Data has, so the length of a series is checked by the chart rather than
 here (ADR 0042).
 
 Three functions come with them. ``ramp`` turns numbers into colours so a line can
@@ -20,11 +20,13 @@ carry a second variable in its own colour, and ``at_bar`` and ``at_next`` pad a
 series that is one short onto its bars.
 """
 
-from __future__ import annotations
-
 import math
+import numbers
 
 import numpy as np
+
+from .._data import Data
+from .._errors import ProbatumKeyError, ProbatumTypeError, ProbatumValueError
 
 __all__ = [
     "Panel", "Line", "Histogram", "Band", "Level", "Marker", "Markers",
@@ -54,16 +56,16 @@ def _as_array(values, where):
 
     try:
         arr = np.array(values, dtype=np.float64, copy=True)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"{where} must be numbers; pass a numpy array, a pandas Series, "
-            f"or a list of floats"
-        ) from exc
+    except (TypeError, ValueError):
+        raise ProbatumTypeError(f"{where}: a {type(values).__name__} numpy cannot read "
+                                f"as numbers; give a numpy array, a pandas Series or a "
+                                f"list of floats") from None
 
     if arr.ndim != 1:
-        raise ValueError(f"{where} must be one dimensional, got shape {arr.shape}")
+        raise ProbatumValueError(f"{where}: shape {arr.shape}; give one dimension, a "
+                                 f"value a bar")
     if arr.size == 0:
-        raise ValueError(f"{where} is empty")
+        raise ProbatumValueError(f"{where}: empty; give a value a bar")
 
     return arr
 
@@ -77,7 +79,8 @@ def _as_colors(values, where):
 
     arr = np.asarray(values, dtype=object)
     if arr.ndim != 1:
-        raise ValueError(f"{where} must be one dimensional, got shape {arr.shape}")
+        raise ProbatumValueError(f"{where}: shape {arr.shape}; give one dimension, a "
+                                 f"colour a bar")
 
     out = []
     for value in arr.tolist():
@@ -86,9 +89,8 @@ def _as_colors(values, where):
         elif isinstance(value, str):
             out.append(value)
         else:
-            raise TypeError(
-                f"{where} must hold colour strings or None, got {value!r}"
-            )
+            raise ProbatumTypeError(f"{where}: {value!r}; give colour strings, or None "
+                                    f"to leave a bar alone")
 
     return out
 
@@ -105,10 +107,9 @@ def _one_color(value, where):
     # nothing downstream can tell apart from one
     if value is None or isinstance(value, str):
         return value
-    raise TypeError(
-        f"{where} takes one colour, not one per bar; for a line whose colour "
-        f"changes along it use Line(numpy.full(len(frame), value), color=...)"
-    )
+    raise ProbatumTypeError(f"{where}: {type(value).__name__}; give one colour, and for "
+                            f"a line whose colour changes along it "
+                            f"Line(numpy.full(len(data), value), color=...)")
 
 
 def _stops(value, where):
@@ -121,14 +122,17 @@ def _stops(value, where):
     if isinstance(value, dict):
         # list(dict) is the keys, every one of them a string, so this would pass
         # every check below and shade the panel in a colour named "calm"
-        raise TypeError(
-            f"{where} takes a colour or a gradient of stops; a "
-            f"{{label: colour}} map is only meaningful on Background"
-        )
+        raise ProbatumTypeError(f"{where}: a map of labels to colours, which only a "
+                                f"Background reads; give a colour or a gradient of "
+                                f"stops")
 
-    stops = list(value)
+    try:
+        stops = list(value)
+    except TypeError:
+        raise ProbatumTypeError(f"{where}: {value!r}; give a colour or a gradient of "
+                                f"stops") from None
     if not stops:
-        raise ValueError(f"{where} is empty")
+        raise ProbatumValueError(f"{where}: empty; give a colour or a gradient of stops")
 
     if len(stops) > _MAX_STOPS:
         # more entries than a gradient can have is one per bar. A chart of three
@@ -137,38 +141,61 @@ def _stops(value, where):
 
     for stop in stops:
         if not isinstance(stop, str):
-            raise TypeError(f"{where} stops must be colour strings, got {stop!r}")
+            raise ProbatumTypeError(f"{where}: a stop of {stop!r}; give colour strings")
 
     return stops
 
 
 def _finite(value, where):
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ProbatumTypeError(f"{where}: {value!r}; give a number")
+
     value = float(value)
     if not math.isfinite(value):
-        raise ValueError(f"{where} needs a finite value, got {value}")
+        raise ProbatumValueError(f"{where}: {value}; give a finite number")
     return value
+
+
+def _whole(value, where):
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ProbatumTypeError(f"{where}: {value!r}; give a whole number")
+    if not math.isfinite(value) or value != int(value):
+        raise ProbatumValueError(f"{where}: {value}; give a whole number")
+    return int(value)
+
+
+def _pair(value, where):
+    # a range or a domain is two finite numbers, low below high
+    try:
+        low, high = value
+    except (TypeError, ValueError):
+        raise ProbatumTypeError(f"{where}: {value!r}; give a (low, high) pair") from None
+
+    low, high = _finite(low, where), _finite(high, where)
+    if low >= high:
+        raise ProbatumValueError(f"{where}: ({low}, {high}); give a low below its high")
+    return low, high
 
 
 def _one_of(value, allowed, where):
     if value not in allowed:
-        raise ValueError(
-            f"{where} must be one of {', '.join(repr(a) for a in allowed)}, "
-            f"got {value!r}"
-        )
+        raise ProbatumValueError(f"{where}: {value!r}; give one of "
+                                 f"{', '.join(repr(a) for a in allowed)}")
     return value
 
 
 def _hex_to_rgba(value, where):
-    ok = isinstance(value, str) and value.startswith("#") and len(value) in (7, 9)
-    if not ok:
-        raise ValueError(
-            f"{where} stops must be #rrggbb or #rrggbbaa hex strings, got {value!r}"
-        )
+    if not isinstance(value, str):
+        raise ProbatumTypeError(f"{where}: a stop of {value!r}; give #rrggbb or "
+                                f"#rrggbbaa hex strings")
 
     try:
+        if not (value.startswith("#") and len(value) in (7, 9)):
+            raise ValueError
         parts = tuple(int(value[i:i + 2], 16) for i in range(1, len(value), 2))
-    except ValueError as exc:
-        raise ValueError(f"{where} stop {value!r} is not valid hex") from exc
+    except ValueError:
+        raise ProbatumValueError(f"{where}: a stop of {value!r}; give #rrggbb or "
+                                 f"#rrggbbaa hex strings") from None
 
     return parts if len(parts) == 4 else parts + (255,)
 
@@ -199,10 +226,9 @@ class _Mark:
                 # Panel('') raises, so accepting one here builds a panel that can
                 # never be weighted, scaled or hidden, because the object needed
                 # to name it cannot be constructed
-                raise ValueError(
-                    f"{type(self).__name__} panel needs a name; leave it out to "
-                    f"place the mark automatically"
-                )
+                raise ProbatumValueError(f"{type(self).__name__} panel: {panel!r}; give "
+                                         f"it a name, or leave it out to place the "
+                                         f"mark itself")
 
 
     def __repr__(self):
@@ -217,7 +243,7 @@ class Panel:
     ``show=False`` removes the panel and everything drawn on it, and its data is
     left out of the document rather than merely going unpainted. ``weight`` is a
     stretch factor rather than pixels, so a layout holds at any size; ``height``
-    means pixels and lives on ``chart``. ``scale`` is ``"linear"``, ``"log"`` or
+    means pixels and lives on the chart. ``scale`` is ``"linear"``, ``"log"`` or
     ``"percent"``, matching the A / L / % buttons the panel draws in its own axis,
     and ``range`` pins the axis to a fixed window.
 
@@ -229,37 +255,21 @@ class Panel:
     def __init__(self, name, *, show=True, weight=1, scale="linear", range=None):
         self.name = str(name)
         if not self.name:
-            raise ValueError("a panel needs a name")
+            raise ProbatumValueError(f"Panel name: {name!r}; give the panel a name")
 
         self.show   = bool(show)
-        self.weight = float(weight)
+        self.weight = _finite(weight, f"Panel {self.name!r} weight")
 
         if self.weight == 0.0:
-            raise ValueError(
-                f"panel {self.name!r} weight is zero, which used to mean hidden; "
-                f"say so instead, with Panel(name={self.name!r}, show=False)"
-            )
-        if not math.isfinite(self.weight) or self.weight < 0:
-            raise ValueError(
-                f"panel {self.name!r} weight must be a positive number, "
-                f"got {weight}"
-            )
+            raise ProbatumValueError(f"Panel {self.name!r} weight: 0, which used to mean "
+                                     f"hidden; say so, with Panel({self.name!r}, "
+                                     f"show=False)")
+        if self.weight < 0:
+            raise ProbatumValueError(f"Panel {self.name!r} weight: {weight}; give a "
+                                     f"positive number, its stretch against the others")
 
-        self.scale = _one_of(scale, _SCALES, f"panel {self.name!r} scale")
-
-        if range is None:
-            self.range = None
-        else:
-            low, high = (float(x) for x in range)
-            if not (math.isfinite(low) and math.isfinite(high)):
-                raise ValueError(
-                    f"panel {self.name!r} range must be finite, got {range}"
-                )
-            if low >= high:
-                raise ValueError(
-                    f"panel {self.name!r} range low {low} must be below high {high}"
-                )
-            self.range = (low, high)
+        self.scale = _one_of(scale, _SCALES, f"Panel {self.name!r} scale")
+        self.range = None if range is None else _pair(range, f"Panel {self.name!r} range")
 
 
     def __repr__(self):
@@ -286,17 +296,16 @@ class Line(_Mark):
     ):
         super().__init__(name, panel)
         where       = f"Line {name!r}" if name else "Line"
-        self.values = _as_array(values, where)
+        self.values = _as_array(values, f"{where} values")
         self.color  = _color(color, f"{where} color")
         self.fill   = _stops(fill, f"{where} fill")
 
         if self.fill is not None and len(self.fill) > _MAX_STOPS:
             # a line's fill is one area under one line, and an area carries one
             # gradient. Two colours means two regions, which is two marks
-            raise TypeError(
-                f"{where} fill takes a colour or a gradient, not one per bar; "
-                f"for a region that changes colour use two conditional Bands"
-            )
+            raise ProbatumTypeError(f"{where} fill: a colour a bar; give a colour or a "
+                                    f"gradient, and for a region that changes colour "
+                                    f"two conditional Bands")
 
         if self.fill is not None and not isinstance(self.color, (str, type(None))):
             # a filled line is drawn as an area, and an area carries ONE line
@@ -305,16 +314,13 @@ class Line(_Mark):
             # swatch reported a different colour at every bar, which is the one
             # thing the legend exists not to do. Neither half can be picked
             # without lying about the other, so the pair is refused
-            raise TypeError(
-                f"{where} takes a per-bar colour or a fill, not both: an area "
-                f"carries one line colour and the ramp would be dropped while "
-                f"the legend went on reporting it; drop fill, or pass a plain "
-                f"colour, or draw the fill as a Band underneath"
-            )
+            raise ProbatumTypeError(f"{where} color: a colour a bar beside a fill, and an "
+                                    f"area carries one line colour; drop fill, give one "
+                                    f"colour, or draw the fill as a Band underneath")
 
-        self.width = int(width)
+        self.width = _whole(width, f"{where} width")
         if self.width < 1:
-            raise ValueError(f"{where} width must be at least 1, got {width}")
+            raise ProbatumValueError(f"{where} width: {width}; give at least 1")
 
         self.style = _one_of(style, _STYLES, f"{where} style")
         self.step  = bool(step)
@@ -329,7 +335,7 @@ class Histogram(_Mark):
     def __init__(self, values, name=None, *, panel=None, color=None, base=0):
         super().__init__(name, panel)
         where       = f"Histogram {name!r}" if name else "Histogram"
-        self.values = _as_array(values, where)
+        self.values = _as_array(values, f"{where} values")
         self.color  = _color(color, f"{where} color")
         self.base   = _finite(base, f"{where} base")
 
@@ -362,10 +368,9 @@ class Band(_Mark):
             self.lower = _as_array(lower, f"{where} lower")
             self.level = None
             if self.lower.size != self.upper.size:
-                raise ValueError(
-                    f"{where} edges must be the same length; upper has "
-                    f"{self.upper.size} values and lower has {self.lower.size}"
-                )
+                raise ProbatumValueError(f"{where}: an upper edge of {self.upper.size} "
+                                         f"values and a lower of {self.lower.size}; give "
+                                         f"two edges of one length")
 
         self.fill  = _stops(fill, f"{where} fill")
         self.color = _color(color, f"{where} color")
@@ -383,11 +388,11 @@ class Level(_Mark):
         style="solid",
     ):
         super().__init__(name, panel)
-        self.value = _finite(value, "Level")
+        self.value = _finite(value, "Level value")
         self.color = _one_color(color, "Level color")
-        self.width = int(width)
+        self.width = _whole(width, "Level width")
         if self.width < 1:
-            raise ValueError(f"Level width must be at least 1, got {width}")
+            raise ProbatumValueError(f"Level width: {width}; give at least 1")
 
         self.style = _one_of(style, _STYLES, "Level style")
 
@@ -411,24 +416,21 @@ class Marker(_Mark):
     ):
         super().__init__(None, panel)
 
-        try:
-            self.bar = int(bar)
-        except (TypeError, ValueError) as exc:
+        if isinstance(bar, bool) or not isinstance(bar, numbers.Real):
             # the first thing a plotshape() port reaches for is an array, and
             # numpy's own message names neither Marker nor the repair
-            raise TypeError(
-                f"Marker takes one bar, not an array; for a shape on every bar "
-                f"meeting a condition use Markers(mask=...), which is the same "
-                f"thing plotshape does. Got {bar!r}"
-            ) from exc
+            raise ProbatumTypeError(f"Marker bar: {bar!r}; give one bar, and for a shape "
+                                    f"on every bar a condition holds Markers(mask=...), "
+                                    f"which is plotshape")
 
+        self.bar = _whole(bar, "Marker bar")
         if self.bar < 0:
-            raise ValueError(f"Marker bar must be zero or positive, got {bar}")
+            raise ProbatumValueError(f"Marker bar: {bar}; give a bar from 0")
 
         self.value  = None if value is None else _finite(value, "Marker value")
         self.text   = None if text is None else str(text)
         self.shape  = _one_of(shape, _SHAPES, "Marker shape")
-        self.offset = int(offset)
+        self.offset = _whole(offset, "Marker offset")
         self.color  = _one_color(color, "Marker color")
 
 
@@ -464,29 +466,26 @@ class Markers(_Mark):
 
         arr = np.asarray(mask)
         if arr.ndim != 1:
-            raise ValueError(
-                f"Markers mask must be one dimensional, got shape {arr.shape}"
-            )
+            raise ProbatumValueError(f"Markers mask: shape {arr.shape}; give one "
+                                     f"dimension, a value a bar")
         if arr.size == 0:
-            raise ValueError("Markers mask is empty")
+            raise ProbatumValueError("Markers mask: empty; give a value a bar")
 
         if arr.dtype != bool:
             # a float mask is how a comparison arrives after passing through NaN,
             # and a NaN is not a condition being met, for the reason at_bar's
             # docstring gives
             if arr.dtype.kind not in "iu":
-                raise TypeError(
-                    f"Markers mask must be boolean, got {arr.dtype}; compare "
-                    f"first, as in Markers(mask=fast > slow), and repair any NaN "
-                    f"before it gets here, because NaN is truthy"
-                )
+                raise ProbatumTypeError(f"Markers mask: {arr.dtype}; give booleans, as "
+                                        f"Markers(mask=fast > slow), and repair any NaN "
+                                        f"before it gets here, because NaN is truthy")
             arr = arr != 0
 
         self.mask   = arr.copy()
         self.value  = _marker_values(value, arr.size)
         self.text   = None if text is None else str(text)
         self.shape  = _one_of(shape, _SHAPES, "Markers shape")
-        self.offset = int(offset)
+        self.offset = _whole(offset, "Markers offset")
         self.color  = _one_color(color, "Markers color")
 
 
@@ -498,10 +497,8 @@ def _marker_values(value, size):
 
     arr = _as_array(value, "Markers value")
     if arr.size != size:
-        raise ValueError(
-            f"Markers value has {arr.size} entries and the mask has {size}; one "
-            f"anchor per bar, or a single number for all of them"
-        )
+        raise ProbatumValueError(f"Markers value: {arr.size} values for a mask of {size}; "
+                                 f"give one a bar, or one number for all of them")
 
     return arr
 
@@ -530,11 +527,10 @@ class Background(_Mark):
 
         arr = np.asarray(values, dtype=object)
         if arr.ndim != 1:
-            raise ValueError(
-                f"Background values must be one dimensional, got shape {arr.shape}"
-            )
+            raise ProbatumValueError(f"Background values: shape {arr.shape}; give one "
+                                     f"dimension, a value a bar")
         if arr.size == 0:
-            raise ValueError("Background values is empty")
+            raise ProbatumValueError("Background values: empty; give a value a bar")
         self.values = arr.tolist()
 
         if isinstance(fill, dict):
@@ -566,14 +562,12 @@ def ramp(values, *stops, colors=None, domain=None):
 
     if colors is not None:
         if stops:
-            raise TypeError(
-                f"ramp was given {len(stops)} loose colour stops and a colors= "
-                f"list; pass them one way or the other"
-            )
+            raise ProbatumTypeError(f"ramp: {len(stops)} loose colour stops and a "
+                                    f"colors= list; give the stops one way")
         stops = tuple(colors)
 
     if len(stops) < 2:
-        raise ValueError(f"ramp needs at least two colour stops, got {len(stops)}")
+        raise ProbatumValueError(f"ramp: {len(stops)} colour stops; give at least two")
 
     rgba   = [_hex_to_rgba(stop, "ramp") for stop in stops]
     finite = np.isfinite(arr)
@@ -584,11 +578,7 @@ def ramp(values, *stops, colors=None, domain=None):
         low  = float(np.nanmin(arr[finite]))
         high = float(np.nanmax(arr[finite]))
     else:
-        low, high = (float(x) for x in domain)
-        if not (math.isfinite(low) and math.isfinite(high)):
-            raise ValueError(f"ramp domain must be finite, got {domain}")
-        if low >= high:
-            raise ValueError(f"ramp domain low {low} must be below high {high}")
+        low, high = _pair(domain, "ramp domain")
 
     if high <= low:
         first = _rgba_to_hex(rgba[0])
@@ -623,26 +613,30 @@ class Recorder:
     ``T - 1`` long, and both of the legal lengths mean something. The length
     contract catches a wrong count and can never catch a wrong phase, because
     both wrong forms are legal lengths. Worse, a series passed one bar late lands
-    exactly on the engine's own fill arrows, so the wrong chart looks more
+    exactly on the run's own fill arrows, so the wrong chart looks more
     internally consistent than the right one (ADR 0042).
 
     This moves the choice to where the meaning is obvious. ``at_bar`` is for a
-    number that was already true on the bar you were handed. ``at_next`` is for
-    one that describes the bar after it, like a level the next bar is tested
-    against. Reading a key back gives one value per bar, already placed:
+    number that was already true on the bar ``next`` was handed. ``at_next`` is
+    for one that describes the bar after it, like a level the next bar is tested
+    against. Each takes that bar, or its row of the Data, and reading a key back
+    gives one value per bar of the Data, already placed:
 
         class Carry(probatum.Strategy):
-            def init(self, engine):
-                self.log = probatum.plot.Recorder(engine)
+            def init(self, data):
+                self.log = Recorder(data)
 
-            def next(self, state, engine):
-                self.log.at_bar(state, lev=..., flat=state["position"] == 0.0)
+            def next(self, bar, account):
+                self.log.at_bar(bar, leverage=account.leverage)
 
-        probatum.chart(frame, Line(strategy.log["lev"], "leverage"), result).show()
+        result = probatum.backtest(Carry(), data, "binance_perp")
+        result.chart(Line(result.policy.log["leverage"], "leverage")).show()
 
-    A bar you never reached is a gap, and a boolean one is ``False``, so an early
-    return during a warm-up costs nothing and needs no padding. One key holds one
-    kind and one alignment; changing either raises rather than converting.
+    The run decides with a copy of the strategy, so the values are on
+    ``result.policy``. A bar you never reached is a gap, and a boolean one is
+    ``False``, so an early return during a warm-up costs nothing and needs no
+    padding. One key holds one kind and one alignment; changing either raises
+    rather than converting.
 
     Recording costs one array write per value per bar, so leave it out of a
     strategy you mean to sweep across hundreds of trials.
@@ -650,16 +644,14 @@ class Recorder:
 
 
     def __init__(self, bars):
-        # an engine, or the number of bars. Knowing the length up front is what
+        # a Data, or the number of its bars. Knowing the length up front is what
         # lets a bar that was never reached stay a gap instead of shifting
         # everything after it
-        if hasattr(bars, "reset") and hasattr(bars, "data"):
-            bars = len(bars.data)
+        count = len(bars) if isinstance(bars, Data) else _whole(bars, "bars")
+        if count < 1:
+            raise ProbatumValueError(f"bars: {count}; give at least one bar")
 
-        self._n = int(bars)
-        if self._n < 1:
-            raise ValueError(f"Recorder needs at least one bar, got {bars}")
-
+        self._n      = count
         self._series = {}
         self._shift  = {}
 
@@ -675,26 +667,29 @@ class Recorder:
 
 
     def _write(self, shift, at, values):
-        if isinstance(at, dict):
-            at = at["tick_index"]
-        bar = int(getattr(at, "tick_index", at))
+        row = getattr(at, "i", at)
+        if isinstance(row, bool) or not isinstance(row, numbers.Real):
+            raise ProbatumTypeError(f"at: {at!r}; give the bar next was handed, or its "
+                                    f"row")
+        bar = _whole(row, "at")
 
         for key, value in values.items():
+            if not isinstance(value, (numbers.Real, np.bool_)):
+                raise ProbatumTypeError(f"{key}: {value!r}; record a number or a "
+                                        f"boolean, a value a bar")
+
             store = self._series.get(key)
             if store is None:
                 store = self._open(key, value, shift)
             elif self._shift[key] != shift:
                 was = "at_bar" if self._shift[key] == 0 else "at_next"
                 now = "at_bar" if shift == 0 else "at_next"
-                raise ValueError(
-                    f"{key!r} was recorded with {was} and is now {now}; one key "
-                    f"belongs to one bar, so record the two under two names"
-                )
+                raise ProbatumValueError(f"{key}: recorded with {was} and now {now}; one "
+                                         f"key belongs to one bar, so record the two under "
+                                         f"two names")
             elif store.dtype == bool and not isinstance(value, (bool, np.bool_)):
-                raise TypeError(
-                    f"{key!r} was first recorded as a boolean and is now "
-                    f"{value!r}; one key holds one kind"
-                )
+                raise ProbatumTypeError(f"{key}: recorded as a boolean and now {value!r}; "
+                                        f"record one kind under one key")
 
             target = bar + shift
             if 0 <= target < self._n:
@@ -717,10 +712,10 @@ class Recorder:
         try:
             return self._series[key].copy()
         except KeyError:
-            raise KeyError(
-                f"nothing was recorded under {key!r}; recorded so far: "
-                f"{sorted(self._series)}"
-            ) from None
+            known = ", ".join(sorted(self._series))
+            raise ProbatumKeyError(f"recorder: nothing recorded under {key!r}; "
+                                   + (f"use one of {known}" if known
+                                      else "record a value under it first")) from None
 
 
     def __contains__(self, key):
@@ -762,10 +757,10 @@ def at_next(values):
     """Pad a series describing the following bar out to one value per bar.
 
     The mirror of ``at_bar``, for a value that belongs one bar later than it was
-    computed: a level the next bar is tested against, a diff, or the engine's own
-    ``equity_curve``. Passing one of those short is already correct, so this is
-    for when you would rather every array on a chart be the same length and read
-    the padding off the call instead of off the length.
+    computed: a level the next bar is tested against, or a diff. Passing one of
+    those short is already correct, so this is for when you would rather every
+    array on a chart be the same length and read the padding off the call instead
+    of off the length.
     """
     arr = np.asarray(values)
     if arr.dtype == bool:

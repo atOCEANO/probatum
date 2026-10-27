@@ -4,8 +4,9 @@ The compiled Rust core is ``probatum._probatum``, whose engine the Backtester an
 drive. ``Engine`` is an account at a venue on a Data for a loop the caller owns, opened
 with ``reset`` and moved one bar at a time with ``step``. ``Batch`` runs many
 independent envs over one shared series and steps them in parallel with the GIL
-released. ``chart`` renders a frame, your own arrays and a run into one
-self-contained HTML document for a notebook cell or a file, computing nothing itself.
+released. ``Data.chart`` and ``Result.chart`` draw bars, a run on them and your own
+arrays as one self-contained HTML document for a notebook cell or a file, computing
+nothing, with the marks ``chart.marks`` holds and the look ``chart.defaults`` sets.
 ``Venue`` holds a venue's rules, and ``venues`` the presets, each one a Venue.
 ``backtest`` runs a policy on a Data at a venue and returns the ``Result`` it
 recorded, ``Strategy`` is a policy that decides at each close, and ``combine`` adds
@@ -34,8 +35,8 @@ trials. ``Result.report`` and ``Study.report`` write a run's tear sheet and a se
 or a validation's report, each one HTML file of static figures that ``report`` draws
 from what they hold, with the plot extra's matplotlib.
 Every error probatum raises is a ``ProbatumError`` and the built-in it means, and
-every warning a ``ProbatumWarning``, outside the modules carried from emsl, which raise
-the built-ins and warn with ``UserWarning`` or ``RuntimeWarning``.
+every warning a ``ProbatumWarning``, outside the modules still carried from emsl,
+which raise the built-ins and warn with ``UserWarning`` or ``RuntimeWarning``.
 """
 
 from ._errors import (DataError, LookaheadError, MissingDependency, PolicyError,
@@ -47,7 +48,7 @@ from ._probatum import Batch
 from ._data import Data, Instrument, to_ohlcv
 from ._venue import Venue
 from ._space import Categorical, Float, Int
-from . import cv, metrics, plot, stats, ta, venues
+from . import cv, metrics, stats, ta, venues
 from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
 from ._engine import Engine
@@ -60,15 +61,15 @@ from ._labels import Labels, labels
 from ._search import Study, search
 from ._validate import validate
 from .market import Market
-from ._chart import chart, chart_defaults
+from . import chart
 
 __all__ = [
     "BacktestResult", "Backtester", "Batch", "Capacity", "Categorical", "CostCurve",
     "Data", "Engine", "Float", "Instrument", "Int", "Labels", "Market", "Result",
     "Strategy", "Study", "Venue",
-    "backtest", "breakeven_bps", "capacity", "chart", "chart_defaults", "combine",
-    "compare", "cost_curve", "labels", "save", "search", "to_ohlcv", "validate",
-    "cv", "metrics", "plot", "stats", "ta", "venues",
+    "backtest", "breakeven_bps", "capacity", "combine", "compare", "cost_curve",
+    "labels", "save", "search", "to_ohlcv", "validate",
+    "chart", "cv", "metrics", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",
     "ProbatumNotImplementedError", "DataError", "VenueError", "SpecError",

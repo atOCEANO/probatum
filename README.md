@@ -248,52 +248,48 @@ For how far the numbers can be trusted, `probatum.stats` gives each statistic of
 
 ### Looking at the result
 
-The five paths above produce numbers. `probatum.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve with its drawdown shaded onto it, a trade log, and any array of your own beside them.
+The five paths above produce numbers. `result.chart()` is how you look at a run: its candles, the fills on the bars they happened on, the account's equity with its drawdown shaded onto it, a trade log, and any array of your own beside them. `data.chart()` draws bars with no run.
 
 ```python
 import numpy as np
 
 import probatum
-from probatum.plot import Background, Band, Histogram, Level, Line
+from probatum.chart.marks import Background, Band, Histogram, Level, Line
 
-result = probatum.Backtester(candles=frame, market="spot").run(strategy)
+result = probatum.backtest(Channel(), data, "binance_spot")
+strategy = result.policy                      # the copy of the strategy the run used
 
-# the bars the rule was actually in the market, a round trip still open at the end
-# running to the last. Bars index candles, so this is one entry per candle; an
-# equity curve is one shorter and the chart aligns it for you
-held = np.zeros(len(frame), dtype=bool)
+# the bars the rule was in the market, a round trip still open at the end running
+# to the last, its bars the run's placed on the Data's rows
+rows = np.searchsorted(data.time, result.time)
+held = np.zeros(len(data), dtype=bool)
 for trade in result.trades:
-    last = len(frame) - 1 if trade["open"] else trade["close_bar"]
-    held[trade["open_bar"]:last + 1] = True
+    last = rows[-1] if trade["open"] else rows[trade["close_bar"]]
+    held[rows[trade["open_bar"]]:last + 1] = True
 
-probatum.chart(
-    frame=frame,
-    marks=[                                    # every array here is the strategy's
-        Background(values=strategy.uptrend, fill="#2fe0a814"),
-        Band(upper=strategy.upper, lower=strategy.lower, name="channel 96",
-             fill="#8b97a514"),
-        Line(values=strategy.basis, name="basis 96", width=1, style="dashed"),
-        Histogram(values=strategy.hist, name="MACD 12/26/9", panel="momentum",
-                  color=np.where(strategy.hist >= 0.0, "#2fe0a8", "#ff5470")),
-        Level(value=0.0, panel="momentum", style="dotted"),
-    ],
-    run=result,
+result.chart(                                 # every array here is the strategy's
+    Background(strategy.uptrend, fill="#2fe0a814"),
+    Band(strategy.upper, strategy.lower, "channel 96", fill="#8b97a514"),
+    Line(strategy.basis, "basis 96", width=1, style="dashed"),
+    Histogram(strategy.hist, "MACD 12/26/9", panel="momentum",
+              color=np.where(strategy.hist >= 0.0, "#2fe0a8", "#ff5470")),
+    Level(0.0, panel="momentum", style="dotted"),
     candle_color=np.where(held, "#4d9fff", None),
 ).show()
 ```
 
-Those are the arrays the rule decided on, handed over as they are. Nothing here recomputes an indicator, because a recomputed copy is a picture of a rule that was never executed.
+Those are the arrays the rule decided on, handed over as they are. Nothing here recomputes an indicator, because a recomputed copy is a picture of a rule that was never run.
 
 <div align="center">
   <img src=".Documentation/imgs/charts/chart-backtest.png" alt="A backtest drawn: a channel and its basis, a regime shaded behind the candles, the fills on the bars they filled on, a MACD histogram, and an equity curve with its drawdown shaded onto it" width="100%" />
-  <p style="margin: 0;"><i>One call, one year of hourly candles. Five panels, their order, their weights and the trade log are the library's; every mark on them is the strategy's own array</i></p>
+  <p style="margin: 0;"><i>One call, one year of hourly candles. Four panels, their order, their weights and the trade log are the library's; every mark on them is the strategy's own array</i></p>
 </div>
 
 <br>
 
 **Everything above the fold came free**, and everything else is one more mark in the same list. You add a `Line` for a moving average or an equity curve of your own, a `Band` for a channel or a conditional shading, a `Level` for a threshold, `Markers` for a glyph on every bar a condition holds, a `Background` for a regime, a `Histogram` for anything per-bar. Any of them goes on the candles or on a panel of its own, just by naming one, and panels are stretched, pinned to a range, put on a log scale, or hidden. Every mark takes one colour or **one colour per bar**, so a line can carry a second variable in its own shading, and the candles themselves can be tinted the same way. A series can even be drawn past the last candle, which is what an Ichimoku cloud needs.
 
-None of it is required. A frame alone is a chart, an array finds its own home, and a run brings its own panels.
+None of it is required. Bars alone are a chart, an array finds its own home, and a run brings its own panels.
 
 **`show()` draws it in the notebook cell**, inline, where you are already working. No second window, no server, no separate viewer.
 
@@ -302,7 +298,7 @@ None of it is required. A frame alone is a chart, an array finds its own home, a
 **`save()` writes one HTML file** you open in a browser by double-clicking it, for the people who want the picture without the notebook.
 
 ```python
-probatum.chart(frame=frame, run=result).save(path="reports/run.html")
+result.chart().save("reports/run.html")
 ```
 
 It computes nothing and knows no indicator names: pass the strategy's own arrays and the line on screen cannot drift from the line that made the decision.
