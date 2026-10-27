@@ -1,5 +1,5 @@
-"""probatum's reference statistics, written from the Specification's Inference, Across a
-search, and Capacity and costs sections.
+"""probatum's reference statistics, written from the Specification's Inference,
+Statistics of a run, Across a search, and Capacity and costs sections.
 
 Like the reference simulator, it exists to disagree with `probatum.stats`, so it is
 written from the rules as the page states them and never from the module. Each
@@ -9,11 +9,15 @@ drew, so a test can hand it the module's own draws and compare what the two comp
 from them.
 """
 
+import datetime
+import fractions
 import itertools
 import math
 import statistics
 
 NORMAL   = statistics.NormalDist()
+DAY      = 86_400 * 10**9   # Drawdown: a day, in the nanoseconds a row's time is in
+GROUPS   = 10        # Parameter importance: the groups a parameter's ranks fall into
 NUDGE    = 1e-9      # Intervals of the returns: a rank this near a whole number is it
 CEILING  = 1e12      # what a CAGR saturates at, as the record's does
 FLOOR    = 60        # Samples with no interval: the round trips a trade interval needs
@@ -346,14 +350,22 @@ def calmar(r, periods_per_year):
     return growth * fall if growth < 0.0 else ranked(growth, fall, 1.0)
 
 
-def value_at_risk(r):
-    """Intervals of the returns: the loss of the `k`-th lowest return, in percent."""
-    return -sorted(r)[tail(r) - 1] * 100.0
+def counted(n, alpha):
+    """The returns' shape: `k = max(1, ceil(n * (1 - alpha)))` of `n` returns, `alpha`
+    the shortest decimal that reads as it."""
+    return max(1, math.ceil(n * (1 - fractions.Fraction(repr(float(alpha))))))
 
 
-def conditional_value_at_risk(r):
-    """Intervals of the returns: the mean loss of the `k` lowest returns, in percent."""
-    return -mean(sorted(r)[:tail(r)]) * 100.0
+def value_at_risk(r, alpha=0.95):
+    """Intervals of the returns, and the returns' shape at any `alpha`: the loss of the
+    `k`-th lowest return, in percent."""
+    return -sorted(r)[counted(len(r), alpha) - 1] * 100.0
+
+
+def conditional_value_at_risk(r, alpha=0.95):
+    """Intervals of the returns, and the returns' shape at any `alpha`: the mean loss of
+    the `k` lowest returns, in percent."""
+    return -mean(sorted(r)[:counted(len(r), alpha)]) * 100.0
 
 
 def ordered(values, q):
@@ -764,6 +776,272 @@ def decay(fitted, earned, direction):
     return gaps, mean(gaps)
 
 
+def returned(equity):
+    """What a statistic reads: each row's return after the first, zero after a row
+    whose equity is not above zero."""
+    return [equity[t] / equity[t - 1] - 1.0 if equity[t - 1] > 0.0 else 0.0
+            for t in range(1, len(equity))]
+
+
+def path(r):
+    """Drawdown: a plain series' path, compounded from 1 before its first return, its
+    row 0, a return after the path reaches zero moving it no further."""
+    equity = [1.0]
+    for v in r:
+        equity.append(equity[-1] * (1.0 + v) if equity[-1] > 0.0 else equity[-1])
+    return equity
+
+
+def drawdown(equity):
+    """Drawdown: `D_t = 1 - E_t / P_t` at each row in percent, `P_t` the running peak
+    from the first row, at most 100."""
+    peak, out = equity[0], []
+    for e in equity:
+        peak = max(peak, e)
+        out.append(min(1.0 - e / peak, 1.0) * 100.0)
+    return out
+
+
+def episodes(equity):
+    """Drawdown: each episode in the order it opened, its rows of its peak, its trough
+    and its recovery, None while it is below at the last row, its depth, its rows from
+    peak to trough and its rows under."""
+    falls = drawdown(equity)
+    last  = len(equity) - 1
+    found = []
+    t     = 1
+
+    while t <= last:
+        if falls[t] == 0.0:
+            t += 1
+            continue
+
+        peak = t - 1
+        while t <= last and falls[t] > 0.0:
+            t += 1
+
+        recovered = t if t <= last else None
+        trough    = min(range(peak + 1, t), key=lambda s: (-falls[s], s))
+        found.append(dict(peak=peak, trough=trough, recovered=recovered,
+                          depth=falls[trough], to_trough=trough - peak,
+                          under=(last if recovered is None else recovered) - peak))
+
+    return found
+
+
+def drawdown_table(equity, top=5):
+    """Drawdown: the `top` deepest episodes, deepest first and the earlier of two equal
+    ones first."""
+    return sorted(episodes(equity), key=lambda e: (-e["depth"], e["peak"]))[:top]
+
+
+def time_under_water(equity, times=None):
+    """Drawdown: the longest and the mean of the episodes' rows under, their count, the
+    share of the rows after the first below their peak, and with the rows' `times` the
+    longest and the mean in days."""
+    found = episodes(equity)
+    spans = [e["under"] for e in found]
+    below = sum(1 for v in drawdown(equity)[1:] if v > 0.0)
+    out   = dict(longest=max(spans, default=0), mean=mean(spans) if spans else 0.0,
+                 episodes=len(found), share=below / (len(equity) - 1) if below else 0.0)
+
+    if times is not None:
+        days = [(times[len(equity) - 1 if e["recovered"] is None else e["recovered"]]
+                 - times[e["peak"]]) / DAY for e in found]
+        out.update(longest_days=max(days, default=0.0),
+                   mean_days=mean(days) if days else 0.0)
+
+    return out
+
+
+def ulcer_index(equity):
+    """Drawdown: the root mean square of the drawdown over the rows after the first, in
+    percent."""
+    falls = drawdown(equity)[1:]
+    return math.sqrt(sum(v * v for v in falls) / len(falls)) if falls else 0.0
+
+
+def still(values):
+    """Over time: whether a window's returns are all one value, which has no
+    deviation."""
+    return all(v == values[0] for v in values)
+
+
+def rolling_sharpe(r, window, periods_per_year, risk_free=0.0):
+    """Over time: the record's Sharpe of the `window` returns that end at each one, a
+    window of one value ranked over no deviation, None on the first `window - 1`."""
+    out = []
+    for t in range(len(r)):
+        held = r[max(t - window + 1, 0):t + 1]
+        if t < window - 1:
+            out.append(None)
+        elif still(held):
+            out.append(ranked(held[0] - risk_free / periods_per_year, 0.0, 1.0))
+        else:
+            out.append(recorded(held, periods_per_year, risk_free))
+    return out
+
+
+def rolling_volatility(r, window, periods_per_year):
+    """Over time: the volatility of the `window` returns that end at each one, in
+    percent, 0 for a window of one value, None on the first `window - 1`."""
+    out = []
+    for t in range(len(r)):
+        held = r[max(t - window + 1, 0):t + 1]
+        if t < window - 1:
+            out.append(None)
+        else:
+            out.append(0.0 if still(held) else volatility(held, periods_per_year))
+    return out
+
+
+def utc(time):
+    """A row's time, nanoseconds since 1970, as its UTC date and time."""
+    epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+    return epoch + datetime.timedelta(microseconds=int(time) // 1_000)
+
+
+def period_returns(times, equity, by="month"):
+    """Over time: each calendar period's name, first row, count of rows and return in
+    percent, its rows' returns compounded, the first row's none."""
+    def named(time):
+        when = utc(time)
+        if by == "month":
+            return f"{when.year}-{when.month:02d}"
+        if by == "quarter":
+            return f"{when.year}-Q{(when.month - 1) // 3 + 1}"
+        return f"{when.year}"
+
+    r       = [0.0] + returned(equity)
+    periods = []
+    for t, time in enumerate(times):
+        if periods and periods[-1][0] == named(time):
+            periods[-1][2] += 1
+        else:
+            periods.append([named(time), t, 1])
+
+    return [(name, first, rows, (compounded(r[first:first + rows]) - 1.0) * 100.0)
+            for name, first, rows in periods]
+
+
+def segment(equity, trips, held, start, stop, periods_per_year, risk_free):
+    """Over time: the record's statistics over rows `start` to `stop - 1`, read from
+    the equity of row `start - 1`, a stretch from the first row reading the rows after
+    it; `trips` each closed round trip's (closing row, pnl) and `held` whether each row
+    ended holding a position."""
+    first = max(start, 1)
+    r     = returned(equity[first - 1:stop])
+    x     = excess(r, periods_per_year, risk_free)
+    pnl   = [p for row, p in trips if start <= row < stop]
+    gain  = total_return(r)
+    rate  = periods_per_year
+
+    return dict(total_return_pct=gain, net_profit_pct=gain, cagr_pct=cagr(r, rate),
+                sharpe=recorded(r, rate, risk_free), sortino=sortino(x, rate),
+                calmar=calmar(r, rate), max_drawdown_pct=max_drawdown(r),
+                volatility_pct=volatility(r, rate),
+                exposure_pct=sum(held[first:stop]) / len(r) * 100.0,
+                win_rate=win_rate(pnl) if pnl else 0.0, profit_factor=profit_factor(pnl),
+                num_trades=len(pnl),
+                avg_trade_pct=average_trade(pnl, equity[first - 1]) if pnl else 0.0)
+
+
+def moment(r, k):
+    """The returns' shape: the mean of `(r_t - rbar)^k`, `n` in its divisor."""
+    centre = mean(r)
+    return sum((v - centre) ** k for v in r) / len(r)
+
+
+def skew(r):
+    """The returns' shape: `m3 / m2^(3/2)`, 0 below 3 returns or where none varies."""
+    if len(r) < 3 or all(v == r[0] for v in r):
+        return 0.0
+    return moment(r, 3) / moment(r, 2) ** 1.5
+
+
+def kurtosis(r):
+    """The returns' shape: `m4 / m2^2`, 3 below 4 returns or where none varies."""
+    if len(r) < 4 or all(v == r[0] for v in r):
+        return 3.0
+    return moment(r, 4) / moment(r, 2) ** 2
+
+
+def omega(r, threshold=0.0, periods_per_year=None):
+    """The returns' shape: the gains past the annual `threshold` over `ppy` over the
+    losses short of it, ranked."""
+    h = threshold / periods_per_year if threshold else 0.0
+    return ranked(sum(max(v - h, 0.0) for v in r), sum(max(h - v, 0.0) for v in r), 1.0)
+
+
+def tail_ratio(r, alpha=0.95):
+    """The returns' shape: the `k`-th highest return over the loss of the `k`-th
+    lowest, ranked."""
+    k     = counted(len(r), alpha)
+    order = sorted(r)
+    return ranked(order[-k], -order[k - 1], 1.0)
+
+
+def trade_stats(pnl, held, opening):
+    """Round trips: what the closed round trips' `pnl`, in the order they closed, and
+    the rows each was `held` give, each 0 where there is none to read."""
+    wins    = [v for v in pnl if v > 0.0]
+    losses  = [v for v in pnl if v < 0.0]
+    run     = longest = 0
+    for v in pnl:
+        run     = run + 1 if v < 0.0 else 0
+        longest = max(longest, run)
+
+    win, loss  = (mean(wins) if wins else 0.0), (-mean(losses) if losses else 0.0)
+    expectancy = mean(pnl) if pnl else 0.0
+    return dict(trades=len(pnl), wins=len(wins), losses=len(losses), avg_win=win,
+                avg_loss=loss, payoff=ranked(win, loss, 1.0), expectancy=expectancy,
+                expectancy_pct=expectancy / opening * 100.0,
+                largest_win=max(wins, default=0.0), largest_loss=min(losses, default=0.0),
+                max_consecutive_losses=longest, avg_bars_held=mean(held) if held else 0.0)
+
+
+def session_buckets(trips, times, by="hour"):
+    """Round trips: each bucket's count, summed pnl and win rate, the closed round
+    trips, each a (closing row, pnl), booked at the UTC hour or weekday of the row they
+    closed on."""
+    buckets = {}
+    for row, pnl in trips:
+        when = utc(times[row])
+        buckets.setdefault(when.hour if by == "hour" else when.weekday(), []).append(pnl)
+
+    return {key: (len(held), math.fsum(held), win_rate(held))
+            for key, held in sorted(buckets.items())}
+
+
+def benchmark(r, prices, periods_per_year, risk_free=0.0):
+    """Against a benchmark: holding `prices`, one a row, its return and its Sharpe, the
+    run's excess return in points, and beta and the information ratio as alpha and beta
+    reads them, for a run's returns `r`."""
+    y      = returned(prices)
+    held   = (prices[-1] / prices[0] - 1.0) * 100.0
+    x      = excess(r, periods_per_year, risk_free)
+    theirs = excess(y, periods_per_year, risk_free)
+    gap    = [p - q for p, q in zip(x, theirs)]
+
+    return dict(hold_return_pct=held, hold_sharpe=recorded(y, periods_per_year, risk_free),
+                excess_return_pct=total_return(r) - held,
+                beta=covariance(x, theirs) / covariance(theirs, theirs),
+                information_ratio=ranked(mean(gap), deviation(gap, 1),
+                                         math.sqrt(periods_per_year)))
+
+
+def decompose(equity, costs, traded, periods_per_year):
+    """Where the money went: the price pnl, the costs summed, the net and its share of
+    the opening balance in percent, the costs' share of the price pnl in percent,
+    ranked, and the turnover of the `traded` notional."""
+    net   = equity[-1] - equity[0]
+    paid  = math.fsum(costs)
+    price = net + paid
+    return dict(price=price, costs=paid, net=net, net_pct=net / equity[0] * 100.0,
+                cost_share=ranked(paid, price, 100.0),
+                turnover=turnover(traded, equity, periods_per_year))
+
+
 def expected_maximum(trials):
     """The deflated Sharpe: `f(N) = (1 - gamma) * Phi^-1(1 - 1/N) + gamma * Phi^-1(1 -
     1/(N * e))`, the expected best of `N` standard normal draws."""
@@ -1166,6 +1444,45 @@ def plateau(trials, ranges, best, level, maximize=True):
         shares.append(len(past) / len(near) if near else None)
 
     return shares
+
+
+def importance(trials, kinds):
+    """Parameter importance: each parameter's `eta^2` over the complete trials whose
+    score is finite, and the share `(g - 1) / (N - 1)` its `g` groups explain by chance,
+    None below 2 such trials; each trial a (values, state, score), and `kinds` each
+    parameter's "categorical", or "number" for an Int or a Float."""
+    def key(value):
+        # NaN is one choice
+        return ("nan",) if value != value else ("value", value)
+
+    kept  = [trial for trial in trials
+             if trial[1] == "complete" and math.isfinite(trial[2])]
+    count = len(kept)
+    if count < 2:
+        return None
+
+    scores = [trial[2] for trial in kept]
+    centre = mean(scores)
+    total  = sum((s - centre) ** 2 for s in scores)
+    still  = all(s == scores[0] for s in scores)
+    out    = []
+
+    for k, kind in enumerate(kinds):
+        values = [trial[0][k] for trial in kept]
+        if kind == "categorical" or len(set(values)) <= GROUPS:
+            labels = [key(value) for value in values]
+        else:
+            labels = [math.floor(GROUPS * sum(1 for w in values if w < v) / count)
+                      for v in values]
+
+        groups = {}
+        for label, score in zip(labels, scores):
+            groups.setdefault(label, []).append(score)
+
+        between = sum(len(held) * (mean(held) - centre) ** 2 for held in groups.values())
+        out.append((0.0 if still else between / total, (len(groups) - 1) / (count - 1)))
+
+    return out
 
 
 def round_trip_cost(notionals, costs):

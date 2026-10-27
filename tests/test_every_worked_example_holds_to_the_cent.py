@@ -1583,6 +1583,87 @@ def test_three_of_four_stretches_score_above_0_and_three_windows_decay_by_1_07()
     assert ([round(gap, 9) for gap in gaps], round(mean, 2)) == ([1.2, -0.2, 2.2], 1.07)
 
 
+def test_six_daily_rows_fall_25_percent_and_10_and_stay_under_water_3_days_at_most():
+    equity = [100.0, 120.0, 90.0, 108.0, 129.6, 116.64]
+    under  = statistics.time_under_water(equity, [t * DAY for t in range(6)])
+
+    assert [round(v, 9) for v in statistics.drawdown(equity)] == [0.0, 0.0, 25.0, 10.0, 0.0,
+                                                                  10.0]
+    assert [(e["peak"], e["trough"], e["recovered"], e["to_trough"], e["under"])
+            for e in statistics.episodes(equity)] == [(1, 2, 4, 1, 3), (4, 5, None, 1, 1)]
+    assert (under["longest"], under["mean"], under["episodes"], under["share"]) == (
+        3, 2.0, 2, 0.6)
+    assert (under["longest_days"], under["mean_days"]) == (3.0, 2.0)
+    assert round(statistics.ulcer_index(equity), 2) == 12.85
+
+
+def test_four_month_windows_of_the_eight_returns_have_sharpes_of_1_90_and_1_52():
+    sharpes = statistics.rolling_sharpe(MONTHLY, 4, 12)
+    spreads = statistics.rolling_volatility(MONTHLY, 4, 12)
+
+    assert round(statistics.deviation(MONTHLY[:4], 1) * 100, 3) == 1.826
+    assert sharpes[:3] == spreads[:3] == [None] * 3
+    assert (round(sharpes[3], 2), round(sharpes[4], 2)) == (1.90, 1.52)
+    assert (round(spreads[3], 2), round(spreads[4], 2)) == (6.32, 5.92)
+
+
+def test_three_months_return_2_1_96_and_minus_0_96_percent_and_their_quarter_3():
+    days   = ("2024-01-30", "2024-01-31", "2024-02-01", "2024-02-29", "2024-03-01")
+    times  = [int(np.datetime64(day, "ns").astype(np.int64)) for day in days]
+    equity = [100.0, 102.0, 101.0, 104.0, 103.0]
+    months = statistics.period_returns(times, equity, "month")
+
+    assert [(name, first, rows, round(gain, 2)) for name, first, rows, gain in months] == [
+        ("2024-01", 0, 2, 2.0), ("2024-02", 2, 2, 1.96), ("2024-03", 4, 1, -0.96)]
+    assert math.prod(1.0 + gain / 100.0 for *_, gain in months) == pytest.approx(1.03)
+    for by, name in (("quarter", "2024-Q1"), ("year", "2024")):
+        [(named, first, rows, gain)] = statistics.period_returns(times, equity, by)
+        assert (named, first, rows, round(gain, 9)) == (name, 0, 5, 3.0)
+
+
+def test_five_returns_skew_0_387_with_a_kurtosis_of_2_122_and_an_omega_of_2_25():
+    r = [-0.03, -0.01, 0.01, 0.02, 0.06]
+
+    assert [round(statistics.moment(r, k) * 100.0 ** k, 9) for k in (2, 3, 4)] == [
+        9.2, 10.8, 179.6]
+    assert (round(statistics.skew(r), 3), round(statistics.kurtosis(r), 3)) == (0.387, 2.122)
+    assert round(statistics.omega(r), 9) == 2.25
+
+    assert statistics.counted(5, 0.6) == 2
+    assert (round(statistics.value_at_risk(r, 0.6), 9),
+            round(statistics.conditional_value_at_risk(r, 0.6), 9),
+            round(statistics.tail_ratio(r, 0.6), 9)) == (1.0, 2.0, 2.0)
+
+
+def test_five_round_trips_pay_off_3_to_1_with_an_expectancy_of_50():
+    found = statistics.trade_stats([300.0, -100.0, -50.0, 200.0, -100.0], [1] * 5, 10_000.0)
+
+    assert (found["wins"], found["losses"], found["avg_win"],
+            round(found["avg_loss"], 2)) == (2, 3, 250.0, 83.33)
+    assert (round(found["payoff"], 9), found["expectancy"],
+            round(found["expectancy_pct"], 9)) == (3.0, 50.0, 0.5)
+    assert (found["largest_win"], found["largest_loss"],
+            found["max_consecutive_losses"]) == (300.0, -100.0, 2)
+
+
+def test_a_run_of_6_05_percent_beats_holding_3_96_by_2_09_points_at_a_beta_of_0_857():
+    r     = [0.03, -0.01, 0.04]
+    found = statistics.benchmark(r, [100.0, 102.0, 99.96, 103.9584], 12)
+
+    assert (round(found["hold_return_pct"], 2), round(statistics.total_return(r), 2),
+            round(found["excess_return_pct"], 2)) == (3.96, 6.05, 2.09)
+    assert (round(found["beta"], 3), round(found["information_ratio"], 1)) == (0.857, 4.0)
+
+
+def test_a_run_that_made_580_in_price_and_paid_80_lost_13_8_percent_of_it_to_costs():
+    # 366 daily rows are a year of returns at 365 a year, their equity averaging 10,250
+    equity = [10_000.0] + [10_250.0] * 364 + [10_500.0]
+    found  = statistics.decompose(equity, [40.0, 10.0, 5.0, 25.0], 40_000.0, 365)
+
+    assert (found["costs"], found["price"], found["net_pct"]) == (80.0, 580.0, 5.0)
+    assert (round(found["cost_share"], 1), round(found["turnover"], 1)) == (13.8, 3.9)
+
+
 def test_four_trials_on_four_blocks_overfit_and_lose_in_four_of_six_halvings():
     blocks = [(0.4, 0.1, -0.2, 0.3), (-0.1, 0.5, 0.2, -0.3), (0.2, -0.4, 0.6, 0.1),
               (0.35, 0.45, 0.05, 0.15)]
@@ -1614,6 +1695,18 @@ def test_three_trials_near_a_winner_leave_none_within_0_05_and_half_within_0_1()
     assert (round(math.hypot(0.05, 0.05), 4), round(math.hypot(0.25, 0.2), 2)) == (
         0.0707, 0.32)
     assert shares[:2] == [None, 0.5] and shares[6] == pytest.approx(2 / 3)
+
+
+def test_six_trials_give_x_an_importance_of_0_975_beside_0_4_and_c_0_025_beside_0_2():
+    scores = [1.0, 1.2, 2.0, 2.2, 0.5, 0.7]
+    values = [(1, "a"), (1, "b"), (2, "a"), (2, "b"), (3, "a"), (3, "b")]
+    trials = [(given, "complete", score) for given, score in zip(values, scores)]
+
+    assert (round(statistics.mean(scores), 3),
+            round(sum((s - statistics.mean(scores)) ** 2 for s in scores), 3)) == (1.267, 2.393)
+
+    (x, x_chance), (c, c_chance) = statistics.importance(trials, ["number", "categorical"])
+    assert (round(x, 3), x_chance, round(c, 3), c_chance) == (0.975, 0.4, 0.025, 0.2)
 
 
 def test_a_label_closes_at_its_horizon_or_at_its_stop_and_the_last_rows_are_censored():
