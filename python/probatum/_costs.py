@@ -13,7 +13,7 @@ from ._data import Data
 from ._errors import ProbatumTypeError, ProbatumValueError, ProbatumWarning, VenueError
 from ._result import _money
 from ._venue import _balance, _python, _run, _venue_of
-from .stats import PACKAGE, _Frozen
+from .stats import PACKAGE, _Frozen, _notional
 
 # what a run pays for trading, the costs a sweep multiplies
 CHARGED = ("fees", "spread", "slippage", "impact")
@@ -144,7 +144,7 @@ def capacity(policy, data, venue, balances, sizing="weight", stop=None,
     agent = dict(spec=spec, features=features, decode=decode, instruments=instruments)
     runs  = [_measured(_backtested(policy, data, venue, sizing, stop, take_profit,
                                    tolerance, "full", risk_free, balance=balance,
-                                   baseline=False, **agent), traded)
+                                   baseline=False, **agent))
              for balance in balances]
 
     return Capacity(balances, [run.total_return_pct for run in runs],
@@ -176,7 +176,7 @@ def cost_curve(policy, data, venue, scales=SCALES, sizing="weight", stop=None,
     agent = dict(spec=spec, features=features, decode=decode, instruments=instruments)
     runs  = [_measured(_backtested(policy, data, venue, sizing, stop, take_profit,
                                    tolerance, "full", risk_free, costs=scale,
-                                   baseline=False, **agent), traded)
+                                   baseline=False, **agent))
              for scale in scales]
 
     return CostCurve(scales, [run.cost_bps for run in runs],
@@ -213,7 +213,7 @@ def breakeven_bps(policy, data, venue, ceiling=100.0, precision=0.05, sizing="we
     def ran(scale):
         run = _measured(_backtested(policy, data, venue, sizing, stop, take_profit,
                                     tolerance, "full", risk_free, costs=scale,
-                                    baseline=False, **agent), traded)
+                                    baseline=False, **agent))
         return run.total_return_pct > 0.0, run.cost_bps
 
     gains, low_cost = ran(0.0)
@@ -257,20 +257,12 @@ def breakeven_bps(policy, data, venue, ceiling=100.0, precision=0.05, sizing="we
     return (low_cost + high_cost) / 2.0
 
 
-def _measured(result, data):
+def _measured(result):
     """What a sweep reads of a run's `Result`, at the full level: its return, its
     Sharpe and its round trips, each cost it paid, the round-trip cost its fills paid,
     its turnover and the share of its orders the liquidity budget held (Specification,
     What a run of them reads)."""
-    fills = result.fills
-    size  = np.abs(np.asarray(fills["size"], dtype=np.float64))
-    price = np.asarray(fills["price"], dtype=np.float64)
-    first = data.instruments[0]
-
-    # an inverse account holds its one contract, whose notional is in its coin
-    notional = (size * first.contract / price if first.market == "inverse"
-                else size * price)
-    traded   = math.fsum(notional.tolist())
+    traded   = _notional(result)
     costs    = result.costs
     paid     = math.fsum(costs[name] for name in CHARGED)
     equity   = np.asarray(result.equity, dtype=np.float64)

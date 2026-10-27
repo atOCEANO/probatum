@@ -24,7 +24,7 @@ from ._errors import (MissingDependency, ProbatumAttributeError, ProbatumIndexEr
 from ._probatum import Table as _Held, ln, stats_of
 from ._transitions import Transitions
 from ._venue import _settlement
-from .stats import Statistics, _closed, _percent, sharpe
+from .stats import Statistics, _closed, _percent, sharpe, time_under_water
 
 # the format a saved Result is written in, which this version reads, as every later
 # one will
@@ -148,25 +148,6 @@ def _row(label, value, said):
     return textwrap.fill(f"  {label:<16}{value:>8}   {said}", width=88,
                          subsequent_indent=" " * 29, break_long_words=False,
                          break_on_hyphens=False)
-
-
-def _under_water(time, equity):
-    """The longest time from a row at the running peak to the first row back at or
-    above it, or to the last row while it is below, in days."""
-    under = equity < np.maximum.accumulate(equity)
-
-    longest, at = 0, 0
-    while at < len(equity):
-        if not under[at]:
-            at += 1
-            continue
-
-        start = at - 1
-        while at < len(equity) and under[at]:
-            at += 1
-        longest = max(longest, int(time[min(at, len(equity) - 1)] - time[start]))
-
-    return longest / DAY
 
 
 def _recorded(provenance):
@@ -758,7 +739,7 @@ class Result:
                               "their autocorrelation moves"))
 
         lines.append(_row("max drawdown", f"{-stats['max_drawdown_pct'] + 0.0:.1f}%",
-                          f"{_under_water(self.time, self.equity):,.0f} days under water"))
+                          f"{time_under_water(self).longest_days:,.0f} days under water"))
         lines.append(_row("round trips", f"{stats['num_trades']:,}",
                           f"win rate {stats['win_rate']:.0%}, profit factor "
                           f"{stats['profit_factor']:.2f}"))

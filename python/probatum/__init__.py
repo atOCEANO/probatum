@@ -27,8 +27,10 @@ load Gymnasium when first reached, which nothing else here imports but the backt
 an agent trained there, which ``save`` writes beside the spec it trained with.
 ``stats`` says how far a run's statistics can be trusted, read from a Result or any
 series of returns: the Sharpe's interval, its probability of beating a benchmark and
-the track record that would show it; and how far a search's winner can, judged across
-all its trials.
+the track record that would show it; what else describes a run, its drawdowns, its
+statistics over time, its round trips and where its money went, with ``compare``
+setting runs side by side; and how far a search's winner can, judged across all its
+trials.
 Every error probatum raises is a ``ProbatumError`` and the built-in it means, and
 every warning a ``ProbatumWarning``, outside the modules carried from emsl, which raise
 the built-ins and warn with ``UserWarning`` or ``RuntimeWarning``.
@@ -48,6 +50,7 @@ from ._backtester import Backtester, BacktestResult
 from ._strategy import Strategy
 from ._engine import Engine
 from ._result import Result, combine
+from .stats import compare
 from ._backtest import backtest
 from ._agent import save
 from ._costs import Capacity, CostCurve, breakeven_bps, capacity, cost_curve
@@ -62,7 +65,7 @@ __all__ = [
     "Data", "Engine", "Float", "Instrument", "Int", "Labels", "Market", "Result",
     "Strategy", "Study", "Venue",
     "backtest", "breakeven_bps", "capacity", "chart", "chart_defaults", "combine",
-    "cost_curve", "labels", "save", "search", "to_ohlcv", "validate",
+    "compare", "cost_curve", "labels", "save", "search", "to_ohlcv", "validate",
     "cv", "metrics", "plot", "stats", "ta", "venues",
     "ProbatumError", "ProbatumValueError", "ProbatumTypeError", "ProbatumKeyError",
     "ProbatumIndexError", "ProbatumAttributeError", "ProbatumRuntimeError",

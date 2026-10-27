@@ -2,11 +2,15 @@
 from any series of returns: the Sharpe's interval by the delta method over a long-run
 variance with Newey and West's weights, its probability of beating a benchmark and the
 track record that would show it, the long-run Sharpe, and every other statistic's
-interval by a bootstrap of the returns or of the round trips; and, across all of a
-search's trials, how far its winner can be trusted and whether it stands among
-neighbours that score as it does (ADRs 0031, 0033; Specification, Inference; Across a
-search)."""
+interval by a bootstrap of the returns or of the round trips; what else describes a
+run, its drawdowns, its statistics over time and by calendar period, the shape of its
+returns, its round trips, another series held beside it and where its money went; and,
+across all of a search's trials, how far its winner can be trusted, whether it stands
+among neighbours that score as it does and how much of its scores each parameter
+explains (ADRs 0031, 0033, 0047; Specification, Inference; Statistics of a run; Across
+a search)."""
 
+import fractions
 import hashlib
 import itertools
 import math
@@ -17,20 +21,27 @@ from collections.abc import Mapping
 
 import numpy as np
 
+from ._data import DAY, HOUR, _chosen
 from ._errors import (DataError, ProbatumAttributeError, ProbatumKeyError,
                       ProbatumTypeError, ProbatumValueError, ProbatumWarning)
 from ._space import _flag, _number, _whole
 from ._streams import stream
 
-__all__ = ["AlphaBeta", "BacktestLength", "Consistency", "Decay", "Deflated", "Difference",
-           "EffectiveTrials", "Forecast", "Interval", "Overfitting", "Permutations",
-           "Plateau", "Probability", "RealityCheck", "Statistics", "TrackRecord",
-           "alpha_beta",
-           "autocorrelation",
-           "bootstrap", "deflated_sharpe", "deflation_threshold", "effective_sample",
-           "effective_trials", "min_backtest_length", "min_track_record_length",
-           "overfitting", "plateau", "probabilistic_sharpe", "reality_check", "sharpe",
-           "sharpe_difference", "sharpe_interval", "trade_order"]
+__all__ = ["AlphaBeta", "BacktestLength", "Benchmark", "Consistency", "Decay",
+           "Decomposition", "Deflated", "Difference", "EffectiveTrials", "Forecast",
+           "Importance", "Interval", "Overfitting", "Permutations", "Plateau",
+           "Probability", "RealityCheck", "Statistics", "TrackRecord", "TradeStats",
+           "UnderWater",
+           "alpha_beta", "autocorrelation", "benchmark", "bootstrap", "compare",
+           "conditional_value_at_risk", "decompose", "deflated_sharpe",
+           "deflation_threshold", "drawdown", "drawdown_table", "effective_sample",
+           "effective_trials", "importance", "kurtosis", "long_short_split",
+           "min_backtest_length", "min_track_record_length", "omega", "overfitting",
+           "period_returns", "plateau", "probabilistic_sharpe", "reality_check",
+           "rolling_sharpe", "rolling_volatility", "segment", "session_buckets", "sharpe",
+           "sharpe_difference", "sharpe_interval", "skew", "tail_ratio",
+           "time_under_water", "trade_order", "trade_stats", "ulcer_index",
+           "value_at_risk"]
 
 # the package's files, which a warning skips to name the caller's line
 PACKAGE = (os.path.dirname(__file__),)
@@ -48,6 +59,8 @@ LLOYD    = 300       # Lloyd's iterations at most
 PARTS    = 16        # the blocks the overfitting probability cuts a run into
 AT_ONCE  = 1 << 21   # the halves' statistics a chunk reads, beside its complements'
 RADII    = tuple(0.05 * k for k in range(1, 11))   # the plateau's, in normalised units
+GROUPS   = 10        # the groups a parameter's ranks fall into, read for its importance
+WINDOWS  = 1 << 21   # the returns the rolling windows read again hold at a time
 # the objectives the overfitting probability reads from halves joined out of order
 HALVED = ("sharpe", "sortino", "total_return_pct", "net_profit_pct", "cagr_pct",
           "volatility_pct")
@@ -406,6 +419,158 @@ class Decay(_Frozen):
                 f"between what a fit scored and what its bars then earned: {listed}")
 
 
+class UnderWater(_Frozen):
+    """How long a run stayed below its running peak: ``longest`` and ``mean``, its
+    drawdowns' rows under, each from its peak to its recovery or to the last row;
+    ``episodes``, their count; ``share``, the share of the rows after the first that are
+    below their peak; and ``longest_days`` and ``mean_days``, a Result's in days, None
+    for a plain series (Specification, Drawdown)."""
+
+    __slots__ = ("longest", "mean", "episodes", "share", "longest_days", "mean_days")
+
+
+    def __init__(self, longest, mean, episodes, share, longest_days, mean_days):
+        self._set(
+            longest      = int(longest),
+            mean         = float(mean),
+            episodes     = int(episodes),
+            share        = float(share),
+            longest_days = _maybe(longest_days),
+            mean_days    = _maybe(mean_days),
+        )
+
+
+    def __str__(self):
+        days = "" if self.longest_days is None else f", {self.longest_days:,.0f} days"
+        return (f"longest under water {self.longest:,} rows{days}, a mean of "
+                f"{self.mean:,.1f} over {self.episodes:,} drawdown"
+                f"{'s' * (self.episodes != 1)}; {self.share:.0%} of the rows after the "
+                f"first below their peak")
+
+
+class TradeStats(_Frozen):
+    """A run's closed round trips read in the order they closed: ``trades``; ``wins``,
+    above zero, and ``losses``, below it; ``avg_win`` and ``avg_loss``, the latter a
+    positive amount, and ``payoff``, the one over the other, ranked as the record ranks
+    a ratio; ``expectancy``, the mean pnl, and ``expectancy_pct``, the same as a
+    percentage of the opening balance; ``largest_win`` and ``largest_loss``;
+    ``max_consecutive_losses``; and ``avg_bars_held``, a trip's closing row less its
+    opening row. A mean or a largest of none is 0 (Specification, Round trips)."""
+
+    __slots__ = ("trades", "wins", "losses", "avg_win", "avg_loss", "payoff", "expectancy",
+                 "expectancy_pct", "largest_win", "largest_loss", "max_consecutive_losses",
+                 "avg_bars_held")
+
+
+    def __init__(self, trades, wins, losses, avg_win, avg_loss, payoff, expectancy,
+                 expectancy_pct, largest_win, largest_loss, max_consecutive_losses,
+                 avg_bars_held):
+        self._set(
+            trades                 = int(trades),
+            wins                   = int(wins),
+            losses                 = int(losses),
+            avg_win                = float(avg_win),
+            avg_loss               = float(avg_loss),
+            payoff                 = float(payoff),
+            expectancy             = float(expectancy),
+            expectancy_pct         = float(expectancy_pct),
+            largest_win            = float(largest_win),
+            largest_loss           = float(largest_loss),
+            max_consecutive_losses = int(max_consecutive_losses),
+            avg_bars_held          = float(avg_bars_held),
+        )
+
+
+    def __str__(self):
+        if not self.trades:
+            return "no closed round trips"
+
+        return (f"{self.trades:,} round trip{'s' * (self.trades != 1)}, {self.wins:,} won "
+                f"and {self.losses:,} lost; mean win {self.avg_win:,.2f} and mean loss "
+                f"{self.avg_loss:,.2f}, a payoff of {self.payoff:.2f}; expectancy "
+                f"{self.expectancy:,.2f}, {self.expectancy_pct:.2f}% of the opening "
+                f"balance; largest win {self.largest_win:,.2f} and largest loss "
+                f"{self.largest_loss:,.2f}; {self.max_consecutive_losses:,} losses in a "
+                f"row at most; {self.avg_bars_held:,.1f} rows held on average")
+
+
+class Benchmark(_Frozen):
+    """A run held against holding another series: ``hold_return_pct``, holding's
+    return, and ``hold_sharpe``, its Sharpe at the run's annualisation and risk-free
+    rate; ``excess_return_pct``, the run's total return less holding's, in percentage
+    points; and ``beta`` and ``information_ratio``, as alpha_beta gives them against it
+    (Specification, Against a benchmark)."""
+
+    __slots__ = ("hold_return_pct", "hold_sharpe", "excess_return_pct", "beta",
+                 "information_ratio")
+
+
+    def __init__(self, hold_return_pct, hold_sharpe, excess_return_pct, beta,
+                 information_ratio):
+        self._set(
+            hold_return_pct   = float(hold_return_pct),
+            hold_sharpe       = float(hold_sharpe),
+            excess_return_pct = float(excess_return_pct),
+            beta              = float(beta),
+            information_ratio = float(information_ratio),
+        )
+
+
+    def __str__(self):
+        return (f"holding returned {self.hold_return_pct:+.2f}% at a sharpe of "
+                f"{self.hold_sharpe:.2f}; the run returned "
+                f"{self.excess_return_pct:+.2f} points beside it, at a beta of "
+                f"{self.beta:.3g} and an information ratio of "
+                f"{self.information_ratio:.2f}")
+
+
+class Decomposition(_Frozen):
+    """Where a run's money went: ``price``, the pnl its fills and marks made, measured
+    from each fill's reference; each cost of Result.costs it paid, ``fees``,
+    ``funding``, ``spread``, ``slippage``, ``impact``, ``liquidation`` and ``dust``, and
+    ``costs``, their sum, so that ``price`` less ``costs`` is ``net``, the change in its
+    equity; ``net_pct``, the net as a percentage of the opening balance;
+    ``cost_share``, the costs as a percentage of the price pnl, ranked as the record
+    ranks a ratio; and ``turnover``, a year of the notional its fills traded over its
+    mean equity (Specification, Where the money went)."""
+
+    __slots__ = ("price", "fees", "funding", "spread", "slippage", "impact", "liquidation",
+                 "dust", "costs", "net", "net_pct", "cost_share", "turnover")
+
+
+    def __init__(self, price, fees, funding, spread, slippage, impact, liquidation, dust,
+                 costs, net, net_pct, cost_share, turnover):
+        self._set(
+            price       = float(price),
+            fees        = float(fees),
+            funding     = float(funding),
+            spread      = float(spread),
+            slippage    = float(slippage),
+            impact      = float(impact),
+            liquidation = float(liquidation),
+            dust        = float(dust),
+            costs       = float(costs),
+            net         = float(net),
+            net_pct     = float(net_pct),
+            cost_share  = float(cost_share),
+            turnover    = float(turnover),
+        )
+
+
+    def __str__(self):
+        paid = ", ".join(f"{name} {getattr(self, name):,.2f}"
+                         for name in ("fees", "funding", "spread", "slippage", "impact",
+                                      "liquidation", "dust") if getattr(self, name))
+        took = ("the price pnl made no gain for the costs to share" if self.price <= 0.0
+                else f"the costs took {self.cost_share:.1f}% of the price pnl")
+        turned = ("none" if math.isnan(self.turnover)
+                  else f"{self.turnover:,.1f} a year")
+        return (f"price pnl {self.price:,.2f}, costs {self.costs:,.2f}"
+                + (f" ({paid})" if paid else "")
+                + f", net {self.net:,.2f}, {self.net_pct:+.2f}% of the opening balance; "
+                f"{took}; turnover {turned}")
+
+
 class Deflated(_Frozen):
     """The deflated Sharpe of a search's winner: ``value``, the probabilistic Sharpe of
     its annual ``sharpe`` against ``threshold``, the annual Sharpe the best of
@@ -621,6 +786,37 @@ class Plateau(_Frozen):
         listed = ", ".join("none" if math.isnan(share) else f"{share:.0%}"
                            for share in self.share)
         return f"{head}; from 0.05 to 0.5: {listed}"
+
+
+class Importance(_Frozen):
+    """How much of a search's scores each parameter explains on its own: ``names``, its
+    parameters in the order of its space; ``importance``, each one's eta squared, the
+    share of the scores' variation the means of its groups explain; ``chance``, the
+    share a parameter with no effect explains by chance on as many ``groups``; and
+    ``trials``, the complete trials with a finite score it read (ADR 0047;
+    Specification, Parameter importance)."""
+
+    __slots__ = ("names", "importance", "chance", "groups", "trials")
+
+
+    def __init__(self, names, importance, chance, groups, trials):
+        self._set(
+            names      = tuple(names),
+            importance = tuple(float(value) for value in importance),
+            chance     = tuple(float(value) for value in chance),
+            groups     = tuple(int(count) for count in groups),
+            trials     = int(trials),
+        )
+
+
+    def __str__(self):
+        ranked = sorted(zip(self.names, self.importance, self.chance),
+                        key=lambda part: -part[1])
+        listed = ", ".join(f"{name} {value:.2f} beside {level:.2f}"
+                           for name, value, level in ranked)
+        return (f"importance over {self.trials:,} complete trials, the share of their "
+                f"scores' variation each parameter explains beside what chance gives: "
+                f"{listed}")
 
 
 class Forecast(_Frozen):
@@ -1040,6 +1236,458 @@ def trade_order(result, n=2000, seed=None):
                         _ordered(runs, 0.025), _ordered(runs, 0.975), pnl.size, n)
 
 
+def drawdown(returns):
+    """The drawdown of ``returns``: a Result's on each of its rows, the first 0, or a
+    plain series' on each of its returns, over its path compounded from 1 before the
+    first; the fall from the running peak over the peak, in percent and at most 100,
+    the largest being the record's maximum drawdown (Specification, Drawdown)."""
+    equity, time = _path(returns)
+    falls = _fallen(equity)
+    return falls if time is not None else falls[1:]
+
+
+def drawdown_table(returns, top=5):
+    """The ``top`` deepest drawdowns of ``returns``, a Result's or a plain series', as a
+    Table, deepest first and the earlier of two equal ones first: the rows of each one's
+    peak, its trough, the first of equally deep rows, and its recovery, missing while
+    it is below at the last row, and a Result's times of each, missing for a plain
+    series, whose rows are its path's, the 1 before its first return its row 0; its
+    depth in percent; its rows from peak to trough; and its rows under, from its peak
+    to its recovery or to the last row (Specification, Drawdown)."""
+    from ._probatum import Table as _Held
+    from ._result import Table
+
+    if not _whole(top):
+        raise ProbatumTypeError(f"top: {top!r}; give a whole number of drawdowns from 1")
+    if top < 1:
+        raise ProbatumValueError(f"top: {top}; give a whole number of drawdowns from 1")
+
+    equity, time = _path(returns)
+    falls        = _fallen(equity)
+    peaks, ends  = _episodes(equity)
+    depths       = np.maximum.reduceat(falls, peaks + 1) if peaks.size else falls[:0]
+
+    kept   = np.lexsort((peaks, -depths))[:top]
+    peak   = peaks[kept]
+    end    = ends[kept]
+    trough = np.array([at + 1 + int(np.argmax(falls[at + 1:stop]))
+                       for at, stop in zip(peak.tolist(), end.tolist())], dtype=np.int64)
+
+    rows  = len(equity)
+    back  = end < rows
+    last  = np.minimum(end, rows - 1)
+    clock = np.zeros(rows, dtype=np.int64) if time is None else time
+    timed = np.full(peak.size, time is not None)
+
+    return Table(_Held([
+        _column("peak_bar", "int", peak),
+        _column("trough_bar", "int", trough),
+        _column("recovered_bar", "int", np.where(back, end, 0), back),
+        _column("peak_time", "time", clock[peak], timed),
+        _column("trough_time", "time", clock[trough], timed),
+        _column("recovered_time", "time", clock[last], timed & back),
+        _column("depth_pct", "float", depths[kept]),
+        _column("bars_to_trough", "int", trough - peak),
+        _column("bars_under", "int", last - peak),
+    ]))
+
+
+def time_under_water(returns):
+    """How long ``returns``, a Result's or a plain series', stayed below its running
+    peak, as UnderWater: the longest and the mean of its drawdowns' rows under, each
+    from its peak to its recovery or to the last row, their count and the share of the
+    rows after the first below their peak, with a Result's longest and mean in days,
+    the longest being the one its summary prints (Specification, Drawdown)."""
+    equity, time = _path(returns)
+    peaks, ends  = _episodes(equity)
+    rows  = len(equity) - 1
+    last  = np.minimum(ends, rows)
+    spans = last - peaks
+    below = int(np.count_nonzero(equity < np.maximum.accumulate(equity)))
+
+    longest, mean = (int(spans.max()), float(spans.mean())) if spans.size else (0, 0.0)
+    if time is None:
+        days = (None, None)
+    else:
+        held = (time[last] - time[peaks]) / DAY
+        days = (float(held.max()), float(held.mean())) if held.size else (0.0, 0.0)
+
+    return UnderWater(longest, mean, spans.size, below / rows if below else 0.0, *days)
+
+
+def ulcer_index(returns):
+    """The root mean square of the drawdown of ``returns``, a Result's or a plain
+    series', over the rows after the first, in percent (Martin and McCann 1989;
+    Specification, Drawdown)."""
+    equity, _ = _path(returns)
+    falls = _fallen(equity)[1:]
+    return math.sqrt(float(falls @ falls) / falls.size) if falls.size else 0.0
+
+
+def rolling_sharpe(returns, window, periods_per_year=None, risk_free=None):
+    """The record's Sharpe of the ``window`` returns that end at each row of
+    ``returns``: a Result's at its annualisation and risk-free rate, a value a row and
+    NaN on its first ``window`` rows, since its returns start on its second, or a plain
+    series' at ``periods_per_year`` against an annual ``risk_free``, a value a return
+    and NaN on its first ``window - 1``. ``window`` is a whole number of returns from
+    2, with no default, since its span in time depends on the bars (Specification, Over
+    time)."""
+    r, rate, free, lead = _windowed(returns, window, periods_per_year, risk_free)
+    out = np.full(lead + r.size, math.nan)
+    if r.size >= window:
+        mean, spread = _rolled(r, window)
+        out[lead + window - 1:] = _ranked_all(mean - free / rate, spread, math.sqrt(rate))
+
+    return out
+
+
+def rolling_volatility(returns, window, periods_per_year=None):
+    """The volatility of the ``window`` returns that end at each row of ``returns``, as
+    ``rolling_sharpe`` reads and aligns them: their deviation, ``window - 1`` in its
+    divisor, times the square root of the bars a year, in percent (Specification, Over
+    time)."""
+    r, rate, _, lead = _windowed(returns, window, periods_per_year, None)
+    out = np.full(lead + r.size, math.nan)
+    if r.size >= window:
+        out[lead + window - 1:] = _rolled(r, window)[1] * math.sqrt(rate) * 100.0
+
+    return out
+
+
+def period_returns(result, by="month"):
+    """A Result's return in each calendar month, quarter or year of its rows' times in
+    UTC, as ``by`` names, as a Table, a row a period in order: its name, "2024-02",
+    "2024-Q1" or "2024", its first row, its count of rows, the times of its first and
+    its last, and its return in percent, its rows' returns compounded, so the periods
+    compound to the run (Specification, Over time)."""
+    from ._probatum import Table as _Held
+    from ._result import Table, _text
+
+    result = _ran(result, "period_returns")
+    _chosen("by", by, ("month", "quarter", "year"), 'give "month", "quarter" or "year"')
+
+    months = result.time.view("M8[ns]").astype("M8[M]").astype(np.int64)
+    keys   = months // {"month": 1, "quarter": 3, "year": 12}[by]
+    first  = np.flatnonzero(np.concatenate([[True], keys[1:] != keys[:-1]]))
+    counts = np.diff(np.append(first, keys.size))
+    grown  = np.multiply.reduceat(1.0 + result.returns, first) - 1.0
+
+    def named(key):
+        if by == "month":
+            return f"{1970 + key // 12}-{key % 12 + 1:02d}"
+        if by == "quarter":
+            return f"{1970 + key // 4}-Q{key % 4 + 1}"
+        return f"{1970 + key}"
+
+    ends, valid, data = _text([named(key) for key in keys[first].tolist()])
+    return Table(_Held([
+        ("period", "text", False, ends, valid, data),
+        _column("first_bar", "int", first),
+        _column("rows", "int", counts),
+        _column("start", "time", result.time[first], np.ones(first.size, dtype=bool)),
+        _column("end", "time", result.time[first + counts - 1],
+                np.ones(first.size, dtype=bool)),
+        _column("return_pct", "float", grown * 100.0),
+    ]))
+
+
+def segment(result, start=0, stop=None):
+    """The record's statistics of a Result over its rows ``start`` to ``stop - 1``, to
+    the last row unless given, as Statistics, each read on the stretch as the run's are
+    on the run: the returns of those rows, the first from the equity of row ``start -
+    1``, a segment from row 0 reading those after it as the run does; the round trips
+    that closed on those rows; the rows that ended holding a position; and the fills on
+    them, None for a run recorded at the account level, which keeps no fill log.
+    Consecutive segments compound to the run (Specification, Over time)."""
+    from ._probatum import stats_of
+    from ._result import _recorded
+
+    result = _ran(result, "segment")
+    rows   = len(result.time)
+    stop   = rows if stop is None else stop
+    for name, value in (("start", start), ("stop", stop)):
+        if not _whole(value):
+            raise ProbatumTypeError(f"{name}: {value!r}; give a whole number of rows")
+
+    if not 0 <= start < rows:
+        raise ProbatumValueError(f"start: {start}; give a row from 0 to {rows - 1:,}")
+
+    first = max(int(start), 1)
+    if not first < stop <= rows:
+        raise ProbatumValueError(f"stop: {stop}; give a row from {first + 1:,} to "
+                                 f"{rows:,}, so the segment holds a return")
+
+    given = result.provenance
+    rate  = given["periods_per_year"]
+    if rate is None:
+        raise ProbatumValueError("result: a Result whose clock is too short to annualise; "
+                                 "run it over more than one row")
+
+    trades = result.trades
+    closed = np.asarray(np.ma.filled(trades["close_bar"], -1))
+    exits  = ~np.asarray(trades["open"]) & (closed >= start) & (closed < stop)
+    pnl    = np.array(trades["pnl"][exits], dtype=np.float64)
+    held   = np.asarray(result.ledger["gross_exposure"])[first:stop] > 0.0
+    logged = _recorded(given) == "full"
+    fills  = (int(np.count_nonzero((result.fills["bar"] >= start)
+                                   & (result.fills["bar"] < stop))) if logged else 0)
+
+    opening = float(result.equity[first - 1])
+    values  = stats_of(opening, np.ascontiguousarray(result.equity[first:stop]),
+                       np.ascontiguousarray(pnl), rate, float(given["risk_free"]),
+                       int(held.sum()), fills,
+                       math.fsum(result.ledger["funding"][start:stop].tolist()))
+    if not logged:
+        values["num_fills"] = None
+
+    return Statistics(values, np.array(result.returns[first:stop]), pnl, opening, rate,
+                      given["risk_free"])
+
+
+def skew(returns):
+    """The skew of ``returns``, a Result's or a plain series', ``m3 / m2^(3/2)``, each
+    ``m_k`` the mean of the returns' ``k``-th powers about their mean; 0 below 3 returns
+    or where they never vary (Specification, The returns' shape)."""
+    r = _values(returns)
+    if r.size < 3 or np.all(r == r[0]):
+        return 0.0
+
+    centred = r - r.mean()
+    return float((centred ** 3).mean() / (centred ** 2).mean() ** 1.5)
+
+
+def kurtosis(returns, excess=False):
+    """The kurtosis of ``returns``, a Result's or a plain series', ``m4 / m2^2``, so a
+    normal series has 3, which the probabilistic Sharpe reads; 3 below 4 returns or
+    where they never vary; and with ``excess`` less 3 (Specification, The returns'
+    shape)."""
+    excess = _flag("excess", excess)
+    r = _values(returns)
+    if r.size < 4 or np.all(r == r[0]):
+        value = 3.0
+    else:
+        centred = r - r.mean()
+        value   = float((centred ** 4).mean() / (centred ** 2).mean() ** 2)
+
+    return value - 3.0 if excess else value
+
+
+def omega(returns, threshold=0.0, periods_per_year=None):
+    """The omega of ``returns``, a Result's or a plain series', at an annual
+    ``threshold``: the gains past the threshold's share of a bar over the losses short
+    of it, ranked as the record ranks a ratio, so returns none of which falls short of
+    it are infinite where one passes it. A plain series needs ``periods_per_year`` only
+    for a threshold other than 0 (Keating and Shadwick 2002; Specification, The returns'
+    shape)."""
+    threshold = _finite("threshold", threshold, "an annual return, such as 0.0")
+    r   = _values(returns)
+    bar = 0.0
+    if threshold != 0.0 or periods_per_year is not None:
+        bar = threshold / _read(returns, periods_per_year, None)[1]
+
+    return _ranked(float(np.maximum(r - bar, 0.0).sum()),
+                   float(np.maximum(bar - r, 0.0).sum()), 1.0)
+
+
+def value_at_risk(returns, alpha=0.95):
+    """The loss of the ``k``-th lowest of ``returns``, a Result's or a plain series', in
+    percent, ``k = max(1, ceil(n * (1 - alpha)))`` of the ``n`` returns, ``alpha`` taken
+    as the shortest decimal that reads as it, so at 0.95 the one its interval reads
+    (Specification, The returns' shape)."""
+    r, k = _tail(returns, alpha)
+    return float(-np.partition(r, k - 1)[k - 1] * 100.0) + 0.0
+
+
+def conditional_value_at_risk(returns, alpha=0.95):
+    """The mean loss of the ``k`` lowest of ``returns``, ``k`` as ``value_at_risk``
+    counts it, in percent; at 0.95 the one its interval reads (Specification, The
+    returns' shape)."""
+    r, k = _tail(returns, alpha)
+    return float(-np.partition(r, k - 1)[:k].mean() * 100.0) + 0.0
+
+
+def tail_ratio(returns, alpha=0.95):
+    """The ``k``-th highest of ``returns`` over the loss of the ``k``-th lowest, ``k`` as
+    ``value_at_risk`` counts it, ranked as the record ranks a ratio, so returns whose
+    ``k``-th lowest is no loss are infinite where their ``k``-th highest is a gain
+    (Specification, The returns' shape)."""
+    r, k = _tail(returns, alpha)
+    order = np.sort(r)
+    return _ranked(float(order[-k]), float(-order[k - 1]), 1.0)
+
+
+def trade_stats(result):
+    """What a Result's closed round trips' pnl gives, read in the order they closed, as
+    TradeStats: their count, the wins and the losses, the mean win and the mean loss and
+    the payoff of the one over the other, the expectancy and the same as a percentage
+    of the opening balance, the largest win and loss, the longest run of losses in a row
+    and the mean rows held (Specification, Round trips)."""
+    result = _ran(result, "trade_stats")
+    pnl, held, _, _ = _trips(result)
+    return _traded(pnl, held, float(result.equity[0]))
+
+
+def long_short_split(result):
+    """``trade_stats`` of a Result's long round trips and of its short ones, under
+    ``"long"`` and ``"short"`` (Specification, Round trips)."""
+    result = _ran(result, "long_short_split")
+    pnl, held, side, _ = _trips(result)
+    opening = float(result.equity[0])
+    return {name: _traded(pnl[side == name], held[side == name], opening)
+            for name in ("long", "short")}
+
+
+def session_buckets(result, by="hour"):
+    """A Result's closed round trips, each booked at the UTC time of the row it closed
+    on, by hour of the day, 0 to 23, or with ``by="weekday"`` by day of the week, Monday
+    0 to Sunday 6, as a Table, a row each bucket that holds one, in order: its bucket,
+    its round trips, their summed pnl and their win rate (Specification, Round
+    trips)."""
+    from ._probatum import Table as _Held
+    from ._result import Table
+
+    result = _ran(result, "session_buckets")
+    _chosen("by", by, ("hour", "weekday"), 'give "hour" or "weekday"')
+
+    pnl, _, _, shut = _trips(result)
+    hours = result.time[shut] // HOUR
+    # the clock's day 0 is a Thursday, 3 from a Monday
+    keys  = hours % 24 if by == "hour" else (hours // 24 + 3) % 7
+    found = np.unique(keys)
+    trips = [pnl[keys == key] for key in found.tolist()]
+
+    return Table(_Held([
+        _column("bucket", "int", found),
+        _column("trades", "int", [trip.size for trip in trips]),
+        _column("pnl", "float", [math.fsum(trip.tolist()) for trip in trips]),
+        _column("win_rate", "float", [np.count_nonzero(trip > 0.0) / trip.size
+                                      for trip in trips]),
+    ]))
+
+
+def benchmark(result, prices):
+    """A Result held against holding another series, as a Benchmark: ``prices``, one a
+    row of the Result, an array or a list of its rows' count or a pandas Series indexed
+    by its row times exactly, return ``p_t / p_{t-1} - 1``; holding them returns the
+    last over the first, less one, at the record's Sharpe on those returns at the run's
+    annualisation and risk-free rate; the run's total return less holding's is in
+    percentage points; and beta and the information ratio are those alpha_beta gives
+    against them, 0 below 2 returns, and beta 0 where the series' returns never vary
+    (Specification, Against a benchmark)."""
+    result = _ran(result, "benchmark")
+    rate   = result.provenance["periods_per_year"]
+    if rate is None:
+        raise ProbatumValueError("result: a Result whose clock is too short to annualise; "
+                                 "run it over more than one row")
+
+    p    = _priced(result, prices)
+    y    = p[1:] / p[:-1] - 1.0
+    r    = np.asarray(result.returns[1:])
+    free = result.provenance["risk_free"]
+    held = (p[-1] / p[0] - 1.0) * 100.0
+    gain = (result.equity[-1] / result.equity[0] - 1.0) * 100.0
+
+    beta = ratio = 0.0
+    if r.size >= 2:
+        moved = y - y.mean()
+        if not np.all(y == y[0]):
+            beta = float((r - r.mean()) @ moved / (moved @ moved))
+        gap   = r - y
+        ratio = _ranked(gap.mean(), gap.std(ddof=1), math.sqrt(rate))
+
+    return Benchmark(held, _recorded_sharpe(y, rate, free), gain - held, beta, ratio)
+
+
+def decompose(result):
+    """Where a Result's money went, as a Decomposition: the change in its equity split
+    into the price pnl its fills and marks made, measured from each fill's reference,
+    and each cost of ``Result.costs`` it paid, with the net as a percentage of the
+    opening balance, the costs' share of the price pnl and the turnover, a year of the
+    notional its fills traded over its mean equity, NaN where it has no annualisation,
+    its mean equity is not above zero or, recorded at the account level, it keeps no
+    fill log (Specification, Where the money went)."""
+    from ._result import COSTS, _recorded
+
+    result = _ran(result, "decompose")
+    paid   = result.costs
+    costs  = math.fsum(paid.values())
+    equity = np.asarray(result.equity)
+    net    = float(equity[-1] - equity[0])
+    rate   = result.provenance["periods_per_year"]
+    mean   = float(equity.mean())
+
+    turnover = math.nan
+    if (_recorded(result.provenance) == "full" and rate is not None and equity.size > 1
+            and mean > 0.0):
+        turnover = _notional(result) / mean * rate / (equity.size - 1)
+
+    return Decomposition(net + costs, *(paid[name] for name in COSTS), costs, net,
+                         net / equity[0] * 100.0, _ranked(costs, net + costs, 100.0),
+                         turnover)
+
+
+def compare(results, keys=None):
+    """Runs set side by side, as a Table, a row a run in the order given: ``results``,
+    a list of Results, each named by its venue's name, or a mapping of a name to each;
+    a row its name, its venue, its policy, the fingerprint of its data, its rows and its
+    statistics, every one or those ``keys`` names, missing for a run whose clock is too
+    short to annualise (Specification, Comparing runs)."""
+    from ._probatum import Table as _Held
+    from ._result import COUNTS, STATS, Result, Table, _text
+
+    if isinstance(results, Mapping):
+        named = list(results.items())
+    elif isinstance(results, (list, tuple)):
+        named = [(None, result) for result in results]
+    else:
+        raise ProbatumTypeError(f"results: {type(results).__name__}; pass a list of "
+                                f"Results, or a mapping of a name to each")
+
+    if not named:
+        raise ProbatumValueError("results: none given; pass the Results to set side by "
+                                 "side")
+
+    for name, result in named:
+        if not isinstance(result, Result):
+            raise ProbatumTypeError(f"results: a {type(result).__name__} among them; "
+                                    f"pass Results")
+
+    chosen = list(STATS) if keys is None else list(keys)
+    for key in chosen:
+        if key not in STATS:
+            raise ProbatumKeyError(f"keys: {key!r}, which no run reports; give some of "
+                                   f"{', '.join(STATS)}")
+
+    def told(result, field):
+        given = result.provenance
+        parts = list(given["results"].values()) if "results" in given else [given]
+        if field == "venue":
+            return " and ".join(part["venue_name"] or "a venue built by hand"
+                                for part in parts)
+        if field == "data":
+            return " and ".join(part["data"]["fingerprint"] for part in parts)
+        return " and ".join(str(part["policy"]) for part in parts)
+
+    labels  = [told(result, "venue") if name is None else str(name)
+               for name, result in named]
+    columns = [("name", labels)] + [(field, [told(result, field) for _, result in named])
+                                    for field in ("venue", "policy", "data")]
+    parts   = [(field, "text", False, *_text(values)) for field, values in columns]
+    parts.append(_column("rows", "int", [len(result.time) for _, result in named]))
+
+    for key in chosen:
+        values  = [None if result.stats is None else result.stats[key]
+                   for _, result in named]
+        present = np.array([value is not None for value in values])
+        if key in COUNTS:
+            parts.append(_column(key, "int", [value or 0 for value in values], present))
+        else:
+            parts.append(_column(key, "float", [math.nan if value is None else value
+                                                for value in values]))
+
+    return Table(_Held(parts))
+
+
 def deflation_threshold(spread, trials):
     """The annual Sharpe the best of ``trials`` independent trials reaches by luck when
     their annual Sharpes spread ``spread`` about zero: ``spread`` times Bailey and Lopez
@@ -1432,6 +2080,56 @@ def _placed(values, drawn):
 
     # in Python's numbers, which take a whole number's difference exactly
     return np.array([(value - low) / (high - low) for value in values])
+
+
+def importance(study):
+    """How much of the variation in a search's scores each parameter of its space
+    explains on its own, as an Importance: its complete trials whose score is finite
+    grouped by each parameter's value, a categorical one's by its choice, NaN being one
+    choice, and a number's by its value where it takes at most 10 among them or
+    otherwise into 10 groups by rank, each parameter's eta squared, the share of the
+    scores' variation its groups' means explain, beside ``(g - 1) / (N - 1)``, the share
+    a parameter with no effect explains by chance in ``g`` groups of ``N`` trials. It
+    reads the trials table alone, so it is the same in every process and after a load
+    (ADR 0047; Specification, Parameter importance)."""
+    from ._space import Categorical, _one
+    study = _searched(study, "study")
+
+    table = study.trials
+    score = np.asarray(table["score"], dtype=np.float64)
+    kept  = (np.asarray(table["state"]) == "complete") & np.isfinite(score)
+    count = int(np.count_nonzero(kept))
+    if count < 2:
+        raise ProbatumValueError(f"study: {count} complete trial{'s' * (count != 1)} with "
+                                 f"a finite score; importance needs at least 2")
+
+    rows   = np.flatnonzero(kept).tolist()
+    scores = score[kept]
+    centre = scores.mean()
+    total  = float(((scores - centre) ** 2).sum())
+    still  = bool(np.all(scores == scores[0]))
+    shares, chances, groups = [], [], []
+
+    for name, drawn in study._space.items():
+        if isinstance(drawn, Categorical):
+            # a choice's place among the choices, since the trials table holds a None
+            # among floats as NaN
+            labels = np.array([next(k for k, choice in enumerate(drawn.choices)
+                                    if _one(choice, study._params[i][name])) for i in rows])
+        else:
+            values = np.array([study._params[i][name] for i in rows])
+            labels = values if np.unique(values).size <= GROUPS else (
+                GROUPS * np.searchsorted(np.sort(values), values, side="left") // count)
+
+        _, inverse, sizes = np.unique(labels, return_inverse=True, return_counts=True)
+        means   = np.bincount(inverse.reshape(-1), weights=scores) / sizes
+        between = float((sizes * (means - centre) ** 2).sum())
+
+        shares.append(0.0 if still else between / total)
+        chances.append((sizes.size - 1) / (count - 1))
+        groups.append(sizes.size)
+
+    return Importance(study._space, shares, chances, groups, count)
 
 
 def autocorrelation(returns, lag=1):
@@ -2716,3 +3414,209 @@ def _family(study, held, bar):
     member = labels == labels[held.numbers.index(winner)]
     return probabilistic_sharpe(_combined(rows[member]), benchmark=bar,
                                 periods_per_year=rate)
+
+
+def _ran(result, name):
+    """``result``, refused unless it is a Result, which ``name`` reads."""
+    from ._result import Result
+    if not isinstance(result, Result):
+        raise ProbatumTypeError(f"result: {type(result).__name__}; {name} reads a Result")
+    return result
+
+
+def _column(name, kind, values, present=None):
+    """A column of a Table the binding builds, of ints, times or floats, missing where
+    ``present`` is False."""
+    held  = np.ascontiguousarray(values, dtype=np.float64 if kind == "float" else np.int64)
+    valid = None if present is None or np.all(present) else np.asarray(present, dtype=bool)
+    return name, kind, kind == "float" or present is not None, held, valid, None
+
+
+def _path(returns):
+    """The equity a drawdown reads and its rows' times: a Result's own, or a plain
+    series' path compounded from 1 before its first return, a return after the path
+    reaches zero moving it no further, with no times (Specification, Drawdown)."""
+    from ._result import Result
+    if isinstance(returns, Result):
+        return np.asarray(returns.equity), returns.time
+
+    path = np.concatenate([[1.0], np.cumprod(1.0 + _series(returns))])
+    gone = np.flatnonzero(path <= 0.0)
+    if gone.size:
+        path[gone[0] + 1:] = path[gone[0]]
+
+    return path, None
+
+
+def _fallen(equity):
+    """Each row's fall from the running peak of ``equity`` over the peak, in percent and
+    at most 100, as the record measures its maximum drawdown (ADR 0030)."""
+    peak = np.maximum.accumulate(equity)
+    fall = np.divide(peak - equity, peak, out=np.zeros_like(equity), where=peak > 0.0)
+    return np.minimum(fall, 1.0) * 100.0
+
+
+def _episodes(equity):
+    """The drawdowns of ``equity`` in the order they opened: each one's peak, the row
+    before its first below the running peak, and its end, the first row back at or
+    above it, or the count of rows while it is below at the last."""
+    under = np.concatenate([[False], equity < np.maximum.accumulate(equity), [False]])
+    moved = np.diff(under.astype(np.int8))
+    return np.flatnonzero(moved == 1) - 1, np.flatnonzero(moved == -1)
+
+
+def _windowed(returns, window, periods_per_year, risk_free):
+    """What a rolling statistic of ``returns`` reads: the returns, the bars a year, the
+    annual risk-free rate and the rows before the first return, a Result's one."""
+    from ._result import Result
+    if not _whole(window):
+        raise ProbatumTypeError(f"window: {window!r}; give a whole number of returns "
+                                f"from 2")
+    if window < 2:
+        raise ProbatumValueError(f"window: {window}; give a whole number of returns from 2")
+
+    _, rate = _read(returns, periods_per_year, risk_free)
+    if isinstance(returns, Result):
+        return _values(returns), rate, returns.provenance["risk_free"], 1
+
+    return _values(returns), rate, 0.0 if risk_free is None else float(risk_free), 0
+
+
+def _rolled(r, window):
+    """The mean and the deviation, ``window - 1`` in its divisor, of the ``window``
+    returns that end at each of ``r`` from its ``window``-th, from running sums of the
+    returns about their mean."""
+    window  = int(window)
+    centre  = r.mean()
+    moved   = r - centre
+    sums    = np.concatenate([[0.0], np.cumsum(moved)])
+    squares = np.concatenate([[0.0], np.cumsum(moved * moved)])
+    total   = sums[window:] - sums[:-window]
+    mean    = total / window + centre
+    spread  = np.maximum(squares[window:] - squares[:-window] - total * (mean - centre),
+                         0.0)
+
+    # a window whose spread is small beside the running sums loses digits to their
+    # difference, so it is read again on its own returns
+    rough  = np.flatnonzero(spread < 1e-5 * squares[window:])
+    spread = np.sqrt(spread / (window - 1))
+    held   = np.lib.stride_tricks.sliding_window_view(r, window)
+    for part in np.array_split(rough, rough.size * window // WINDOWS + 1):
+        mean[part], spread[part] = held[part].mean(axis=1), held[part].std(axis=1, ddof=1)
+
+    # and one whose returns are all one value has no deviation and that value for its
+    # mean, which rounding would miss either way
+    changes = np.concatenate([[0], np.cumsum(r[1:] != r[:-1])])
+    still   = changes[window - 1:] == changes[:r.size - window + 1]
+    return np.where(still, r[window - 1:], mean), np.where(still, 0.0, spread)
+
+
+def _tail(returns, alpha):
+    """The returns a statistic of their tail reads, at least one, and the count ``k`` of
+    the lowest it reads at ``alpha`` (Specification, The returns' shape)."""
+    alpha = _fraction("alpha", alpha)
+    r = _values(returns)
+    if not r.size:
+        raise ProbatumValueError("returns: none; a tail needs at least one return")
+
+    return r, _counted(r.size, alpha)
+
+
+def _counted(count, alpha):
+    """``k = max(1, ceil(n * (1 - alpha)))`` of ``count`` returns, ``alpha`` taken as the
+    shortest decimal that reads as it, so 0.95 counts ``n / 20`` exactly at any ``n``
+    (Specification, The returns' shape)."""
+    return max(1, math.ceil(count * (1 - fractions.Fraction(repr(alpha)))))
+
+
+def _trips(result):
+    """A Result's closed round trips in the order they closed: their pnl, the rows each
+    was held, their sides and the rows they closed on."""
+    trades = result.trades
+    closed = ~np.asarray(trades["open"])
+    shut   = np.asarray(np.ma.filled(trades["close_bar"], -1))[closed]
+    order  = np.argsort(shut, kind="stable")
+    opened = np.asarray(trades["open_bar"])[closed][order]
+    return (np.asarray(trades["pnl"], dtype=np.float64)[closed][order],
+            shut[order] - opened, np.asarray(trades["side"])[closed][order], shut[order])
+
+
+def _traded(pnl, held, opening):
+    """TradeStats of the closed round trips' ``pnl`` in the order they closed and the
+    rows each was ``held``, on the ``opening`` balance."""
+    wins, losses = pnl[pnl > 0.0], pnl[pnl < 0.0]
+    lost = np.diff(np.concatenate([[0], (pnl < 0.0).astype(np.int8), [0]]))
+    runs = np.flatnonzero(lost == -1) - np.flatnonzero(lost == 1)
+
+    win  = float(wins.mean()) if wins.size else 0.0
+    loss = float(-losses.mean()) if losses.size else 0.0
+    mean = float(pnl.mean()) if pnl.size else 0.0
+    return TradeStats(pnl.size, wins.size, losses.size, win, loss, _ranked(win, loss, 1.0),
+                      mean, mean / opening * 100.0, wins.max(initial=0.0),
+                      losses.min(initial=0.0), runs.max(initial=0),
+                      float(held.mean()) if held.size else 0.0)
+
+
+def _priced(result, prices):
+    """``prices``, one a row of ``result``, as an array: an array or a list of its rows'
+    count, or a pandas Series indexed by its row times exactly, each finite and above
+    zero (Specification, Against a benchmark)."""
+    if hasattr(prices, "index") and hasattr(prices, "to_numpy"):
+        try:
+            times = np.asarray(prices.index.values).astype("datetime64[ns]").view(np.int64)
+        except (TypeError, ValueError):
+            times = None
+        if times is None or not np.array_equal(times, result.time):
+            raise DataError("prices: a Series whose index is not the run's row times; "
+                            "index it by them, as result.time holds them")
+        prices = prices.to_numpy()
+
+    if isinstance(prices, (str, bytes, dict)) or not hasattr(prices, "__len__"):
+        raise ProbatumTypeError(f"prices: {type(prices).__name__}; pass an array, a list "
+                                f"or a pandas Series of prices, one a row")
+    try:
+        values = np.asarray(prices, dtype=np.float64)
+    except (TypeError, ValueError):
+        raise ProbatumTypeError(f"prices: a {type(prices).__name__} that holds no "
+                                f"numbers; pass one price a row") from None
+
+    if values.shape != result.time.shape:
+        raise ProbatumValueError(f"prices: {values.size:,} values beside a run of "
+                                 f"{result.time.size:,} rows; give one price a row")
+
+    bad = np.flatnonzero(~(np.isfinite(values) & (values > 0.0)))
+    if bad.size:
+        raise ProbatumValueError(f"prices: position {bad[0]} holds {values[bad[0]]}; a "
+                                 f"price is a finite number above zero")
+
+    return values
+
+
+def _recorded_sharpe(r, rate, free):
+    """The record's Sharpe of returns ``r``: their mean less the risk-free rate's share
+    of a bar over their own deviation, 0 below 2 returns (ADR 0030)."""
+    if r.size < 2:
+        return 0.0
+    return _ranked(r.mean() - free / rate, r.std(ddof=1), math.sqrt(rate))
+
+
+def _notional(result):
+    """The notional a Result's fills traded at their prices, ``abs(q) * p``, or on an
+    inverse contract ``abs(u) / p`` of its dollars, in the asset each account settles
+    in (Specification, What a run of them reads)."""
+    fills = result.fills
+    size  = np.abs(np.asarray(fills["size"], dtype=np.float64))
+    price = np.asarray(fills["price"], dtype=np.float64)
+    given = result.provenance
+
+    accounts = given["results"] if "results" in given else {None: given}
+    venue    = (np.asarray(fills["venue"]) if "venue" in fills.columns
+                else np.full(size.size, None, dtype=object))
+    notional = size * price
+    for label, account in accounts.items():
+        # an inverse account holds its one contract, whose notional is in its coin
+        if account.get("markets") == ["inverse"]:
+            mine = np.array([at == label for at in venue.tolist()], dtype=bool)
+            notional[mine] = size[mine] * account["contract"] / price[mine]
+
+    return math.fsum(notional.tolist())

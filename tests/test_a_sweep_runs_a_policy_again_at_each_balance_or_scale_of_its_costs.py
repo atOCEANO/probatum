@@ -262,7 +262,7 @@ def bisected(monkeypatch, cost):
         ran.append(costs)
         return costs
 
-    def measured(scale, data):
+    def measured(scale):
         return _costs.Measured(1.0 if scale < 37.0 else -1.0, 0.0, 1, {}, cost(scale),
                                0.0, 0.0)
 

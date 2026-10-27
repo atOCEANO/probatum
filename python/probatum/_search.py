@@ -36,8 +36,8 @@ from ._strategy import Strategy, _Run, _play
 from ._venue import _run
 from .stats import (BREAK_EVEN, GROWS, HALVED, PARTS, RETURNS, TRADES, Consistency, Decay,
                     Forecast, _finite, _percent, bootstrap, deflated_sharpe,
-                    effective_trials, min_backtest_length, overfitting, plateau,
-                    reality_check, sharpe_interval)
+                    effective_trials, importance, min_backtest_length, overfitting,
+                    plateau, reality_check, sharpe_interval)
 
 LOGGER     = logging.getLogger("probatum")
 SAMPLERS   = ("tpe", "random", "grid")
@@ -981,8 +981,9 @@ class Study:
     ``looks``, how many times the winner has been handed the held-out bars; and
     ``provenance``, what the call was given and where it ran. A search's is judged
     across its trials by ``deflated_sharpe(null)``, ``effective_trials()``,
-    ``overfitting()``, ``reality_check()``, ``min_backtest_length()`` and
-    ``plateau(level)``, as ``probatum.stats`` computes them (ADR 0033)."""
+    ``overfitting()``, ``reality_check()``, ``min_backtest_length()``,
+    ``plateau(level)`` and ``importance()``, as ``probatum.stats`` computes them (ADRs
+    0033, 0047)."""
 
 
     def __init__(self, trials, returns, winner, ran, provenance, tables=None,
@@ -1455,6 +1456,13 @@ class Study:
         """The share of the trials near the winner, in normalised parameters, that
         scored past ``level`` (``probatum.stats.plateau``)."""
         return plateau(self, level)
+
+
+    def importance(self):
+        """Each parameter's share of the variation in the complete trials' scores its
+        own values explain, beside the share chance gives
+        (``probatum.stats.importance``)."""
+        return importance(self)
 
 
     def _deflated(self, null):
