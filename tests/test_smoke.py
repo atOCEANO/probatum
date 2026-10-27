@@ -1246,6 +1246,17 @@ def test_batch_features_are_read_by_row_whatever_order_numpy_holds_them_in(featu
     np.testing.assert_array_equal(b.observe_features(1), [[first], [first]])
 
 
+def driven(engine, decide):
+    """``engine`` stepped from its first bar to its last, ``decide(state, engine)``
+    placing orders at each bar but the last, and its last state."""
+    state = engine.reset()
+    while not engine.done():
+        decide(state, engine)
+        state = engine.step()
+
+    return state
+
+
 class BuyAndHold:
     """Buys once on the first bar, then holds, through the engine's own API."""
 
@@ -1260,35 +1271,14 @@ class BuyAndHold:
             self.entered = True
 
 
-class RecordsInit:
-
-    def __init__(self):
-        self.inited = False
-
-
-    def init(self, engine):
-        self.inited = True
-
-
-    def next(self, state, engine):
-        pass
-
-
-def test_run_drives_a_python_strategy_that_places_orders():
+def test_a_loop_that_places_orders_through_the_engine_trades_on_it():
     e     = engine()
-    final = e.run(BuyAndHold())
+    final = driven(e, BuyAndHold().next)
 
     assert final["tick_index"] == 2    # drove to the last bar
     assert final["position"]   == 1.0  # bought 1 at bar 1 open, held
     # spot: quote 10000 - 200 spent, base 1 marked at the last close 350
     assert final["equity"] == 10_150.0
-
-
-def test_run_calls_init_when_present():
-    strat = RecordsInit()
-    engine().run(strat)
-
-    assert strat.inited is True
 
 
 class BuyThenClose:
@@ -1302,9 +1292,9 @@ class BuyThenClose:
             engine.close()
 
 
-def test_run_with_reporting_yields_stats():
+def test_a_run_with_reporting_yields_stats():
     e = engine(report=True)
-    e.run(BuyAndHold())
+    driven(e, BuyAndHold().next)
     st = e.stats()
 
     assert isinstance(st, dict)
@@ -1314,7 +1304,7 @@ def test_run_with_reporting_yields_stats():
 
 def test_closed_trades_flow_into_stats():
     e = engine(report=True)
-    e.run(BuyThenClose())
+    driven(e, BuyThenClose().next)
     st = e.stats()
 
     assert st["num_trades"]    == 1             # bought 1 @ 200, closed @ 300
@@ -1557,7 +1547,7 @@ def test_qty_helpers_size_from_weight_and_quote():
 
 def test_stats_include_exposure_and_net_profit():
     e = engine(report=True)
-    e.run(BuyAndHold())
+    driven(e, BuyAndHold().next)
     st = e.stats()
 
     assert "net_profit_pct" in st and "exposure_pct" in st
@@ -2045,7 +2035,7 @@ def test_stats_reproduce_from_the_trade_log():
         report    = True,
     )
 
-    e.run(PingPong())
+    driven(e, PingPong().next)
     st     = e.stats()
     trades = [t for t in e.trades() if not t["open"]]
 
@@ -2135,7 +2125,7 @@ def test_trade_metrics_are_net_of_fees():
         report    = True,
     )
 
-    e.run(PingPong())
+    driven(e, PingPong().next)
     st = e.stats()
 
     assert st["total_return_pct"] < 0.0
@@ -2246,3 +2236,88 @@ def test_a_mask_byte_other_than_0_resets_its_env_as_true_does():
     states = b.step_all()
 
     assert [state["tick_index"] for state in states] == [1, 2]
+
+
+def test_the_named_price_views_are_the_columns_of_data():
+    eng = probatum._probatum.Engine(series())
+
+    for name, column in (("opens", 0), ("highs", 1), ("lows", 2),
+                         ("closes", 3), ("volumes", 4)):
+        view = getattr(eng, name)
+        assert view.shape == (len(series()),)
+        assert np.array_equal(view, eng.data[:, column])
+
+
+def test_a_price_view_is_read_only_and_copies_nothing():
+    eng = probatum._probatum.Engine(series())
+
+    assert not eng.closes.flags.writeable
+
+    with pytest.raises(ValueError):
+        eng.closes[0] = 1.0
+
+    # a view, not a copy: it shares the engine's buffer rather than duplicating it
+    assert eng.closes.base is not None
+
+
+def test_a_row_whose_prices_are_not_a_bar_is_refused():
+    # the taker clamp bounds a fill by price.min(high) on a buy and price.max(low)
+    # on a sell, so on an unordered row those move the fill toward the account
+    # rather than away from it, silently and always favourably (ADR 0007)
+    data = np.array([
+        [100.0, 101.0, 99.0, 100.0, 1000.0],
+        [100.0, 99.0, 101.0, 100.0, 1000.0],   # high and low transposed
+    ])
+
+    with pytest.raises(DataError) as excinfo:
+        probatum._probatum.Engine(data)
+
+    said = str(excinfo.value)
+    assert "row 1" in said
+    assert "column order" in said
+
+
+def test_a_column_order_that_keeps_the_high_above_the_low_is_refused_too():
+    # the case that decides how much of the ordering has to be checked. Read a
+    # low, high, open, close feed positionally and the two columns probatum calls
+    # high and low are the real high and the real OPEN, so the high is at or
+    # above the low on every row, every value is finite, and a high >= low check
+    # passes it untouched while the fill model still prices off a bar that never
+    # traded. Only the full ordering catches it (ADR 0007)
+    real     = [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)]
+    shuffled = np.array([[low, high, opened, close, 1000.0]
+                         for opened, high, low, close in real])
+
+    assert (shuffled[:, 1] >= shuffled[:, 2]).all()      # the naive check passes
+
+    with pytest.raises(DataError) as excinfo:
+        probatum._probatum.Engine(shuffled)
+
+    assert "not a bar" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("row, says", [
+    ([100.0, 101.0, 0.0, 100.0, 1000.0], "candles: a low of 0 at row 1; give prices"),
+    ([-2.0, -1.0, -3.0, -2.0, 1000.0], "candles: a low of -3 at row 1; give prices"),
+    ([100.0, 101.0, 99.0, 100.0, -5.0], "candles: a volume of -5 at row 1; give a"),
+])
+def test_a_price_at_or_below_zero_or_a_negative_volume_is_refused(row, says):
+    # the window takes the logarithm of each close and the budget and the impact
+    # read the volume as a size, so neither has a meaning to repair (ADR 0007)
+    data = np.array([[100.0, 101.0, 99.0, 100.0, 1000.0], row])
+
+    with pytest.raises(DataError, match=says):
+        probatum._probatum.Engine(data)
+
+
+def test_a_bar_that_never_moved_is_still_a_bar():
+    # every price equal is a real, if dull, candle and the rule is inclusive at
+    # both ends, so a dead feed must not be refused as malformed
+    flat = np.array([
+        [100.0, 100.0, 100.0, 100.0, 0.0],
+        [100.0, 100.0, 100.0, 100.0, 0.0],
+    ])
+
+    engine = probatum._probatum.Engine(flat)
+
+    assert engine.reset()["equity"] > 0.0

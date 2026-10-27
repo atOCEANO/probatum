@@ -2247,7 +2247,7 @@ impl Engine {
     }
 
     /// Every open, as a zero-copy read-only view, `(T,)`, or `(T, N)` over a universe.
-    /// The named companions to `data`, so a strategy reads `engine.closes` rather
+    /// The named companions to `data`, so a caller's loop reads `engine.closes` rather
     /// than remembering that the close is column 3 of a `(T, 5)` array.
     #[getter]
     fn opens<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
@@ -2861,62 +2861,6 @@ impl Engine {
             Some((order, amount)) => self.open_dict(py, order, "pending", amount).map(Some),
             None => Ok(None),
         }
-    }
-
-    /// Drive `strategy` over the whole series and return the final state. Resets,
-    /// calls `strategy.init(engine)` if it exists, then for each bar calls
-    /// `strategy.next(state, engine)` and steps. The strategy places its orders
-    /// through the engine's own methods (market, limit, stop, close), so it can
-    /// express any action; it should not call `step` itself, since the driver
-    /// does. This is the single-env callback path: `next` runs under the GIL, so
-    /// it is the slow path next to `Batch.step_all`.
-    fn run<'py>(
-        slf: Bound<'py, Self>,
-        strategy: Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyState>> {
-        let py = slf.py();
-
-        // Each engine borrow below is scoped and dropped before Python runs, so
-        // the callback is free to re-enter the engine (place orders) without a
-        // double-borrow panic.
-        let mut state = {
-            let mut engine = slf.try_borrow_mut()?;
-            let state = engine.inner.reset();
-            engine.state_of(py, state)?
-        };
-
-        if strategy.hasattr("init")? {
-            strategy.call_method1("init", (slf.clone(),))?;
-        }
-
-        // A declared warm-up is read once, after init, so a strategy can compute it
-        // from the data it just looked at. The bars before it still advance and
-        // still fill whatever is resting; only the decision is skipped, which is
-        // what makes the guard everybody writes by hand unnecessary (ADR 0025).
-        let warmup: usize = match strategy.getattr("warmup") {
-            Ok(value) if !value.is_none() => value.extract().map_err(|_| {
-                ProbatumValueError::new_err(format!(
-                    "warmup: {}; give a whole number of bars from 0",
-                    value.repr().map(|r| r.to_string()).unwrap_or_default()
-                ))
-            })?,
-            _ => 0,
-        };
-
-        let mut tick = 0usize;
-        while !slf.try_borrow()?.inner.done() {
-            if tick >= warmup {
-                strategy.call_method1("next", (state.clone(), slf.clone()))?;
-            }
-            state = {
-                let mut engine = slf.try_borrow_mut()?;
-                let state = engine.inner.step();
-                engine.state_of(py, state)?
-            };
-            tick += 1;
-        }
-
-        Ok(state)
     }
 }
 

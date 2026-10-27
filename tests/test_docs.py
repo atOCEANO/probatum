@@ -14,7 +14,6 @@ import re
 
 import probatum
 from probatum import stats, ta
-from probatum import Backtester
 from probatum.chart import marks
 
 # the gate copies the pages to /docs; a source checkout has them beside tests
@@ -49,8 +48,6 @@ _API = {
     "chart": probatum.Result.chart,
     "Data.chart": probatum.Data.chart,
     "defaults": probatum.chart.defaults,
-    "to_ohlcv": probatum.to_ohlcv,
-    "Backtester": Backtester,
     "backtest": probatum.backtest,
     "env": probatum.env,
     "Engine": probatum.Engine,
@@ -66,7 +63,6 @@ _API = {
     "ramp": marks.ramp,
     "at_bar": marks.at_bar,
     "at_next": marks.at_next,
-    "Market": probatum.Market,
     "Data": probatum.Data,
     "from_router": probatum.Data.from_router,
     "load": probatum.Data.load,

@@ -100,49 +100,36 @@ print(engine.equity, engine.position)          # account value and position at t
 
 ## Ways to drive it
 
-The raw engine and the strategy runner below take the same eleven engine knobs. `probatum.Market` holds them once so they cannot drift apart, and hands out both itself:
-
-```python
-binance = probatum.Market(kind="perp", fee_taker=0.0004, slippage_bps=2.0,
-                      leverage=5.0, funding_rate=0.0001, funding_interval=8)
-
-result = binance.backtest(candles).run(MyStrategy())
-```
-
-Each method takes only what is not the venue, so a cost cannot be passed twice. Writing the knobs out per call still works and is the right thing for a one-off.
-
-### Raw engine
-
-The Backtester drives the compiled engine, `probatum._probatum.Engine`, built over a candle array with the engine's settings as keywords. Its candles are readable as named zero-copy views, `engine.opens`, `engine.highs`, `engine.lows`, `engine.closes` and `engine.volumes`, so nothing has to remember that the close is column 3. `engine.data` is still the whole `(T, 5)` array.
-
-The order verbs mirror a real exchange, so a strategy is written against the same calls it would use live. `market_buy` / `market_sell` (taker, fills at the next open), `limit_buy` / `limit_sell` (rests until a candle reaches it, a maker unless its first bar opens at or through it), `stop(side, size, trigger)`, `close()`, `cancel(order_id)`, and `cancel_all()`. The full `order(side, size, type=, price=, trigger=, reduce_only=, post_only=, tif=)` primitive sets the flags the shortcuts leave default (a reduce-only stop-loss, a post-only limit, an IOC or FOK fill), and `qty_from_weight` / `qty_from_quote` size an order from a fraction of equity or a cash amount. One netted position: net long, net short, or flat, never both, and never short on spot. Every `step` returns the state as a typed record, read by attribute or by key; see the [Python API](.Documentation/Python_API.md) for the full field list and order semantics.
+`probatum.backtest(policy, data, venue)` runs a policy on a Data at a venue and returns its `Result`: an array of weights or quantities, run whole in Rust in one call, a `Strategy` deciding at each close, or a trained agent. `probatum.Engine` is the same account in a loop you own, as above, and `probatum.env` steps many of them together for an agent. The venue is an argument of each, a preset's name or a `probatum.Venue`, so a cost has one place to be given and cannot arrive twice ([ADR 0002](.Documentation/Decisions.md)).
 
 ### Backtest
 
-A classic `Strategy` class with `init` and `next`, driven over the series, returning stats, the equity curve, and the trade log. Set `warmup` to the longest history a decision reads and `next` is not called until that many bars exist, which replaces the guard every strategy used to open with and closes what that guard was really for: on an early bar `close[i - 50]` is a negative index, numpy resolves it from the **end** of the array, and the rule reads prices from the future without raising anything.
+A `Strategy` class with `init` and `next`. `init(data)` runs once over the whole Data, where indicators are computed over every bar at once, and `next(bar, account)` runs at each close and places orders through the account, which fill on a later bar. Set `warmup` to the longest history a decision reads and `next` is not called until that many bars exist, which closes what an early guard was for: on an early bar `close[i - 50]` is a negative index, numpy resolves it from the **end** of the array, and the rule reads prices from the future without raising anything.
 
 ```python
-from probatum import Backtester, Strategy
+import probatum
 
-class BuyDip(Strategy):
+
+class BuyDip(probatum.Strategy):
     warmup = 1                                # next() waits until a previous bar exists
 
-    def init(self, engine):
-        self.close = engine.closes            # zero-copy view of the closes
+    def init(self, data):
+        self.close = data.close               # a read-only view of the closes
 
-    def next(self, state, engine):
-        i = state["tick_index"]
-        if state["position"] == 0 and self.close[i] < self.close[i - 1]:
-            engine.market_buy(1.0)            # buy after a down bar
-        elif state["position"] > 0 and self.close[i] > self.close[i - 1]:
-            engine.close()                    # close into the next up bar
+    def next(self, bar, account):
+        i = bar.i
+        if account.position == 0.0 and self.close[i] < self.close[i - 1]:
+            account.buy(0.01)                 # buy after a down bar
+        elif account.position > 0.0 and self.close[i] > self.close[i - 1]:
+            account.close()                   # close into the next up bar
 
-result = Backtester(ohlcv, market="spot").run(BuyDip())
+
+result = probatum.backtest(BuyDip(), data, "binance_spot")
 print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
-print(len(result.trades), "trades")
+print(len(result.trades), "round trips")
 ```
 
-The full stats set (total return, net profit, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, exposure, win rate, profit factor, average trade, funding paid, and the trade log) is in the [Python API](.Documentation/Python_API.md#backtesting).
+The account's verbs mirror a venue's: `buy` and `sell` at market, at a `limit`, or once a price reaches a `stop`, with `tif`, `post_only` and `reduce_only`; `buy_value` and `sell_value` in the quote currency; `bracket`, a stop and a take-profit as one OCO pair; `close`, `cancel`, `replace` and `cancel_all`; and `target`, each instrument to a weight of equity. The position is netted, long, short or flat, and never short on spot. The statistics, the round trips and every table a run records are in the [Python API](.Documentation/Python_API.md#backtesting).
 
 ### Indicators
 
@@ -150,10 +137,10 @@ The full stats set (total return, net profit, CAGR, Sharpe, Sortino, Calmar, dra
 
 ```python
 class Cross(probatum.Strategy):
-    def init(self, engine):
-        fast, slow = probatum.ta.ema(engine.closes, 20), probatum.ta.ema(engine.closes, 60)
+    def init(self, data):
+        fast, slow = probatum.ta.ema(data.close, 20), probatum.ta.ema(data.close, 60)
         self.up = probatum.ta.crossover(fast, slow)          # a cross, not a level
-        self.trend = probatum.ta.adx(engine.highs, engine.lows, engine.closes).adx
+        self.trend = probatum.ta.adx(data.high, data.low, data.close).adx
         self.warmup = 80
 ```
 
@@ -314,11 +301,11 @@ Throughput depends on which path you drive, and they differ by orders of magnitu
 
 | Path | Throughput | What bounds it |
 | :--- | :--- | :--- |
-| Single-env raw step | ~358K steps/s | the Python-to-Rust boundary, crossed on every `step` |
-| Single-env with a Python strategy | ~77K steps/s | your per-bar Python, not the engine |
-| Batched RL step | ~770K-1.6M env-steps/s | writing the observation, GIL released |
+| Single-env raw step | ~1.7M steps/s | the Python-to-Rust boundary, crossed on every `step` |
+| `backtest` with a Python `Strategy` | ~111K bars/s | the `next` called on every bar and the views it reads, not the engine |
+| Batched RL step | ~760K-1.3M env-steps/s | writing the observation, GIL released |
 
-The single-env rows say something worth internalizing: the engine steps at about 358K per second with nothing attached, and a strategy that recomputes indicators with numpy on every bar drops that to about 77K, so a single backtest is bound by your own per-bar code, not by probatum. Vectorize the indicators once and the rate climbs back toward the engine. The batched RL step releases the GIL and moves every env together, bound by building the observation rather than by the fill. A parameter search scales the other way, across processes rather than per bar, so its rate is trials per second and it grows with the cores you give it.
+The single-env rows say something worth internalizing: the engine steps at about 1.7M per second with nothing attached, and a `Strategy` that reads indicators computed once in `init` runs at about 111K, so a backtest stepped from Python is bound by the call to `next` on every bar, not by the engine. A policy given as an array runs in Rust in one call, with no Python on any bar. The batched RL step releases the GIL and moves every env together, bound by building the observation rather than by the fill. A parameter search scales the other way, across processes rather than per bar, so its rate is trials per second and it grows with the cores you give it.
 
 These move with hardware and workload, so treat them as shape, not a promise. Run `benchmarks/throughput.py` for your own machine, and the Criterion bench in `crates/probatum-engine/benches` for the pure-Rust step and the in-core sweep.
 

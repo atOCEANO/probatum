@@ -305,7 +305,7 @@ def test_what_the_reader_refuses_is_refused_by_the_name_it_came_as(name):
 
 class Cross(probatum.Strategy):
 
-    def next(self, state, engine):
+    def next(self, bar, account):
         pass
 
 

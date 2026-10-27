@@ -5,7 +5,9 @@ loaded again, or a torch module written by probatum.save, should backtest as it 
 memory. stable-baselines3 backs it, so the module skips without it, and torch with it.
 """
 
+import importlib
 import json
+import sys
 import warnings
 
 import numpy as np
@@ -413,6 +415,19 @@ def test_the_callback_refuses_a_model_whose_action_space_carries_no_spec():
                                         "no agent spec; train it on "
                                         "probatum.sb3.wrap\\(env\\)$"):
         model.learn(total_timesteps=32, callback=probatum.sb3.SpecCallback())
+
+
+def test_without_stable_baselines3_the_adapter_names_the_line_that_installs_it(
+        monkeypatch):
+    # the module is imported again with SB3's callbacks missing, and the one already
+    # loaded is put back once the test is done
+    monkeypatch.delitem(sys.modules, "probatum.sb3")
+    monkeypatch.setitem(sys.modules, "stable_baselines3.common.callbacks", None)
+
+    with pytest.raises(probatum.MissingDependency, match="^probatum.sb3: needs "
+                       "stable-baselines3, which is not installed; pip install "
+                       "\"probatum\\[sb3\\]\"$"):
+        importlib.import_module("probatum.sb3")
 
 
 def test_capacity_and_a_cost_sweep_run_an_sb3_agent_at_their_balances_and_costs():

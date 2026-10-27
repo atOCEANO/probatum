@@ -118,6 +118,29 @@ def test_next_runs_at_each_close_from_its_warmup_but_the_last_and_a_row_none_pri
     assert result.policy.data is data and not hasattr(strategy, "rows")
     assert len(result.time) == len(printed)
 
+    # a warm-up past the last bar leaves nothing to decide, and nothing trades
+    idle = probatum.backtest(Seen(warmup=10_000), data, VENUE)
+    assert idle.policy.rows == [] and len(idle.trades) == 0
+
+
+class Computed(Seen):
+    """A tenth of its bars' warm-up, worked out in init from the bars it reads, where
+    its class says none."""
+
+
+    def init(self, data):
+        super().init(data)
+        self.warmup = len(data) // 10
+
+
+def test_a_warmup_set_in_init_is_the_one_honoured():
+    # it is read after init, so a strategy can work it out from the bars, where one
+    # read before would find the class's zero (ADR 0025)
+    result = probatum.backtest(Computed(), one(), VENUE)
+
+    assert result.policy.warmup == 6
+    assert result.policy.rows[0] == 6
+
 
 class Traded(probatum.Strategy):
     """A buy every six rows and a close three rows later, with what the account named."""

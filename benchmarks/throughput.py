@@ -4,7 +4,7 @@ Covers the paths a user actually runs, not just the raw step:
 
 - single-env ``Engine.step``, which crosses the Python-to-Rust boundary each call;
 - batched ``Batch.advance``, which releases the GIL and steps every env in parallel;
-- a ``Backtester`` driving a Python ``Strategy`` callback each bar (flexible, slow);
+- ``backtest`` asking a Python ``Strategy`` at each close (flexible, slow);
 - a full ``probatum.env`` step, including the decode, the observation and the reward.
 
 It prints steps/sec and env-steps/sec, the only figures a speed claim in the docs
@@ -64,38 +64,40 @@ def time_batch(data, num_envs, passes):
 
 
 def time_backtest(data, passes):
-    from probatum import Backtester, Strategy
+    import probatum
 
-    class SmaCross(Strategy):
+    class SmaCross(probatum.Strategy):
+        """Long while the 10-bar average is over the 30-bar one."""
 
-        def init(self, engine):
-            self.closes = engine.data[:, 3]
-            self.fast   = 10
-            self.slow   = 30
+        warmup = 30
 
 
-        def next(self, state, engine):
-            i = state["tick_index"]
-            if i < self.slow:
-                return
+        def init(self, data):
+            self.fast = probatum.ta.sma(data.close, 10)
+            self.slow = probatum.ta.sma(data.close, 30)
 
-            fast = self.closes[i - self.fast + 1 : i + 1].mean()
-            slow = self.closes[i - self.slow + 1 : i + 1].mean()
-            pos  = state["position"]
 
-            if pos == 0.0 and fast > slow:
-                engine.market_buy(1.0)
-            elif pos != 0.0 and fast < slow:
-                engine.close()
+        def next(self, bar, account):
+            up = self.fast[bar.i] > self.slow[bar.i]
+            if account.position == 0.0 and up:
+                account.buy(1.0)
+            elif account.position != 0.0 and not up:
+                account.close()
 
-    bars  = data.shape[0]
+    bars  = probatum.Data(
+        data,
+        symbol = "BTCUSDT",
+        market = "spot",
+        time   = np.arange(len(data), dtype=np.int64) * 3_600_000_000_000,
+    )
+    venue = probatum.Venue(balance=100_000.0, fills={"slippage": {"fixed": 2.0}})
     start = time.perf_counter()
 
     for _ in range(passes):
-        Backtester(data, market="spot", quote=100_000.0, slippage_bps=2.0).run(SmaCross())
+        probatum.backtest(SmaCross(), bars, venue)
 
     elapsed = time.perf_counter() - start
-    return (passes * bars) / elapsed
+    return (passes * len(data)) / elapsed
 
 
 def time_rl(data, num_envs, steps):
@@ -133,7 +135,7 @@ def main():
         print(f"batch advance n={num_envs:<5}       : {rate:>16,.0f} env-steps/sec")
 
     print("-- wrappers --")
-    print(f"Backtester (python SMA)    : {time_backtest(data, 20):>16,.0f} bar-steps/sec")
+    print(f"backtest (python Strategy) : {time_backtest(data, 20):>16,.0f} bar-steps/sec")
     for num_envs in (1_024, 4_096):
         rate = time_rl(data, num_envs, 300)
         print(f"probatum.env step n={num_envs:<5}   : {rate:>16,.0f} env-steps/sec")

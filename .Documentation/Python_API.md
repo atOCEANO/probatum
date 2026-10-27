@@ -56,10 +56,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.breakeven_bps` | The round-trip cost, in basis points, at which a policy stops making money as every cost its venue charges for trading is multiplied. [Below](#capacity-and-costs). |
 | `probatum.Capacity` | What `capacity` found: each balance's return, Sharpe, impact paid, share of orders the liquidity budget held, round-trip cost and turnover. [Below](#capacity-and-costs). |
 | `probatum.CostCurve` | What `cost_curve` found: each scale's round-trip cost, return, Sharpe, round trips, each cost paid and turnover. [Below](#capacity-and-costs). |
-| `probatum.Backtester` | emsl's strategy runner: drive a `Strategy` over one series, get stats, equity, and trades. [Below](#the-strategy-runner). |
-| `probatum.BacktestResult` | What a `Backtester` run returns. [Below](#the-strategy-runner). |
-| `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account, and by the `Backtester` as emsl ran it. [Below](#a-strategy). |
-| `probatum.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
+| `probatum.Strategy` | A policy written as what it decides at each close, run by `backtest` with the bar and the account. [Below](#a-strategy). |
 | `probatum.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
 | `probatum.env` | Step accounts at a venue on a Data together in Rust as a Gymnasium vector environment, each environment drawing its episodes from a stream of its own. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `probatum.rl` | `VectorEnv`, the environment `probatum.env` returns, `Env`, one environment of it, both registered as `probatum/Trading-v0`, and `Batch`, the raw batch. [Below](#reinforcement-learning). |
@@ -67,7 +64,6 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.save` | Write a trained agent beside the spec it trained with: a torch module's state dict or an SB3 model's own zip, and `spec.json`. [Below](#an-agent). |
 | `probatum.torch` | `TensorEnv`, which hands an environment's observation, rewards and flags out as tensors on a device, and in its resident mode writes the market block on the device itself. [RL Guide](RL_Guide.md#tensors-and-the-gpu). |
 | `probatum.chart` | The interactive chart: `Chart`, the one self-contained HTML document `Result.chart` and `Data.chart` build of a run or of bars with your own arrays; `defaults`, the look of every later chart; and `marks`, holding `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Markers`, `Background`, `Panel`, `Recorder`, `ramp`, `at_bar` and `at_next`, the marks a chart carries and the helpers that record and align them. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
-| `probatum.to_ohlcv` | Turn a DataFrame, a parquet path, or an array into the `(T, 5)` the engine takes. [Below](#data-input). |
 | `probatum.ProbatumError` | What every error probatum raises derives from, beside the built-in it means: a class for each built-in, `ProbatumValueError` and its siblings, and the kinds `DataError`, `VenueError`, `SpecError`, `LookaheadError`, `PolicyError` and `MissingDependency`. [Below](#errors-and-warnings). |
 | `probatum.ProbatumWarning` | The class of every warning probatum gives, a `UserWarning`. [Below](#errors-and-warnings). |
 
@@ -212,62 +208,6 @@ print(cheaper.to_dict()["fees"])            # {'maker': 0.0002, 'taker': 0.0004}
 
 <br>
 
-## Data input
-
-`probatum.to_ohlcv(data)` returns the `(T, 5)` float64 array the engine takes, from any of three inputs:
-
-| Input | Handling |
-| :--- | :--- |
-| numpy array | Must be `(T, 5)` OHLCV; returned contiguous and float64. |
-| pandas DataFrame | Needs `open`, `high`, `low`, `close`, `volume` columns; any extra column is ignored. |
-| parquet path | Read with pandas, then treated as the DataFrame case. |
-
-**Volume is in the units an order's size is in**: base units, or contracts on an inverse perpetual. The liquidity budget is a share of it and the market-impact term divides a fill's size by it, so a feed shipping quote volume instead inflates the budget by roughly the price: `budget` stops binding, impact goes to zero, and nothing says so. An inverse feed in coin rather than contracts errs the other way. The router's frames carry base `volume` alongside a separate `volume_usd`, and only the first is read.
-
-A frame carrying a real (datetime) index must be sorted ascending and unique; a plain `RangeIndex` holds no timestamps, so it is exempt. A missing column, a wrong shape, or an unsorted index raises `ValueError`, and an unsupported type raises `TypeError`.
-
-**Every row has to be a bar**: `low <= open <= high` and `low <= close <= high`, checked per row alongside finiteness ([ADR 0007](Decisions.md)). The fill model bounds a taker to what the bar traded, and on an unordered row that bound moves the fill toward the account instead, so a dead flat market pays out. The realistic cause is a positional slice of a feed that ships its columns in another order, which is why the message names the order it wants: a venue returning `low, high, open, close` satisfies `high >= low` on every row and still mints money. A bar that never moved, every price equal, is a bar. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
-
-The wrappers call it for you, so a DataFrame can go straight into `Backtester`. Handing the `Backtester` a datetime index is also what stamps each round trip with `open_time` and `close_time` ([Trades](#trades)).
-
-<br>
-
-## The market
-
-The engine and a backtest each take the same eleven of the engine's knobs, and leave its `window`, `spread`, `impact_model`, `limit` and `sizes` at their defaults: a window of 24 bars, no spread, linear impact, limits filled on touch and sizes off. Written out at two call sites they are two chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `probatum.Market` holds them once and hands out the surfaces itself.
-
-```python
-import probatum
-
-binance = probatum.Market(
-    kind="perp",              # "spot" or "perp"
-    fee_taker=0.0004,
-    fee_maker=0.0002,
-    slippage_bps=2.0,
-    leverage=5.0,
-    funding_rate=0.0001,
-    funding_interval=8,
-)
-
-result = binance.backtest(candles).run(MyStrategy())
-engine = binance.engine(candles)          # takes a frame like its sibling
-```
-
-Each method takes only the arguments that are **not** the venue, so a knob cannot be passed twice and no rule about which copy wins is needed: there is only ever one copy. Passing one anyway is refused rather than merged ([ADR 0002](Decisions.md)).
-
-| Call | Gives |
-| :--- | :--- |
-| `engine(candles, report=False)` | [the engine](#the-engine-it-drives) the strategy runner drives. |
-| `backtest(candles, periods_per_year=None, risk_free=0.0)` | a `Backtester`. |
-| `replace(**changes)` | a copy with some knobs changed. |
-| `as_dict()` | the knobs as the keyword arguments the engine takes. |
-
-`replace` is what makes a cost comparison honest: `binance.replace(fee_taker=0.001)` differs in exactly one number and is visibly the same venue otherwise. A market prints only the knobs that differ from the defaults, so `repr` reads as the handful of choices you actually made. Two markets with the same knobs compare equal.
-
-The keyword form is untouched and remains the right thing for a one-off: `Backtester(candles, market="perp", fee_taker=0.0004)`. `Market` is for when the venue is fixed and the surfaces are many.
-
-<br>
-
 ## Engine
 
 `probatum.Engine(data, venue, seed=None)` is an account at `venue`, a Venue or a preset's name, on `data`, a Data or anything one is built from, for a loop the caller owns. It is the fourth depth beside an array, a Strategy and an agent, and records the same Result ([ADR 0002](Decisions.md)).
@@ -290,7 +230,7 @@ result = engine.result()
 | `done()` | bool | True at the last bar, which no bar follows to fill on. |
 | `result(risk_free=0.0)` | a `Result` | What the account has recorded from its first bar to the current one, as `backtest` returns it, with no `policy`. |
 
-Between steps the engine is the account a Strategy's `next` reads, with the same state and the same verbs ([A strategy](#a-strategy)), and its `events` hold what happened to its orders since the last step. `seed` names the stream a venue whose `intrabar` is `"random"` draws from, which `backtest` refuses so that a backtest repeats without one ([Specification](Specification.md#what-a-bar-cannot-show)). `engine.clone()` copies the account as it stands, which steps on as this one would, with handles of its own for the orders placed so far, and an engine pickles to move into another process of the same version ([Specification](Specification.md#clones-and-pickles)). emsl's engine, built over candles with keyword settings, is `probatum._probatum.Engine`, described with [the strategy runner](#the-engine-it-drives) that drives it.
+Between steps the engine is the account a Strategy's `next` reads, with the same state and the same verbs ([A strategy](#a-strategy)), and its `events` hold what happened to its orders since the last step. `seed` names the stream a venue whose `intrabar` is `"random"` draws from, which `backtest` refuses so that a backtest repeats without one ([Specification](Specification.md#what-a-bar-cannot-show)). `engine.clone()` copies the account as it stands, which steps on as this one would, with handles of its own for the orders placed so far, and an engine pickles to move into another process of the same version ([Specification](Specification.md#clones-and-pickles)). emsl's engine, built over candles with keyword settings, is `probatum._probatum.Engine`, [the compiled engine](#the-compiled-engine) every run steps.
 
 <br>
 
@@ -322,7 +262,7 @@ Because the envs are independent, batched stepping is bit-identical to stepping 
 
 Each cost knob also takes an optional per-env override: pass `fee_taker_per_env`, `fee_maker_per_env`, `slippage_bps_per_env`, or `impact_per_env` as a length-`num_envs` float64 array and each env carries its own cost while sharing the one candle buffer; a fee override replaces the venue's rate and leaves alone a rate an instrument charges of its own. This is what an environment's `costs` draws into, every instrument's own rate set aside for a fee it draws ([ADR 0038](Decisions.md)); an override whose length is not `num_envs` is a `ValueError`.
 
-**A batch over a universe** takes `(T, N, 5)` candles and the same `instruments` and `funding_instruments` as [the engine](#the-engine-it-drives), and steps each env through `target`; the signed sizes `step_all` and `advance` take trade the first instrument. Its `observe(window)` is `(num_envs, window, N, 5)`, zero where an instrument printed no bar, and `snapshot()` adds every instrument's `positions` and `marks` as `(num_envs, N)` arrays beside its `(num_envs,)` fields, whose position, unrealized PnL and mark read the first instrument.
+**A batch over a universe** takes `(T, N, 5)` candles and the same `instruments` and `funding_instruments` as [the engine](#the-compiled-engine), and steps each env through `target`; the signed sizes `step_all` and `advance` take trade the first instrument. Its `observe(window)` is `(num_envs, window, N, 5)`, zero where an instrument printed no bar, and `snapshot()` adds every instrument's `positions` and `marks` as `(num_envs, N)` arrays beside its `(num_envs,)` fields, whose position, unrealized PnL and mark read the first instrument.
 
 Under `intrabar="random"` each env draws from its own stream, named from `seed` and the env's index, so each env decides the bars' hidden events apart from the others.
 
@@ -465,68 +405,9 @@ policy.load_state_dict(torch.load("agents/ppo-1/weights.pt"))
 result = probatum.backtest(policy, test, "binance_perp", spec="agents/ppo-1")
 ```
 
-### The strategy runner
+### The compiled engine
 
-`probatum.Backtester` drives a `Strategy` over one series, as emsl did. Reporting is always on, so the result carries the stats, equity curve, and trades.
-
-```python
-from probatum import Backtester, Strategy
-
-class SmaCross(Strategy):
-    warmup = 30                               # next() waits for 30 bars of history
-
-    def init(self, engine):
-        self.close = engine.closes            # optional; runs once after reset
-
-    def next(self, state, engine):
-        i = state["tick_index"]
-        fast = self.close[i - 10:i].mean()
-        slow = self.close[i - 30:i].mean()
-        if state["position"] == 0 and fast > slow:
-            engine.market_buy(1.0)
-        elif state["position"] > 0 and fast < slow:
-            engine.close()
-
-result = Backtester(candles, market="spot", fee_taker=0.0006).run(SmaCross())
-print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
-print(result.equity_curve[-1], len(result.trades))
-```
-
-`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, budget, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (the [round trips](#trades), a list of dicts), `.fills` (the [fill log](#fills)), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the round trips cannot always say: a forced close ends one with the reason `liquidation`, but an account drained by fees or funding ends none at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
-
-**`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it counts the bars the index holds, the rows less one per 365 days of their span, so hourly candles annualize at 8760 without being told, a feed missing a day annualizes at the bars it actually has, and a stock's daily bars at the 252 or so a year it trades. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0004](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional.
-
-A strategy uses any order type, the sizing helpers, and the state's `open_orders` to manage risk. This one sizes each entry to half of equity and rests a reduce-only stop-loss under the position:
-
-```python
-class SmaWithStop(Strategy):
-    def __init__(self, fast=10, slow=30, stop_pct=0.05):
-        self.fast, self.slow, self.stop_pct = fast, slow, stop_pct
-
-    def init(self, engine):
-        self.close = engine.closes                     # zero-copy view of every close
-        self.warmup = self.slow                        # read after init, so compute it here
-
-    def next(self, state, engine):
-        i = state["tick_index"]
-        fast = self.close[i - self.fast:i].mean()
-        slow = self.close[i - self.slow:i].mean()
-        pos = state["position"]
-        if pos == 0 and fast > slow:
-            engine.market_buy(engine.qty_from_weight(0.5))          # enter with half of equity
-        elif pos > 0:
-            if fast < slow:
-                engine.close()                                      # exit on the crossover
-            elif not state["open_orders"]:                          # rest the stop once, while held
-                trigger = state["bar_close"] * (1.0 - self.stop_pct)
-                engine.stop("sell", pos, trigger, reduce_only=True)
-```
-
-The stop rests only once a position is held (orders fill on the next bar, so there is nothing to protect until then), and `reduce_only` keeps it from flipping the position short instead of closing it.
-
-### The engine it drives
-
-The Backtester drives emsl's engine, `probatum._probatum.Engine`, which `probatum.Market` hands out as well: built over a candle array with the engine's settings as keywords, it is reset, given orders, stepped and read a bar at a time, and the `Batch` and the RL environment take the same settings.
+Every run steps emsl's engine, `probatum._probatum.Engine`: built over a candle array with the engine's settings as keywords, it is reset, given orders, stepped and read a bar at a time, and the `Batch` and the RL environment take the same settings.
 
 ```python
 import probatum
@@ -598,7 +479,6 @@ eng = probatum._probatum.Engine(
 | `reset()` | state | Reset the account and cursor to the first bar. |
 | `step()` | state | Advance one bar, resolve the orders placed since the last step, mark, return the new state. |
 | `done()` | bool | True when there is no next bar to step into. |
-| `run(strategy)` | final state | Drive a strategy over the whole series (see [below](#running-a-strategy)). |
 
 ### Orders
 
@@ -627,15 +507,16 @@ eng = probatum._probatum.Engine(
 Three things about resting orders that are easy to get wrong. Nothing links them into an OCO group, so **re-placing a trailing stop with `stop()` each bar rests a new order every time**; the one that fills leaves its siblings live, and on a perp those open a position on the other side. Use `replace`, which cannot leave two alive and quietly does nothing once the order has filled ([ADR 0010](Decisions.md)). Pass `reduce_only=True` as well, so even a leaked stop can only shrink the position ([ADR 0010](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the budget can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
 
 ```python
-#  a trailing stop that stays one order and can only ever shrink the position
+#  a trailing stop that stays one order and can only ever shrink the position, inside
+#  a loop that set stop_id and trigger to None before its first step
 if state["position"] > 0.0:
     wanted = state["bar_close"] * 0.94
-    if self.stop_id is None:
-        self.stop_id = engine.stop("sell", state["position"], wanted, reduce_only=True)
-    elif wanted > self.trigger:
+    if stop_id is None:
+        stop_id = engine.stop("sell", state["position"], wanted, reduce_only=True)
+    elif wanted > trigger:
         #  None here means the stop already filled, so nothing is armed again
-        self.stop_id = engine.replace(self.stop_id, trigger=wanted)
-    self.trigger = wanted
+        stop_id = engine.replace(stop_id, trigger=wanted)
+    trigger = wanted
 ```
 
 You decide on a bar and the order fills on the next one; there is no same-bar lookahead.
@@ -683,23 +564,7 @@ Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `st
 
 `eng.data` is the same kind of read-only, zero-copy view over the whole `(T, 5)` series rather than a window (columns are OHLCV by position). It is the full-series companion to `observation`, cursor-independent.
 
-`eng.opens`, `eng.highs`, `eng.lows`, `eng.closes` and `eng.volumes` are the same view one field at a time, so a strategy reads `engine.closes` rather than remembering that the close is column 3. They are strided views into the same buffer, not copies, so taking all five costs nothing.
-
-### Running a strategy
-
-`run(strategy)` resets, calls `strategy.init(engine)` if it exists, then for each bar calls `strategy.next(state, engine)` and steps, returning the final state. The strategy places orders through the engine, so it can use any order type. It should not call `step` itself; the driver does.
-
-If the strategy carries a `warmup`, read once after `init` so it can be computed there, `next` is not called until that many bars exist. The bars before it still advance and still fill whatever is resting; only the decision is skipped. It replaces the `if i < self.slow: return` a strategy would otherwise open with, and it closes what that guard is really for: on an early bar `close[i - 50]` is a **negative** index, numpy resolves it from the end of the array, and the rule reads prices from the future, reports a wonderful result, and raises nothing ([ADR 0025](Decisions.md)).
-
-```python
-class BuyAndHold:
-    def next(self, state, engine):
-        if state["position"] == 0:
-            engine.market_buy(1.0)
-
-eng = probatum._probatum.Engine(candles, report=True)
-final = eng.run(BuyAndHold())
-```
+`eng.opens`, `eng.highs`, `eng.lows`, `eng.closes` and `eng.volumes` are the same view one field at a time, so a loop reads `eng.closes` rather than remembering that the close is column 3. They are strided views into the same buffer, not copies, so taking all five costs nothing.
 
 ### Results
 
@@ -715,7 +580,7 @@ With `report=True`, seven accessors read the recorded run (each returns `None` w
 
 An engine built with `record="account"` keeps less: `fills()` and `order_log()` return `None` with reporting on, `ledger()` has none of the columns for each instrument, and `tables()` gives the ledger and the round trips alone ([Specification](Specification.md#recording-levels)).
 
-`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. The engine's `stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`. `Backtester` reads it from the candles' own timestamps instead, and only falls back when there are none ([ADR 0004](Decisions.md)).
+`periods_per_year` annualizes to your bar interval: 525600 for 1m, 8760 for 1h, 365 for 1d. The engine's `stats` is the raw call and takes it as a number, so state it; an engine built with `times=` gives its own clock's count from `periods_per_year()`, which is what a `Result` reads off its Data's clock ([ADR 0004](Decisions.md)).
 
 ### Statistics
 
@@ -767,7 +632,7 @@ Each entry in `trades()` is one round trip: a maximal run of one sign, from the 
 | `reason` | What closed it, `market`, `limit`, `stop`, `take_profit`, `rebalance`, `seam`, `liquidation`, `dust` or `delist`, and `None` while it is open. A forced close is priced where the margin ran out, a sale on the book less its costs, not at the extreme the bar printed, so the loss is bounded by the margin ([ADRs 0017, 0018](Decisions.md)). |
 | `open` | True for the round trip still open at the end. |
 
-When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, it sets `open_time` and `close_time` from the index values at those bars. A raw numpy input has no index, so they stay `None`.
+A Result's round trips are the same rows as a [table](#the-tables), every bar counted from its first row and every time its bar's.
 
 ### The ledger
 
@@ -1395,9 +1260,9 @@ Every error probatum raises is one of its own classes and the built-in it means,
 
 A refusal is a kind where both its topic and its built-in are the kind's, and otherwise the class for its built-in, which follows what arrived: a value of a type the argument does not take raises a `TypeError`, and one of its type that the call cannot take a `ValueError`, so `tolerance="0.01"` is a `ProbatumTypeError` and `tolerance=-0.01` a `ProbatumValueError`. So a Data's wrong value is a `DataError` and its wrong type a `ProbatumTypeError`, which `except probatum.DataError` does not catch, and a Venue built in Python splits the same way between `VenueError` and `ProbatumTypeError`, while every wrong setting in a preset's file is a `VenueError`. A policy's wrong value is a `ProbatumValueError`, not a `PolicyError`. A symbol the router fails on in `Data.from_router` raises the router's own error, as a pull of that symbol alone does, so `except ValueError` does not catch a failed batch.
 
-What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. emsl's modules the package still carries, `Backtester`, `Market`, `sb3` and `to_ohlcv`, raise the built-ins from their own checks, while what reaches them from the engine or from a `Strategy` is probatum's, and warn with `UserWarning` or `RuntimeWarning`.
+What another library raises stays its own: the router's errors, the file system's from `save` and `load`, numpy's for values an indicator, `asof` or `features` cannot read as numbers, Python's `OverflowError` for an integer no float holds, and whatever your own code raises inside a policy. The binding's raw objects, `probatum.Batch` and those of `probatum._probatum`, refuse a wrong value with the same classes, but what pyo3 converts itself, an argument of a type their signature cannot take or a part of one it cannot unpack, it refuses as a `TypeError`, an `OverflowError` or a `ValueError`, with a note naming an argument the signature declares, and a call from a second thread into an object another call holds as a `RuntimeError`. A package a module needs and does not find, as `probatum.sb3` needs stable-baselines3, is a `MissingDependency` when the module is first imported.
 
-Every warning probatum gives is a `probatum.ProbatumWarning`, a `UserWarning`, named at the line of your code that caused it, so a test can make probatum's warnings errors without touching anyone else's. Outside those modules probatum prints nothing: long work is logged to the `probatum` logger, `Data.from_router` logging each instrument it built at INFO and each call to the router at DEBUG, which Python's `logging` turns on.
+Every warning probatum gives is a `probatum.ProbatumWarning`, a `UserWarning`, named at the line of your code that caused it, so a test can make probatum's warnings errors without touching anyone else's. probatum prints nothing: long work is logged to the `probatum` logger, `Data.from_router` logging each instrument it built at INFO and each call to the router at DEBUG, which Python's `logging` turns on.
 
 ```python
 import logging

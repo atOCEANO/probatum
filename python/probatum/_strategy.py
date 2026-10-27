@@ -55,12 +55,7 @@ class Strategy:
     called at a validation's seam, before the incoming window's first decision and
     once every order the outgoing one left is cancelled, so a policy can protect a
     position it did not open. Its parameters are its constructor's arguments, kept as
-    attributes of the same names.
-
-    `probatum.Backtester` drives the class as emsl did:
-    ``init(engine)`` once after the reset and ``next(state, engine)`` on every bar but
-    the last, with ``warmup`` read the same way and the orders placed through the
-    engine's own methods (ADR 0025).
+    attributes of the same names (ADR 0025).
     """
 
     warmup = 0

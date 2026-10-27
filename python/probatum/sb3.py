@@ -30,16 +30,15 @@ import copy
 import gymnasium
 import numpy as np
 
+from ._errors import MissingDependency, SpecError
+from ._storage import _plain
+
 try:
     from stable_baselines3.common.callbacks import BaseCallback
     from stable_baselines3.common.vec_env import VecEnv
-except ImportError as exc:
-    raise ImportError(
-        "stable-baselines3 is required for probatum.sb3; pip install 'probatum[sb3]'"
-    ) from exc
-
-from ._errors import SpecError
-from ._storage import _plain
+except ImportError:
+    raise MissingDependency("probatum.sb3: needs stable-baselines3, which is not "
+                            "installed; pip install \"probatum[sb3]\"") from None
 
 __all__ = ["ProbatumVecEnv", "SpecCallback", "wrap"]
 

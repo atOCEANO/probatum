@@ -21,7 +21,7 @@ import numpy as np
 import probatum
 from probatum import Batch
 from probatum._probatum import Engine
-from probatum import Backtester, Strategy
+from probatum import Strategy
 
 BARS = 10_000
 FAST = 10
@@ -35,35 +35,6 @@ def make_series(n):
     low    = close - 1.0
     volume = np.full(n, 1000.0)
     return np.column_stack([close, high, low, close, volume])
-
-
-class SmaCross(Strategy):
-    """Fast/slow moving-average crossover: long when fast crosses above slow, flat
-    when it crosses back.
-    """
-
-
-    def __init__(self, fast=FAST, slow=SLOW):
-        self.fast = int(fast)
-        self.slow = int(slow)
-
-
-    def init(self, engine):
-        self.close = engine.data[:, 3]
-
-
-    def next(self, state, engine):
-        i = state["tick_index"]
-        if i < self.slow:
-            return
-
-        fast = self.close[i - self.fast:i].mean()
-        slow = self.close[i - self.slow:i].mean()
-
-        if state["position"] == 0 and fast > slow:
-            engine.market_buy(1.0)
-        elif state["position"] > 0 and fast < slow:
-            engine.close()
 
 
 def best_rate(work, amount, repeats=3):
@@ -111,13 +82,6 @@ def bench_engine(data):
             state = eng.step()
 
     return best_rate(run, steps)
-
-
-def bench_backtester(data):
-    bt    = Backtester(data, market="spot", quote=100_000)
-    steps = data.shape[0] - 1
-
-    return best_rate(lambda: bt.run(SmaCross()), steps)
 
 
 def weighted(width, bars):
@@ -271,7 +235,6 @@ def main():
 
     engine_raw_bps = bench_engine_raw(data)
     engine_bps     = bench_engine(data)
-    backtester_bps = bench_backtester(data)
 
     trials       = 48
     search_array = bench_search(crossing, trials, n_jobs=1)
@@ -291,7 +254,6 @@ def main():
     print("surface,metric,value,detail")
     print(f"engine_raw_step,bars_per_sec,{engine_raw_bps:.0f},single env no strategy")
     print(f"engine_own_loop,bars_per_sec,{engine_bps:.0f},single env python loop")
-    print(f"backtester,bars_per_sec,{backtester_bps:.0f},single env reporting wrapper")
     print(f"array,bars_per_sec,{array_one:.0f},50000 bars N=1 weights in one call")
     print(f"array,bars_per_sec,{array_fifty:.0f},50000 bars N=50 weights in one call")
     print(f"strategy,bars_per_sec,{strategy_one:.0f},50000 bars N=1 the same weights "
