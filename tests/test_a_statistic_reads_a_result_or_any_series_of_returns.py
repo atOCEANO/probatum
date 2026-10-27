@@ -57,6 +57,27 @@ def test_a_result_s_sharpe_is_its_record_s(result):
     assert stats.sharpe(result) == pytest.approx(result.stats["sharpe"], rel=1e-12)
 
 
+def test_returns_that_never_vary_have_no_deviation_at_any_rate():
+    close = 100.0 + np.random.default_rng(5).normal(0.0, 1.0, 400).cumsum()
+    bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(400, 1e3)])
+    data  = probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(400, dtype=np.int64) * 3_600_000_000_000,
+    )
+
+    idle = probatum.backtest(np.zeros(400), data, "frictionless", risk_free=0.04)
+    assert stats.sharpe(idle) == stats.sharpe(idle, long_run=True) == idle.stats["sharpe"]
+    assert idle.stats["sharpe"] == 0.0 and "long-run sharpe" not in idle.summary()
+
+    # the excess of zeros over a rate is one value only as far as its mean rounds
+    for count in range(2, 60):
+        for long_run in (False, True):
+            assert stats.sharpe([0.0] * count, periods_per_year=8_760, risk_free=0.04,
+                                long_run=long_run) == 0.0
+
+
 def test_a_pandas_series_is_read_by_position_and_never_by_its_index():
     shuffled = pd.Series(MONTHLY, index=[7, 3, 5, 1, 0, 2, 6, 4])
 

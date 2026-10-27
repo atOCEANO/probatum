@@ -978,10 +978,14 @@ def sharpe(returns, periods_per_year=None, risk_free=None, long_run=False):
     if x.size < 2:
         return 0.0
 
+    # the returns' own deviation, as the record reads it, which returns of zero have as
+    # 0 where their excess over a rate, one value only as far as its mean rounds, would
+    # not
+    r = _values(returns)
     if not long_run:
-        return _ranked(x.mean(), x.std(ddof=1), math.sqrt(rate))
+        return _ranked(x.mean(), r.std(ddof=1), math.sqrt(rate))
 
-    centred = x - x.mean()
+    centred = r - r.mean()
     m       = _lag(centred)
     spread  = _bartlett(_autocovariances(centred, m), m)
     return _ranked(x.mean(), math.sqrt(max(spread, 0.0)), math.sqrt(rate))

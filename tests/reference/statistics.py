@@ -80,14 +80,15 @@ def per_bar(x):
 
 
 def sharpe(x, periods_per_year):
-    """What a statistic reads: the record's Sharpe."""
+    """What a statistic reads: the Sharpe of excess returns `x`, which is the record's
+    wherever they vary."""
     return ranked(mean(x), deviation(x, 1), math.sqrt(periods_per_year))
 
 
 def recorded(returns, periods_per_year, risk_free):
-    """The probability of backtest overfitting: the Sharpe as the record computes it, the
-    excess mean over the deviation of the returns themselves, so returns that never
-    vary rank at zero whatever the rate."""
+    """What a statistic reads, and the probability of backtest overfitting: the Sharpe
+    as the record computes it, the excess mean over the deviation of the returns
+    themselves, so returns of zero have none whatever the rate."""
     excess = mean(returns) - risk_free / periods_per_year
     return ranked(excess, deviation(returns, 1), math.sqrt(periods_per_year))
 
@@ -219,14 +220,16 @@ def min_track_record(x, periods_per_year, benchmark=0.0, confidence=0.95):
                         confidence)
 
 
-def long_run_sharpe(x, periods_per_year):
-    """The long-run Sharpe: the mean over the Bartlett long-run deviation of the
-    returns at the 1994 lag on them, not floored."""
-    mu       = mean(x)
-    centred  = [v - mu for v in x]
+def long_run_sharpe(r, periods_per_year, risk_free=0.0):
+    """The long-run Sharpe: the excess mean over the Bartlett long-run deviation of the
+    returns themselves at the 1994 lag on them, not floored, ranked where they never
+    vary."""
+    centre   = mean(r)
+    centred  = [v - centre for v in r]
     m        = lag(centred)
     variance = bartlett(autocovariances(centred, m), m)
-    return math.sqrt(periods_per_year) * mu / math.sqrt(variance)
+    return ranked(centre - risk_free / periods_per_year, math.sqrt(max(variance, 0.0)),
+                  math.sqrt(periods_per_year))
 
 
 def correlation(a, b):

@@ -58,9 +58,10 @@ def test_the_sharpe_its_interval_its_probability_and_its_track_record_agree(seed
     given = dict(periods_per_year=rate, risk_free=free)
     near  = dict(rel=1e-9, abs=1e-12)
 
-    assert stats.sharpe(values, **given) == pytest.approx(statistics.sharpe(x, rate), **near)
+    assert stats.sharpe(values, **given) == pytest.approx(
+        statistics.recorded(values.tolist(), rate, free), **near)
     assert stats.sharpe(values, long_run=True, **given) == pytest.approx(
-        statistics.long_run_sharpe(x, rate), **near)
+        statistics.long_run_sharpe(values.tolist(), rate, free), **near)
 
     interval = stats.sharpe_interval(values, level=0.9, **given)
     low, high, lag, floored = statistics.sharpe_interval(x, rate, level=0.9)
