@@ -698,3 +698,371 @@ def test_the_deflation_threshold_and_the_backtest_length_agree(trials):
         statistics.deflation_threshold(0.7, trials), rel=1e-12)
     assert stats.min_backtest_length(trials, 1.3).years == pytest.approx(
         statistics.min_backtest_length(trials, 1.3), rel=1e-12)
+
+
+VENUE = probatum.venues.binance_perp.replace(funding="none")
+NEAR  = dict(rel=1e-9, abs=1e-9)
+
+
+def run(seed, risk_free=0.0, record="full"):
+    """A run long, short or flat in stretches of 20 rows over random bars four hours
+    apart, which cross months, quarters and a year, at fees, slippage and impact, and
+    the bars' closes."""
+    rng   = np.random.Generator(np.random.PCG64(2_000 + seed))
+    rows  = int(rng.choice([400, 900, 2_400]))
+    close = 100.0 * np.exp(rng.normal(0.0, 0.01, rows).cumsum())
+    bars  = np.column_stack([close, close * 1.003, close * 0.997, close, np.full(rows, 1e3)])
+    data  = probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = 1_700_000_000 * 10**9 + np.arange(rows, dtype=np.int64) * 4 * 3_600 * 10**9,
+    )
+
+    held = np.repeat(rng.choice([-1.0, 0.0, 1.0], rows // 20 + 1), 20)[:rows]
+    return probatum.backtest(held, data, VENUE, tolerance=0.05, risk_free=risk_free,
+                             record=record), close
+
+
+def closed(result):
+    """A run's closed round trips in the order they closed: their pnl, the rows each was
+    held, their sides and the rows they closed on."""
+    trades = result.trades
+    shut   = ~np.asarray(trades["open"])
+    order  = np.argsort(np.asarray(np.ma.filled(trades["close_bar"], -1))[shut],
+                        kind="stable")
+    rows   = np.asarray(np.ma.filled(trades["close_bar"], -1))[shut][order]
+    return (np.asarray(trades["pnl"])[shut][order].tolist(),
+            (rows - np.asarray(trades["open_bar"])[shut][order]).tolist(),
+            np.asarray(trades["side"])[shut][order].tolist(), rows.tolist())
+
+
+@pytest.mark.parametrize("seed", CASES[:60])
+def test_a_series_drawdowns_time_under_water_and_ulcer_index_agree(seed):
+    values, rate, free = series(seed)
+    path   = statistics.path(values.tolist())
+    table  = stats.drawdown_table(values, top=1_000)
+    theirs = statistics.drawdown_table(path, 1_000)
+    held   = stats.time_under_water(values)
+    found  = statistics.time_under_water(path)
+
+    assert stats.drawdown(values) == pytest.approx(statistics.drawdown(path)[1:], **NEAR)
+    assert [(e["peak"], e["trough"], -1 if e["recovered"] is None else e["recovered"],
+             e["to_trough"], e["under"]) for e in theirs] == (
+        list(zip(table["peak_bar"].tolist(), table["trough_bar"].tolist(),
+                 np.ma.filled(table["recovered_bar"], -1).tolist(),
+                 table["bars_to_trough"].tolist(), table["bars_under"].tolist())))
+    assert table["depth_pct"] == pytest.approx([e["depth"] for e in theirs], **NEAR)
+    assert np.ma.getmaskarray(table["peak_time"]).all()
+
+    assert (held.longest, held.episodes, held.longest_days) == (
+        found["longest"], found["episodes"], None)
+    assert (held.mean, held.share) == (pytest.approx(found["mean"], **NEAR),
+                                       pytest.approx(found["share"], **NEAR))
+    assert stats.ulcer_index(values) == pytest.approx(statistics.ulcer_index(path), **NEAR)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_run_s_drawdowns_are_read_on_its_equity_and_its_rows_times(seed):
+    result, _ = run(seed)
+    equity = result.equity.tolist()
+    table  = stats.drawdown_table(result, top=3)
+    theirs = statistics.drawdown_table(equity, 3)
+    held   = stats.time_under_water(result)
+    found  = statistics.time_under_water(equity, result.time.tolist())
+
+    assert stats.drawdown(result) == pytest.approx(statistics.drawdown(equity), **NEAR)
+    assert stats.drawdown(result).max() == pytest.approx(result.stats["max_drawdown_pct"],
+                                                         rel=1e-12)
+    assert table["peak_bar"].tolist() == [e["peak"] for e in theirs]
+    assert table["peak_time"].tolist() == result.time[[e["peak"] for e in theirs]].tolist()
+    assert table["trough_time"].tolist() == result.time[
+        [e["trough"] for e in theirs]].tolist()
+
+    assert (held.longest, held.episodes) == (found["longest"], found["episodes"])
+    assert (held.longest_days, held.mean_days) == (
+        pytest.approx(found["longest_days"], rel=1e-12),
+        pytest.approx(found["mean_days"], rel=1e-12))
+    assert f"{held.longest_days:,.0f} days under water" in result.summary()
+
+
+@pytest.mark.parametrize("seed", CASES[:60])
+def test_the_rolling_sharpe_and_volatility_agree_window_by_window(seed):
+    values, rate, free = series(seed)
+    listed = values.tolist()
+
+    for window in (2, 3, 7, 30):
+        sharpes = stats.rolling_sharpe(values, window, periods_per_year=rate, risk_free=free)
+        spreads = stats.rolling_volatility(values, window, periods_per_year=rate)
+        theirs  = zip(statistics.rolling_sharpe(listed, window, rate, free),
+                      statistics.rolling_volatility(listed, window, rate))
+
+        for sharpe, spread, (want, wide) in zip(sharpes, spreads, theirs):
+            if want is None:
+                assert math.isnan(sharpe) and math.isnan(spread)
+                continue
+            assert sharpe == pytest.approx(want, **NEAR)
+            assert spread == pytest.approx(wide, **NEAR)
+
+
+def test_a_window_of_returns_that_never_vary_ranks_as_the_record_ranks_it():
+    # zeros at a rate rank at zero, and a gain on no risk at infinity, whatever the
+    # running sums' rounding
+    values = np.concatenate([np.random.default_rng(4).normal(0.0, 0.01, 50),
+                             np.zeros(12), np.full(12, 0.0013)])
+    found  = stats.rolling_sharpe(values, 10, periods_per_year=365, risk_free=0.04)
+    wide   = stats.rolling_volatility(values, 10, periods_per_year=365)
+
+    assert np.all(found[60:62] == 0.0) and np.all(np.isinf(found[-3:]))
+    assert np.all(wide[-3:] == 0.0)
+    assert found.tolist() == pytest.approx(
+        [math.nan if v is None else v for v in statistics.rolling_sharpe(
+            values.tolist(), 10, 365, 0.04)], nan_ok=True, **NEAR)
+    assert wide.tolist() == pytest.approx(
+        [math.nan if v is None else v for v in statistics.rolling_volatility(
+            values.tolist(), 10, 365)], nan_ok=True, **NEAR)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_run_s_rolling_series_are_its_returns_a_row_later(seed):
+    result, _ = run(seed, risk_free=0.04)
+    rate      = result.provenance["periods_per_year"]
+    found     = stats.rolling_sharpe(result, 30)
+    plain     = stats.rolling_sharpe(result.returns[1:], 30, periods_per_year=rate,
+                                     risk_free=0.04)
+
+    assert found.size == len(result.time) and np.isnan(found[:30]).all()
+    assert found[1:] == pytest.approx(plain, nan_ok=True, rel=1e-12)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_run_s_calendar_periods_agree_and_compound_to_it(seed):
+    result, _ = run(seed)
+    equity, times = result.equity.tolist(), result.time.tolist()
+
+    for by in ("month", "quarter", "year"):
+        table  = stats.period_returns(result, by=by)
+        theirs = statistics.period_returns(times, equity, by)
+        last   = [first + rows - 1 for _, first, rows, _ in theirs]
+
+        assert table["period"].tolist() == [name for name, *_ in theirs]
+        assert table["first_bar"].tolist() == [first for _, first, _, _ in theirs]
+        assert table["rows"].tolist() == [rows for _, _, rows, _ in theirs]
+        assert table["end"].tolist() == [times[at] for at in last]
+        assert table["return_pct"] == pytest.approx([gain for *_, gain in theirs], **NEAR)
+        assert math.prod(1.0 + gain / 100.0 for gain in table["return_pct"]) == (
+            pytest.approx(1.0 + result.stats["total_return_pct"] / 100.0, rel=1e-9))
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_run_s_segments_agree_and_the_whole_is_its_record(seed):
+    result, _ = run(seed, risk_free=0.04)
+    rows      = len(result.time)
+    rate      = result.provenance["periods_per_year"]
+    pnl, _, _, shut = closed(result)
+    holding   = np.abs(result.holdings["position"].reshape(rows, -1)).max(axis=1) > 0.0
+    bars      = np.asarray(result.fills["bar"])
+    # a round trip closing on a segment's first row is its own and not the one before's
+    cut       = shut[len(shut) // 2]
+
+    for start, stop in ((0, rows), (0, rows // 3), (rows // 3, 2 * rows // 3),
+                        (2 * rows // 3, rows), (rows - 3, rows), (0, cut), (cut, rows)):
+        found  = stats.segment(result, start, stop)
+        theirs = statistics.segment(result.equity.tolist(), list(zip(shut, pnl)),
+                                    holding.tolist(), start, stop, rate, 0.04)
+
+        for name, value in theirs.items():
+            assert found[name] == pytest.approx(value, **NEAR), name
+        assert found["num_fills"] == np.count_nonzero((bars >= start) & (bars < stop))
+
+    whole = stats.segment(result)
+    assert {name: whole[name] for name in result.stats} == pytest.approx(
+        dict(result.stats), rel=1e-12, abs=1e-12)
+
+
+@pytest.mark.parametrize("seed", CASES[:80])
+def test_the_returns_shape_and_tail_agree(seed):
+    values, rate, free = series(seed)
+    listed = values.tolist()
+
+    assert stats.skew(values) == pytest.approx(statistics.skew(listed), **NEAR)
+    assert stats.kurtosis(values) == pytest.approx(statistics.kurtosis(listed), **NEAR)
+    assert stats.kurtosis(values, excess=True) == pytest.approx(
+        statistics.kurtosis(listed) - 3.0, **NEAR)
+    assert stats.omega(values) == pytest.approx(statistics.omega(listed), **NEAR)
+    assert stats.omega(values, threshold=0.1, periods_per_year=rate) == pytest.approx(
+        statistics.omega(listed, 0.1, rate), **NEAR)
+
+    for alpha in (0.5, 0.9, 0.95, 0.99):
+        assert stats.value_at_risk(values, alpha) == pytest.approx(
+            statistics.value_at_risk(listed, alpha), **NEAR)
+        assert stats.conditional_value_at_risk(values, alpha) == pytest.approx(
+            statistics.conditional_value_at_risk(listed, alpha), **NEAR)
+        assert stats.tail_ratio(values, alpha) == pytest.approx(
+            statistics.tail_ratio(listed, alpha), **NEAR)
+
+
+def test_the_tail_at_0_95_is_the_one_its_interval_reads():
+    # at 24 million returns n * (1 - 0.95) is a part in a billion past n / 20 in
+    # floating point, which a nudge of 1e-9 no longer takes back
+    assert all(stats._counted(n, 0.95) == statistics.counted(n, 0.95)
+               == statistics.tail(range(n)) for n in range(1, 10_001))
+    assert stats._counted(24_000_000, 0.95) == statistics.counted(24_000_000, 0.95) == (
+        1_200_000)
+    assert stats.value_at_risk(np.arange(24_000_000.0)) == -1_199_999 * 100.0
+
+    values = np.random.default_rng(6).normal(0.0005, 0.01, 1_000)
+    for name in ("value_at_risk", "conditional_value_at_risk"):
+        assert getattr(stats, name)(values) == pytest.approx(
+            stats.bootstrap(values, name, periods_per_year=365, resamples=20).estimate,
+            rel=1e-12)
+
+
+@pytest.mark.parametrize("seed", range(15))
+def test_the_round_trips_statistics_agree_on_any_pnl_and_on_trips_that_never_lost(seed):
+    pnl  = trips(seed)
+    held = np.random.default_rng(seed).integers(1, 30, pnl.size)
+
+    # to the nearest hundred, so trips that made nothing part runs of losses
+    for given in (pnl, np.abs(pnl), np.round(pnl, -2), pnl[:0]):
+        found  = stats._traded(given, held[:given.size], 10_000.0)
+        theirs = statistics.trade_stats(given.tolist(), held[:given.size].tolist(),
+                                        10_000.0)
+        for name, value in theirs.items():
+            assert getattr(found, name) == pytest.approx(value, **NEAR), name
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_run_s_round_trips_agree_by_side_and_by_session(seed):
+    result, _ = run(seed)
+    pnl, held, side, shut = closed(result)
+    opening = float(result.equity[0])
+    times   = result.time.tolist()
+
+    pairs = [(stats.trade_stats(result), statistics.trade_stats(pnl, held, opening))]
+    for name, found in stats.long_short_split(result).items():
+        mine = [k for k, at in enumerate(side) if at == name]
+        pairs.append((found, statistics.trade_stats([pnl[k] for k in mine],
+                                                    [held[k] for k in mine], opening)))
+
+    for found, theirs in pairs:
+        for name, value in theirs.items():
+            assert getattr(found, name) == pytest.approx(value, **NEAR), name
+
+    for by in ("hour", "weekday"):
+        table  = stats.session_buckets(result, by=by)
+        theirs = statistics.session_buckets(list(zip(shut, pnl)), times, by)
+
+        assert table["bucket"].tolist() == list(theirs)
+        assert table["trades"].tolist() == [count for count, _, _ in theirs.values()]
+        assert table["pnl"] == pytest.approx([total for _, total, _ in theirs.values()],
+                                             **NEAR)
+        assert table["win_rate"] == pytest.approx([rate for *_, rate in theirs.values()],
+                                                  **NEAR)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_run_beside_another_series_and_where_its_money_went_agree(seed):
+    result, close = run(seed, risk_free=0.04 * (seed % 2))
+    given  = result.provenance
+    rate   = given["periods_per_year"]
+    found  = stats.benchmark(result, close)
+    theirs = statistics.benchmark(result.returns[1:].tolist(), close.tolist(), rate,
+                                  given["risk_free"])
+
+    for name, value in theirs.items():
+        assert getattr(found, name) == pytest.approx(value, **NEAR), name
+
+    fills  = result.fills
+    traded = math.fsum((np.abs(np.asarray(fills["size"]))
+                        * np.asarray(fills["price"])).tolist())
+    found  = stats.decompose(result)
+    theirs = statistics.decompose(result.equity.tolist(), list(result.costs.values()),
+                                  traded, rate)
+
+    for name, value in theirs.items():
+        assert getattr(found, name) == pytest.approx(value, **NEAR), name
+    assert {name: getattr(found, name) for name in result.costs} == result.costs
+
+
+def crossed(data, fast, slow, kind, stop):
+    """A policy of two averages' crossing for a search of each kind of parameter."""
+    up      = np.asarray(probatum.ta.ema(data.close, fast)).reshape(-1)
+    down    = np.asarray(probatum.ta.ema(data.close, int(slow))).reshape(-1)
+    weights = np.where(up > down, 1.0, 0.0 if kind == "flat" else -1.0)
+    weights[np.isnan(up) | np.isnan(down)] = np.nan
+    return {"policy": weights, "stop": stop}
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_a_search_s_parameter_importance_agrees_on_every_kind_of_parameter(seed):
+    close = 100.0 * np.exp(np.random.default_rng(seed).normal(0.0, 0.01, 600).cumsum())
+    bars  = np.column_stack([close, close * 1.003, close * 0.997, close, np.full(600, 1e3)])
+    data  = probatum.Data(bars, symbol="BTCUSDT", market="linear",
+                          time=np.arange(600, dtype=np.int64) * 3_600 * 10**9)
+    space = {"fast": probatum.Int(2, 60), "slow": probatum.Float(61.0, 200.0),
+             "kind": probatum.Categorical(["flat", "short"]),
+             "stop": probatum.Categorical([None, 0.02, 0.05])}
+    study = probatum.search(crossed, space, data, VENUE, sampler="random", trials=40,
+                            holdout=0, seed=seed)
+
+    table  = study.trials
+    trials = [((row["fast"], row["slow"], row["kind"], row["stop"]), row["state"],
+               row["score"]) for row in (table[k] for k in range(len(table)))]
+    theirs = statistics.importance(trials, ["number", "number", "categorical",
+                                            "categorical"])
+    found  = study.importance()
+
+    assert found.names == tuple(space)
+    assert found.importance == pytest.approx([value for value, _ in theirs], **NEAR)
+    assert found.chance == pytest.approx([level for _, level in theirs], rel=1e-12)
+    assert found == stats.importance(study)
+
+
+def lengths(data, length, kind):
+    """A policy of a close against its average, for a search of a length's ten values."""
+    average = np.asarray(probatum.ta.sma(data.close, 10 * length)).reshape(-1)
+    weights = np.where(np.asarray(data.close).reshape(-1) > average, 1.0,
+                       0.0 if kind == "flat" else -1.0)
+    weights[np.isnan(average)] = np.nan
+    return weights
+
+
+def test_a_number_that_takes_ten_values_is_grouped_by_them_and_eleven_by_rank():
+    # trials drawn unevenly over the values, so ten groups by rank would join some
+    close = 100.0 * np.exp(np.random.default_rng(8).normal(0.0, 0.01, 600).cumsum())
+    bars  = np.column_stack([close, close * 1.003, close * 0.997, close, np.full(600, 1e3)])
+    data  = probatum.Data(bars, symbol="BTCUSDT", market="linear",
+                          time=np.arange(600, dtype=np.int64) * 3_600 * 10**9)
+
+    for top in (10, 11):
+        space  = {"length": probatum.Int(1, top),
+                  "kind":   probatum.Categorical(["flat", "short"])}
+        study  = probatum.search(lengths, space, data, VENUE, sampler="random", trials=60,
+                                 holdout=0, seed=5)
+        table  = study.trials
+        trials = [((row["length"], row["kind"]), row["state"], row["score"])
+                  for row in (table[k] for k in range(len(table)))]
+        theirs = statistics.importance(trials, ["number", "categorical"])
+        found  = study.importance()
+
+        assert len(set(table["length"].tolist())) == top
+        assert found.importance == pytest.approx([value for value, _ in theirs], **NEAR)
+        assert found.chance == pytest.approx([level for _, level in theirs], rel=1e-12)
+
+
+def test_runs_set_side_by_side_hold_each_one_s_record():
+    one, two = run(1)[0], run(2)[0]
+    table    = probatum.compare({"one": one, "two": two})
+
+    assert table["name"].tolist() == ["one", "two"]
+    assert table["venue"].tolist() == ["binance_perp"] * 2
+    assert table["data"].tolist() == [one.provenance["data"]["fingerprint"],
+                                      two.provenance["data"]["fingerprint"]]
+    assert table["rows"].tolist() == [len(one.time), len(two.time)]
+    for key in one.stats:
+        assert table[key].tolist() == [one.stats[key], two.stats[key]]
+
+    picked = probatum.compare([one, two], keys=["sharpe"])
+    assert picked.columns == ("name", "venue", "policy", "data", "rows", "sharpe")
+    assert picked["name"].tolist() == ["binance_perp"] * 2

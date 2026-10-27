@@ -424,3 +424,176 @@ def test_the_autocorrelation_is_1_at_lag_0_and_0_where_nothing_varies():
     with pytest.raises(ProbatumValueError, match="lag: -1; give a whole number of bars, "
                        "from 0"):
         stats.autocorrelation(MONTHLY, -1)
+
+
+def test_what_reads_a_run_s_time_trips_costs_or_rows_refuses_a_plain_series():
+    calls = [(stats.period_returns, ()), (stats.segment, ()), (stats.trade_stats, ()),
+             (stats.long_short_split, ()), (stats.session_buckets, ()),
+             (stats.benchmark, ([1.0] * 8,)), (stats.decompose, ())]
+
+    for call, given in calls:
+        with pytest.raises(ProbatumTypeError, match=f"result: list; {call.__name__} reads "
+                           f"a Result"):
+            call(MONTHLY, *given)
+
+
+def test_a_plain_series_rows_are_its_path_s_and_a_result_s_its_own(result):
+    plain = stats.drawdown_table(result.returns[1:])
+    own   = stats.drawdown_table(result)
+
+    assert stats.drawdown(result).size == 400 and stats.drawdown(MONTHLY).size == 8
+    assert stats.drawdown(result)[0] == 0.0
+    for column in ("peak_bar", "trough_bar", "bars_to_trough", "bars_under"):
+        assert plain[column].tolist() == own[column].tolist()
+    assert np.ma.getmaskarray(plain["peak_time"]).all()
+    assert own["peak_time"].tolist() == result.time[own["peak_bar"]].tolist()
+
+    under = stats.time_under_water(result)
+    assert under == stats.time_under_water(result)
+    assert stats.time_under_water(MONTHLY).longest_days is None
+    assert str(under).startswith(f"longest under water {under.longest:,} rows, "
+                                 f"{under.longest_days:,.0f} days")
+
+
+def test_a_series_that_loses_everything_falls_100_percent_and_no_further():
+    # the path reaches -0.55 on the second return and moves no further
+    values = [0.1, -1.5, 0.2, 0.3]
+
+    assert stats.drawdown(values).tolist() == [0.0, 100.0, 100.0, 100.0]
+    assert stats.time_under_water(values).longest == 3
+
+
+def test_too_few_returns_or_returns_that_never_vary_have_a_normal_shape():
+    assert stats.skew([0.01, 0.02, 0.06]) > 0.0 and stats.skew([0.01, 0.02]) == 0.0
+    assert stats.kurtosis([0.01, 0.02, 0.06]) == 3.0
+    assert stats.kurtosis([0.01, 0.02, 0.06, -0.03]) != 3.0
+    assert stats.skew([0.01] * 6) == 0.0 and stats.kurtosis([0.01] * 6, excess=True) == 0.0
+
+
+def test_a_pandas_series_of_returns_is_read_by_position():
+    given = pd.Series(MONTHLY, index=list("abcdefgh"))
+
+    assert stats.drawdown(given).tolist() == stats.drawdown(MONTHLY).tolist()
+    assert stats.skew(given) == stats.skew(MONTHLY)
+    assert stats.rolling_sharpe(given, 4, periods_per_year=12).tolist() == pytest.approx(
+        stats.rolling_sharpe(MONTHLY, 4, periods_per_year=12).tolist(), nan_ok=True)
+
+
+def test_a_window_a_count_and_a_choice_are_refused_by_name(result):
+    with pytest.raises(ProbatumValueError, match="window: 1; give a whole number of "
+                       "returns from 2"):
+        stats.rolling_sharpe(MONTHLY, 1, periods_per_year=12)
+    with pytest.raises(ProbatumTypeError, match="window: 4.0; give a whole number"):
+        stats.rolling_volatility(MONTHLY, 4.0, periods_per_year=12)
+    with pytest.raises(ProbatumTypeError, match="periods_per_year: missing"):
+        stats.rolling_sharpe(MONTHLY, 4)
+    with pytest.raises(ProbatumValueError, match="top: 0; give a whole number of "
+                       "drawdowns from 1"):
+        stats.drawdown_table(MONTHLY, top=0)
+    with pytest.raises(ProbatumValueError, match="by: 'week'; give \"month\", "
+                       "\"quarter\" or \"year\""):
+        stats.period_returns(result, by="week")
+    with pytest.raises(ProbatumTypeError, match="by: 1; give \"hour\" or \"weekday\""):
+        stats.session_buckets(result, by=1)
+    with pytest.raises(ProbatumValueError, match="alpha: 1.0; give a fraction"):
+        stats.value_at_risk(MONTHLY, alpha=1.0)
+    with pytest.raises(ProbatumValueError, match="returns: none; a tail needs at least "
+                       "one return"):
+        stats.tail_ratio([])
+    with pytest.raises(ProbatumTypeError, match="periods_per_year: missing"):
+        stats.omega(MONTHLY, threshold=0.1)
+
+    assert stats.omega(MONTHLY) == stats.omega(MONTHLY, periods_per_year=12)
+
+
+def test_a_segment_holds_a_return_and_reads_the_record_s_rows(result):
+    with pytest.raises(ProbatumValueError, match="start: 400; give a row from 0 to 399"):
+        stats.segment(result, 400)
+    with pytest.raises(ProbatumValueError, match="stop: 1; give a row from 2 to 400, so "
+                       "the segment holds a return"):
+        stats.segment(result, 0, 1)
+    with pytest.raises(ProbatumValueError, match="stop: 10; give a row from 11 to 400"):
+        stats.segment(result, 10, 10)
+    with pytest.raises(ProbatumTypeError, match="stop: 2.5; give a whole number of rows"):
+        stats.segment(result, 0, 2.5)
+
+    part = stats.segment(result, 200)
+    assert part.interval("sharpe") == stats.sharpe_interval(
+        result.returns[200:], periods_per_year=result.provenance["periods_per_year"])
+
+
+def test_prices_held_beside_a_run_are_one_a_row_finite_and_above_zero(result):
+    prices = 100.0 + np.arange(400.0)
+    found  = stats.benchmark(result, prices)
+    times  = pd.to_datetime(result.time, utc=True)
+
+    assert found == stats.benchmark(result, pd.Series(prices, index=times))
+    assert found.hold_return_pct == pytest.approx(399.0)
+    with pytest.raises(ProbatumValueError, match="prices: 8 values beside a run of 400 "
+                       "rows; give one price a row"):
+        stats.benchmark(result, MONTHLY)
+
+    prices[7] = 0.0
+    with pytest.raises(ProbatumValueError, match="prices: position 7 holds 0.0; a price "
+                       "is a finite number above zero"):
+        stats.benchmark(result, prices)
+    with pytest.raises(probatum.DataError, match="prices: a Series whose index is not "
+                       "the run's row times"):
+        stats.benchmark(result, pd.Series(100.0 + np.arange(400.0)))
+    with pytest.raises(ProbatumTypeError, match="prices: str; pass an array"):
+        stats.benchmark(result, "close")
+
+
+def test_a_run_kept_at_the_account_level_counts_no_fills_and_no_turnover():
+    close = 100.0 + np.random.default_rng(5).normal(0.0, 1.0, 400).cumsum()
+    bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(400, 1e3)])
+    data  = probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(400, dtype=np.int64) * 3_600_000_000_000,
+    )
+
+    weights = np.where(np.arange(400) % 40 < 20, 1.0, 0.0)
+    venue   = probatum.venues.binance_perp.replace(funding="none")
+    full    = probatum.backtest(weights, data, venue)
+    kept    = probatum.backtest(weights, data, venue, record="account")
+
+    assert math.isnan(stats.decompose(kept).turnover) and stats.decompose(full).turnover > 0
+    assert stats.segment(kept, 100)["num_fills"] is None
+    for name in kept.stats:
+        if name != "num_fills":
+            assert stats.segment(kept, 100)[name] == stats.segment(full, 100)[name]
+    assert "turnover none" in str(stats.decompose(kept))
+
+
+def test_each_new_result_never_changes_and_pickles_as_what_it_holds(traded):
+    found = [stats.time_under_water(traded), stats.trade_stats(traded),
+             stats.benchmark(traded, 100.0 + np.arange(1_000.0)), stats.decompose(traded)]
+
+    for held in found:
+        assert pickle.loads(pickle.dumps(held)) == held
+        assert hash(pickle.loads(pickle.dumps(held))) == hash(held)
+        with pytest.raises(ProbatumAttributeError, match="a result does not change"):
+            held.mean = 0.0
+
+    split = stats.long_short_split(traded)
+    assert list(split) == ["long", "short"] and split["short"].trades == 0
+    assert str(split["short"]) == "no closed round trips"
+    assert split["long"] == stats.trade_stats(traded)
+
+
+def test_runs_set_side_by_side_are_refused_by_name():
+    with pytest.raises(ProbatumTypeError, match="results: str; pass a list of Results"):
+        probatum.compare("run")
+    with pytest.raises(ProbatumValueError, match="results: none given"):
+        probatum.compare([])
+    with pytest.raises(ProbatumTypeError, match="results: a list among them; pass "
+                       "Results"):
+        probatum.compare([MONTHLY])
+
+
+def test_a_key_no_run_reports_is_refused(result):
+    with pytest.raises(probatum.ProbatumKeyError, match="keys: 'alpha', which no run "
+                       "reports"):
+        probatum.compare([result], keys=["alpha"])
