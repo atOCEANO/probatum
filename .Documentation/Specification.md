@@ -27,7 +27,7 @@
 
 ## Specification
 
-This page is every rule the engine applies to money: when an order fills and at what price, what each fill costs, when funding is charged, how margin is measured, where an account is liquidated, what a run records, how a search scores and checks its trials, how a validation divides the bars and runs its paths, and how far a run's statistics can be trusted. Each rule is stated as an equation where it has one and followed by a worked example, and every worked example is a test, so a number on this page is a number the engine produces. Why each rule is the way it is lives in [Decisions](Decisions.md).
+This page is every rule the engine applies to money: when an order fills and at what price, what each fill costs, when funding is charged, how margin is measured, where an account is liquidated, what a run records, how a search scores and checks its trials, how a validation divides the bars and runs its paths, how far a run's statistics can be trusted, and what else describes a run. Each rule is stated as an equation where it has one and followed by a worked example, and every worked example is a test, so a number on this page is a number the engine produces. Why each rule is the way it is lives in [Decisions](Decisions.md).
 
 The contracts are spot, linear perpetuals margined in the quote currency, and inverse perpetuals margined in their coin. Products are written with `*`, and every price is in the quote currency unless a rule says otherwise.
 
@@ -1083,6 +1083,65 @@ The win rate, the profit factor and the average trade take a bootstrap of the cl
 <br>
 
 
+## Statistics of a run
+
+`probatum.stats` also describes a run: how far and how long it fell, how its Sharpe and its volatility moved, what each calendar period returned, the shape of its returns, its round trips, how it compares with holding another series and where its money went. Each reads what a run records, as [What a statistic reads](#what-a-statistic-reads) states, and none has an interval. `period_returns`, `segment`, the round trips' statistics, `benchmark` and `decompose` read what only a Result holds and take a Result alone; the others also take a plain series, which needs `periods_per_year` only where the statistic is annualised.
+
+### Drawdown
+
+- A Result's drawdown is `D_t = 1 - E_t / P_t` at each of its `T` rows, in percent, `P_t = max_{s <= t} E_s` the running peak from the first row, so the first row's is 0 and a loss on the second row shows there. A plain series' is the same over the path compounded from 1 before its first return, a value a return, a return after the path reaches zero moving it no further. It is a positive magnitude, at most 100, and its largest is the record's maximum drawdown.
+- An episode opens at a row at the running peak whose next row is below it, bottoms at its deepest row, the first of several equally deep, and recovers at the first row back at or above its peak; one still below at the last row has no recovery. A plain series' rows are its path's, the 1 before its first return its row 0, so its return at position `i` is on row `i + 1`. `drawdown_table(returns, top=5)` lists the `top` deepest, deepest first and the earlier of two equal ones first: the rows of its peak, its trough and its recovery and a Result's times of each, its depth, its rows from peak to trough, and its rows under, from its peak to its recovery or to the last row.
+- `time_under_water(returns)` gives the longest and the mean of the episodes' rows under, their count, and the share of the rows after the first that are below their peak; for a Result also the longest and the mean in days, from the times of the same rows, the longest being the one a summary prints.
+- `ulcer_index(returns)` is the root mean square of the drawdown over the rows after the first, in percent (Martin and McCann 1989).
+
+**Worked example.** A Result's equity is 100, 120, 90, 108, 129.6 and 116.64 on six daily rows. The running peak is 100, 120, 120, 120, 129.6 and 129.6, so the drawdown is 0, 0, 25%, 10%, 0 and 10%. There are two episodes: from row 1 at 120, bottoming at row 2 at 25% and recovering at row 4, one row to its trough and three under; and from row 4 at 129.6, bottoming at row 5 at 10%, with no recovery and one row under. Rows 2, 3 and 5 of the five after the first are below their peak, a share of 0.6; the longest time under water is 3 rows, 3 days, and the mean 2; and the ulcer index is `sqrt((0 + 625 + 100 + 0 + 100) / 5) = 12.85%`.
+
+### Over time
+
+- `rolling_sharpe(returns, window)` is the Sharpe of the `window` returns that end at each row, as the record computes it on them, at the same annualisation and risk-free rate: for a Result a value a row, NaN on its first `window` rows, since its returns start on its second; for a plain series a value a return, NaN on its first `window - 1`. `rolling_volatility(returns, window)` is the volatility of the same returns, `sqrt(ppy) * s'` in percent. A window whose returns are all one value has no deviation, so its volatility is 0 and its Sharpe ranks as the record ranks a ratio. A window is a whole number from 2 and has no default, since its span in time depends on the bars.
+- `period_returns(result, by="month")` divides a Result's rows by the calendar month, quarter or year of their time in UTC, and each period's return is its rows' returns compounded, in percent, which while the equity stays above zero is its last row's equity over the equity the account carried into it, the row before its first's or for the first period the first row's, less one, so the periods compound to the run. A period is listed with its name, `2024-02`, `2024-Q1` or `2024`, its first row, its count of rows and the times of its first and its last.
+- `segment(result, start=0, stop=None)` is the record's statistics over rows `start` to `stop - 1`, each read on the stretch as the run's are read on the run: the returns of those rows, the first from the equity of row `start - 1`, a segment from row 0 reading those after it as the run does, the round trips that closed on those rows, its exposure on them and its fills on them, which a run recorded at the account level does not count. Consecutive segments compound to the run.
+
+**Worked example.** Eight monthly returns, 2%, -1%, 3%, 0%, 1%, -2%, 4% and 1%, with `periods_per_year=12` and `window=4`. The first four have a mean of 1% and an `s'` of `sqrt(10/3) = 1.826%`, a Sharpe of `0.5477 * sqrt(12) = 1.90` and a volatility of 6.32%; the next four, -1%, 3%, 0% and 1%, a mean of 0.75% and an `s'` of 1.708%, a Sharpe of 1.52 and a volatility of 5.92%. As a plain series, the first three positions are NaN.
+
+**Worked example.** A run's equity is 100 on 30 January 2024, 102 on 31 January, 101 on 1 February, 104 on 29 February and 103 on 1 March. January returns `102 / 100 - 1 = 2%`, February `104 / 102 - 1 = 1.96%` and March `103 / 104 - 1 = -0.96%`, which compound to the run's 3%, as the first quarter and 2024 return.
+
+### The returns' shape
+
+- `skew(returns)` is `m3 / m2^(3/2)` and `kurtosis(returns)` is `m4 / m2^2`, `m_k` the mean of `(r_t - rbar)^k` with `n` in its divisor, so a normal series has a kurtosis of 3, which the probabilistic Sharpe reads, and `excess=True` subtracts 3. Fewer than 3 returns for the skew or 4 for the kurtosis, or returns that never vary, give 0 and 3.
+- `omega(returns, threshold=0.0)` is the sum of `max(r_t - h, 0)` over the sum of `max(h - r_t, 0)`, `h` the annual threshold over `ppy`, ranked as the record ranks a ratio, so a run with no return below the threshold is infinite where one is above it (Keating and Shadwick 2002). A threshold of 0 needs no `periods_per_year`.
+- With `k = max(1, ceil(n * (1 - alpha)))` for `alpha` in `(0, 1)`, 0.95 unless given and taken as the shortest decimal that reads as it, so 0.95 counts `n / 20` exactly: `value_at_risk(returns, alpha)` is the loss of the `k`-th lowest return and `conditional_value_at_risk(returns, alpha)` the mean loss of the `k` lowest, in percent, the ones [Intervals of the returns](#intervals-of-the-returns) reads at 0.95; and `tail_ratio(returns, alpha)` is the `k`-th highest return over the loss of the `k`-th lowest, ranked as above, so a run whose `k`-th lowest return is no loss is infinite where its `k`-th highest is a gain.
+
+**Worked example.** Five returns, -3%, -1%, 1%, 2% and 6%, have a mean of 1%, and their deviations of -4, -2, 0, 1 and 5 give `m2 = 9.2`, `m3 = 10.8` and `m4 = 179.6` in percent, so the skew is `10.8 / 9.2^1.5 = 0.387` and the kurtosis `179.6 / 84.64 = 2.122`. Omega at 0 is `(1 + 2 + 6) / (3 + 1) = 2.25`. At `alpha = 0.6`, `k = 2`: value at risk is 1%, conditional value at risk 2%, and the tail ratio `2 / 1 = 2`.
+
+### Round trips
+
+- `trade_stats(result)` reads the closed round trips' pnl in the order they closed: their count, the wins, above zero, and the losses, below it, the mean win and the mean loss as a positive amount, the payoff, the mean win over the mean loss, ranked as above, the expectancy, the mean pnl, and the same as a percentage of the opening balance, the largest win and the largest loss, the longest run of losses in a row, and the mean rows held, a trip's closing row less its opening row; a mean or a largest of none is 0.
+- `long_short_split(result)` is `trade_stats` over each side's round trips, under `long` and `short`.
+- `session_buckets(result, by="hour")` books each closed round trip at the UTC time of the row it closed on, by hour of day, 0 to 23, or with `by="weekday"` by day of week, Monday 0 to Sunday 6, and lists each bucket that holds one with its count, its summed pnl and its win rate.
+
+**Worked example.** Five round trips close in turn with pnl of 300, -100, -50, 200 and -100 on an opening balance of 10,000: 2 wins and 3 losses, a mean win of 250 and a mean loss of 83.33, a payoff of 3, an expectancy of 50, 0.5% of the balance, a largest win of 300 and a largest loss of -100, and 2 losses in a row at the longest.
+
+### Against a benchmark
+
+`benchmark(result, prices)` holds a Result against holding another series, one price a row of the Result, an array of `T` prices or a pandas Series on its row times exactly. The series returns `y_t = p_t / p_{t-1} - 1`. Holding it returns `p_last / p_first - 1`; its Sharpe is the record's on those returns at the run's annualisation and risk-free rate; the excess return is the run's total return less holding's, in percentage points; and beta and the information ratio are read as `alpha_beta` reads them: the covariance of the run's excess returns with the series' over the series' variance, `n - 1` in each, and the mean of the run's returns less the series' over their deviation, times `sqrt(ppy)`, ranked as above. Fewer than 2 returns give both 0, and a series whose returns never vary a beta of 0.
+
+**Worked example.** Over four monthly rows a series is priced 100, 102, 99.96 and 103.9584, returns of 2%, -2% and 4%, and a run returns 3%, -1% and 4% with no risk-free rate. Holding returns `1.02 * 0.98 * 1.04 - 1 = 3.96%` and the run `1.03 * 0.99 * 1.04 - 1 = 6.05%`, an excess of 2.09 points. Beta is `8 / 9.33 = 0.857`, and the run beats the series by 1%, 1% and 0%, a mean of 0.667% and a deviation of 0.577%, an information ratio of `1.155 * sqrt(12) = 4.0`.
+
+### Where the money went
+
+`decompose(result)` splits the change in equity, `net = E_last - E_first`, into the price pnl the run's fills and marks made, measured from each fill's reference, and the costs of `Result.costs` it paid, `price = net + costs`. It gives each cost and their sum, the net as a percentage of the opening balance, the costs' share of the price pnl, ranked as above where the price pnl is not above zero, and the turnover, a year of the notional its fills traded over its mean equity, as [What a run of them reads](#what-a-run-of-them-reads) states, NaN for a run recorded at the account level, which keeps no fill log.
+
+**Worked example.** A run from 10,000 to 10,500 paid fees of 40, spread of 10, slippage of 5 and funding of 25, costs of 80, so its price pnl is 580 and the costs took 13.8% of it; fills of 40,000 in notional over a year of returns, on an equity that averages 10,250, are a turnover of 3.9.
+
+### Comparing runs
+
+`probatum.compare(results, keys=None)` sets runs side by side in a table, a row a run in the order given, each named by its key in a mapping or by its venue's name in a list: its name, its venue, its policy, the fingerprint of its data, its rows, and its statistics, every one or those `keys` names, missing for a run whose clock is too short to annualise; a key no run reports is refused.
+
+<br>
+<br>
+
+
 ## Across a search
 
 `probatum.stats` also judges a search across all of its trials: how far the winner's Sharpe clears what the best of that many trials reaches by luck, how often the in-sample winner falls below the median out of sample, whether any trial beats a benchmark once every trial is counted, how long a backtest that many trials need, and whether the winner stands among neighbours that score as it does. Each reads a Study of trials or a matrix of trials' returns, the plateau a Study alone, and states how many trials it read.
@@ -1157,6 +1216,14 @@ The win rate, the profit factor and the average trade take a bootstrap of the cl
 - Its text gives the share at 0.1 and then at every radius, "22% of the 40 trials within distance 0.1 of the best, in normalised parameters, score above 1; from 0.05 to 0.5: 30%, 22%, 25%, 21%, 18%, 15%, 14%, 12%, 11%, 10%", a loss printed as the negative return it is with its side turned, and "none" for a radius no trial lies within, which a search's summary prints after "plateau".
 
 **Worked example.** A search maximising the Sharpe over `fast` in `Int(5, 45)` and `slow` in `Int(100, 300)`, whose winner is fast 25 and slow 200. A trial at 27 and 210 lies `sqrt(0.05^2 + 0.05^2) = 0.0707` from it, one at 28 and 200 at 0.075, and one at 35 and 240 at `sqrt(0.25^2 + 0.2^2) = 0.32`. Scoring 1.2, 0.4 and 1.1 against a level of 1.0, they leave no trial within 0.05, 1 of 2 past the level within 0.1, and 2 of 3 within 0.35.
+
+### Parameter importance
+
+- `importance()` asks how much of the variation in the scores of a search's complete trials, those whose score is finite, each parameter of its space explains on its own. A parameter's trials are grouped by its value: by choice for a `Categorical`, NaN being one choice; by value for an `Int` or a `Float` that takes at most 10 values among them; and otherwise into 10 groups by rank, a trial whose value has `j` of the `N` trials below it going to group `floor(10 * j / N)`, so tied values share one.
+- The importance is `eta^2 = SS_between / SS_total`: the sum of squared deviations of the groups' means from the mean score, each counted once a trial of its group, over the scores' own sum of squared deviations, and 0 where the scores never vary. Beside it is `(g - 1) / (N - 1)` for its `g` groups, the share a parameter with no effect explains by chance on average, so an importance near it says nothing.
+- Fewer than 2 such trials give no importance, and a validation's Study, which holds paths, has none.
+
+**Worked example.** Six trials of `x` in 1 to 3 and `c` in `a` and `b` score 1.0, 1.2, 2.0, 2.2, 0.5 and 0.7 at `(1, a)`, `(1, b)`, `(2, a)`, `(2, b)`, `(3, a)` and `(3, b)`. The mean score is 1.267 and the scores' sum of squares 2.393. `x`'s three groups have means of 1.1, 2.1 and 0.6, which explain `2 * (0.0278 + 0.6944 + 0.4444) = 2.333`, an importance of 0.975 beside a chance level of 0.4; `c`'s two have means of 1.167 and 1.367, which explain 0.06, an importance of 0.025 beside 0.2.
 
 <br>
 <br>
