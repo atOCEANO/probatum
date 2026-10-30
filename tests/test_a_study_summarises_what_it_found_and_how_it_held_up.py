@@ -9,6 +9,7 @@ earned (Specification, Summaries; Consistency and decay).
 """
 
 import math
+import pickle
 
 import numpy as np
 import pytest
@@ -281,13 +282,17 @@ def picking(data, pick=None):
     return np.full(len(data.close), 1.0 if pick is None else pick)
 
 
-def test_a_choice_of_none_among_numbers_is_one_configuration_however_often_drawn():
-    # the trials table holds that None as NaN, which equals nothing, itself included
-    found = probatum.search(picking, {"pick": probatum.Categorical([None, 0.5, 1.5])},
-                            bars(), "frictionless", trials=12, sampler="random",
-                            holdout=0.3, seed=1)
+def test_a_choice_of_none_or_nan_is_one_configuration_however_often_drawn():
+    # the trials table holds a None among floats as NaN, and NaN equals nothing, not
+    # even another trial's once a pickle has carried them
+    for choices in ([None, 0.5, 1.5], [math.nan, 0.5, 1.5]):
+        found = probatum.search(picking, {"pick": probatum.Categorical(choices)}, bars(),
+                                "frictionless", trials=12, sampler="random", holdout=0.3,
+                                seed=1)
+        again = pickle.loads(pickle.dumps(found))
 
-    assert "; trials 12; distinct 3; " in found.summary().lines[0]
+        assert "; trials 12; distinct 3; " in found.summary().lines[0]
+        assert "; trials 12; distinct 3; " in again.summary().lines[0]
 
 
 def test_a_break_even_and_a_decay_read_as_the_reference_reads_them(validated):

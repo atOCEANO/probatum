@@ -31,7 +31,7 @@ from ._probatum import Engine, Table as _Held, run_array, run_arrays, stats_of, 
 from ._result import (COSTS, COUNTS, STATS, Summary, Table, _environment, _returns, _text,
                       _version)
 from ._samplers import _Grid, _Random, _Tpe
-from ._space import Categorical, Float, Int, _whole
+from ._space import Categorical, Float, Int, _one, _whole
 from ._strategy import Strategy, _Run, _play
 from ._venue import _run
 from .stats import (BREAK_EVEN, GROWS, HALVED, PARTS, RADII, RETURNS, TRADES, Consistency,
@@ -840,6 +840,20 @@ def _texts(name, values, nullable=True):
     return name, "text", nullable, ends, valid, data
 
 
+def _configuration(space, params):
+    """``params`` as the key of its configuration, as the plateau keys one: a choice of
+    a Categorical by its place among the choices, since NaN is one choice that equals
+    nothing, not even another trial's NaN once a pickle has carried them, and any other
+    value as it was given."""
+    key = []
+    for name, given in space.items():
+        value = params[name]
+        if isinstance(given, Categorical):
+            value = next(k for k, choice in enumerate(given.choices) if _one(choice, value))
+        key.append(value)
+    return tuple(key)
+
+
 def _param(name, given, values):
     """The column of a parameter of the range ``given``, of the kind its values can
     share: an Int's int and a Float's float, and a Categorical's int where every choice
@@ -1301,10 +1315,7 @@ class Study:
                  ("direction", given["direction"])]
 
         if self._tables is None:
-            # each trial's parameters as it was given them, since the trials table holds a
-            # None among floats as NaN, which equals nothing
-            drawn = {tuple(params[name] for name in self._space)
-                     for params in self._params}
+            drawn = {_configuration(self._space, params) for params in self._params}
             said += [("sampler", given["sampler"]["name"]), ("trials", given["ran"]),
                      ("distinct", len(drawn) if 0 < len(drawn) < given["ran"] else None),
                      ("first", _day(self._bars.first)), ("last", _day(self._bars.last))]
