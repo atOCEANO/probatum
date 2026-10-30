@@ -70,7 +70,6 @@ def test_returns_that_never_vary_have_no_deviation_at_any_rate():
     idle = probatum.backtest(np.zeros(400), data, "frictionless", risk_free=0.04)
     assert stats.sharpe(idle) == stats.sharpe(idle, long_run=True) == 0.0
     assert idle.stats._values["sharpe"] == 0.0 and math.isnan(idle.stats["sharpe"])
-    assert "long-run sharpe" not in idle.summary()
 
     # the excess of zeros over a rate is one value only as far as its mean rounds
     for count in range(2, 60):
@@ -154,7 +153,6 @@ def test_a_track_record_has_no_years_where_the_sharpe_is_not_above_its_benchmark
     record = stats.min_track_record_length(MONTHLY, benchmark=3.0, periods_per_year=12)
 
     assert (record.observations, record.years) == (None, None)
-    assert str(record)         == "minimum track record none: the sharpe 1.73 is not above 3.00"
     assert record.series_years == pytest.approx(8 / 12)
 
 
@@ -165,7 +163,6 @@ def test_each_result_says_its_numbers_never_changes_and_pickles_as_it_was():
 
     assert (interval.statistic, interval.method, interval.count, interval.lag,
             interval.floored, interval.level) == ("sharpe", "delta method", 8, 2, True, 0.95)
-    assert str(probability) == "probabilistic sharpe 0.705 against 1.00, one-sided"
     assert repr(record) == repr(record.to_pandas())
 
     for made in (interval, probability, record):
@@ -206,17 +203,13 @@ def test_a_bootstrap_repeats_on_every_read_for_a_result_and_its_series(traded):
     assert once.block >= 1.0 and once.lag is None and once.floored is None
 
 
-def test_a_drawdown_is_a_range_of_histories_and_a_loss_prints_as_a_negative_return(traded):
+def test_a_drawdown_is_a_range_of_histories_and_a_loss_a_positive_magnitude(traded):
     fall = stats.bootstrap(traded, "max_drawdown_pct")
 
     assert fall.kind == "range" and 0.0 < fall.low <= fall.estimate <= fall.high
-    assert str(fall).startswith(f"max drawdown -{fall.estimate:.2f}%; middle 95% of "
-                                f"resampled histories -{fall.high:.2f}% to "
-                                f"-{fall.low:.2f}%, stationary block bootstrap, block ")
 
     worst = stats.bootstrap(traded, "value_at_risk")
-    assert worst.kind == "interval" and str(worst).startswith(
-        f"value at risk -{worst.estimate:.2f}%, two-sided 95% interval")
+    assert worst.kind == "interval" and worst.low <= worst.estimate <= worst.high
     assert worst.method == "percentile stationary block bootstrap"
 
 
@@ -230,7 +223,6 @@ def test_a_result_s_trade_statistics_take_a_bootstrap_of_its_round_trips(traded)
         assert interval.estimate == pytest.approx(traded.stats[name], rel=1e-12)
         assert interval.low <= interval.estimate <= interval.high
         assert (interval.method, interval.count, interval.block) == (method, 251, None)
-        assert str(interval).endswith(f"{method}, 251 round trips")
 
 
 def test_a_bootstrap_refuses_what_its_sample_cannot_support_by_name(result, traded):
@@ -279,14 +271,14 @@ def test_a_bootstrap_refuses_what_its_sample_cannot_support_by_name(result, trad
         [np.full(10, -0.01), np.zeros(490), np.random.default_rng(7).uniform(0.0, 0.01,
                                                                           500)]))
     with pytest.raises(ProbatumValueError, match="value_at_risk: its resamples put both "
-                       "bounds on 0.00%; an interval needs resamples that differ "
+                       "bounds on 0.00; an interval needs resamples that differ "
                        "between them"):
         stats.bootstrap(flat, "value_at_risk", periods_per_year=365)
 
     deep = tied.copy()
     deep[np.argsort(deep)[:300]] = -0.02
     with pytest.raises(ProbatumValueError, match="value_at_risk: its resamples put both "
-                       "bounds on -2.00%"):
+                       "bounds on 2.00;"):
         stats.bootstrap(deep, "value_at_risk", periods_per_year=365)
     with pytest.raises(ProbatumValueError, match="win_rate: its resamples put both bounds "
                        "on 0.47; an interval needs resamples that differ between them"):
@@ -330,9 +322,9 @@ def test_a_run_alone_is_tested_against_buying_and_holding_its_own_bars(result):
         "delta method", "studentized circular block bootstrap")
     assert 0.0 <= found.delta.p <= 1.0 and 0.0 < found.bootstrap.p <= 1.0
 
-    lines = str(found).split("\n")
-    assert len(lines) == 2 and lines[0].startswith("sharpe difference ")
-    assert "p-value" in lines[0] and "block" in lines[1]
+    frame = found.to_pandas()
+    assert list(frame.index) == ["delta", "bootstrap"]
+    assert frame["p"].tolist() == [found.delta.p, found.bootstrap.p]
 
 
 def test_two_sharpes_are_refused_unless_they_read_the_same_bars(result, traded):
@@ -398,7 +390,6 @@ def test_alpha_and_beta_read_buying_and_holding_unless_a_benchmark_is_given(resu
         stats.alpha_beta(result, benchmark=unread)
 
     assert found.count == 399 and found.alpha_low <= found.alpha <= found.alpha_high
-    assert str(found).startswith(f"alpha {found.alpha * 100:.2f}% a year, standard error")
     with pytest.raises(probatum.DataError, match="benchmark: a Series whose index is not "
                        "the run's row times"):
         stats.alpha_beta(result, benchmark=pd.Series(held(result)))
@@ -418,11 +409,6 @@ def test_the_order_of_trades_permutes_a_run_s_closed_round_trips(traded):
     assert found.drawdown_low <= found.drawdown_high and 0.0 <= found.deeper <= 1.0
     assert found.losing_run_low <= found.losing_run_high
     assert found == stats.trade_order(traded) and found != stats.trade_order(traded, seed=4)
-
-    said = str(found)
-    assert said.startswith(f"drawdown at trade closes -{found.drawdown:.2f}% in the order "
-                           f"the 251 round trips closed; middle 95% of 2,000 other orders")
-    assert said.endswith("what the account marked inside a trade is left out")
 
     close = 100.0 + np.random.default_rng(5).normal(0.0, 1.0, 50).cumsum()
     bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(50, 1e3)])
@@ -472,8 +458,6 @@ def test_a_plain_series_rows_are_its_path_s_and_a_result_s_its_own(result):
     under = stats.time_under_water(result)
     assert under == stats.time_under_water(result)
     assert stats.time_under_water(MONTHLY).longest_days is None
-    assert str(under).startswith(f"longest under water {under.longest:,} rows, "
-                                 f"{under.longest_days:,.0f} days")
 
 
 def test_a_series_that_loses_everything_falls_100_percent_and_no_further():
@@ -586,7 +570,6 @@ def test_a_run_kept_at_the_account_level_counts_no_fills_and_no_turnover():
         if name != "num_fills":
             assert (stats.segment(kept, 100)._values[name]
                     == stats.segment(full, 100)._values[name])
-    assert "turnover none" in str(stats.decompose(kept))
 
 
 def test_each_new_result_never_changes_and_pickles_as_what_it_holds(traded):
@@ -601,7 +584,6 @@ def test_each_new_result_never_changes_and_pickles_as_what_it_holds(traded):
 
     split = stats.long_short_split(traded)
     assert list(split) == ["long", "short"] and split["short"].trades == 0
-    assert str(split["short"]) == "no closed round trips"
     assert split["long"] == stats.trade_stats(traded)
 
 

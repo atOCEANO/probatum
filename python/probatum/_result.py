@@ -5,7 +5,6 @@ at several venues added into one (ADR 0026)."""
 import collections.abc
 import copy
 import functools
-import html
 import importlib
 import importlib.metadata
 import json
@@ -14,7 +13,6 @@ import os
 import pathlib
 import platform
 import sys
-import textwrap
 
 import numpy as np
 
@@ -25,7 +23,7 @@ from ._errors import (MissingDependency, ProbatumAttributeError, ProbatumIndexEr
 from ._probatum import Table as _Held, ln, stats_of
 from ._transitions import Transitions
 from ._venue import _settlement
-from .stats import Statistics, _closed, _percent, sharpe, time_under_water
+from .stats import Statistics, _closed
 
 # the format a saved Result is written in, which this version reads, as every later
 # one will
@@ -131,7 +129,7 @@ def _returns(equity):
 
 
 def _money(value):
-    """An amount as a summary prints it: whole from a hundred, to three figures below,
+    """An amount as a summary shows it: whole from a hundred, to three figures below,
     as a coin's are, and to the eighth decimal where three figures would take an
     exponent, so an amount too small for that prints as 0, never as -0."""
     if abs(value) >= 100.0:
@@ -143,12 +141,20 @@ def _money(value):
     return "0" if shown == "-0" else shown
 
 
-def _row(label, value, said):
-    """One line of a summary, its value right-aligned under the others and its words
-    wrapped at 88 columns beneath themselves."""
-    return textwrap.fill(f"  {label:<16}{value:>8}   {said}", width=88,
-                         subsequent_indent=" " * 29, break_long_words=False,
-                         break_on_hyphens=False)
+def _spanned(time, step):
+    """A run's first and last times as its summary gives them, ``step`` its bars'
+    interval, read off its rows where None: the days of its first and last rows, or the
+    minutes of its first row's open and its last row's close where it lasted under a
+    week."""
+    time = np.asarray(time, dtype=np.int64)
+    if step is None:
+        step = int(np.median(np.diff(time))) if time.size > 1 else 0
+
+    if time[-1] + step - time[0] >= 7 * DAY:
+        return tuple(str(np.datetime64(int(at), "ns").astype("M8[D]"))
+                     for at in (time[0], time[-1]))
+    return tuple(str(np.datetime64(int(at), "ns").astype("M8[m]")).replace("T", " ")
+                 for at in (time[0], time[-1] + step))
 
 
 def _recorded(provenance):
@@ -411,6 +417,96 @@ class Assumptions(Table):
         return cls(_Held(parts))
 
 
+class Summary:
+    """A run's or a Study's summary (Specification, Summaries): a row a number, beside
+    its interval and why it has no value or no interval, and the lines under it,
+    ``lines``, what holds for every row. ``to_pandas()`` gives the frame, its numbers
+    whole, and it shows in a notebook and as text as that frame, each number to the
+    places its row reads at, a count whole and an amount as an account's are, its level
+    said once and its reasons numbered under the lines (ADR 0041). Two summaries are
+    equal where their rows and their lines are."""
+
+    __slots__ = ("_named", "_rows", "lines")
+
+
+    def __init__(self, named, rows, lines):
+        self._named = tuple(named)
+        self._rows  = [(name, tuple(math.nan if value is None else float(value)
+                                    for value in values), found, why or "")
+                       for name, values, found, why in rows]
+        self.lines  = [line for line in lines if line]
+
+
+    def __eq__(self, other):
+        return type(other) is type(self) and self._key() == other._key()
+
+    __hash__ = None
+
+
+    def _key(self):
+        # NaN for NaN, so a value a summary holds none of compares equal to another's
+        return self._named, self.lines, [
+            (name, tuple(None if math.isnan(value) else value for value in values), found,
+             why) for name, values, found, why in self._rows]
+
+
+    def to_pandas(self):
+        """The summary as a pandas DataFrame, a row a number: its own columns, then
+        ``low``, ``high``, ``level`` and ``method``, its interval and how it was found,
+        and ``why_none``."""
+        from .stats import _method
+        pd = _frames.pandas("to_pandas")
+        return pd.DataFrame(
+            [[*values, *((math.nan,) * 3 + ("",) if found is None else
+                         (found.low, found.high, found.level, _method(found))), why]
+             for _, values, found, why in self._rows],
+            index=[name for name, *_ in self._rows],
+            columns=[*self._named, "low", "high", "level", "method", "why_none"])
+
+
+    def _shown(self):
+        """The frame as it shows, each number to its row's places, beside the lines
+        under it."""
+        frame = self.to_pandas()
+        for column in (*self._named, "low", "high"):
+            frame[column] = [_figure(value, name)
+                             for name, value in zip(frame.index, frame[column])]
+
+        shown, notes = _frames.noted(frame)
+        return shown, self.lines + notes
+
+
+    def __repr__(self):
+        if _frames.pandas() is None:
+            held = {name: values for name, values, *_ in self._rows}
+            return f"Summary({held!r})"
+        return _frames.text_of(*self._shown())
+
+
+    def _repr_html_(self):
+        return None if _frames.pandas() is None else _frames.html_of(*self._shown())
+
+
+# the rows a summary counts and the amounts it gives, which show as an account's do;
+# every other row a number to two places
+COUNTED = frozenset(("num_trades", "liquidations", "paths", "windows", "windows_gained"))
+PAID    = frozenset(("costs", "price_pnl"))
+# a run's statistics a summary gives, and those it gives for buying and holding too
+SUMMARY = ("total_return_pct", "cagr_pct", "volatility_pct", "sharpe", "max_drawdown_pct",
+           "exposure_pct", "num_trades", "win_rate", "profit_factor")
+HOLDING = ("total_return_pct", "cagr_pct", "volatility_pct", "sharpe", "max_drawdown_pct")
+
+
+def _figure(value, row):
+    """A summary's number as its row shows it: a count whole, an amount as an
+    account's, any other to two places, and nothing where it has none."""
+    if math.isnan(value):
+        return ""
+    if row in COUNTED:
+        return f"{value:,.0f}"
+    return _money(value) if row in PAID else f"{value:,.2f}"
+
+
 CLASSES = {"orders": OrderLog, "assumptions": Assumptions}
 
 
@@ -649,78 +745,90 @@ class Result:
 
 
     def summary(self):
-        """The run in a few lines of text: what ran, at which venue and on what bars,
-        its span and opening balance, its return, its Sharpe with the interval and the
-        lag beside the long-run Sharpe where the two differ by more than 0.1, its
-        maximum drawdown as a loss with the longest time under water, its round trips,
-        its costs and its optimistic assumptions; a book names its accounts, margined
-        apart with no capital moving between them, and a run below the full level names
-        its level (Specification, Summaries)."""
-        head, rows = self._summarised()
-        return "\n".join(head + [_row(*row) for row in rows])
+        """The run's summary, a `Summary` (Specification, Summaries): its return, CAGR,
+        volatility, Sharpe, maximum drawdown, exposure, round trips, win rate and profit
+        factor as its record holds them, its costs and, where it was liquidated, the
+        bars it was, each beside buying and holding's over the same rows where it reads
+        the equity, and beside its interval or why it has none; and under them what
+        ran, at which venue, on which bars and from which balance, the level it was
+        recorded at below the full one, its assumptions, those graded and those leaning
+        optimistic named, and a book's accounts, margined apart."""
+        record, held = self.stats, self._held_record()
+        rows         = []
+        for name in SUMMARY if record is not None else ():
+            found, why = record._found(name, 0.95)
+            rows.append((name, (record[name], held[name] if held is not None
+                                and name in HOLDING else None), found, why))
+
+        rows.append(("costs", (math.fsum(self.costs.values()), None), None, ""))
+        if self.liquidations:
+            rows.append(("liquidations", (self.liquidations, None), None, ""))
+
+        return Summary(("run", "buy_and_hold"), rows, self._ran())
 
 
     def _repr_html_(self):
-        """The summary as a notebook shows a Result: its first two lines over a table of
-        the rest, each row its label, its value and its words."""
-        head, rows = self._summarised()
-        cells = "".join(f"<tr><td style=\"text-align: left\">{html.escape(label)}</td>"
-                        f"<td style=\"text-align: right\">{html.escape(value)}</td>"
-                        f"<td style=\"text-align: left\">{html.escape(said)}</td></tr>"
-                        for label, value, said in rows)
-        return (f"<div><p><b>{html.escape(head[0])}</b><br>{html.escape(head[1])}</p>"
-                f"<table>{cells}</table></div>")
+        return self.summary()._repr_html_()
 
 
-    def _summarised(self):
-        """The summary's first two lines, and each line after them as its label, its
-        value and its words."""
+    def _held_record(self):
+        """The record of buying and holding over the run's rows, read as the run's is,
+        or None where the run keeps no statistics or no baselines."""
+        given = self.provenance
+        if self.stats is None or _recorded(given) != "full":
+            return None
+
+        try:
+            equity = np.asarray(self.baselines["buy_and_hold"], dtype=np.float64)
+        except (ProbatumAttributeError, ProbatumValueError):
+            return None
+        if not np.all(np.isfinite(equity)) or equity[0] <= 0.0:
+            return None
+
+        rate, free = given["periods_per_year"], float(given["risk_free"])
+        none       = np.empty(0, dtype=np.float64)
+        values     = stats_of(float(equity[0]), np.ascontiguousarray(equity[1:]), none,
+                              rate, free, len(equity) - 1, 0, 0.0)
+        return Statistics(values, _returns(equity)[1:], none, equity[0], rate, free)
+
+
+    def _ran(self):
+        """The lines under the run's summary: what ran, at which venue, on which bars
+        and from which balance, the level it was recorded at below the full one, and
+        its assumptions, with a book's accounts."""
         given    = self.provenance
         book     = given.get("results")
         accounts = list(book.values()) if book else [given]
         names    = []
-
         for account in accounts:
             for name in (account.get("data") or {}).get("instruments", []):
                 if name.split(":", 1)[-1] not in names:
                     names.append(name.split(":", 1)[-1])
 
-        what = (f"a book of {' and '.join(book)}" if book
-                else f"{given['policy']}, {given['venue_name'] or 'a venue built by hand'}")
-        where    = names[0] if len(names) == 1 else f"{len(names)} instruments"
         interval = (accounts[0].get("data") or {}).get("interval", "")
+        where    = names[0] if len(names) == 1 else f"{len(names)} instruments"
+        opened   = f"{_money(self.equity[0])} {given.get('settlement') or ''}".rstrip()
+        first, last = _spanned(self.time, INTERVALS.get(interval))
 
-        first, last = (np.datetime64(int(self.time[at]), "ns").astype("datetime64[D]")
-                       for at in (0, -1))
-        span = (f"{first} to {last}, {len(self.time):,} bars, opening balance "
-                f"{_money(self.equity[0])}")
-        span += f" {given['settlement']}" if given.get("settlement") else ""
+        ran = ([("accounts", " and ".join(book)), ("margined", "apart")] if book else
+               [("policy", given["policy"]), ("venue", given["venue_name"] or "built by hand")])
+        ran += [("data", f"{where} {interval}".rstrip()), ("first", first), ("last", last),
+                ("rows", len(self.time)), ("balance", opened)]
         if _recorded(given) != "full":
-            span += f", recorded at the {_recorded(given)} level"
+            ran.append(("recorded", _recorded(given)))
+        if self.stats is None:
+            ran.append(("statistics", "none, the clock too short to annualise"))
 
-        head  = [f"{what}, {where} {interval}".rstrip(), span]
-        stats = self.stats
-        rows  = ([("statistics", "", "none, the clock too short to annualise")]
-                 if stats is None else self._rows(stats))
-
-        paid = sorted(((name, value) for name, value in self.costs.items() if value),
-                      key=lambda item: -abs(item[1]))
-        rows.append(("costs", _money(-sum(self.costs.values())),
-                     ", ".join(f"{name} {_money(-value)}" for name, value in paid)
-                     or "none"))
-
-        table = self.assumptions
-        named = [f"{row['name']} {row['value']}"
-                 + (f" at {row['venue']}" if "venue" in row else "")
-                 for row in table[table.grade == "optimistic"]]
-        rows.append(("assumptions", "", f"{len(named)} optimistic: {', '.join(named)}"
-                     if named else "none optimistic"))
-
-        if book:
-            rows.append(("accounts", "", f"{' and '.join(book)}, margined apart; no "
-                         f"capital moves between them"))
-
-        return head, rows
+        table  = self.assumptions
+        graded = [row["name"] + (f" at {row['venue']}" if "venue" in row else "")
+                  for row in table if row["grade"] == "optimistic"]
+        leans  = [row["name"] + (f" at {row['venue']}" if "venue" in row else "")
+                  for row in table
+                  if row["grade"] == "simplified" and row["direction"] == "optimistic"]
+        return [_frames.line(ran),
+                _frames.line([("assumptions", len(table)),
+                              ("graded optimistic", ", ".join(graded) or "none"),
+                              ("lean optimistic", ", ".join(leans) or "none")])]
 
 
     def chart(self, *marks, instrument=None, data=None, panels=None, focus=None,
@@ -761,45 +869,6 @@ class Result:
                       candle_color=candle_color, theme=theme, palette=palette,
                       height=height, title=title, future=future, stats=stats,
                       trades=trades, drawdown=drawdown, notes=notes)
-
-
-    def _rows(self, record):
-        """The summary's rows that read the run's record of statistics, each its label,
-        its value and its words."""
-        stats = record._values
-        rows  = []
-        rows.append(("return", f"{stats['total_return_pct']:+.1f}%",
-                     f"CAGR {stats['cagr_pct']:+.1f}%, volatility "
-                     f"{stats['volatility_pct']:.1f}%, in the market "
-                     f"{stats['exposure_pct']:.0f}% of bars"))
-
-        held = record.interval("sharpe")
-        if held is None:
-            count = len(self.time) - 1
-            told  = (f"no interval: {count} returns, where one needs 4" if count < 4
-                     else "no interval: the returns never vary"
-                     if np.all(self.returns[1:] == self.returns[1])
-                     else "no interval: its influence is zero on every bar")
-        else:
-            told = (f"{_percent(held.level)} interval {held.low:.2f} to {held.high:.2f}, "
-                    f"delta method, Newey-West lag {held.lag}"
-                    + (" floored at lag zero" if held.floored else ""))
-
-        rows.append(("sharpe", f"{stats['sharpe']:.2f}", told))
-
-        longer = sharpe(self, long_run=True)
-        if abs(longer - stats["sharpe"]) > 0.1:
-            rows.append(("long-run sharpe", f"{longer:.2f}",
-                         "the mean over the returns' long-run deviation, which their "
-                         "autocorrelation moves"))
-
-        rows.append(("max drawdown", f"{-stats['max_drawdown_pct'] + 0.0:.1f}%",
-                     f"{time_under_water(self).longest_days:,.0f} days under water"))
-        rows.append(("round trips", f"{stats['num_trades']:,}",
-                     f"win rate {stats['win_rate']:.0%}, profit factor "
-                     f"{stats['profit_factor']:.2f}"))
-
-        return rows
 
 
     @property

@@ -14,12 +14,12 @@ import pathlib
 import shutil
 import sys
 import tempfile
-import textwrap
 import uuid
 import warnings
 
 import numpy as np
 
+from . import _frames
 from ._backtest import (_agent, _annualised, _kind, _markets, _number, _played,
                         _rate, _repeatable, backtest)
 from ._causality import _check, _read
@@ -28,16 +28,16 @@ from ._errors import (DataError, PolicyError, ProbatumAttributeError,
                       ProbatumRuntimeError, ProbatumTypeError, ProbatumValueError,
                       ProbatumWarning)
 from ._probatum import Engine, Table as _Held, run_array, run_arrays, stats_of, threads
-from ._result import (COSTS, COUNTS, STATS, Table, _environment, _money, _returns,
-                      _text, _version)
+from ._result import (COSTS, COUNTS, STATS, Summary, Table, _environment, _returns, _text,
+                      _version)
 from ._samplers import _Grid, _Random, _Tpe
 from ._space import Categorical, Float, Int, _whole
 from ._strategy import Strategy, _Run, _play
 from ._venue import _run
-from .stats import (BREAK_EVEN, GROWS, HALVED, PARTS, RETURNS, TRADES, Consistency, Decay,
-                    Forecast, _finite, _percent, bootstrap, deflated_sharpe,
-                    effective_trials, importance, min_backtest_length, overfitting,
-                    plateau, reality_check, sharpe_interval)
+from .stats import (BREAK_EVEN, GROWS, HALVED, PARTS, RADII, RETURNS, TRADES, Consistency,
+                    Decay, Forecast, _finite, bootstrap, deflated_sharpe, effective_trials,
+                    importance, min_backtest_length, overfitting, plateau, reality_check,
+                    sharpe_interval)
 
 LOGGER     = logging.getLogger("probatum")
 SAMPLERS   = ("tpe", "random", "grid")
@@ -185,7 +185,7 @@ def search(policy, space, data, venue, objective="sharpe", direction="maximize",
 
     LOGGER.info("search: %s complete of %s; the best, trial %s, %s %.6g",
                 sum(trial.state == "complete" for trial in made), len(made),
-                winner.number, objective, _signed(objective) * winner.score + 0.0)
+                winner.number, objective, winner.score + 0.0)
 
     provenance.update(ran=len(made), checked=passed)
     study = Study(
@@ -257,7 +257,7 @@ def _asked(runner, draws, sampler, keep, resolved, checked, pooled, check, store
             LOGGER.debug("search: trial %s %s%s", trial.number, trial.state,
                          "" if trial.score is None
                          else f", {runner.objective} "
-                              f"{_signed(runner.objective) * trial.score + 0.0:.6g}")
+                              f"{trial.score + 0.0:.6g}")
             if checked is None and trial.state != "failed" and check(trial.params):
                 checked = trial.params
                 LOGGER.info("search: trial %s's decisions are causal", trial.number)
@@ -876,33 +876,9 @@ def _kept(made, keep):
     return out
 
 
-def _line(label, said):
-    """One line of a Study's summary, its words wrapped at 88 columns beneath
-    themselves."""
-    return textwrap.fill(f"  {label:<18}{said}", width=88, subsequent_indent=" " * 20,
-                         break_long_words=False, break_on_hyphens=False)
-
-
 def _day(time):
     """The UTC date of ``time``, int64 nanoseconds since 1970."""
     return str(np.datetime64(int(time), "ns").astype("datetime64[D]"))
-
-
-def _venue_named(given):
-    """The venue a summary names: its preset's name, or what it was built as."""
-    return given["venue_name"] or "a venue built by hand"
-
-
-def _signed(objective):
-    """-1 for an objective a text prints as a loss, the negative return it is, else 1."""
-    return -1.0 if objective in RETURNS and RETURNS[objective][2] else 1.0
-
-
-def _bounds(held, flip):
-    """An interval's bounds as a summary prints them, a loss as the negative return it
-    is."""
-    low, high = sorted((flip * held.low + 0.0, flip * held.high + 0.0))
-    return f"{low:.2f} to {high:.2f}"
 
 
 def _consistent(scores, unit, objective, direction):
@@ -1176,88 +1152,178 @@ class Study:
 
 
     def summary(self, null=None, plateau=None):
-        """The Study in a few lines of text. A search's: what it searched, at which venue
-        and on what bars, its in-sample span and holdout, the winner's parameters and
-        score, with ``null``, a random search of the same policy over the same space on
-        the same venue and in-sample bars scored alike, the winner's deflated Sharpe and
-        the mean of the null's complete trials, the overfitting probability, with
-        ``plateau``, a level in the objective's units, the share of the trials near the
-        winner that scored past it, and the holdout as it stands, each line that cannot
-        be read saying why. A validation's: its paths and how they were cut, each path's
-        score, their median with the median path's interval, its costs as a share of the
-        gross edge, the reminder that paths are stability evidence, and the holdout
-        (Specification, Summaries)."""
-        given = self.provenance
-        data  = given["data"]
-        names = [name.split(":", 1)[-1] for name in data["instruments"]]
-        where = (f"{names[0] if len(names) == 1 else f'{len(names)} instruments'} "
-                 f"{data['interval']}")
-
+        """The Study's summary, a `Summary` (Specification, Summaries). A search's: its
+        best trial's in-sample score; with ``null``, a random search of the same policy
+        over the same space on the same venue and in-sample bars scored alike, the
+        winner's deflated Sharpe against every trial and its cluster's against the
+        effective number of trials, and the mean score of the null's complete trials;
+        its overfitting probability and its probability of loss; and with ``plateau``,
+        a level in the objective's units, the share of the trials within 0.1 of the
+        winner that scored past it. A validation's: its paths, the median of their
+        scores beside the median path's interval, its windows and those past
+        break-even, its decay and the decay's standard error, a model's pooled
+        forecast, and the paths' costs and price pnl. Then either's holdout as it
+        stands and buying and holding over the held-out bars, and under them what it
+        searched or validated, at which venue, on which bars and what it held out."""
         if self._tables is None:
-            if plateau is not None:
-                plateau = _finite("plateau", plateau, "a score in the objective's "
-                                  "units, a finite number")
-
-            lines = [f"search: {given['policy']}, {_venue_named(given)}, {where}, "
-                     f"{given['ran']:,} {given['sampler']['name']} trials",
-                     f"in sample {_day(self._bars.first)} to "
-                     f"{_day(self._bars.last)}, {self._held()}"]
-
-            chosen = ", ".join(f"{key} {value}" for key, value in self.best_params.items())
-            best   = _signed(given["objective"]) * self.best_score + 0.0
-            lines.append(_line("best", f"{chosen}: {given['objective']} {best:.2f}"))
-            if null is not None:
-                lines.append(_line("deflated sharpe", self._deflated(null)))
-                lines.append(_line("null", self._null(null)))
-
-            lines.append(_line("overfitting", self._overfit()))
-            if plateau is not None:
-                lines.append(_line("plateau", str(self.plateau(plateau))))
-
-            lines.append(_line("holdout", self._held_out()))
-            return "\n".join(lines)
-
-        if null is not None:
+            rows = self._searched(null, plateau)
+        elif null is not None:
             raise ProbatumValueError("null: given to a validation's summary, which reads "
                                      "its paths; give the null to its search's summary")
-
-        if plateau is not None:
+        elif plateau is not None:
             raise ProbatumValueError(f"plateau: {plateau!r} given to a validation's "
                                      f"summary, whose paths are no competing "
                                      f"configurations; give it to its search's summary")
+        else:
+            rows = self._validated()
 
-        paths, fits = self._tables["paths"], self._tables["fits"]
-        cut   = given["cv"]
-        lines = [f"validate: {given['policy']}, {_venue_named(given)}, {where}, "
-                 f"{self._held()}",
-                 _line("paths", f"{len(paths):,} out-of-sample path"
-                                f"{'s' * (len(paths) != 1)} from {len(fits):,} fits by "
-                                f"{cut['given']}, over the bars before the holdout"),
-                 _line("embargo", f"{cut['embargo']:,} bars after each test span")]
+        return Summary(("value",), rows + self._held_out(), self._told())
 
-        objective = given["objective"]
-        flip      = _signed(objective)
-        done      = np.asarray(paths["state"]) == "complete"
-        scores    = np.asarray(paths["score"], dtype=np.float64)
 
-        lines.append(_line(objective, "  ".join(f"{flip * score + 0.0:.2f}"
-                                                for score in scores[done])
-                           or "no path completed"))
+    def _repr_html_(self):
+        return self.summary()._repr_html_()
+
+
+    def _searched(self, null, plateau):
+        """A search's rows in its summary, before its holdout's."""
+        if plateau is not None:
+            plateau = _finite("plateau", plateau, "a score in the objective's units, a "
+                              "finite number")
+
+        rows = [("best", (self.best_score,), None, "")]
+        if null is not None:
+            found, why = self._deflated(null)
+            kept       = found is not None and found.effective is not None
+            rows += [("deflated_sharpe", (found and found.value,), None, why),
+                     ("deflated_cluster", (found.effective_value if kept else None,), None,
+                      why or ("" if kept else "the search kept no returns")),
+                     ("null_mean", (self._null(null),), None, "")]
+
+        found, why = self._overfit()
+        signed     = found is not None and found.loss is not None
+        rows += [("overfitting", (found and found.probability,), None, why),
+                 ("overfitting_loss", (found.loss if signed else None,), None,
+                  why or ("" if signed else f"{found.objective} has no sign, so no trial "
+                                            f"loses"))]
+
+        if plateau is not None:
+            share = self.plateau(plateau).share[RADII.index(0.1)]
+            rows.append(("plateau", (share,), None,
+                         "" if share == share else "no trial lies within 0.1 of the best"))
+        return rows
+
+
+    def _validated(self):
+        """A validation's rows in its summary, before its holdout's."""
+        paths  = self._tables["paths"]
+        done   = np.asarray(paths["state"]) == "complete"
+        scores = np.asarray(paths["score"], dtype=np.float64)
+        rows   = [("paths", (len(paths),), None, "")]
 
         if done.any():
-            median = flip * float(np.median(scores[done])) + 0.0
-            lines.append(_line("median", f"{median:.2f}; "
-                                         f"{self._median_path(scores, done)}"))
-            if self._forecast is not None:
-                said = (f"none: {self._forecast}" if isinstance(self._forecast, str)
-                        else str(self._forecast).removeprefix("forecast "))
-                lines.append(_line("forecast", said))
-            lines.append(_line("costs", self._costs(paths, done)))
+            found, why = self._median_path(scores, done)
+            rows.append(("score", (float(np.median(scores[done])),), found, why))
+        else:
+            rows.append(("score", (None,), None, "no path completed"))
 
-        lines.append(_line("evidence", "the paths are stability evidence; the verdict "
-                                       "comes from the holdout"))
-        lines.append(_line("holdout", self._held_out()))
-        return "\n".join(lines)
+        try:
+            held = self.consistency()
+        except ProbatumValueError as error:
+            rows += [("windows", (0,), None, ""), ("windows_gained", (None,), None, str(error))]
+        else:
+            gained = None if held.share is None else round(held.share * len(held.scores))
+            rows += [("windows", (len(held.scores),), None, ""),
+                     ("windows_gained", (gained,), None,
+                      "" if gained is not None else f"{held.objective} has no break-even")]
+
+        try:
+            decay = self.decay()
+        except ProbatumValueError as error:
+            rows += [(name, (None,), None, str(error)) for name in ("decay", "decay_error")]
+        else:
+            rows += [("decay", (decay.mean,), None, ""),
+                     ("decay_error", (decay.error,), None,
+                      "" if decay.error is not None else "one gap has no standard error")]
+
+        if self._forecast is not None:
+            told  = self._forecast if isinstance(self._forecast, str) else ""
+            given = None if told else self._forecast
+            rows += [("rank_ic", (given and given.rank_ic,), None, told),
+                     ("rank_ic_t", (given and given.t,), None, told)]
+
+        if done.any():
+            paid, price = self._costs(paths, done)
+            rows += [("costs", (paid,), None, ""), ("price_pnl", (price,), None, "")]
+        return rows
+
+
+    def _held_out(self):
+        """The rows of the holdout as it stands and of buying and holding over the
+        held-out bars: the holdout's score beside its interval at the level its looks
+        leave, ``1 - 0.05 / k`` after ``k`` looks, or why there is none."""
+        noun, _ = self._called()
+        times   = f"{self._looks} time{'s' * (self._looks != 1)}"
+
+        if self._bars.cut == self._bars.rows:
+            why = f"the {noun} held every bar"
+        elif self._holdout is None and not self._looks:
+            why = "not yet run; evaluate_holdout() spends a look"
+        elif self._holdout is None and self._spent:
+            why = f"read {times}; its run raised, so no result is kept"
+        elif self._holdout is None:
+            why = (f"read {times} before, with no result kept for this winner; "
+                   f"evaluate_holdout() spends another look")
+        else:
+            why = None
+        if why is not None:
+            return [(name, (None,), None, why) for name in ("holdout", "buy_and_hold")]
+
+        objective   = self.provenance["objective"]
+        record      = self._holdout.stats
+        found, said = record._found(objective, 1.0 - 0.05 / self._looks)
+        held        = self._holdout._held_record()
+        read        = "sharpe" if objective == "sharpe" else "total_return_pct"
+        return [("holdout", (record[objective],), found, said),
+                ("buy_and_hold", (None if held is None else held[read],), None,
+                 "" if held is not None else "the holdout keeps no baselines")]
+
+
+    def _told(self):
+        """The lines under the Study's summary: what it searched or validated, at which
+        venue, on which bars and what it held out, and a search's winner."""
+        given = self.provenance
+        data  = given["data"]
+        names = [name.split(":", 1)[-1] for name in data["instruments"]]
+        where = names[0] if len(names) == 1 else f"{len(names)} instruments"
+        said  = [("policy", given["policy"]),
+                 ("venue", given["venue_name"] or "built by hand"),
+                 ("data", f"{where} {data['interval']}"), ("objective", given["objective"]),
+                 ("direction", given["direction"])]
+
+        if self._tables is None:
+            # each trial's parameters as it was given them, since the trials table holds a
+            # None among floats as NaN, which equals nothing
+            drawn = {tuple(params[name] for name in self._space)
+                     for params in self._params}
+            said += [("sampler", given["sampler"]["name"]), ("trials", given["ran"]),
+                     ("distinct", len(drawn) if 0 < len(drawn) < given["ran"] else None),
+                     ("first", _day(self._bars.first)), ("last", _day(self._bars.last))]
+        else:
+            cut, windows = given["cv"], self._tables["windows"]
+            opens, ends  = (np.asarray(windows[name]) for name in ("first_time", "last_time"))
+            said += [("splitter", cut["given"]), ("fits", len(self._tables["fits"])),
+                     ("embargo", cut["embargo"]),
+                     ("first", _day(opens[0]) if opens.size else None),
+                     ("last", _day(ends[-1]) if ends.size else None)]
+
+        said += [("held out", self._held()), ("looks", self._looks)]
+        if self._tables is not None:
+            return [_frames.line(said)]
+
+        best = [(f"best {key}", value) for key, value in self.best_params.items()]
+        if given["sampler"]["name"] == "tpe":
+            best.append(("descriptive", True))
+        return [_frames.line(said), _frames.line(best)]
 
 
     def consistency(self, stretches=None):
@@ -1380,53 +1446,17 @@ class Study:
 
 
     def _held(self):
-        """What the Study held out, as its summary says it."""
+        """What the Study held out, as its summary names it."""
         held = self.provenance["holdout"]
         if not held["rows"]:
-            return "every bar searched, none held out"
+            return "none"
 
         given = held["given"]
         if isinstance(given, float) and 0.0 < given < 1.0:
-            return f"holdout the last {given:.0%} ({held['rows']:,} bars)"
+            return f"the last {given:.0%} ({held['rows']:,} bars)"
         if isinstance(given, int) and not isinstance(given, bool):
-            return f"holdout the last {held['rows']:,} bars"
-        return f"holdout from {held['first']} ({held['rows']:,} bars)"
-
-
-    def _held_out(self):
-        """The holdout as it stands: none, not yet run, run, run and raised, or read
-        before with no result kept for this winner."""
-        noun, verb = self._called()
-
-        if self._bars.cut == self._bars.rows:
-            return f"none: the {noun} held every bar"
-
-        if self._holdout is None:
-            times = f"{self._looks} time{'s' * (self._looks != 1)}"
-            if not self._looks:
-                return "not yet run; evaluate_holdout() spends a look"
-            if self._spent:
-                return f"read {times}; its run raised, so no result is kept"
-            return (f"read {times} before, with no result kept for this winner; "
-                    f"evaluate_holdout() spends another look")
-
-        objective = self.provenance["objective"]
-        record    = self._holdout.stats
-        flip      = _signed(objective)
-        said      = f"{objective} {flip * record._values[objective] + 0.0:.2f}"
-        held      = record.interval(objective)
-
-        if held is not None:
-            what = ("middle {} of resampled histories" if held.kind == "range"
-                    else "{} interval").format(_percent(held.level))
-            said += f", {what} {_bounds(held, flip)}"
-
-        said += f", look {self._looks} of {self._looks}"
-        if held is not None and self._looks > 1:
-            wider = record.interval(objective, level=1.0 - 0.05 / self._looks)
-            said += f"; at {_percent(wider.level)}, {_bounds(wider, flip)}"
-
-        return said
+            return f"the last {held['rows']:,} bars"
+        return f"from {held['first']} ({held['rows']:,} bars)"
 
 
     def deflated_sharpe(self, null):
@@ -1475,57 +1505,52 @@ class Study:
 
 
     def _deflated(self, null):
-        """The deflated Sharpe's line, or why it has none."""
+        """The winner's deflated Sharpe beside None, or None beside why it has none."""
         self._vetted(null)
 
         given = self.provenance
         if (given["objective"], given["direction"]) != ("sharpe", "maximize"):
             ranked = ("minimised sharpe" if given["objective"] == "sharpe" else
                       f"ranked on {given['objective']}")
-            return (f"none: the search {ranked}, and a deflation is of a Sharpe a search "
-                    f"maximised")
+            return None, (f"the search {ranked}, and a deflation is of a Sharpe a search "
+                          f"maximised")
 
         try:
-            found = deflated_sharpe(self, null)
+            return deflated_sharpe(self, null), ""
         except (ProbatumRuntimeError, ProbatumValueError) as error:
-            return f"none: {error}"
-
-        return str(found).removeprefix("deflated sharpe ")
+            return None, str(error)
 
 
     def _overfit(self):
-        """The overfitting probability's line, or why it has none."""
+        """The overfitting probability beside None, or None beside why it has none."""
         objective = self.provenance["objective"]
         complete  = int((np.asarray(self._trials["state"]) == "complete").sum())
 
         if self.returns is None:
-            return "none: the search kept no returns"
+            return None, "the search kept no returns"
         if objective not in HALVED:
-            return (f"none: {objective} is not a statistic the halves give whatever the "
-                    f"order of their returns")
+            return None, (f"{objective} is not a statistic the halves give whatever the "
+                          f"order of their returns")
         if complete < 2:
-            return "none: 1 complete trial"
+            return None, f"{complete} complete trial{'s' * (complete != 1)}"
         if self.returns.shape[1] - 1 < PARTS:
-            return (f"none: {self.returns.shape[1] - 1} returns, fewer than its {PARTS} "
-                    f"blocks")
+            return None, (f"{self.returns.shape[1] - 1} returns, fewer than its {PARTS} "
+                          f"blocks")
 
-        return str(overfitting(self)).removeprefix("overfitting ")
+        return overfitting(self), ""
 
 
     def _null(self, null):
-        """The line a null gives: the mean score of its complete trials."""
+        """The mean score of the null's complete trials."""
         self._vetted(null)
 
-        mine   = self.provenance
         trials = null.trials
         scores = np.asarray(trials["score"], dtype=np.float64)[
             np.asarray(trials["state"]) == "complete"]
         if not scores.size:
             raise ProbatumValueError("null: none of its trials completed, so it has no "
                                      "mean to give")
-
-        mean = _signed(mine["objective"]) * scores.mean() + 0.0
-        return f"mean {mine['objective']} {mean:.2f} over {scores.size:,} trials"
+        return float(scores.mean())
 
 
     def _vetted(self, null):
@@ -1558,49 +1583,41 @@ class Study:
 
     def _median_path(self, scores, done):
         """The median path's interval, the lower of the two middle paths for an even
-        count, on its returns, with the reason where it has none."""
+        count, on its returns, beside None, or None beside why it has none."""
         objective, given = self.provenance["objective"], self.provenance
         ordered = np.flatnonzero(done)[np.argsort(scores[done], kind="stable")]
         path    = int(ordered[(len(ordered) - 1) // 2])
 
         if self.returns is None:
-            return "no path's interval: the returns were not kept"
+            return None, "the returns were not kept"
         if objective in TRADES:
-            return (f"no path's interval: {objective} reads round trips, which a path's "
-                    f"returns do not hold")
+            return None, (f"{objective} reads round trips, which a path's returns do not "
+                          f"hold")
         if objective != "sharpe" and objective not in RETURNS:
-            return f"no path's interval: {objective} has none"
+            return None, f"{objective} has no interval"
 
         returns = self.returns[path][~np.isnan(self.returns[path])]
         rate, risk_free = given["periods_per_year"], given["risk_free"]
 
         try:
-            held = (sharpe_interval(returns, periods_per_year=rate, risk_free=risk_free)
+            return (sharpe_interval(returns, periods_per_year=rate, risk_free=risk_free)
                     if objective == "sharpe" else
                     bootstrap(returns, objective, periods_per_year=rate,
-                              risk_free=risk_free))
+                              risk_free=risk_free)), ""
         except ProbatumValueError as error:
-            return f"no path's interval: {error}"
-
-        what = ("middle {} of resampled histories" if held.kind == "range"
-                else "{} interval").format(_percent(held.level))
-        return (f"the median path's {what} {_bounds(held, _signed(objective))}, and the "
-                f"paths share bars")
+            return None, str(error)
 
 
     def _costs(self, paths, done):
-        """The complete paths' costs as a share of their gross edge, the net profit
-        and the costs summed."""
+        """The complete paths' costs and their price pnl, the net profit plus the costs,
+        each summed."""
         balance = self._bars.balance
         opening = sum(balance.values()) if isinstance(balance, dict) else balance
         paid    = sum(float(np.asarray(paths[name], dtype=np.float64)[done].sum())
                       for name in COSTS)
-
-        net = float((np.asarray(paths["net_profit_pct"], dtype=np.float64)[done]
-                     * opening / 100.0).sum())
-        if net + paid <= 0.0:
-            return f"costs {_money(paid)}, with no gross edge"
-        return f"took {paid / (net + paid):.0%} of the gross edge"
+        net     = float((np.asarray(paths["net_profit_pct"], dtype=np.float64)[done]
+                         * opening / 100.0).sum())
+        return paid, net + paid
 
 
     def save(self, path):
@@ -1638,22 +1655,21 @@ class Study:
         given, bars = self.provenance, self._bars
 
         if self._tables is None:
-            best = _signed(given["objective"]) * self.best_score + 0.0
+            best = self.best_score + 0.0
             what = (f"{given['ran']:,} trials of {given['policy']} by "
                     f"{given['sampler']['name']}, best {given['objective']} "
                     f"{best:,.2f} over {bars.cut:,} bars")
         else:
             paths, fits = self._tables["paths"], len(self._tables["fits"])
-            failed = int((paths["state"] == "failed").sum())
-            scores = paths["score"][~np.isnan(paths["score"])]
-            median = (_signed(given["objective"]) * float(np.median(scores)) + 0.0
-                      if len(scores) else math.nan)
-            counted = (f"{len(paths):,} path{'s' * (len(paths) != 1)}"
-                       + (f", {failed:,} failed," if failed else ""))
-            what = (f"{counted} of {given['policy']} from {fits:,} "
-                    f"fit{'s' * (fits != 1)} by {given['cv']['given']}, stability "
-                    f"evidence, median {given['objective']} {median:,.2f} over "
-                    f"{given['cv']['bars']:,} bars")
+            failed      = int((paths["state"] == "failed").sum())
+            scores      = paths["score"][~np.isnan(paths["score"])]
+            median      = float(np.median(scores)) + 0.0 if len(scores) else math.nan
+            counted     = (f"{len(paths):,} path{'s' * (len(paths) != 1)}"
+                           + (f", {failed:,} failed," if failed else ""))
+            what        = (f"{counted} of {given['policy']} from {fits:,} "
+                           f"fit{'s' * (fits != 1)} by {given['cv']['given']}, median "
+                           f"{given['objective']} {median:,.2f} over "
+                           f"{given['cv']['bars']:,} bars")
 
         held = bars.rows - bars.cut
         if not held:

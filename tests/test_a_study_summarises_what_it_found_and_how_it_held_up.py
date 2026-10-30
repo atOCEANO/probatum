@@ -1,14 +1,14 @@
-"""A Study says in a few lines what it searched and how the winner held up: a search's
-summary names its winner, its deflated Sharpe beside a random null's mean, its
-overfitting probability and its holdout as it stands, and a validation's its paths,
-their median path's interval and the share of the gross edge its costs took;
-consistency scores the winner in stretches, or a validation's windows, against the
+"""A Study's summary is a frame of what it found and how the winner held up: a search's
+best score, its deflated Sharpe beside a random null's mean, its overfitting
+probability and its holdout as it stands; a validation's paths, their median score
+beside the median path's interval, its windows, its decay and its costs; and under it
+what it searched or validated, at which venue, on which bars and what it held out.
+Consistency scores the winner in stretches, or a validation's windows, against the
 objective's break-even, and decay sets what each fit scored against what its bars then
 earned (Specification, Summaries; Consistency and decay).
 """
 
 import math
-import textwrap
 
 import numpy as np
 import pytest
@@ -32,12 +32,6 @@ def bars(rows=800):
         market = "linear",
         time   = np.arange(rows, dtype=np.int64) * HOUR,
     )
-
-
-def line(label, said):
-    """A summary's line as a Study lays it out, wrapped at 88 columns beneath itself."""
-    return textwrap.fill(f"  {label:<18}{said}", width=88, subsequent_indent=" " * 20,
-                         break_long_words=False, break_on_hyphens=False).split("\n")
 
 
 def alternating(data, fast=5):
@@ -81,55 +75,62 @@ def validated():
                              holdout=0.2, seed=1)
 
 
-def test_a_search_s_summary_names_its_winner_its_null_and_its_holdout(study):
-    null        = searched(seed=2)
-    lines       = study.summary(null=null).split("\n")
-    trials      = null.trials
-    done        = np.asarray(trials["state"]) == "complete"
-    mean        = np.asarray(trials["score"], dtype=np.float64)[done].mean()
-    deflated    = str(stats.deflated_sharpe(study, null)).removeprefix("deflated sharpe ")
-    overfitting = str(stats.overfitting(study)).removeprefix("overfitting ")
+def frame(study, **given):
+    return study.summary(**given).to_pandas()
 
-    assert lines == [
-        "search: alternating, frictionless, BTCUSDT 1h, 12 random trials",
-        "in sample 1970-01-01 to 1970-01-24, holdout the last 30% (240 bars)",
-        f"  best              fast {study.best_params['fast']}: sharpe "
-        f"{study.best_score:.2f}",
-        *line("deflated sharpe", deflated),
-        f"  null              mean sharpe {mean:.2f} over {done.sum()} trials",
-        *line("overfitting", overfitting),
-        "  holdout           not yet run; evaluate_holdout() spends a look"]
+
+def test_a_search_s_summary_names_its_winner_its_null_and_its_holdout(study):
+    null     = searched(seed=2)
+    found    = study.summary(null=null)
+    shown    = found.to_pandas()
+    trials   = null.trials
+    done     = np.asarray(trials["state"]) == "complete"
+    deflated = stats.deflated_sharpe(study, null)
+    halved   = stats.overfitting(study)
+    distinct = len(set(np.asarray(study.trials["fast"]).tolist()))
+
+    assert list(shown.index) == ["best", "deflated_sharpe", "deflated_cluster", "null_mean",
+                                 "overfitting", "overfitting_loss", "holdout",
+                                 "buy_and_hold"]
+    assert shown["value"].tolist()[:6] == pytest.approx(
+        [study.best_score, deflated.value, deflated.effective_value,
+         np.asarray(trials["score"], dtype=np.float64)[done].mean(), halved.probability,
+         halved.loss])
+    assert shown.loc["holdout", "why_none"] == "not yet run; evaluate_holdout() spends a look"
+    assert found.lines == [
+        f"policy alternating; venue frictionless; data BTCUSDT 1h; objective sharpe; "
+        f"direction maximize; sampler random; trials 12; distinct {distinct}; first "
+        f"1970-01-01; last 1970-01-24; held out the last 30% (240 bars); looks 0",
+        f"best fast {study.best_params['fast']}"]
 
 
 def test_a_search_says_why_it_has_no_deflated_sharpe_or_overfitting_probability():
-    kept = searched(keep="none")
+    kept = frame(searched(keep="none"))
 
-    assert line("overfitting", "none: the search kept no returns")[0] in kept.summary()
+    assert kept.loc["overfitting", "why_none"] == "the search kept no returns"
 
-    ordered = searched(objective="calmar")
-    shown   = ordered.summary(null=searched(seed=2, objective="calmar"))
+    ordered = frame(searched(objective="calmar"), null=searched(seed=2, objective="calmar"))
 
-    assert line("deflated sharpe", "none: the search ranked on calmar, and a deflation "
-                "is of a Sharpe a search maximised")[0] in shown
-    assert line("overfitting", "none: calmar is not a statistic the halves give whatever "
-                "the order of their returns")[0] in shown
+    assert ordered.loc["deflated_sharpe", "why_none"] == (
+        "the search ranked on calmar, and a deflation is of a Sharpe a search maximised")
+    assert ordered.loc["overfitting", "why_none"] == (
+        "calmar is not a statistic the halves give whatever the order of their returns")
 
-    lowest = searched(direction="minimize").summary(
-        null=searched(seed=2, direction="minimize"))
+    lowest = frame(searched(direction="minimize"), null=searched(seed=2, direction="minimize"))
 
-    assert line("deflated sharpe", "none: the search minimised sharpe, and a deflation is "
-                "of a Sharpe a search maximised")[0] in lowest
+    assert lowest.loc["deflated_sharpe", "why_none"] == (
+        "the search minimised sharpe, and a deflation is of a Sharpe a search maximised")
 
-    alone = searched(trials=1).summary(null=searched(seed=2))
+    alone = frame(searched(trials=1), null=searched(seed=2))
 
-    assert line("deflated sharpe", "none: study: 1 trial; a deflation corrects for more "
-                "than one, so search with trials=2 or more")[0] in alone
-    assert line("overfitting", "none: 1 complete trial")[0] in alone
+    assert alone.loc["deflated_sharpe", "why_none"] == (
+        "study: 1 trial; a deflation corrects for more than one, so search with trials=2 "
+        "or more")
+    assert alone.loc["overfitting", "why_none"] == "1 complete trial"
 
-    short = searched(trials=2, holdout=800 - 16)
+    short = frame(searched(trials=2, holdout=800 - 16))
 
-    assert line("overfitting", "none: 15 returns, fewer than its 16 blocks")[0] in (
-        short.summary())
+    assert short.loc["overfitting", "why_none"] == "15 returns, fewer than its 16 blocks"
 
 
 LAG = [0]
@@ -147,12 +148,12 @@ def test_a_winner_that_runs_otherwise_now_leaves_the_summary_saying_why():
 
     LAG[0] = 3
     try:
-        shown = moved.summary(null=null)
+        shown = frame(moved, null=null)
     finally:
         LAG[0] = 0
 
-    assert "  deflated sharpe   none: best: trial " in shown
-    assert shown.split("\n")[-1].startswith("  holdout           not yet run")
+    assert shown.loc["deflated_sharpe", "why_none"].startswith("best: trial ")
+    assert shown.loc["holdout", "why_none"].startswith("not yet run")
 
 
 def test_a_search_s_shortcuts_are_the_statistics_of_its_trials(study):
@@ -195,10 +196,12 @@ def test_the_holdout_reads_as_it_stands_and_decay_follows_it():
 
     held   = fresh.evaluate_holdout()
     looked = held.stats.interval("sharpe")
+    shown  = frame(fresh)
 
-    assert fresh.summary().split("\n")[-1] == (
-        f"  holdout           sharpe {held.stats['sharpe']:.2f}, 95% interval "
-        f"{looked.low:.2f} to {looked.high:.2f}, look 1 of 1")
+    assert shown.loc["holdout", ["value", "low", "high", "level"]].tolist() == [
+        held.stats["sharpe"], looked.low, looked.high, 0.95]
+    assert shown.loc["buy_and_hold", "value"] == held.summary().to_pandas().loc[
+        "sharpe", "buy_and_hold"]
 
     gap = fresh.best_score - held.stats["sharpe"]
     assert fresh.decay() == stats.Decay(["holdout"], [held.time[0]], [held.time[-1]],
@@ -210,8 +213,8 @@ def test_the_holdout_reads_as_it_stands_and_decay_follows_it():
     with pytest.raises(RuntimeError, match="the tail"):
         raised.evaluate_holdout()
 
-    assert raised.summary().endswith("holdout           read 1 time; its run raised, so "
-                                     "no result is kept")
+    assert frame(raised).loc["holdout", "why_none"] == ("read 1 time; its run raised, so no "
+                                                        "result is kept")
 
     with pytest.raises(ProbatumValueError, match="decay: the holdout was read 1 time and "
                        "its run raised, so no result is kept; evaluate_holdout\\(\\) runs it "
@@ -220,8 +223,8 @@ def test_the_holdout_reads_as_it_stands_and_decay_follows_it():
 
     whole = searched(holdout=0)
 
-    assert whole.summary().split("\n")[1].endswith(", every bar searched, none held out")
-    assert whole.summary().endswith("holdout           none: the search held every bar")
+    assert "; held out none; looks 0" in whole.summary().lines[0]
+    assert frame(whole).loc["holdout", "why_none"] == "the search held every bar"
 
     with pytest.raises(ProbatumValueError, match="decay: the search held nothing out"):
         whole.decay()
@@ -245,7 +248,6 @@ def test_a_search_s_consistency_scores_its_winner_in_stretches_of_its_run(study)
 
     past = sum(score > 0.0 for score in found.scores)
     assert (found.unit, found.break_even, found.share) == ("stretches", 0.0, past / 4)
-    assert str(found).startswith(f"{past} of 4 stretches scored above 0: ")
     assert len(study.consistency(stretches=6).scores) == 6
 
     with pytest.raises(ProbatumValueError, match="stretches: 1; give a whole number from "
@@ -253,35 +255,39 @@ def test_a_search_s_consistency_scores_its_winner_in_stretches_of_its_run(study)
         study.consistency(stretches=1)
 
 
-def test_a_drawdown_objective_reads_as_the_loss_it_is():
-    deep  = searched(objective="max_drawdown_pct", direction="minimize")
-    lines = deep.summary().split("\n")
+def test_a_drawdown_objective_keeps_the_record_s_sign():
+    deep = searched(objective="max_drawdown_pct", direction="minimize")
 
-    assert lines[2].endswith(f"max_drawdown_pct {-deep.best_score:.2f}")
-    assert f"best max_drawdown_pct {-deep.best_score:,.2f} over" in repr(deep)
-
-    found = deep.consistency()
-
-    assert str(found).endswith(", ".join(f"{-score:.2f}" for score in found.scores))
+    assert frame(deep).loc["best", "value"] == deep.best_score > 0.0
+    assert f"best max_drawdown_pct {deep.best_score:,.2f} over" in repr(deep)
 
     held = deep.evaluate_holdout()
 
-    # the holdout's 239 returns are too few to resample, so its line has no range
+    # the holdout's 239 returns are too few to resample, so it has no range
     assert held.stats.interval("max_drawdown_pct") is None
-    assert deep.summary().split("\n")[-1] == (
-        f"  holdout           max_drawdown_pct {-held.stats['max_drawdown_pct']:.2f}, look "
-        f"1 of 1")
-
-    fall = stats.Interval("max_drawdown_pct", 10.0, 5.0, 20.0, 0.95,
-                          "stationary block bootstrap", 1_000, kind="range")
-    assert probatum._search._bounds(fall, -1.0) == "-20.00 to -5.00"
+    assert frame(deep).loc["holdout", ["value", "why_none"]].tolist() == [
+        held.stats["max_drawdown_pct"], "returns: 239 of them; a bootstrap of returns needs "
+                                        "at least 500"]
 
 
 def test_a_venue_built_by_hand_is_named_as_one():
     built = probatum.search(alternating, SPACE, bars(), probatum.Venue(), trials=2,
                             sampler="random", holdout=0.3, seed=1)
 
-    assert built.summary().startswith("search: alternating, a venue built by hand, ")
+    assert built.summary().lines[0].startswith("policy alternating; venue built by hand; ")
+
+
+def picking(data, pick=None):
+    return np.full(len(data.close), 1.0 if pick is None else pick)
+
+
+def test_a_choice_of_none_among_numbers_is_one_configuration_however_often_drawn():
+    # the trials table holds that None as NaN, which equals nothing, itself included
+    found = probatum.search(picking, {"pick": probatum.Categorical([None, 0.5, 1.5])},
+                            bars(), "frictionless", trials=12, sampler="random",
+                            holdout=0.3, seed=1)
+
+    assert "; trials 12; distinct 3; " in found.summary().lines[0]
 
 
 def test_a_break_even_and_a_decay_read_as_the_reference_reads_them(validated):
@@ -310,7 +316,8 @@ def test_an_objective_with_no_break_even_gives_its_scores_and_no_share():
     found = searched(objective="win_rate").consistency()
 
     assert (found.break_even, found.share) == (None, None)
-    assert str(found).startswith("win_rate has no break-even, so no part gains or loses")
+    assert frame(searched(objective="win_rate")).loc["overfitting", "why_none"] == (
+        "win_rate is not a statistic the halves give whatever the order of their returns")
 
 
 def test_a_validation_reads_its_windows_and_its_fits(validated):
@@ -356,33 +363,36 @@ def test_an_even_count_of_paths_reads_the_lower_middle_one_and_its_costs():
     held    = stats.sharpe_interval(returns,
                                     periods_per_year=done.provenance["periods_per_year"])
 
-    shown = " ".join(done.summary().split())
-    assert (f"the median path's 95% interval {held.low:.2f} to {held.high:.2f}, and the "
-            f"paths share bars") in shown
+    shown = frame(done)
+
+    assert shown.loc["score", ["value", "low", "high"]].tolist() == [
+        float(np.median(scores)), held.low, held.high]
 
     paid = sum(float(np.asarray(paths[name], dtype=np.float64).sum())
                for name in ("fees", "funding", "spread", "slippage", "impact",
                             "liquidation", "dust"))
     net = float((np.asarray(paths["net_profit_pct"], dtype=np.float64) * 100.0).sum())
+
     assert paid > 0.0
-    assert (f"costs took {paid / (net + paid):.0%} of the gross edge" if net + paid > 0.0
-            else f"costs costs {paid:,.0f}, with no gross edge") in shown
+    assert shown.loc["costs", "value"] == pytest.approx(paid, rel=1e-12)
+    assert shown.loc["price_pnl", "value"] == pytest.approx(net + paid, rel=1e-12)
 
 
 def test_a_validation_s_summary_names_its_paths_and_its_median_path(validated):
-    lines = validated.summary().split("\n")
+    found = validated.summary()
+    shown = found.to_pandas()
     paths = validated.paths
-    score = float(paths["score"][0])
     held  = stats.sharpe_interval(validated.returns[0][~np.isnan(validated.returns[0])],
                                   periods_per_year=validated.provenance["periods_per_year"])
+    decay = validated.decay()
 
-    assert lines[0] == ("validate: Flip, frictionless, BTCUSDT 1h, holdout the last 20% "
-                        "(160 bars)")
-    assert lines[3] == "  embargo           0 bars after each test span"
-    assert lines[4] == f"  sharpe            {score:.2f}"
-    assert " ".join(lines[5:7]).split() == (
-        f"median {score:.2f}; the median path's 95% interval {held.low:.2f} to "
-        f"{held.high:.2f}, and the paths share bars").split()
-    assert "  evidence          the paths are stability evidence; the verdict comes from "\
-           "the holdout" in lines
-    assert lines[-1] == "  holdout           not yet run; evaluate_holdout() spends a look"
+    assert list(shown.index) == ["paths", "score", "windows", "windows_gained", "decay",
+                                 "decay_error", "costs", "price_pnl", "holdout",
+                                 "buy_and_hold"]
+    assert shown.loc["score", ["value", "low", "high"]].tolist() == [
+        float(paths["score"][0]), held.low, held.high]
+    assert shown.loc[["decay", "decay_error"], "value"].tolist() == [decay.mean, decay.error]
+    assert found.lines == [
+        "policy Flip; venue frictionless; data BTCUSDT 1h; objective sharpe; direction "
+        "maximize; splitter PurgedKFold(4); fits 4; embargo 0; first 1970-01-01; last "
+        "1970-01-27; held out the last 20% (160 bars); looks 0"]

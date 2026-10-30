@@ -1,6 +1,6 @@
 """The API page's Inference section runs as written after its Quickstart, in one
-namespace, as a reader copies them: its eight monthly returns print the sentences the
-page shows beneath them, the Specification's worked example, and the Quickstart's run
+namespace, as a reader copies them: its eight monthly returns print the fields and the
+frames the page shows beneath them, the Specification's worked example, and the Quickstart's run
 is read at its own annualisation.
 """
 
@@ -36,4 +36,4 @@ def test_the_inference_section_prints_what_the_page_shows(capsys):
     lines = shown("Inference")
 
     assert said[-len(lines):] == lines
-    assert lines[0].startswith("sharpe 1.73, two-sided 95% interval -0.92 to 4.39")
+    assert lines[0] == "1.73 from -0.92 to 4.39, lag 2, floored True"

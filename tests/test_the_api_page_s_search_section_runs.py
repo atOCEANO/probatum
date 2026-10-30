@@ -24,6 +24,8 @@ def test_the_search_section_runs_after_the_quickstart(capsys):
 
     assert "Study(40 trials of crossing by random, best sharpe " in said
     assert "Int(40, 200, step=10) Float(0.01, 0.05, step=0.01)" in said
-    assert "search: crossing, frictionless, BTCUSDT 1h, 40 random trials" in said
-    assert "  null              mean sharpe " in said and ", look 1 of 1" in said
-    assert " of 4 stretches scored above 0: " in said and "decay " in said
+    assert ("policy crossing; venue frictionless; data BTCUSDT 1h; objective sharpe; "
+            "direction maximize; sampler random; trials 40; ") in said
+    assert "null_mean" in said and "; looks 1" in said
+    assert "unit stretches; break_even 0.0; share " in said
+    assert "\nwindow" in said and "; objective sharpe; direction maximize" in said

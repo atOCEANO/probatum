@@ -253,8 +253,8 @@ def test_the_forecast_is_spearman_s_against_the_labels_with_a_newey_west_error()
     assert (found.rows, found.paths, found.lag) == (3 * len(p), 3, lag)
     assert (found.rank_ic, found.error, found.r_squared) == pytest.approx(pooled,
                                                                           rel=1e-9)
-    assert f"forecast          rank IC {found.rank_ic:.3f}, t = {found.t:.1f}" in (
-        study.summary())
+    assert study.summary().to_pandas().loc[["rank_ic", "rank_ic_t"], "value"].tolist() == [
+        found.rank_ic, found.t]
 
 
 def test_best_is_the_final_fit_on_the_in_sample_bars_and_the_holdout_its_tail():
@@ -495,14 +495,15 @@ def test_example_30_validates_a_ridge_on_a_universe_end_to_end():
         to_weights=lambda predicted: np.clip(predicted * 10.0, 0.0, 0.2),
         holdout=0.2,
     )
-    said = study.summary().splitlines()
+    found = study.summary()
+    shown = found.to_pandas()
 
-    assert said[0] == ("validate: Ridge(), a venue built by hand, 4 instruments 1h, "
-                       "holdout the last 20% (480 bars)")
-    assert [line.split()[0] for line in said if not line.startswith("    ")] == [
-        "validate:", "paths", "embargo", "sharpe", "median", "forecast", "costs",
-        "evidence", "holdout"]
-    assert "7 out-of-sample paths from 28 fits" in said[1]
+    assert found.lines[0].startswith("policy Ridge(); venue built by hand; data 4 "
+                                     "instruments 1h; objective sharpe")
+    assert list(shown.index) == ["paths", "score", "windows", "windows_gained", "decay",
+                                 "decay_error", "rank_ic", "rank_ic_t", "costs",
+                                 "price_pnl", "holdout", "buy_and_hold"]
+    assert shown.loc["paths", "value"] == 7 and "; fits 28; " in found.lines[0]
     assert study.forecast is not None and len(study.paths) == 7
 
 

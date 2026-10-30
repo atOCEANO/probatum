@@ -26,7 +26,7 @@ from test_a_search_is_judged_across_its_trials import HOUR, SPACE, alternating, 
 from test_a_search_runs_its_other_trials_in_workers_spawn_starts import Fragile
 from test_a_search_runs_its_other_trials_in_workers_spawn_starts import (
     searched as spawned)
-from test_a_study_summarises_what_it_searched_and_how_it_held_up import (
+from test_a_study_summarises_what_it_found_and_how_it_held_up import (
     raising_on_the_tail)
 
 FLIPS = {"fast": probatum.Int(2, 20), "lag": probatum.Int(0, 4)}
@@ -221,9 +221,9 @@ def test_a_stored_study_keeps_its_looks_through_a_resume(tmp_path, monkeypatch):
     assert more.best_params != first.best_params
     assert (more.looks, more.holdout) == (1, None)
 
-    said = ("holdout read 1 time before, with no result kept for this winner; "
+    said = ("read 1 time before, with no result kept for this winner; "
             "evaluate_holdout() spends another look")
-    assert said in " ".join(more.summary().split())
+    assert more.summary().to_pandas().loc["holdout", "why_none"] == said
     with pytest.raises(ProbatumValueError, match=r"^decay: the holdout was read 1 time "
                        r"before, and no result is kept for this winner; "
                        r"evaluate_holdout\(\) runs it, and spends a look$"):
@@ -384,7 +384,7 @@ def test_a_holdout_a_write_stopped_part_way_leaves_no_manifest_naming_it(tmp_pat
     loaded = Study.load(folder)
     assert (loaded.looks, loaded.holdout) == (2, None)
     # the run kept no result there, and did not raise
-    assert "raised" not in loaded.summary()
+    assert "raised" not in loaded.summary().to_pandas().loc["holdout", "why_none"]
     assert searched(trials=6, storage=folder).looks == 2
 
 
@@ -401,9 +401,10 @@ def test_a_loaded_study_says_its_run_raised_only_where_it_saw_it_raise(tmp_path)
 
     study.save(tmp_path / "saved")
     loaded = Study.load(tmp_path / "saved")
-    said   = "holdout           read 1 time; its run raised, so no result is kept"
+    said   = "read 1 time; its run raised, so no result is kept"
 
-    assert loaded.summary() == study.summary() and loaded.summary().endswith(said)
+    assert loaded.summary() == study.summary()
+    assert loaded.summary().to_pandas().loc["holdout", "why_none"] == said
 
     # a look taken once the Study was kept is counted there with no result
     kept = raised(storage=tmp_path / "kept")
@@ -411,9 +412,10 @@ def test_a_loaded_study_says_its_run_raised_only_where_it_saw_it_raise(tmp_path)
     with pytest.raises(RuntimeError, match="the tail"):
         kept.evaluate_holdout()
 
-    said = ("holdout read 1 time before, with no result kept for this winner; "
+    said = ("read 1 time before, with no result kept for this winner; "
             "evaluate_holdout() spends another look")
-    assert said in " ".join(Study.load(tmp_path / "kept").summary().split())
+    assert Study.load(tmp_path / "kept").summary().to_pandas().loc[
+        "holdout", "why_none"] == said
 
 
 def test_a_trial_its_policy_exits_in_a_worker_is_written_as_it_comes(tmp_path,

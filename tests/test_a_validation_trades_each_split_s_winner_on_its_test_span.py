@@ -529,7 +529,7 @@ def test_a_fit_with_no_complete_trial_fails_and_so_does_each_path_it_trades():
     median = paths["score"][2]
 
     assert repr(study) == (f"Study(3 paths, 2 failed, of Late from 6 fits by "
-                           f"CombinatorialPurged(4, 2), stability evidence, median "
+                           f"CombinatorialPurged(4, 2), median "
                            f"total_return_pct {median:,.2f} over 480 bars; 120 held "
                            f"out, not yet read)")
 
@@ -767,7 +767,7 @@ def test_a_study_of_paths_reads_as_one_and_refuses_what_a_search_s_holds():
     score = study.paths["score"][0]
 
     assert repr(study) == (f"Study(1 path of Cross from 3 fits by WalkForward(150, "
-                           f"100), stability evidence, median total_return_pct "
+                           f"100), median total_return_pct "
                            f"{score:,.2f} over 480 bars; 120 held out, not yet read)")
 
     given = study.provenance

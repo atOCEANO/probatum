@@ -82,8 +82,6 @@ def test_a_backtest_length_is_the_years_the_expected_best_takes_to_fall_to_a_sha
 
     assert held.years == pytest.approx(statistics.min_backtest_length(46, 1.0), rel=1e-12)
     assert (held.trials, held.sharpe, held.series_years) == (46, 1.0, None)
-    assert str(held) == ("minimum backtest length 5.0 years for the best of 46 trials to "
-                         "fall to a sharpe of 1.00")
 
     with pytest.raises(ProbatumTypeError, match="sharpe: missing"):
         stats.min_backtest_length(46)
@@ -100,7 +98,6 @@ def test_a_search_s_backtest_length_reads_its_trials_and_its_winner(study):
     assert held.sharpe == float(np.asarray(trials["sharpe"])[winner][0])
     assert held.series_years == pytest.approx(
         (len(study.best.time) - 1) / study.provenance["periods_per_year"])
-    assert str(held).endswith(f"; this series has {held.series_years:.2f}")
 
     with pytest.raises(ProbatumTypeError, match="sharpe: 1.0 beside a Study"):
         stats.min_backtest_length(study, 1.0)
@@ -119,8 +116,6 @@ def test_the_effective_number_clusters_the_trials_that_share_their_returns():
 
     assert held.spread == pytest.approx(
         statistics.deviation([statistics.sharpe(s, 252) for s in series], 1), rel=1e-9)
-    assert str(held) == (f"3 effective trials of 12, quality {held.quality:.2f}, their "
-                         f"clusters' sharpes spread {held.spread:.2f} a year")
 
 
 def test_a_trial_that_never_varies_is_left_out_and_two_are_their_own_clusters():
@@ -136,7 +131,6 @@ def test_a_trial_that_never_varies_is_left_out_and_two_are_their_own_clusters():
     one = stats.effective_trials(blocks()[:1], periods_per_year=252)
 
     assert (one.count, one.spread) == (1, None)
-    assert str(one) == "1 effective trial of 1"
 
 
 def test_a_cluster_of_one_trial_s_copies_is_that_trial_s_returns():
@@ -201,9 +195,6 @@ def test_the_deflated_sharpe_is_the_winner_s_probabilistic_sharpe_against_luck(s
     assert len(members) > 1
     assert found.effective_value == pytest.approx(statistics.deflated_sharpe(
         statistics.combined(members), rate, held.spread, held.count), rel=1e-9)
-    assert str(found) == (f"deflated sharpe {found.value:.2f} against all 24 trials; "
-                          f"{found.effective_value:.2f} for the winner's cluster against "
-                          f"{held.count} effective trial{'s' * (held.count != 1)}")
 
 
 def test_a_floor_keeps_no_trial_out_of_the_count_or_out_of_the_null_s_spread():
@@ -232,7 +223,6 @@ def test_a_search_that_kept_no_returns_is_deflated_against_every_trial_alone(nul
 
     assert (found.effective, found.effective_value, found.effective_threshold) == (
         None, None, None)
-    assert str(found) == f"deflated sharpe {found.value:.2f} against all 24 trials"
 
     with pytest.raises(ProbatumValueError, match="trials: a Study kept with keep=\"none\""):
         stats.effective_trials(kept)
@@ -280,7 +270,6 @@ def test_an_adaptive_search_is_deflated_and_called_descriptive(null):
     found    = stats.deflated_sharpe(adaptive, null)
 
     assert found.descriptive
-    assert str(found).endswith(", descriptive")
     assert stats.overfitting(adaptive).descriptive
     assert stats.reality_check(adaptive, resamples=20).descriptive
 
@@ -294,10 +283,6 @@ def test_the_overfitting_probability_ranks_a_search_s_complete_trials(study):
     assert (found.objective, found.direction, found.descriptive) == ("sharpe", "maximize",
                                                                      False)
     assert 0.0 <= found.probability <= 1.0 and 0.0 <= found.loss <= 1.0
-    assert str(found) == (f"overfitting {found.probability:.2f} probability the in-sample "
-                          f"best ranks below the median on the held-back blocks (16 "
-                          f"blocks, {complete} trials); it loses on {found.loss:.0%} of "
-                          f"them")
 
 
 def test_trials_with_no_skill_overfit_about_half_the_halvings_and_skill_none():
@@ -317,7 +302,6 @@ def test_trials_with_no_skill_overfit_about_half_the_halvings_and_skill_none():
     calm = stats.overfitting(noise, "volatility_pct", periods_per_year=252)
 
     assert (calm.direction, calm.loss) == ("minimize", None)
-    assert str(calm).endswith("(16 blocks, 20 trials)")
 
 
 def test_a_winner_that_breaks_even_out_of_sample_neither_loses_nor_overfits():
@@ -377,9 +361,6 @@ def test_the_reality_check_tests_every_trial_that_ran_against_cash(study):
     assert (found.trials, found.excluded, found.benchmark) == (ran, 0, "cash")
     assert 0.0 <= found.p <= 1.0 and 0.0 <= found.spa <= 1.0
     assert stats.reality_check(study, resamples=200) == found
-    assert str(found) == (f"reality check p {found.p:.2f} and SPA p {found.spa:.2f} that no "
-                          f"trial beats cash, 200 stationary resamples in blocks of "
-                          f"{found.block:.1f}, {ran} trials")
 
     held = stats.reality_check(study, "buy_and_hold", resamples=50)
 
@@ -481,8 +462,6 @@ def test_a_plateau_reads_a_log_scale_and_a_choice_and_a_search_that_minimises():
 
     assert [None if math.isnan(share) else share for share in found.share] == held
     assert sum(found.trials) > 0
-    # a drawdown prints as the loss it is, and below a level becomes above its loss
-    assert f"score above {-level + 0.0:g}" in str(found)
 
 
 def test_a_trial_at_a_radius_s_edge_lies_within_it():
@@ -543,34 +522,27 @@ def test_a_whole_number_past_a_float_s_precision_keeps_its_own_place():
     assert found.trials[3] == 0 and found.trials[4] >= 1
 
 
-def test_a_plateau_reads_as_the_share_at_0_1_and_then_at_every_radius():
+def test_a_plateau_is_a_row_a_radius_the_rest_under_it():
     shares = [math.nan, 0.5] + [0.25] * 8
     found  = stats.Plateau(stats.RADII, [0, 2] + [4] * 8, [0, 1] + [1] * 8, shares, 1.0,
                            "sharpe", "maximize")
+    frame  = found.to_pandas()
 
-    assert str(found) == ("50% of the 2 trials within distance 0.1 of the best, in "
-                          "normalised parameters, score above 1; from 0.05 to 0.5: none, "
-                          "50%, 25%, 25%, 25%, 25%, 25%, 25%, 25%, 25%")
-
-    alone = stats.Plateau(stats.RADII, [0] * 10, [0] * 10, [math.nan] * 10, 1.0,
-                          "sharpe", "maximize")
-
-    assert str(alone).startswith("no trial within distance 0.1 of the best, in "
-                                 "normalised parameters, to score above 1; from 0.05 to "
-                                 "0.5: none, none")
+    assert (frame.index.name, list(frame.index)) == ("radius", list(stats.RADII))
+    assert list(frame.columns) == ["trials", "passed", "share"]
+    assert frame["share"].tolist()[1:] == shares[1:] and math.isnan(frame["share"][0.05])
+    assert repr(found).splitlines()[-1] == "level 1.0; objective sharpe; direction maximize"
 
 
-def test_a_search_s_summary_prints_its_plateau_and_a_validation_s_refuses_one(study):
-    # its line wrapped beneath itself, after the overfitting probability's and before
-    # the holdout's
+def test_a_search_s_summary_gives_its_plateau_and_a_validation_s_refuses_one(study):
+    # after the overfitting probability and before the holdout
     level = float(np.nanmedian(study.trials["score"]))
-    lines = [line.strip() for line in study.summary(plateau=level).splitlines()]
-    first = next(k for k, line in enumerate(lines) if line.startswith("plateau "))
-    last  = next(k for k, line in enumerate(lines) if line.startswith("holdout "))
+    shown = study.summary(plateau=level).to_pandas()
+    share = study.plateau(level).share[1]
 
-    assert " ".join(" ".join(lines[first:last]).split()) == (
-        f"plateau {study.plateau(level)}")
-    assert any(line.startswith("overfitting ") for line in lines[:first])
+    assert list(shown.index)[-4:] == ["overfitting_loss", "plateau", "holdout",
+                                      "buy_and_hold"]
+    assert shown.loc["plateau", "value"] == share or math.isnan(share)
 
     with pytest.raises(ProbatumTypeError, match=r"^plateau: '1'; give a score in the "
                        r"objective's units, a finite number$"):

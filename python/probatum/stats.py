@@ -69,20 +69,19 @@ HALVED = ("sharpe", "sortino", "total_return_pct", "net_profit_pct", "cagr_pct",
 # the Euler-Mascheroni constant of the expected maximum of normal draws
 EULER = 0.5772156649015329
 
-# the statistics a stationary bootstrap of the returns serves: each one's words in a
-# text, its unit, whether a text prints it as a loss, and how the resamples are read,
-# studentized on a pivot, at their percentiles, or as the middle of the resampled
-# histories, which is no interval
+# the statistics a stationary bootstrap of the returns serves, each by how its resamples
+# are read: studentized on a pivot, at their percentiles, or as the middle of the
+# resampled histories, which is no interval
 RETURNS = {
-    "total_return_pct":          ("total return", "%", False, "studentized"),
-    "net_profit_pct":            ("net profit", "%", False, "studentized"),
-    "cagr_pct":                  ("cagr", "%", False, "studentized"),
-    "volatility_pct":            ("volatility", "%", False, "studentized"),
-    "sortino":                   ("sortino", "", False, "studentized"),
-    "value_at_risk":             ("value at risk", "%", True, "percentile"),
-    "conditional_value_at_risk": ("conditional value at risk", "%", True, "studentized"),
-    "max_drawdown_pct":          ("max drawdown", "%", True, "range"),
-    "calmar":                    ("calmar", "", False, "range"),
+    "total_return_pct":          "studentized",
+    "net_profit_pct":            "studentized",
+    "cagr_pct":                  "studentized",
+    "volatility_pct":            "studentized",
+    "sortino":                   "studentized",
+    "value_at_risk":             "percentile",
+    "conditional_value_at_risk": "studentized",
+    "max_drawdown_pct":          "range",
+    "calmar":                    "range",
 }
 # the statistics read on the growth a bar, which a return of -100% leaves undefined
 GROWTH = ("total_return_pct", "net_profit_pct", "cagr_pct")
@@ -101,11 +100,11 @@ BREAK_EVEN = {
 # the spans' lengths
 GROWS = ("total_return_pct", "net_profit_pct", "max_drawdown_pct", "num_trades",
          "num_fills", "funding_paid")
-# the statistics a bootstrap of the closed round trips serves: words, unit and method
+# the statistics a bootstrap of the closed round trips serves, each by its method
 TRADES = {
-    "win_rate":      ("win rate", "", "percentile bootstrap of round trips"),
-    "profit_factor": ("profit factor", "", "BCa bootstrap of round trips"),
-    "avg_trade_pct": ("average trade", "%", "studentized bootstrap of round trips"),
+    "win_rate":      "percentile bootstrap of round trips",
+    "profit_factor": "BCa bootstrap of round trips",
+    "avg_trade_pct": "studentized bootstrap of round trips",
 }
 # the field a record's lists are rows by, and the name of the index it makes of them
 INDEXED = (("names", "parameter"), ("window", "window"), ("numbers", "trial"),
@@ -243,8 +242,7 @@ class Interval(_Frozen):
     floor at lag zero bound; ``block``, a block bootstrap's block; ``kind``,
     ``"interval"``, or ``"range"`` for the middle of the resampled histories, which is
     no confidence interval; and ``p``, the two-sided p-value of an estimate of zero,
-    where the interval is a test's. Its text says each, a loss as the negative return
-    it is."""
+    where the interval is a test's."""
 
     __slots__ = ("statistic", "estimate", "low", "high", "level", "method", "count", "lag",
                  "floored", "block", "kind", "p")
@@ -268,27 +266,6 @@ class Interval(_Frozen):
         )
 
 
-    def __str__(self):
-        words, unit, loss = _shown(self.statistic)
-        flip = -1.0 if loss else 1.0
-        low, high = sorted((flip * self.low + 0.0, flip * self.high + 0.0))
-        what = (f"; middle {_percent(self.level)} of resampled histories"
-                if self.kind == "range" else f", two-sided {_percent(self.level)} interval")
-
-        how = self.method
-        if self.lag is not None:
-            how += f", Newey-West lag {self.lag}"
-            how += " floored at lag zero" if self.floored else ""
-        if self.block is not None:
-            how += f", block {self.block:.1f}"
-        if self.p is not None:
-            how += f", p-value {self.p:.3f}"
-
-        noun = "round trips" if self.statistic in TRADES else "returns"
-        return (f"{words} {flip * self.estimate + 0.0:.2f}{unit}{what} {low:.2f}{unit} to "
-                f"{high:.2f}{unit}, {how}, {self.count:,} {noun}")
-
-
 class Probability(_Frozen):
     """The probabilistic Sharpe: ``value``, the one-sided probability that the Sharpe is
     above ``benchmark``, an annual Sharpe; ``lag`` and ``floored``, its variance's; and
@@ -305,11 +282,6 @@ class Probability(_Frozen):
             floored   = bool(floored),
             count     = int(count),
         )
-
-
-    def __str__(self):
-        return (f"probabilistic sharpe {self.value:.3f} against "
-                f"{_against(self.benchmark)}, one-sided")
 
 
 class TrackRecord(_Frozen):
@@ -338,16 +310,6 @@ class TrackRecord(_Frozen):
         )
 
 
-    def __str__(self):
-        if self.years is None:
-            return (f"minimum track record none: the sharpe {self.sharpe:.2f} is not "
-                    f"above {_against(self.benchmark)}")
-
-        return (f"minimum track record {_years(self.years)} years for "
-                f"{_percent(self.confidence)} one-sided confidence against "
-                f"{_against(self.benchmark)}; this series has {_years(self.series_years)}")
-
-
 class Difference(_Frozen):
     """Two Sharpes on the same bars: ``estimate``, the first's less the second's a year,
     and its two tests, ``delta``, the delta method's, and ``bootstrap``, Ledoit and
@@ -359,10 +321,6 @@ class Difference(_Frozen):
 
     def __init__(self, estimate, delta, bootstrap):
         self._set(estimate=float(estimate), delta=delta, bootstrap=bootstrap)
-
-
-    def __str__(self):
-        return f"{self.delta}\n{self.bootstrap}"
 
 
 class AlphaBeta(_Frozen):
@@ -397,17 +355,6 @@ class AlphaBeta(_Frozen):
         )
 
 
-    def __str__(self):
-        return (f"alpha {self.alpha * 100.0:.2f}% a year, standard error "
-                f"{self.alpha_error * 100.0:.2f}%, two-sided {_percent(self.level)} "
-                f"interval {self.alpha_low * 100.0:.2f}% to {self.alpha_high * 100.0:.2f}%, "
-                f"t {self.alpha_t:.2f}; beta {self.beta:.3g}, standard error "
-                f"{self.beta_error:.3g}, interval {self.beta_low:.3g} to "
-                f"{self.beta_high:.3g}; tracking error {self.tracking_error * 100.0:.2f}%, "
-                f"information ratio {self.information_ratio:.2f}; Newey-West lag "
-                f"{self.lag}, {self.count:,} returns")
-
-
 class Permutations(_Frozen):
     """The order of a run's round trips: ``drawdown``, the drawdown at trade closes in
     the order they closed, in percent and a positive loss, with ``drawdown_low`` and
@@ -436,16 +383,6 @@ class Permutations(_Frozen):
         )
 
 
-    def __str__(self):
-        return (f"drawdown at trade closes {-self.drawdown + 0.0:.2f}% in the order the "
-                f"{self.count:,} round trips closed; middle 95% of {self.n:,} other orders "
-                f"{-self.drawdown_high + 0.0:.2f}% to {-self.drawdown_low + 0.0:.2f}%, "
-                f"{self.deeper:.1%} of them deeper; longest losing run {self.losing_run}, "
-                f"middle 95% {self.losing_run_low} to {self.losing_run_high}; each trip "
-                f"compounds its return on the equity it opened on, and what the account "
-                f"marked inside a trade is left out")
-
-
 class Consistency(_Frozen):
     """How a fit's score holds up across a run: ``scores``, each part's in order, the
     ``unit`` its parts are, stretches of a search's winner or a validation's windows;
@@ -465,19 +402,6 @@ class Consistency(_Frozen):
             objective  = objective,
             direction  = direction,
         )
-
-
-    def __str__(self):
-        flip   = -1.0 if _shown(self.objective)[2] else 1.0
-        listed = ", ".join(f"{flip * score + 0.0:.2f}" for score in self.scores)
-        if self.share is None:
-            return (f"{self.objective} has no break-even, so no part gains or loses: "
-                    f"{listed}")
-
-        past = round(self.share * len(self.scores))
-        side = "above" if self.direction == "maximize" else "below"
-        return (f"{past} of {len(self.scores)} {self.unit} scored {side} "
-                f"{self.break_even:g}: {listed}")
 
 
 class Decay(_Frozen):
@@ -510,13 +434,6 @@ class Decay(_Frozen):
         )
 
 
-    def __str__(self):
-        listed  = ", ".join(f"{gap:.2f}" for gap in self.gaps)
-        counted = f"{len(self.gaps)} gap{'s' * (len(self.gaps) != 1)}"
-        return (f"decay {self.mean:.2f} in {self.objective}, the mean of {counted} "
-                f"between what a fit scored and what its bars then earned: {listed}")
-
-
 class UnderWater(_Frozen):
     """How long a run stayed below its running peak: ``longest`` and ``mean``, its
     drawdowns' rows under, each from its peak to its recovery or to the last row;
@@ -536,14 +453,6 @@ class UnderWater(_Frozen):
             longest_days = _maybe(longest_days),
             mean_days    = _maybe(mean_days),
         )
-
-
-    def __str__(self):
-        days = "" if self.longest_days is None else f", {self.longest_days:,.0f} days"
-        return (f"longest under water {self.longest:,} rows{days}, a mean of "
-                f"{self.mean:,.1f} over {self.episodes:,} drawdown"
-                f"{'s' * (self.episodes != 1)}; {self.share:.0%} of the rows after the "
-                f"first below their peak")
 
 
 class TradeStats(_Frozen):
@@ -579,19 +488,6 @@ class TradeStats(_Frozen):
         )
 
 
-    def __str__(self):
-        if not self.trades:
-            return "no closed round trips"
-
-        return (f"{self.trades:,} round trip{'s' * (self.trades != 1)}, {self.wins:,} won "
-                f"and {self.losses:,} lost; mean win {self.avg_win:,.2f} and mean loss "
-                f"{self.avg_loss:,.2f}, a payoff of {self.payoff:.2f}; expectancy "
-                f"{self.expectancy:,.2f}, {self.expectancy_pct:.2f}% of the opening "
-                f"balance; largest win {self.largest_win:,.2f} and largest loss "
-                f"{self.largest_loss:,.2f}; {self.max_consecutive_losses:,} losses in a "
-                f"row at most; {self.avg_bars_held:,.1f} rows held on average")
-
-
 class Benchmark(_Frozen):
     """A run held against holding another series: ``hold_return_pct``, holding's
     return, and ``hold_sharpe``, its Sharpe at the run's annualisation and risk-free
@@ -612,14 +508,6 @@ class Benchmark(_Frozen):
             beta              = float(beta),
             information_ratio = float(information_ratio),
         )
-
-
-    def __str__(self):
-        return (f"holding returned {self.hold_return_pct:+.2f}% at a sharpe of "
-                f"{self.hold_sharpe:.2f}; the run returned "
-                f"{self.excess_return_pct:+.2f} points beside it, at a beta of "
-                f"{self.beta:.3g} and an information ratio of "
-                f"{self.information_ratio:.2f}")
 
 
 class Decomposition(_Frozen):
@@ -653,20 +541,6 @@ class Decomposition(_Frozen):
             cost_share  = float(cost_share),
             turnover    = float(turnover),
         )
-
-
-    def __str__(self):
-        paid = ", ".join(f"{name} {getattr(self, name):,.2f}"
-                         for name in ("fees", "funding", "spread", "slippage", "impact",
-                                      "liquidation", "dust") if getattr(self, name))
-        took = ("the price pnl made no gain for the costs to share" if self.price <= 0.0
-                else f"the costs took {self.cost_share:.1f}% of the price pnl")
-        turned = ("none" if math.isnan(self.turnover)
-                  else f"{self.turnover:,.1f} a year")
-        return (f"price pnl {self.price:,.2f}, costs {self.costs:,.2f}"
-                + (f" ({paid})" if paid else "")
-                + f", net {self.net:,.2f}, {self.net_pct:+.2f}% of the opening balance; "
-                f"{took}; turnover {turned}")
 
 
 class Deflated(_Frozen):
@@ -703,15 +577,6 @@ class Deflated(_Frozen):
         )
 
 
-    def __str__(self):
-        said = f"deflated sharpe {self.value:.2f} against all {self.trials:,} trials"
-        if self.effective is not None:
-            said += (f"; {self.effective_value:.2f} for the winner's cluster against "
-                     f"{self.effective:,} effective trial{'s' * (self.effective != 1)}")
-
-        return said + (", descriptive" if self.descriptive else "")
-
-
 class EffectiveTrials(_Frozen):
     """The effective number of trials: ``count``, the clusters Lopez de Prado and
     Lewis's clustering finds among the ``trials`` it read, ``numbers``, those whose
@@ -733,17 +598,6 @@ class EffectiveTrials(_Frozen):
             spread   = _maybe(spread),
             dropped  = int(dropped),
         )
-
-
-    def __str__(self):
-        said = (f"{self.count:,} effective trial{'s' * (self.count != 1)} of "
-                f"{self.trials:,}")
-        if self.quality is not None:
-            said += f", quality {self.quality:.2f}"
-        if self.spread is not None:
-            said += f", their clusters' sharpes spread {self.spread:.2f} a year"
-
-        return said
 
 
 class Overfitting(_Frozen):
@@ -771,16 +625,6 @@ class Overfitting(_Frozen):
             direction   = direction,
             descriptive = bool(descriptive),
         )
-
-
-    def __str__(self):
-        said = (f"overfitting {self.probability:.2f} probability the in-sample best ranks "
-                f"below the median on the held-back blocks ({self.blocks} blocks, "
-                f"{self.trials:,} trials)")
-        if self.loss is not None:
-            said += f"; it loses on {self.loss:.0%} of them"
-
-        return said + (", descriptive" if self.descriptive else "")
 
 
 class RealityCheck(_Frozen):
@@ -815,13 +659,6 @@ class RealityCheck(_Frozen):
         )
 
 
-    def __str__(self):
-        return (f"reality check p {self.p:.2f} and SPA p {self.spa:.2f} that no trial "
-                f"beats {self.benchmark}, {self.resamples:,} stationary resamples in "
-                f"blocks of {self.block:.1f}, {self.trials:,} trials"
-                + (", descriptive" if self.descriptive else ""))
-
-
 class BacktestLength(_Frozen):
     """The minimum backtest length: the ``years`` over which the expected best of
     ``trials`` trials with no skill falls to the annual ``sharpe``, and
@@ -837,15 +674,6 @@ class BacktestLength(_Frozen):
             sharpe       = float(sharpe),
             series_years = _maybe(series_years),
         )
-
-
-    def __str__(self):
-        said = (f"minimum backtest length {_years(self.years)} years for the best of "
-                f"{self.trials:,} trials to fall to a sharpe of {self.sharpe:.2f}")
-        if self.series_years is not None:
-            said += f"; this series has {_years(self.series_years)}"
-
-        return said
 
 
 class Plateau(_Frozen):
@@ -871,22 +699,6 @@ class Plateau(_Frozen):
         )
 
 
-    def __str__(self):
-        # a loss prints as the negative return it is, its side turned with it
-        flip  = -1.0 if _shown(self.objective)[2] else 1.0
-        side  = "above" if (self.direction == "maximize") == (flip > 0.0) else "below"
-        bound = f"score {side} {flip * self.level + 0.0:g}"
-        count = self.trials[1]
-        head  = (f"{self.share[1]:.0%} of the {count:,} trial{'s' * (count != 1)} within "
-                 f"distance 0.1 of the best, in normalised parameters, {bound}" if count
-                 else f"no trial within distance 0.1 of the best, in normalised "
-                      f"parameters, to {bound}")
-
-        listed = ", ".join("none" if math.isnan(share) else f"{share:.0%}"
-                           for share in self.share)
-        return f"{head}; from 0.05 to 0.5: {listed}"
-
-
 class Importance(_Frozen):
     """How much of a search's scores each parameter explains on its own: ``names``, its
     parameters in the order of its space; ``importance``, each one's eta squared, the
@@ -906,16 +718,6 @@ class Importance(_Frozen):
             groups     = tuple(int(count) for count in groups),
             trials     = int(trials),
         )
-
-
-    def __str__(self):
-        ranked = sorted(zip(self.names, self.importance, self.chance),
-                        key=lambda part: -part[1])
-        listed = ", ".join(f"{name} {value:.2f} beside {level:.2f}"
-                           for name, value, level in ranked)
-        return (f"importance over {self.trials:,} complete trials, the share of their "
-                f"scores' variation each parameter explains beside what chance gives: "
-                f"{listed}")
 
 
 class Forecast(_Frozen):
@@ -938,11 +740,6 @@ class Forecast(_Frozen):
             rows      = int(rows),
             paths     = int(paths),
         )
-
-
-    def __str__(self):
-        return (f"forecast rank IC {self.rank_ic:.3f}, t = {self.t:.1f} (Newey-West, lag "
-                f"{self.lag}); R squared {self.r_squared:.1%}")
 
 
 class Statistics(Mapping):
@@ -1119,28 +916,6 @@ def _withheld(returns, pnl, rate):
         out.update(dict.fromkeys(TRADES, "round trips: none closed; a rate of round "
                                          "trips needs one that closed"))
     return out
-
-
-def _percent(level):
-    return f"{level * 100.0:.10g}%"
-
-
-def _shown(statistic):
-    """A statistic's words in a text, its unit and whether the text prints it as a
-    loss."""
-    if statistic in RETURNS:
-        return RETURNS[statistic][:3]
-    if statistic in TRADES:
-        return TRADES[statistic][0], TRADES[statistic][1], False
-    return statistic, "", False
-
-
-def _against(benchmark):
-    return "zero" if benchmark == 0.0 else f"{benchmark:.2f}"
-
-
-def _years(years):
-    return f"{years:.1f}" if years >= 1.0 else f"{years:.2f}"
 
 
 def sharpe(returns, periods_per_year=None, risk_free=None, long_run=False):
@@ -1479,8 +1254,8 @@ def time_under_water(returns):
     """How long ``returns``, a Result's or a plain series', stayed below its running
     peak, as UnderWater: the longest and the mean of its drawdowns' rows under, each
     from its peak to its recovery or to the last row, their count and the share of the
-    rows after the first below their peak, with a Result's longest and mean in days,
-    the longest being the one its summary prints (Specification, Drawdown)."""
+    rows after the first below their peak, with a Result's longest and mean in days
+    (Specification, Drawdown)."""
     equity, time = _path(returns)
     peaks, ends  = _episodes(equity)
     rows  = len(equity) - 1
@@ -2734,7 +2509,7 @@ def _return_core(r, x, rate, names, level, resamples, seed):
     pivots = {}
 
     for name in names:
-        if said[name] is None and RETURNS[name][3] == "studentized":
+        if said[name] is None and RETURNS[name] == "studentized":
             theta, psi = _pivot(name, r[None, :], x[None, :])
             m     = _lag(psi[0])
             error = math.sqrt(float(_long_run(psi, m)[0]) / (r.size - 1))
@@ -2760,7 +2535,7 @@ def _return_core(r, x, rate, names, level, resamples, seed):
     low_q, high_q = (1.0 - level) / 2.0, (1.0 + level) / 2.0
     made = {name: (None, said[name]) for name in names}
     for name in held:
-        values, how = np.concatenate(found[name]), RETURNS[name][3]
+        values, how = np.concatenate(found[name]), RETURNS[name]
         if name in pivots:
             theta, error, _ = pivots[name]
             low, high = sorted(_unpivoted(name, theta - _ordered(values, q) * error,
@@ -2826,9 +2601,7 @@ def _unsupported(r, statistic, estimate, block):
 def _met(statistic, value):
     """Why an interval of ``statistic`` whose resamples put both its bounds on ``value``
     has none (Specification, Samples with no interval)."""
-    _, unit, loss = _shown(statistic)
-    shown = -value + 0.0 if loss else value + 0.0
-    return (f"{statistic}: its resamples put both bounds on {shown:.2f}{unit}; an "
+    return (f"{statistic}: its resamples put both bounds on {value + 0.0:.2f}; an "
             f"interval needs resamples that differ between them")
 
 
@@ -2963,7 +2736,7 @@ def _trips_core(pnl, opening, statistic, level, resamples, seed):
     if low == high:
         return None, _met(statistic, low)
 
-    return Interval(statistic, estimate, low, high, level, TRADES[statistic][2],
+    return Interval(statistic, estimate, low, high, level, TRADES[statistic],
                     pnl.size), None
 
 

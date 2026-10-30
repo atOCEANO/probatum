@@ -34,4 +34,4 @@ def test_the_validation_section_runs_after_the_quickstart(capsys):
 
     assert (len(study.paths), len(study.fits), study.looks) == (7, 28, 1)
     assert names["held"] is study.holdout and study.forecast is not None
-    assert "  forecast          rank IC" in capsys.readouterr().out
+    assert "\nrank_ic " in capsys.readouterr().out

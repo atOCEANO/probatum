@@ -169,7 +169,7 @@ def test_each_return_statistic_s_bounds_agree_on_the_module_s_own_resamples(seed
     drawn  = np.concatenate(list(stats._stationary(
         values.size, block, 60, stats._drawn(values, "stats returns", None)))).tolist()
 
-    for name, (_, _, _, how) in stats.RETURNS.items():
+    for name, how in stats.RETURNS.items():
         whole = statistic(name, values.tolist(), x, rate)
         if math.isinf(whole):
             with pytest.raises(probatum.ProbatumValueError, match="ranked at infinity"):
@@ -254,7 +254,7 @@ def test_an_interval_whose_resamples_put_both_bounds_on_one_value_is_refused():
     assert low == high
 
     with pytest.raises(probatum.ProbatumValueError, match="value_at_risk: its resamples "
-                       "put both bounds on 0.00%"):
+                       "put both bounds on 0.00;"):
         stats.bootstrap(flat, "value_at_risk", periods_per_year=365, level=0.9,
                         resamples=60)
 
@@ -784,7 +784,6 @@ def test_a_run_s_drawdowns_are_read_on_its_equity_and_its_rows_times(seed):
     assert (held.longest_days, held.mean_days) == (
         pytest.approx(found["longest_days"], rel=1e-12),
         pytest.approx(found["mean_days"], rel=1e-12))
-    assert f"{held.longest_days:,.0f} days under water" in result.summary()
 
 
 @pytest.mark.parametrize("seed", CASES[:60])

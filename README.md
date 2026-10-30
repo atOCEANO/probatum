@@ -211,7 +211,7 @@ A random or grid search of a policy that returns weights runs its trials togethe
 
 ### Judging the result
 
-`result.summary()` prints the run in a few lines, and `probatum.stats` is what you read after it. The first thing to look at is where the money went, because a large share of what looks like alpha in crypto is a funding carry, and a larger share of dead strategies died on the fee line rather than on the idea.
+`result.summary()` shows the run beside buying and holding, and `probatum.stats` is what you read after it. The first thing to look at is where the money went, because a large share of what looks like alpha in crypto is a funding carry, and a larger share of dead strategies died on the fee line rather than on the idea.
 
 ```python
 from probatum import stats
@@ -227,9 +227,9 @@ probatum.compare({"cheap": a, "dear": b})       # several runs, side by side
 
 How much friction a policy survives is a run of its own. `probatum.cost_curve(policy, data, venue)` runs it again with every cost the venue charges for trading, its fees, spread, slippage and impact, multiplied together by 0, 0.5, 1, 2 and 4, and `probatum.breakeven_bps(policy, data, venue)` finds the round-trip cost at which it stops making money, so "this dies at 8 basis points a round trip and you pay 6" is a number you read rather than guess, worth more in the first week than any probability. `probatum.capacity(policy, data, venue, balances=[...])` runs it at several balances, to show where its own size starts to cost it ([ADR 0045](.Documentation/Decisions.md)).
 
-Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `result.summary()` prints the win rate beside the profit factor and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
+Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `result.summary()` shows the win rate beside the profit factor and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
 
-For how far the numbers can be trusted, `probatum.stats` gives each statistic of a run its interval, named for its method: the Sharpe's by the delta method over a long-run variance that autocorrelation widens and never narrows, with its probability of beating a benchmark and the track record that would show it, the others by a bootstrap of the returns or of the round trips. It also tests two Sharpes on the same bars and measures alpha and beta against buying and holding, and `result.summary()` prints the run with its Sharpe's interval ([Python API](.Documentation/Python_API.md#inference)). `probatum.stats.deflated_sharpe(study, null)` asks whether a search's winner beats what the best of that many trials would have reached by luck; it requires a random-search null and refuses to guess one.
+For how far the numbers can be trusted, `probatum.stats` gives each statistic of a run its interval, named for its method: the Sharpe's by the delta method over a long-run variance that autocorrelation widens and never narrows, with its probability of beating a benchmark and the track record that would show it, the others by a bootstrap of the returns or of the round trips. It also tests two Sharpes on the same bars and measures alpha and beta against buying and holding, and `result.summary()` shows the run with its intervals ([Python API](.Documentation/Python_API.md#inference)). `probatum.stats.deflated_sharpe(study, null)` asks whether a search's winner beats what the best of that many trials would have reached by luck; it requires a random-search null and refuses to guess one.
 
 ### Looking at the result
 
