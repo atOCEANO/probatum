@@ -497,7 +497,7 @@ const applyTheme = function (mode) {
     layout: {
       background: { type: LWC.ColorType.Solid, color: t.surface },
       textColor: t.ink2,
-      panes: { separatorColor: t.hairline, separatorHoverColor: t.grid },
+      panes: { separatorColor: t.grid, separatorHoverColor: t.hairline },
     },
     grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
     crosshair: {
@@ -579,7 +579,7 @@ const seedAnchors = function () {
   });
 };
 
-// the edge of each pane toward a separator, shaded faintly in ink
+// the edge of each pane toward a separator, shaded faintly dark
 const edgePrimitive = function (index, count) {
   return {
     updateAllViews: function () {},
@@ -593,7 +593,7 @@ const edgePrimitive = function (index, count) {
               target.useMediaCoordinateSpace(function (scope) {
                 const ctx = scope.context;
                 const w = scope.mediaSize.width, h = scope.mediaSize.height;
-                const reach = Math.round(16 * UI);
+                const reach = Math.round(12 * UI);
                 const shade = function (from, to) {
                   const g = ctx.createLinearGradient(0, from, 0, to);
                   g.addColorStop(0, T().edge);

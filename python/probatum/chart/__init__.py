@@ -95,6 +95,8 @@ _PALETTES = {
 }
 # the colours a palette may name beside those, each its candle's own where it names none
 _ADDED = ("wick_up", "wick_down", "volume_up", "volume_down")
+# the opacity of the black a pane's edge toward its neighbour is shaded with
+_SHADE = {"dark": 0.35, "light": 0.05}
 _HEX   = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})")
 _RGB   = re.compile(r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*"
                     r"(?:,\s*(\d*\.?\d+)\s*)?\)")
@@ -1017,7 +1019,7 @@ def _theme(mode, palette):
         merged.setdefault("volume_up", _faded(merged["up"], 0.4))
         merged.setdefault("volume_down", _faded(merged["down"], 0.4))
         merged.update(ddTop=_faded(merged["loss"], 0.0), ddBottom=_faded(merged["loss"], 0.267),
-                      edge=_faded(merged["ink"], 0.07), edgeClear=_faded(merged["ink"], 0.0))
+                      edge=_faded("#000000", _SHADE[key]), edgeClear=_faded("#000000", 0.0))
         out[key] = merged
 
     return out
