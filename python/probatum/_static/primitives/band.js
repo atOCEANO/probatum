@@ -116,7 +116,7 @@ const bandPrimitive = function (anchor, spec) {
     const pts = run.pts;
     const ramped = isRamp(spec.color);
     const edges = spec.v2 ? [1, 2] : [1];
-    ctx.lineWidth = spec.width || 1;
+    ctx.lineWidth = 1;
 
     for (let e = 0; e < edges.length; e++) {
       const at = edges[e];

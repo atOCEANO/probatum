@@ -292,12 +292,12 @@ def test_no_non_finite_value_reaches_the_document():
     json.dumps(spec, allow_nan=False)
 
 
-def test_an_infinite_stat_becomes_null_rather_than_breaking_the_document():
+def test_an_infinite_stat_reads_n_a_rather_than_breaking_the_document():
     # profit_factor with no losing trade is infinite, and JSON carries no infinity
-    spec = run().chart().spec()
+    spec = run().chart(stats=["profit_factor"]).spec()
 
-    assert spec["stats"]["profit_factor"] is None
-    json.dumps(spec["stats"], allow_nan=False)
+    assert spec["headline"] == [["profit factor", "n/a"]]
+    json.dumps(spec, allow_nan=False)
 
 
 def test_a_bar_the_instrument_printed_none_on_is_left_empty():

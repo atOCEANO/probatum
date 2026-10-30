@@ -6,10 +6,9 @@ cannot be asserted there is the contract between the two halves: a key renamed i
 closes that by recording every key path the spec carries, which makes a rename a
 visible one-line diff in the same commit.
 
-Run it whenever the spec gains, loses, or renames a key, and bump ``schema`` in
-``chart/__init__.py`` in the same commit. It imports the test module rather than
-rebuilding the fixture, so the golden can never be recorded against a different
-chart from the one the test checks:
+Run it whenever the spec gains, loses, or renames a key, in the same commit. It
+imports the test module rather than rebuilding the fixture, so the golden can never
+be recorded against a different chart from the one the test checks:
 
     docker build --target builder -t probatum-builder .
     docker run --rm -v "${PWD}:/repo" probatum-builder sh -c \

@@ -54,9 +54,10 @@ _ASSETS = (
 
 _PLACEHOLDER = re.compile(r"__[A-Z_]+__")
 
-# a value that lands inside a <style> block or a canvas call rather than in the
-# JSON payload, so escaping cannot save it and it is refused instead. A title is
-# not in here: that one is escaped on both paths it travels
+# a value the scripts write into markup, a panel's name into an attribute, or into a
+# style, a palette's colour, rather than read from the JSON payload, so escaping cannot
+# save it and it is refused instead. A title is not in here: that one is escaped on
+# both paths it travels
 _UNSAFE = re.compile(r"[<>\";{}]")
 
 _WEIGHTS = {"price": 5.0, "volume": 1.0, "equity": 2.0, "drawdown": 1.5}
@@ -238,8 +239,6 @@ _STAT_LABELS = {
     "num_fills":        ("fills", "{:.0f}"),
     "funding_paid":     ("funding", "{:+.2f}"),
 }
-
-_FONT = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace'
 
 _bundled = None
 
@@ -911,7 +910,7 @@ def _headline(result, chosen, name, several):
                                    f"one of {', '.join(stats)}")
 
         value = float(stats[key])
-        label, form = _STAT_LABELS.get(key, (key, "{:.2f}"))
+        label, form = _STAT_LABELS[key]
         shown = form.format(value) if math.isfinite(value) else "n/a"
         out.append([label, _tripped(result, name, several, shown)
                     if key == "num_trades" else shown])
@@ -1007,7 +1006,7 @@ def _theme(mode, palette):
     chart's, the wicks and the volume the bodies' where the caller names none, and the
     washes faded here from whatever form a colour came in, so the renderer composes no
     alpha of its own (ADR 0042)."""
-    out = {"mode": mode, "font": _FONT}
+    out = {"mode": mode}
     for key in ("dark", "light"):
         merged = dict(_PALETTES[key])
         if palette and key in palette:
@@ -1569,7 +1568,6 @@ def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, fo
     tint = _palette(palette) if palette is not None else _DEFAULTS["palette"]
 
     spec = {
-        "schema": 7,
         "n": num_bars,
         # numpy's own tolist(), never a comprehension, for the reason _candles gives
         "t": times.tolist(),
@@ -1616,13 +1614,6 @@ def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, fo
         spec["drawdown"] = _track(dd, num_bars, "drawdown", places("drawdown"))
 
     if result is not None and result.stats is not None:
-        # a stat is legitimately infinite (profit_factor with no losing trade), and
-        # JSON carries no infinity, so one becomes null rather than a crash on the
-        # way out
-        spec["stats"] = {
-            key: (float(v) if math.isfinite(float(v)) else None)
-            for key, v in result.stats.items()
-        }
         headline = _headline(result, stats, name, len(data.names) > 1)
         if headline:
             spec["headline"] = headline

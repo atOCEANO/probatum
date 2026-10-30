@@ -148,8 +148,7 @@ const legendRows = function (index) {
     rows.push({
       swatch: swatch || T().muted,
       label: spec.own ? "" : spec.name || "",
-      value: united(legendValue(legendValueAt(spec, i),
-        spec.digits === undefined ? panel.digits : spec.digits), spec.unit),
+      value: united(legendValue(legendValueAt(spec, i), spec.digits), spec.unit),
     });
   });
 

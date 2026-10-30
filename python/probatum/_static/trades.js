@@ -1,7 +1,7 @@
 "use strict";
 
-// the engine's own fills: arrows on the bars they happened on, a table, and a
-// selection that runs both ways. The arrows use the native marker api, which
+// the run's round trips: arrows on the bars they opened and closed on, a table, and
+// a selection that runs both ways. The arrows use the native marker api, which
 // stacks them above and below a bar for free; a user's Marker is a canvas
 // primitive instead, because only that can express a pixel offset.
 

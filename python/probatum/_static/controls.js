@@ -76,7 +76,6 @@ const placePaneCtls = function () {
   paneBands = [];
   let y = 0;
   paneCtls.querySelectorAll(".panectl").forEach(function (g, i) {
-    if (i >= hs.length) { g.style.display = "none"; return; }
     paneBands.push({ top: y, bottom: y + hs[i] });
     // the backdrop spans the whole gutter so the fade covers every label it
     // sits over, rather than leaving a lit strip either side of the buttons
@@ -128,7 +127,7 @@ const mountHead = function () {
   head.hidden = !SPEC.title && !rows.length;
 };
 
-// the caller's own table, under the fills. Built with textContent rather than
+// the caller's own table, above the trade log. Built with textContent rather than
 // markup for the same reason the head row is: a cell carrying angle brackets is
 // a cell, and not a decision anybody has to think about
 const mountNotes = function () {
@@ -155,7 +154,7 @@ const mountNotes = function () {
   document.getElementById("tablePanel").hidden = false;
   document.getElementById("tbl").setAttribute("aria-pressed", "true");
   // a run is not required to have notes, and mountTrades hides the button when
-  // there are no fills, so this puts it back
+  // there are no round trips, so this puts it back
   document.getElementById("tbl").hidden = false;
 };
 
@@ -248,7 +247,7 @@ const mountControls = function () {
     }
   });
 
-  // after mountTrades, which is what hides the button on a chart with no fills
+  // after mountTrades, which is what hides the button on a chart with no round trips
   mountNotes();
 
   applyScale();

@@ -407,7 +407,6 @@ const paint = function (entry) {
     return;
   }
   const runs = runsOf(rows);
-  if (!entry.siblings) entry.siblings = [];
   while (entry.siblings.length < runs.length - 1) entry.siblings.push(entry.make());
   const drawn = [entry.series].concat(entry.siblings);
   for (let k = 0; k < drawn.length; k++) drawn[k].setData(runs[k] || []);
@@ -471,7 +470,6 @@ const applyTheme = function (mode) {
   MODE = mode;
   const t = T();
   const root = document.documentElement;
-  root.setAttribute("data-theme", mode);
   root.style.setProperty("color-scheme", mode);
   // the button shows the mode it will switch to, here, which is the only place that
   // knows the mode moved, so a chart that opens light never offers light
@@ -483,7 +481,7 @@ const applyTheme = function (mode) {
     button.setAttribute("aria-label", button.title);
   }
   Object.keys(CSS_VARS).forEach(function (key) {
-    if (t[key] !== undefined) root.style.setProperty(CSS_VARS[key], t[key]);
+    root.style.setProperty(CSS_VARS[key], t[key]);
   });
 
   chart.applyOptions({
@@ -511,7 +509,7 @@ const applyTheme = function (mode) {
   paintCandles();
   paintVolume();
   SERIES.forEach(paint);
-  if (typeof repaintTrades === "function") repaintTrades();
+  repaintTrades();
   invalidate();
 };
 
@@ -622,7 +620,7 @@ const mountPrimitives = function () {
   });
 
   panes.forEach(function (pane, i) {
-    if (SPEC.panels[i]) pane.attachPrimitive(legendPrimitive(i));
+    pane.attachPrimitive(legendPrimitive(i));
     if (panes.length > 1) pane.attachPrimitive(edgePrimitive(i, panes.length));
   });
 };
@@ -678,7 +676,7 @@ const mount = function (spec, root) {
     autoSize: true,
     layout: {
       background: { type: LWC.ColorType.Solid, color: t.surface },
-      textColor: t.ink2, fontFamily: spec.theme.font || FONT, attributionLogo: false,
+      textColor: t.ink2, fontFamily: FONT, attributionLogo: false,
       panes: { separatorColor: t.hairline, separatorHoverColor: t.grid, enableResize: true },
     },
     grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
@@ -767,7 +765,7 @@ const mount = function (spec, root) {
   // the gap split in `paint` only runs for an entry that has one: both are dense
   // by construction today, so this is a guard rather than a fix, and the reason to
   // write it is that the next curve added here will not be
-  const addCurve = function (name, label, track, options, type) {
+  const addCurve = function (name, track, options, type) {
     const index = panelIndex(name);
     const panel = spec.panels[index];
     // by name, not by index: panelIndex answers 0 for a name it does not hold, so
@@ -788,8 +786,7 @@ const mount = function (spec, root) {
     };
     SERIES.push({
       spec: {
-        kind: "line", panel: name, name: label, color: options.lineColor,
-        equityBase: base,
+        panel: name, color: options.lineColor, equityBase: base,
         i0: track.i0, v: track.v, digits: panel.digits, unit: unit, own: true,
       },
       series: make(),
@@ -799,12 +796,12 @@ const mount = function (spec, root) {
   };
 
   if (spec.equity) {
-    addCurve("equity", "equity", spec.equity, {
+    addCurve("equity", spec.equity, {
       base: spec.equity.v[0], color: t.win, lineWidth: 2,
     }, LWC.LineSeries);
   }
   if (spec.drawdown) {
-    addCurve("drawdown", "drawdown", spec.drawdown, {
+    addCurve("drawdown", spec.drawdown, {
       unit: "%",
       lineColor: t.loss, topColor: t.ddTop, bottomColor: t.ddBottom,
       lineWidth: 1, invertFilledArea: true,
@@ -831,7 +828,7 @@ const mount = function (spec, root) {
   });
 
   chart.panes().forEach(function (pane, i) {
-    if (spec.panels[i]) pane.setStretchFactor(spec.panels[i].weight);
+    pane.setStretchFactor(spec.panels[i].weight);
     const scale = pane.priceScale("right");
     if (scale) scale.applyOptions({ mode: SCALE[spec.panels[i].scale], entireTextOnly: true });
   });
@@ -860,8 +857,8 @@ const mount = function (spec, root) {
   seedAnchors();
 
   mountPrimitives();
-  if (typeof mountTrades === "function") mountTrades();
-  if (typeof mountControls === "function") mountControls();
+  mountTrades();
+  mountControls();
 
   applyTheme(MODE);
 

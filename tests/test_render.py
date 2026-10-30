@@ -167,7 +167,9 @@ def observe(built, tmp_path, name="chart.html", act=None):
             ),
             "title": page.locator("#title").text_content(),
             "hint": page.locator("#hint").text_content(),
-            "theme": page.evaluate("document.documentElement.getAttribute('data-theme')"),
+            "theme": page.evaluate(
+                "document.documentElement.style.getPropertyValue('color-scheme')"
+            ),
             "ink": page.evaluate(
                 "getComputedStyle(document.documentElement).getPropertyValue('--ink')"
             ),
@@ -858,7 +860,9 @@ def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
             page.wait_for_timeout(400)
 
             seen[scheme] = (
-                page.evaluate("document.documentElement.getAttribute('data-theme')"),
+                page.evaluate(
+                    "document.documentElement.style.getPropertyValue('color-scheme')"
+                ),
                 page.locator("#theme").get_attribute("title"),
             )
             page.close()
