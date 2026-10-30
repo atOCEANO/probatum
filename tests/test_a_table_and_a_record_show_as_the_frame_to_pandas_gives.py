@@ -1,19 +1,28 @@
 """A table, a record and a run's statistics show, in a notebook and as text, as the
-pandas frame their to_pandas() gives: what holds for every row is said once under it,
-and why a statistic has no value or no interval is numbered under it. Without pandas a
-table and a record show their fields (ADR 0041).
+pandas frame their to_pandas() gives: what holds for every row in a frame of one column
+beside it, and why a statistic has no value or no interval in a frame under them, by
+the number its row gives. Without pandas a table and a record show their fields (ADR
+0041).
 """
 
+import html
 import math
 import sys
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import probatum
 from probatum import MissingDependency, _frames, stats
+from probatum._result import _money
 
 HOUR = 3_600_000_000_000
+
+
+def beside(record):
+    """What ``record`` shows beside its frame, each name to its value as it reads."""
+    return _frames.held(record._frame()[1])["value"].to_dict()
 
 
 def run(rows, ending=False):
@@ -59,26 +68,36 @@ def test_a_record_of_one_row_is_named_by_its_statistic_or_its_class(traded):
     assert list(stats.time_under_water(traded).to_pandas().index) == ["UnderWater"]
 
 
-def test_a_record_s_lists_are_rows_by_what_numbers_them_the_rest_under_them():
+def test_a_record_s_lists_are_rows_by_what_numbers_them_the_rest_beside_them():
     decay = stats.Decay([0, 2], [0, HOUR], [2 * HOUR, 3 * HOUR], [1.8, 1.2], [0.6, 1.4],
                         [1.2, -0.2], 0.5, 0.7, "sharpe", "maximize")
     frame = decay.to_pandas()
+    held  = _frames.held(decay._frame()[1])
+    shown = decay._repr_html_()
 
     assert (frame.index.name, list(frame.index)) == ("window", [0, 2])
     assert list(frame.columns) == ["first", "last", "fitted", "earned", "gaps"]
     assert str(frame["first"].dtype) == "datetime64[ns, UTC]"
-    assert repr(decay).splitlines()[-1] == ("mean 0.5; error 0.7; objective sharpe; "
-                                            "direction maximize")
+    assert held["value"].to_dict() == {"mean": "0.5", "error": "0.7", "objective": "sharpe",
+                                       "direction": "maximize"}
+    assert repr(decay) == f"{frame!r}\n\n{held!r}"
+    assert shown.index(frame._repr_html_()) < shown.index(held._repr_html_())
+
+    # a holdout's one gap has no standard error, a field the record holds none of
+    once = stats.Decay(["holdout"], [0], [HOUR], [1.8], [0.6], [1.2], 1.2, None, "sharpe",
+                       "maximize")
+
+    assert list(beside(once)) == ["mean", "objective", "direction"]
 
     held = stats.Consistency([0.81, 1.22, -0.3, 0.94], "stretches", 0.0, 0.75, "sharpe",
                              "maximize")
 
     assert held.to_pandas()["scores"].tolist() == [0.81, 1.22, -0.3, 0.94]
-    assert repr(held).splitlines()[-1] == ("unit stretches; break_even 0.0; share 0.75; "
-                                           "objective sharpe; direction maximize")
+    assert beside(held) == {"unit": "stretches", "break_even": "0.0", "share": "0.75",
+                            "objective": "sharpe", "direction": "maximize"}
 
 
-def test_a_record_of_two_tests_is_a_row_each_what_they_share_said_under_it(traded):
+def test_a_record_of_two_tests_is_a_row_each_what_they_share_beside_it(traded):
     apart = stats.sharpe_difference(traded)
     frame = apart.to_pandas()
 
@@ -86,9 +105,22 @@ def test_a_record_of_two_tests_is_a_row_each_what_they_share_said_under_it(trade
     assert {"statistic", "estimate", "level", "count", "kind"}.isdisjoint(frame.columns)
     assert frame.loc["delta", "p"] == apart.delta.p
     assert frame.loc["bootstrap", "block"] == apart.bootstrap.block
-    assert repr(apart).splitlines()[-1].endswith(
-        f"; statistic sharpe difference; level 0.95; count {apart.delta.count:,}; kind "
-        f"interval")
+    assert list(beside(apart).items())[-4:] == [
+        ("statistic", "sharpe difference"), ("level", "0.95"),
+        ("count", f"{apart.delta.count:,}"), ("kind", "interval")]
+
+    # one series against itself reversed, two equal Sharpes whose tests both read 1
+    steps = np.tile([0.015625, -0.0078125, 0.0078125, -0.00390625], 256)
+    equal = stats.sharpe_difference(steps, steps[::-1], periods_per_year=365).to_pandas()
+
+    assert equal["p"].tolist() == [1.0, 1.0]
+
+    # a difference built by hand whose two tests read at two levels shows both
+    wider = stats.Interval(*(0.9 if name == "level" else value for name, value in
+                             zip(stats.Interval.__slots__, apart.bootstrap._args())))
+    mixed = stats.Difference(apart.estimate, apart.delta, wider).to_pandas()
+
+    assert mixed["level"].tolist() == [0.95, 0.9] and "statistic" not in mixed.columns
 
     check = stats.RealityCheck(0.045, 0.048, 0.010297, 2.173125, 2, 3.13, 1000, 40, 0,
                                "cash", False)
@@ -96,9 +128,18 @@ def test_a_record_of_two_tests_is_a_row_each_what_they_share_said_under_it(trade
 
     assert list(shown.index) == ["reality check", "spa"]
     assert shown.to_dict("list") == {"p": [0.045, 0.048], "statistic": [0.010297, 2.173125]}
-    assert repr(check).splitlines()[-1] == ("best 2; block 3.13; resamples 1,000; trials "
-                                            "40; excluded 0; benchmark cash; descriptive "
-                                            "False")
+    assert beside(check) == {"best": "2", "block": "3.13", "resamples": "1,000",
+                             "trials": "40", "excluded": "0", "benchmark": "cash",
+                             "descriptive": "False"}
+
+
+def test_the_sides_of_a_run_s_round_trips_keep_every_column_whatever_they_share(traded):
+    held = stats.trade_stats(traded)
+    both = stats.Sides(held, held).to_pandas()
+
+    assert list(both.index) == ["long", "short"]
+    assert list(both.columns) == list(stats.TradeStats.__slots__)
+    assert both.loc["short", "trades"] == held.trades
 
 
 def test_a_run_s_statistics_show_each_beside_its_interval_and_why_it_has_none(traded):
@@ -118,23 +159,50 @@ def test_a_run_s_statistics_show_each_beside_its_interval_and_why_it_has_none(tr
     assert frame.loc["total_return_pct", "why_none"].startswith("returns: 999 in blocks of")
     assert frame.loc["exposure_pct", "why_none"] == ""
 
-    reasons = list(dict.fromkeys(why for why in frame["why_none"] if why))
-    lines   = ["level 0.95"] + [f"{k}. {why}" for k, why in enumerate(reasons, start=1)]
 
-    assert repr(record).splitlines()[-len(lines):] == lines
-    assert all(line in record._repr_html_() for line in lines[:1])
+def test_a_run_s_statistics_show_their_numbers_as_a_summary_does_over_their_reasons(
+        traded):
+    record               = traded.stats
+    frame                = record.to_pandas()
+    sharpe               = record.interval("sharpe")
+    shown, held, reasons = record._shown()
+    why                  = list(dict.fromkeys(why for why in frame["why_none"] if why))
+
+    assert shown.loc[["num_trades", "num_fills"], "value"].tolist() == [
+        f"{record['num_trades']:,.0f}", f"{record['num_fills']:,.0f}"]
+    assert shown.loc["funding_paid", "value"] == _money(record["funding_paid"])
+    assert shown.loc["sharpe", ["value", "low", "high", "level"]].tolist() == [
+        f"{record['sharpe']:,.2f}", f"{sharpe.low:,.2f}", f"{sharpe.high:,.2f}", "0.95"]
+    assert held is None and reasons.to_dict("list") == {"why_none": why}
+    assert list(reasons.index) == list(range(1, len(why) + 1))
+    assert shown.loc["cagr_pct", "why_none"] == str(
+        why.index(record._withheld["cagr_pct"]) + 1)
+    assert shown.loc["exposure_pct", "why_none"] == ""
+
+    with pd.option_context("display.max_colwidth", None):
+        page = record._repr_html_()
+
+        assert repr(record) == f"{shown!r}\n\n{reasons!r}"
+        assert page.index(shown._repr_html_()) < page.index(reasons._repr_html_())
 
 
-def test_a_setting_shows_to_pandas_places_and_one_too_small_for_them_in_full(monkeypatch):
-    settings = [("level", 0.95), ("rate", 3e-7), ("dust", -1e-9), ("zero", -0.0)]
-    said     = "level 0.95; rate 3e-07; dust -1e-09; zero 0.0"
+def test_where_pandas_shows_frames_as_text_a_notebook_shows_a_record_as_its_text(traded):
+    under = stats.time_under_water(traded)
+    # a unit named with markup, which the page escapes
+    named = stats.Consistency([1.0], "<a & 'b'>", 0.0, 1.0, "sharpe", "maximize")
 
-    assert _frames.line(settings) == said
+    with pd.option_context("display.notebook_repr_html", False):
+        for shown, said in ((traded.stats, traded.stats), (under, under), (named, named),
+                            (traded, traded.summary())):
+            assert shown._repr_html_() == f"<pre>{html.escape(repr(said))}</pre>"
 
-    # a summary's lines are built with it, and need no pandas to be
-    monkeypatch.setitem(sys.modules, "pandas", None)
 
-    assert _frames.line(settings) == said
+def test_a_value_beside_a_frame_shows_to_pandas_places_and_a_tiny_one_in_full():
+    values = [(0.95, "0.95"), (1.0, "1.0"), (12_345.5, "12,345.5"), (3e-7, "3e-07"),
+              (-1e-9, "-1e-09"), (-0.0, "0.0"), (1_000, "1,000"), (False, "False"),
+              ("cash", "cash")]
+
+    assert [_frames.said(value) for value, _ in values] == [said for _, said in values]
 
 
 def test_without_pandas_a_table_and_a_record_show_their_fields(traded, monkeypatch):

@@ -379,10 +379,16 @@ def test_a_sweep_shows_a_row_a_level_and_a_run_that_trades_nothing_reads_nan():
     found = probatum.capacity(POLICY, DATA, VENUE, [10_000.0, 1_000_000.0])
     frame = found.to_pandas()
 
-    assert (frame.index.name, list(frame.index)) == ("balance", [10_000.0, 1_000_000.0])
+    assert (frame.index.name, list(frame.index)) == ("balance", [10_000, 1_000_000])
+    assert frame.index.dtype == np.int64
     assert list(frame.columns) == ["total_return_pct", "sharpe", "impact", "held", "cost_bps",
                                    "turnover"]
     assert repr(found) == repr(frame)
+
+    # a balance an int64 cannot hold keeps every balance a float
+    huge = probatum.Capacity([10_000.0, 1e19], *found._args()[1:]).to_pandas()
+
+    assert huge.index.tolist() == [10_000.0, 1e19] and huge.index.dtype == np.float64
 
     curve = probatum.cost_curve(np.zeros(len(DATA)), DATA, VENUE, scales=(1.0,))
 

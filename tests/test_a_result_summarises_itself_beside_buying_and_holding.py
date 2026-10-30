@@ -1,11 +1,11 @@
 """A Result's summary is a frame of its headline statistics as its record holds them,
 its costs and the bars it was liquidated on, beside buying and holding over the same
-rows and each one's interval or why it has none, with what ran, where, on which bars
-and from which balance, and its assumptions, under it; it shows each number to its
-row's places, its level once and its reasons numbered (Specification, Summaries).
+rows and each one's interval or why it has none, and its context, what ran, where, on
+which bars and from which balance, and its assumptions; it shows each number to its
+row's places, its context in a frame beside it and its reasons numbered in a frame
+under them (Specification, Summaries).
 """
 
-import html
 import pickle
 import sys
 
@@ -15,7 +15,7 @@ import pytest
 
 import probatum
 from probatum import MissingDependency, stats
-from probatum._result import HOLDING, SUMMARY, _money
+from probatum._result import HOLDING, SUMMARY, Summary, _money
 
 HOUR  = 3_600_000_000_000
 VENUE = probatum.venues.binance_perp.replace(funding="none")
@@ -92,11 +92,12 @@ def test_a_run_s_summary_is_its_record_beside_buying_and_holding(traded):
                                                  "them needs at least 60")
 
 
-def test_under_it_are_what_ran_its_bars_its_balance_and_its_assumptions(traded):
-    assert traded.summary().lines == [
-        "policy a (1000, 1) array of weights; venue binance_perp; data BTCUSDT 1h; first "
-        "1970-01-01; last 1970-02-11; rows 1,000; balance 10,000",
-        f"assumptions 37; graded optimistic funding; lean optimistic {LEANS}"]
+def test_its_context_is_what_ran_its_bars_its_balance_and_its_assumptions(traded):
+    assert list(traded.summary().context.items()) == [
+        ("policy", "a (1000, 1) array of weights"), ("venue", "binance_perp"),
+        ("data", "BTCUSDT 1h"), ("first", "1970-01-01"), ("last", "1970-02-11"),
+        ("rows", 1_000), ("balance", "10,000"), ("assumptions", 37),
+        ("graded optimistic", "funding"), ("lean optimistic", LEANS)]
 
     one = probatum.Data(
         np.array([[100.0, 100.5, 99.5, 100.0, 1e3]]),
@@ -108,30 +109,39 @@ def test_under_it_are_what_ran_its_bars_its_balance_and_its_assumptions(traded):
     short = probatum.backtest(np.ones(1), one, VENUE).summary()
 
     assert list(short.to_pandas().index) == ["costs"]
-    assert short.lines[0] == ("policy a (1, 1) array of weights; venue binance_perp; data "
-                              "BTCUSDT 1h; first 1970-01-01 00:00; last 1970-01-01 01:00; "
-                              "rows 1; balance 10,000; statistics none, the clock too short "
-                              "to annualise")
+    assert list(short.context.items())[3:8] == [
+        ("first", "1970-01-01 00:00"), ("last", "1970-01-01 01:00"), ("rows", 1),
+        ("balance", "10,000"), ("statistics", "none, the clock too short to annualise")]
 
 
-def test_it_shows_each_number_to_its_row_s_places_its_level_once_and_its_reasons(traded):
-    found        = traded.summary()
-    shown, lines = found._shown()
-    record       = traded.stats
+def test_it_shows_each_number_to_its_row_s_places_beside_its_context_over_its_reasons(
+        traded):
+    found                   = traded.summary()
+    frame                   = found.to_pandas()
+    shown, context, reasons = found._shown()
+    record                  = traded.stats
 
     assert shown.loc["num_trades", "run"] == "50"
     assert shown.loc["sharpe", "run"] == f"{record['sharpe']:,.2f}"
     assert shown.loc["costs", "run"] == _money(sum(traded.costs.values()))
-    assert shown.loc["cagr_pct", "run"] == "" and "level" not in shown.columns
+    assert shown.loc["cagr_pct", "run"] == "" and shown.loc["cagr_pct", "level"] == ""
+    assert shown.loc["sharpe", "level"] == "0.95"
+    assert list(context.index) == list(found.context) and context["value"]["rows"] == "1,000"
 
-    reasons = list(dict.fromkeys(why for why in found.to_pandas()["why_none"] if why))
+    why = list(dict.fromkeys(why for why in frame["why_none"] if why))
 
-    assert lines == found.lines + ["level 0.95"] + [f"{k}. {why}" for k, why in
-                                                    enumerate(reasons, start=1)]
-    assert repr(found) == "\n".join([repr(shown)] + lines)
-    assert found._repr_html_().startswith(shown._repr_html_())
-    assert all(html.escape(line) in found._repr_html_() for line in lines)
-    assert traded._repr_html_() == found._repr_html_()
+    assert reasons.to_dict("list") == {"why_none": why}
+    assert list(reasons.index) == list(range(1, len(why) + 1))
+    assert shown.loc["cagr_pct", "why_none"] == str(
+        why.index(frame.loc["cagr_pct", "why_none"]) + 1)
+
+    with pd.option_context("display.max_colwidth", None):
+        parts = [shown, context, reasons]
+        shows = found._repr_html_()
+        at    = [shows.index(part._repr_html_()) for part in parts]
+
+        assert repr(found) == "\n\n".join(repr(part) for part in parts) and at == sorted(at)
+    assert traded._repr_html_() == shows
 
 
 @pytest.mark.parametrize("steps, weight, why", [
@@ -169,15 +179,17 @@ def test_a_coin_and_a_book_name_what_they_hold():
                               probatum.Data(frame), probatum.Venue(balance=0.5))
     found = coin.summary()
 
-    assert found.lines[0].startswith("policy a (200, 1) array of weights; venue built by "
-                                     "hand; data inverse:BTCUSD 1h; first 2024-01-01")
-    assert found.lines[0].endswith("; rows 200; balance 0.5")
+    assert [found.context[name] for name in ("policy", "venue", "data", "rows",
+                                             "balance")] == [
+        "a (200, 1) array of weights", "built by hand", "inverse:BTCUSD 1h", 200, "0.5"]
+    assert found.context["first"].startswith("2024-01-01")
     assert found.to_pandas().loc["costs", "run"] == coin.costs["fees"] > 0.0
     assert found._shown()[0].loc["costs", "run"] == f"{coin.costs['fees']:.3g}"
 
     book = probatum.combine({"a": coin}).summary()
 
-    assert book.lines[0].startswith("accounts a; margined apart; data inverse:BTCUSD 1h")
+    assert list(book.context.items())[:3] == [("accounts", "a"), ("margined", "apart"),
+                                              ("data", "inverse:BTCUSD 1h")]
 
 
 def test_an_amount_is_whole_from_a_hundred_three_figures_below_and_never_minus_0():
@@ -209,7 +221,7 @@ class Marked(probatum.Strategy):
 def test_a_policy_named_with_markup_is_escaped_in_a_notebook():
     shown = probatum.backtest(Marked(), data(60), VENUE)._repr_html_()
 
-    assert "policy Marked&lt;&amp;&gt;; venue binance_perp" in shown and "Marked<&>" not in shown
+    assert "<td>Marked&lt;&amp;&gt;</td>" in shown and "Marked<&>" not in shown
 
 
 def test_a_book_names_its_accounts_and_a_run_its_level_below_the_full_one(traded):
@@ -217,17 +229,19 @@ def test_a_book_names_its_accounts_and_a_run_its_level_below_the_full_one(traded
                               VENUE)
     book  = probatum.combine({"A": traded, "B": other}).summary()
 
-    assert book.lines[0].startswith("accounts A and B; margined apart; data BTCUSDT 1h")
+    assert list(book.context.items())[:3] == [("accounts", "A and B"), ("margined", "apart"),
+                                              ("data", "BTCUSDT 1h")]
 
     kept  = probatum.backtest(np.where(np.arange(1_000) % 20 < 10, 1.0, 0.0), data(1_000),
                               VENUE, record="account")
     found = kept.summary()
 
-    assert found.lines[0].endswith("; rows 1,000; balance 10,000; recorded account")
+    assert list(found.context.items())[5:8] == [("rows", 1_000), ("balance", "10,000"),
+                                                ("recorded", "account")]
     assert found.to_pandas()["buy_and_hold"].isna().all()
 
 
-def test_two_summaries_are_equal_where_their_rows_and_lines_are(traded, tmp_path):
+def test_two_summaries_are_equal_where_their_rows_and_context_are(traded, tmp_path):
     traded.summary()
     traded.save(tmp_path / "run")
 
@@ -235,12 +249,19 @@ def test_two_summaries_are_equal_where_their_rows_and_lines_are(traded, tmp_path
     assert traded.summary() == pickle.loads(pickle.dumps(traded)).summary()
     assert traded.summary() != probatum.backtest(np.ones(1_000), data(1_000), VENUE).summary()
 
+    found = traded.summary()
+    again = Summary(found._named, found._rows, found.context.items())
+    moved = Summary(found._named, found._rows, {**found.context, "rows": 2}.items())
 
-def test_without_pandas_a_summary_shows_its_rows(traded, monkeypatch):
+    assert again == found and moved != found
+
+
+def test_without_pandas_a_summary_shows_its_rows_and_its_context(traded, monkeypatch):
     found = traded.summary()
     monkeypatch.setitem(sys.modules, "pandas", None)
 
     assert repr(found).startswith("Summary({'total_return_pct': (")
+    assert repr(found).endswith(f", context={found.context!r})")
     assert found._repr_html_() is None
 
     with pytest.raises(MissingDependency, match="to_pandas: pandas is not installed"):

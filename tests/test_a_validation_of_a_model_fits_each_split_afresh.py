@@ -498,12 +498,13 @@ def test_example_30_validates_a_ridge_on_a_universe_end_to_end():
     found = study.summary()
     shown = found.to_pandas()
 
-    assert found.lines[0].startswith("policy Ridge(); venue built by hand; data 4 "
-                                     "instruments 1h; objective sharpe")
+    assert list(found.context.items())[:4] == [
+        ("policy", "Ridge()"), ("venue", "built by hand"), ("data", "4 instruments 1h"),
+        ("objective", "sharpe")]
     assert list(shown.index) == ["paths", "score", "windows", "windows_gained", "decay",
                                  "decay_error", "rank_ic", "rank_ic_t", "costs",
                                  "price_pnl", "holdout", "buy_and_hold"]
-    assert shown.loc["paths", "value"] == 7 and "; fits 28; " in found.lines[0]
+    assert shown.loc["paths", "value"] == 7 and found.context["fits"] == 28
     assert study.forecast is not None and len(study.paths) == 7
 
 

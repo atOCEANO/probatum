@@ -19,7 +19,6 @@ import warnings
 
 import numpy as np
 
-from . import _frames
 from ._backtest import (_agent, _annualised, _kind, _markets, _number, _played,
                         _rate, _repeatable, backtest)
 from ._causality import _check, _read
@@ -1177,7 +1176,7 @@ class Study:
         scores beside the median path's interval, its windows and those past
         break-even, its decay and the decay's standard error, a model's pooled
         forecast, and the paths' costs and price pnl. Then either's holdout as it
-        stands and buying and holding over the held-out bars, and under them what it
+        stands and buying and holding over the held-out bars, and its context, what it
         searched or validated, at which venue, on which bars and what it held out."""
         if self._tables is None:
             rows = self._searched(null, plateau)
@@ -1303,8 +1302,9 @@ class Study:
 
 
     def _told(self):
-        """The lines under the Study's summary: what it searched or validated, at which
-        venue, on which bars and what it held out, and a search's winner."""
+        """The context of the Study's summary, as (name, value) pairs: what it searched or
+        validated, at which venue, on which bars and what it held out, and a search's
+        winner."""
         given = self.provenance
         data  = given["data"]
         names = [name.split(":", 1)[-1] for name in data["instruments"]]
@@ -1316,25 +1316,25 @@ class Study:
 
         if self._tables is None:
             drawn = {_configuration(self._space, params) for params in self._params}
-            said += [("sampler", given["sampler"]["name"]), ("trials", given["ran"]),
-                     ("distinct", len(drawn) if 0 < len(drawn) < given["ran"] else None),
-                     ("first", _day(self._bars.first)), ("last", _day(self._bars.last))]
+            said += [("sampler", given["sampler"]["name"]), ("trials", given["ran"])]
+            if 0 < len(drawn) < given["ran"]:
+                said.append(("distinct", len(drawn)))
+            said += [("first", _day(self._bars.first)), ("last", _day(self._bars.last))]
         else:
             cut, windows = given["cv"], self._tables["windows"]
             opens, ends  = (np.asarray(windows[name]) for name in ("first_time", "last_time"))
             said += [("splitter", cut["given"]), ("fits", len(self._tables["fits"])),
-                     ("embargo", cut["embargo"]),
-                     ("first", _day(opens[0]) if opens.size else None),
-                     ("last", _day(ends[-1]) if ends.size else None)]
+                     ("embargo", cut["embargo"]), ("first", _day(opens[0])),
+                     ("last", _day(ends[-1]))]
 
         said += [("held out", self._held()), ("looks", self._looks)]
         if self._tables is not None:
-            return [_frames.line(said)]
+            return said
 
-        best = [(f"best {key}", value) for key, value in self.best_params.items()]
+        said += [(f"best {key}", value) for key, value in self.best_params.items()]
         if given["sampler"]["name"] == "tpe":
-            best.append(("descriptive", True))
-        return [_frames.line(said), _frames.line(best)]
+            said.append(("descriptive", True))
+        return said
 
 
     def consistency(self, stretches=None):

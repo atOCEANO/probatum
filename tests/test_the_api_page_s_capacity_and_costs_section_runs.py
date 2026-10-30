@@ -18,8 +18,7 @@ def test_the_capacity_and_costs_section_runs_after_the_quickstart(capsys):
     said  = capsys.readouterr().out.splitlines()
     table = next(k for k, line in enumerate(said) if line.startswith("balance "))
 
-    assert [line.split()[0] for line in said[table + 1:table + 3]] == ["10000.0",
-                                                                       "100000.0"]
+    assert [line.split()[0] for line in said[table + 1:table + 3]] == ["10000", "100000"]
 
     curve  = next(k for k, line in enumerate(said) if line.startswith("scale "))
     scaled = said[curve + 3].split()

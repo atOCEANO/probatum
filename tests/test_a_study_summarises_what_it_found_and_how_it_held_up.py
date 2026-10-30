@@ -1,8 +1,9 @@
 """A Study's summary is a frame of what it found and how the winner held up: a search's
 best score, its deflated Sharpe beside a random null's mean, its overfitting
 probability and its holdout as it stands; a validation's paths, their median score
-beside the median path's interval, its windows, its decay and its costs; and under it
-what it searched or validated, at which venue, on which bars and what it held out.
+beside the median path's interval, its windows, its decay and its costs; and its
+context, what it searched or validated, at which venue, on which bars and what it held
+out.
 Consistency scores the winner in stretches, or a validation's windows, against the
 objective's break-even, and decay sets what each fit scored against what its bars then
 earned (Specification, Summaries; Consistency and decay).
@@ -98,11 +99,14 @@ def test_a_search_s_summary_names_its_winner_its_null_and_its_holdout(study):
          np.asarray(trials["score"], dtype=np.float64)[done].mean(), halved.probability,
          halved.loss])
     assert shown.loc["holdout", "why_none"] == "not yet run; evaluate_holdout() spends a look"
-    assert found.lines == [
-        f"policy alternating; venue frictionless; data BTCUSDT 1h; objective sharpe; "
-        f"direction maximize; sampler random; trials 12; distinct {distinct}; first "
-        f"1970-01-01; last 1970-01-24; held out the last 30% (240 bars); looks 0",
-        f"best fast {study.best_params['fast']}"]
+    assert list(found.context.items()) == [
+        ("policy", "alternating"), ("venue", "frictionless"), ("data", "BTCUSDT 1h"),
+        ("objective", "sharpe"), ("direction", "maximize"), ("sampler", "random"),
+        ("trials", 12), ("distinct", distinct), ("first", "1970-01-01"),
+        ("last", "1970-01-24"), ("held out", "the last 30% (240 bars)"), ("looks", 0),
+        ("best fast", study.best_params["fast"])]
+    # a grid draws each configuration once, so none repeats
+    assert "distinct" not in searched(sampler="grid").summary().context
 
 
 def test_a_search_says_why_it_has_no_deflated_sharpe_or_overfitting_probability():
@@ -224,7 +228,7 @@ def test_the_holdout_reads_as_it_stands_and_decay_follows_it():
 
     whole = searched(holdout=0)
 
-    assert "; held out none; looks 0" in whole.summary().lines[0]
+    assert [whole.summary().context[name] for name in ("held out", "looks")] == ["none", 0]
     assert frame(whole).loc["holdout", "why_none"] == "the search held every bar"
 
     with pytest.raises(ProbatumValueError, match="decay: the search held nothing out"):
@@ -275,7 +279,8 @@ def test_a_venue_built_by_hand_is_named_as_one():
     built = probatum.search(alternating, SPACE, bars(), probatum.Venue(), trials=2,
                             sampler="random", holdout=0.3, seed=1)
 
-    assert built.summary().lines[0].startswith("policy alternating; venue built by hand; ")
+    assert list(built.summary().context.items())[:2] == [("policy", "alternating"),
+                                                         ("venue", "built by hand")]
 
 
 def picking(data, pick=None):
@@ -291,8 +296,26 @@ def test_a_choice_of_none_or_nan_is_one_configuration_however_often_drawn():
                                 seed=1)
         again = pickle.loads(pickle.dumps(found))
 
-        assert "; trials 12; distinct 3; " in found.summary().lines[0]
-        assert "; trials 12; distinct 3; " in again.summary().lines[0]
+        for held in (found, again):
+            shown = held.summary()._shown()[1]["value"]
+            assert [shown[name] for name in ("trials", "distinct", "best pick")] == [
+                "12", "3", str(held.best_params["pick"])]
+
+
+def holding(data, pick=None):
+    return np.full(len(data.close), 0.0 if pick == 0.0 else 1.0)
+
+
+def test_a_winner_that_chose_none_or_nan_names_its_choice_and_keeps_it():
+    # holding these bars beats holding nothing, so the winner is the choice other than 0
+    for choice in (None, math.nan):
+        found = probatum.search(holding, {"pick": probatum.Categorical([choice, 0.0])},
+                                bars(), "frictionless", trials=12, sampler="random",
+                                holdout=0.3, seed=1)
+        given = found.summary()
+
+        assert given._shown()[1]["value"]["best pick"] == str(choice)
+        assert pickle.loads(pickle.dumps(found)).summary() == given
 
 
 def test_a_break_even_and_a_decay_read_as_the_reference_reads_them(validated):
@@ -397,7 +420,8 @@ def test_a_validation_s_summary_names_its_paths_and_its_median_path(validated):
     assert shown.loc["score", ["value", "low", "high"]].tolist() == [
         float(paths["score"][0]), held.low, held.high]
     assert shown.loc[["decay", "decay_error"], "value"].tolist() == [decay.mean, decay.error]
-    assert found.lines == [
-        "policy Flip; venue frictionless; data BTCUSDT 1h; objective sharpe; direction "
-        "maximize; splitter PurgedKFold(4); fits 4; embargo 0; first 1970-01-01; last "
-        "1970-01-27; held out the last 20% (160 bars); looks 0"]
+    assert list(found.context.items()) == [
+        ("policy", "Flip"), ("venue", "frictionless"), ("data", "BTCUSDT 1h"),
+        ("objective", "sharpe"), ("direction", "maximize"), ("splitter", "PurgedKFold(4)"),
+        ("fits", 4), ("embargo", 0), ("first", "1970-01-01"), ("last", "1970-01-27"),
+        ("held out", "the last 20% (160 bars)"), ("looks", 0)]

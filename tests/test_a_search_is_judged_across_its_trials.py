@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import probatum
-from probatum import ProbatumTypeError, ProbatumValueError, ProbatumWarning, stats
+from probatum import ProbatumTypeError, ProbatumValueError, ProbatumWarning, _frames, stats
 
 from reference import statistics
 
@@ -522,16 +522,19 @@ def test_a_whole_number_past_a_float_s_precision_keeps_its_own_place():
     assert found.trials[3] == 0 and found.trials[4] >= 1
 
 
-def test_a_plateau_is_a_row_a_radius_the_rest_under_it():
+def test_a_plateau_is_a_row_a_radius_the_rest_beside_them():
     shares = [math.nan, 0.5] + [0.25] * 8
     found  = stats.Plateau(stats.RADII, [0, 2] + [4] * 8, [0, 1] + [1] * 8, shares, 1.0,
                            "sharpe", "maximize")
     frame  = found.to_pandas()
+    held   = _frames.held(found._frame()[1])
 
     assert (frame.index.name, list(frame.index)) == ("radius", list(stats.RADII))
     assert list(frame.columns) == ["trials", "passed", "share"]
     assert frame["share"].tolist()[1:] == shares[1:] and math.isnan(frame["share"][0.05])
-    assert repr(found).splitlines()[-1] == "level 1.0; objective sharpe; direction maximize"
+    assert held["value"].to_dict() == {"level": "1.0", "objective": "sharpe",
+                                       "direction": "maximize"}
+    assert repr(found) == f"{frame!r}\n\n{held!r}"
 
 
 def test_a_search_s_summary_gives_its_plateau_and_a_validation_s_refuses_one(study):

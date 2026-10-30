@@ -573,8 +573,10 @@ def test_a_run_kept_at_the_account_level_counts_no_fills_and_no_turnover():
 
 
 def test_each_new_result_never_changes_and_pickles_as_what_it_holds(traded):
+    split = stats.long_short_split(traded)
     found = [stats.time_under_water(traded), stats.trade_stats(traded),
-             stats.benchmark(traded, 100.0 + np.arange(1_000.0)), stats.decompose(traded)]
+             stats.benchmark(traded, 100.0 + np.arange(1_000.0)), stats.decompose(traded),
+             split]
 
     for held in found:
         assert pickle.loads(pickle.dumps(held)) == held
@@ -582,9 +584,8 @@ def test_each_new_result_never_changes_and_pickles_as_what_it_holds(traded):
         with pytest.raises(ProbatumAttributeError, match="a result does not change"):
             held.mean = 0.0
 
-    split = stats.long_short_split(traded)
-    assert list(split) == ["long", "short"] and split["short"].trades == 0
-    assert split["long"] == stats.trade_stats(traded)
+    assert split.short.trades == 0 and split.long == stats.trade_stats(traded)
+    assert list(split.to_pandas().index) == ["long", "short"]
 
 
 def test_runs_set_side_by_side_are_refused_by_name():

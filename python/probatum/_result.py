@@ -419,22 +419,23 @@ class Assumptions(Table):
 
 class Summary:
     """A run's or a Study's summary (Specification, Summaries): a row a number, beside
-    its interval and why it has no value or no interval, and the lines under it,
-    ``lines``, what holds for every row. ``to_pandas()`` gives the frame, its numbers
-    whole, and it shows in a notebook and as text as that frame, each number to the
-    places its row reads at, a count whole and an amount as an account's are, its level
-    said once and its reasons numbered under the lines (ADR 0041). Two summaries are
-    equal where their rows and their lines are."""
+    its interval and why it has no value or no interval, and ``context``, what holds for
+    every row, each setting's name to its value. ``to_pandas()`` gives the frame, its
+    numbers whole, and it shows in a notebook and as text as that frame, each number to
+    the places its row reads at, a count whole and an amount as an account's are, beside
+    ``context`` as a frame of one column, and its reasons, by the numbers its rows give,
+    in a frame under them (ADR 0041). Two summaries are equal where their rows and their
+    context are."""
 
-    __slots__ = ("_named", "_rows", "lines")
+    __slots__ = ("_named", "_rows", "context")
 
 
-    def __init__(self, named, rows, lines):
-        self._named = tuple(named)
-        self._rows  = [(name, tuple(math.nan if value is None else float(value)
-                                    for value in values), found, why or "")
-                       for name, values, found, why in rows]
-        self.lines  = [line for line in lines if line]
+    def __init__(self, named, rows, context):
+        self._named  = tuple(named)
+        self._rows   = [(name, tuple(math.nan if value is None else float(value)
+                                     for value in values), found, why or "")
+                        for name, values, found, why in rows]
+        self.context = dict(context)
 
 
     def __eq__(self, other):
@@ -444,8 +445,11 @@ class Summary:
 
 
     def _key(self):
-        # NaN for NaN, so a value a summary holds none of compares equal to another's
-        return self._named, self.lines, [
+        # NaN for NaN, so a value a summary holds none of compares equal to another's,
+        # as a winner's choice of NaN does once loaded or unpickled
+        context = [(name, ("nan",) if isinstance(value, float) and math.isnan(value) else
+                    value) for name, value in self.context.items()]
+        return self._named, context, [
             (name, tuple(None if math.isnan(value) else value for value in values), found,
              why) for name, values, found, why in self._rows]
 
@@ -465,21 +469,17 @@ class Summary:
 
 
     def _shown(self):
-        """The frame as it shows, each number to its row's places, beside the lines
-        under it."""
-        frame = self.to_pandas()
-        for column in (*self._named, "low", "high"):
-            frame[column] = [_figure(value, name)
-                             for name, value in zip(frame.index, frame[column])]
-
-        shown, notes = _frames.noted(frame)
-        return shown, self.lines + notes
+        """The frame as it shows, each number to its row's places, beside the frame of
+        its context and above the frame of its reasons."""
+        frame, reasons = _frames.shown(self.to_pandas(), (*self._named, "low", "high"),
+                                       _figure)
+        return frame, _frames.held(self.context.items()), reasons
 
 
     def __repr__(self):
         if _frames.pandas() is None:
             held = {name: values for name, values, *_ in self._rows}
-            return f"Summary({held!r})"
+            return f"Summary({held!r}, context={self.context!r})"
         return _frames.text_of(*self._shown())
 
 
@@ -487,10 +487,11 @@ class Summary:
         return None if _frames.pandas() is None else _frames.html_of(*self._shown())
 
 
-# the rows a summary counts and the amounts it gives, which show as an account's do;
-# every other row a number to two places
-COUNTED = frozenset(("num_trades", "liquidations", "paths", "windows", "windows_gained"))
-PAID    = frozenset(("costs", "price_pnl"))
+# the rows of a summary or a run's record that count and those that are amounts, which
+# show as an account's do; every other row a number to two places
+COUNTED = frozenset(("num_trades", "num_fills", "liquidations", "paths", "windows",
+                     "windows_gained"))
+PAID    = frozenset(("costs", "price_pnl", "funding_paid"))
 # a run's statistics a summary gives, and those it gives for buying and holding too
 SUMMARY = ("total_return_pct", "cagr_pct", "volatility_pct", "sharpe", "max_drawdown_pct",
            "exposure_pct", "num_trades", "win_rate", "profit_factor")
@@ -498,8 +499,9 @@ HOLDING = ("total_return_pct", "cagr_pct", "volatility_pct", "sharpe", "max_draw
 
 
 def _figure(value, row):
-    """A summary's number as its row shows it: a count whole, an amount as an
-    account's, any other to two places, and nothing where it has none."""
+    """``value``, a number of a summary or a run's record, as its ``row`` shows it: a
+    count whole, an amount as an account's, any other to two places, and nothing where
+    it has none."""
     if math.isnan(value):
         return ""
     if row in COUNTED:
@@ -749,7 +751,7 @@ class Result:
         volatility, Sharpe, maximum drawdown, exposure, round trips, win rate and profit
         factor as its record holds them, its costs and, where it was liquidated, the
         bars it was, each beside buying and holding's over the same rows where it reads
-        the equity, and beside its interval or why it has none; and under them what
+        the equity, and beside its interval or why it has none; and its context, what
         ran, at which venue, on which bars and from which balance, the level it was
         recorded at below the full one, its assumptions, those graded and those leaning
         optimistic named, and a book's accounts, margined apart."""
@@ -793,9 +795,9 @@ class Result:
 
 
     def _ran(self):
-        """The lines under the run's summary: what ran, at which venue, on which bars
-        and from which balance, the level it was recorded at below the full one, and
-        its assumptions, with a book's accounts."""
+        """The context of the run's summary, as (name, value) pairs: what ran, at which
+        venue, on which bars and from which balance, the level it was recorded at below
+        the full one, and its assumptions, with a book's accounts."""
         given    = self.provenance
         book     = given.get("results")
         accounts = list(book.values()) if book else [given]
@@ -825,10 +827,9 @@ class Result:
         leans  = [row["name"] + (f" at {row['venue']}" if "venue" in row else "")
                   for row in table
                   if row["grade"] == "simplified" and row["direction"] == "optimistic"]
-        return [_frames.line(ran),
-                _frames.line([("assumptions", len(table)),
-                              ("graded optimistic", ", ".join(graded) or "none"),
-                              ("lean optimistic", ", ".join(leans) or "none")])]
+        return ran + [("assumptions", len(table)),
+                      ("graded optimistic", ", ".join(graded) or "none"),
+                      ("lean optimistic", ", ".join(leans) or "none")]
 
 
     def chart(self, *marks, instrument=None, data=None, panels=None, focus=None,

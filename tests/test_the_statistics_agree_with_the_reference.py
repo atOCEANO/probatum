@@ -940,10 +940,12 @@ def test_a_run_s_round_trips_agree_by_side_and_by_session(seed):
     times   = result.time.tolist()
 
     pairs = [(stats.trade_stats(result), statistics.trade_stats(pnl, held, opening))]
-    for name, found in stats.long_short_split(result).items():
+    split = stats.long_short_split(result)
+    for name in ("long", "short"):
         mine = [k for k, at in enumerate(side) if at == name]
-        pairs.append((found, statistics.trade_stats([pnl[k] for k in mine],
-                                                    [held[k] for k in mine], opening)))
+        pairs.append((getattr(split, name),
+                      statistics.trade_stats([pnl[k] for k in mine], [held[k] for k in mine],
+                                             opening)))
 
     for found, theirs in pairs:
         for name, value in theirs.items():

@@ -1,7 +1,8 @@
-"""How a table, a record and a summary show, in a notebook and as text: as the pandas
-frame its ``to_pandas()`` gives, what holds for every row said once under it as names
-and values, and why a row has no value or no interval numbered under it (ADR 0041).
-Without pandas, which a frame needs, a table and a record show their fields."""
+"""How a table, a record and a summary show, in a notebook and as text, as pandas frames
+(ADR 0041): the frame its ``to_pandas()`` gives, beside it a frame of one column of what
+holds for every row, and under them a frame of the reasons a row has no value or no
+interval, by the number its row gives. Without pandas, which a frame needs, a table and
+a record show their fields."""
 
 import html
 import importlib
@@ -11,9 +12,10 @@ import numpy as np
 
 from ._errors import MissingDependency
 
-# a line under a frame, a little apart from it and faded, in the cell's own ink
-UNDER = ('<div style="margin-top: 6px; font-size: 0.92em; opacity: 0.75; '
-         'white-space: normal">{}</div>')
+# the frames side by side where the cell is wide enough, and the reasons under them
+BESIDE = ('<div style="display: flex; flex-wrap: wrap; align-items: flex-start; '
+          'gap: 0 24px">{}</div>')
+UNDER  = '<div style="margin-top: 4px">{}</div>'
 
 
 def pandas(said=None):
@@ -46,16 +48,15 @@ def typed(frame):
 
 
 def said(value):
-    """One setting's value: a number to the places pandas shows, 6 without it, with the
-    trailing zeros left off, or to that many significant figures where it is too small
-    for them, and any other as its text."""
+    """``value`` as a frame of what holds shows it: a number to the places pandas shows,
+    with the trailing zeros left off, or to that many significant figures where it is
+    too small for them, and any other as its text."""
     if isinstance(value, (bool, np.bool_)):
         return str(bool(value))
     if isinstance(value, (int, np.integer)):
         return f"{int(value):,}"
     if isinstance(value, (float, np.floating)):
-        found  = pandas()
-        places = 6 if found is None else found.get_option("display.precision")
+        places = pandas().get_option("display.precision")
         value  = float(value) + 0.0
         if not math.isfinite(value):
             return str(value)
@@ -66,34 +67,56 @@ def said(value):
     return str(value)
 
 
-def line(settings):
-    """``settings``, (name, value) pairs, as one line, a value of None left out."""
-    return "; ".join(f"{name} {said(value)}" for name, value in settings if value is not None)
+def held(pairs):
+    """``pairs``, (name, value), as a frame of one column, ``value``, each as ``said``
+    gives it, or None where there are none."""
+    pairs = list(pairs)
+    if not pairs:
+        return None
+    return pandas().DataFrame({"value": [said(value) for _, value in pairs]},
+                              index=[name for name, _ in pairs])
 
 
-def noted(frame):
-    """``frame``, whose last columns are ``level``, ``method`` and ``why_none``, as it
-    shows, beside the lines under it: its level dropped where every interval it holds
-    shares one, which is said under it, and each reason numbered in ``why_none``, the
-    reasons under it, each once."""
+def shown(frame, columns, figure):
+    """``frame``, whose last columns are ``low``, ``high``, ``level``, ``method`` and
+    ``why_none``, as it shows: each number of ``columns`` as ``figure`` gives it for its
+    row, the level as ``said`` does, nothing where there is none, and each reason the
+    number of its row of the frame of reasons beside it, None where it holds none."""
+    frame = frame.copy()
+    for column in columns:
+        frame[column] = [figure(value, row)
+                         for row, value in zip(frame.index, frame[column])]
+    frame["level"] = ["" if math.isnan(level) else said(level) for level in frame["level"]]
+
     reasons = list(dict.fromkeys(why for why in frame["why_none"] if why))
-    shown   = frame.copy()
-    shown["why_none"] = [str(reasons.index(why) + 1) if why else ""
+    frame["why_none"] = [str(reasons.index(why) + 1) if why else ""
                          for why in frame["why_none"]]
-
-    lines  = []
-    levels = frame["level"].dropna().unique()
-    if len(levels) <= 1:
-        shown = shown.drop(columns="level")
-        lines.append(line([("level", level) for level in levels]))
-
-    return shown, lines + [f"{number}. {why}" for number, why in enumerate(reasons, start=1)]
+    if not reasons:
+        return frame, None
+    return frame, pandas().DataFrame({"why_none": reasons},
+                                     index=range(1, len(reasons) + 1))
 
 
-def html_of(frame, lines):
-    return frame._repr_html_() + "".join(UNDER.format(html.escape(text)) for text in lines
-                                         if text)
+def html_of(frame, beside=None, under=None):
+    """``frame`` as a notebook shows it, ``beside`` it what holds for every row and
+    ``under`` them the reasons, each cell whole, or the three as text where pandas is
+    set to show frames in a notebook as text."""
+    pd = pandas()
+    if not pd.get_option("display.notebook_repr_html"):
+        return f"<pre>{html.escape(text_of(frame, beside, under))}</pre>"
+
+    with pd.option_context("display.max_colwidth", None):
+        parts = "".join(f"<div>{part._repr_html_()}</div>" for part in (frame, beside)
+                        if part is not None)
+        shown = BESIDE.format(parts)
+        if under is not None:
+            shown += UNDER.format(under._repr_html_())
+    return shown
 
 
-def text_of(frame, lines):
-    return "\n".join([repr(frame)] + [text for text in lines if text])
+def text_of(frame, beside=None, under=None):
+    """``frame`` as text, ``beside``, what holds for every row, and ``under``, the
+    reasons, after it, each cell whole."""
+    with pandas().option_context("display.max_colwidth", None):
+        return "\n\n".join(repr(part) for part in (frame, beside, under)
+                           if part is not None)

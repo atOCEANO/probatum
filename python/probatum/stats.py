@@ -31,8 +31,8 @@ from ._streams import stream
 __all__ = ["AlphaBeta", "BacktestLength", "Benchmark", "Consistency", "Decay",
            "Decomposition", "Deflated", "Difference", "EffectiveTrials", "Forecast",
            "Importance", "Interval", "Overfitting", "Permutations", "Plateau",
-           "Probability", "RealityCheck", "Statistics", "TrackRecord", "TradeStats",
-           "UnderWater",
+           "Probability", "RealityCheck", "Sides", "Statistics", "TrackRecord",
+           "TradeStats", "UnderWater",
            "alpha_beta", "autocorrelation", "benchmark", "bootstrap", "compare",
            "conditional_value_at_risk", "decompose", "deflated_sharpe",
            "deflation_threshold", "drawdown", "drawdown_table", "effective_sample",
@@ -114,7 +114,8 @@ INDEXED = (("names", "parameter"), ("window", "window"), ("numbers", "trial"),
 class _Frozen:
     """What the module's results share: set once, compared and hashed by what they
     hold, pickled as the values they were made from, and shown as the frame
-    ``to_pandas()`` gives, what holds for every row said once under it (ADR 0041)."""
+    ``to_pandas()`` gives, with what holds for every row in a frame of one column beside
+    it (ADR 0041)."""
 
     __slots__ = ()
     # two tests a record holds in fields of its own, each a row of its p-value and its
@@ -122,6 +123,10 @@ class _Frozen:
     _tests = ()
     # the fields that hold times, int64 nanoseconds since 1970, which a frame gives in UTC
     _times = ()
+    # the fields the records a record holds share by construction, as a Difference's two
+    # tests share their statistic, level and count, said once beside them; a field they
+    # share only by chance, as two p-values or two sides' trade counts, stays a column
+    _shared = ()
 
 
     def __setattr__(self, name, value):
@@ -153,7 +158,7 @@ class _Frozen:
             return f"{type(self).__name__}({held})"
 
         table, settings = self._frame()
-        return _frames.text_of(table, [_frames.line(settings)])
+        return _frames.text_of(table, _frames.held(settings))
 
 
     def _repr_html_(self):
@@ -161,7 +166,7 @@ class _Frozen:
             return None
 
         table, settings = self._frame()
-        return _frames.html_of(table, [_frames.line(settings)])
+        return _frames.html_of(table, _frames.held(settings))
 
 
     def to_pandas(self):
@@ -185,7 +190,7 @@ class _Frozen:
                                  columns=["p", "statistic"])
             used  = {field for _, *fields in self._tests for field in fields}
             return _frames.typed(table), [(name, value) for name, value in held.items()
-                                          if name not in used]
+                                          if name not in used and value is not None]
 
         tests = {name: value for name, value in held.items() if isinstance(value, _Frozen)}
         if tests:
@@ -196,12 +201,15 @@ class _Frozen:
             table = pd.DataFrame({key: pd.Series([read[name].get(key) for name in read],
                                                  index=list(read), dtype=object)
                                   for key in keys}).dropna(axis=1, how="all")
-            settings = [(name, value) for name, value in held.items() if name not in tests]
-            # a column every row shares is said once, beside the record's own fields
-            for name in list(table.columns):
+            settings = [(name, value) for name, value in held.items()
+                        if name not in tests and value is not None]
+            own      = dict(settings)
+            for name in [name for name in self._shared if name in table.columns]:
                 values = table[name].tolist()
-                if all(value == values[0] for value in values[1:]):
-                    if all(name != given for given, _ in settings):
+                # said once only where the rows and the record do share it, which records
+                # built by hand need not
+                if all(value == own.get(name, values[0]) for value in values):
+                    if name not in own:
                         settings.append((name, values[0]))
                     table = table.drop(columns=name)
             return _frames.typed(table), settings
@@ -211,10 +219,17 @@ class _Frozen:
             size     = max(set(sizes), key=sizes.count)
             columns  = {name: list(value) for name, value in held.items()
                         if isinstance(value, (tuple, list)) and len(value) == size}
-            settings = [(name, value) for name, value in held.items() if name not in columns]
+            settings = [(name, value) for name, value in held.items()
+                        if name not in columns and value is not None]
             table    = pd.DataFrame(columns)
             for name, axis in INDEXED:
                 if name in table.columns:
+                    # a balance given as 1e5 indexes as 100000, not 100000.0; a key an
+                    # int64 cannot hold, not finite or past 2**63, keeps them all floats
+                    keys = table[name]
+                    if (keys.dtype.kind == "f" and np.all(np.abs(keys) < 2.0**63)
+                            and np.all(keys == np.floor(keys))):
+                        table[name] = keys.astype(np.int64)
                     table = table.set_index(name).rename_axis(axis)
             return table, settings
 
@@ -317,6 +332,7 @@ class Difference(_Frozen):
     difference."""
 
     __slots__ = ("estimate", "delta", "bootstrap")
+    _shared   = ("statistic", "estimate", "level", "count", "kind")
 
 
     def __init__(self, estimate, delta, bootstrap):
@@ -486,6 +502,17 @@ class TradeStats(_Frozen):
             max_consecutive_losses = int(max_consecutive_losses),
             avg_bars_held          = float(avg_bars_held),
         )
+
+
+class Sides(_Frozen):
+    """A run's closed round trips by side: ``long`` and ``short``, the TradeStats of
+    each (Specification, Round trips)."""
+
+    __slots__ = ("long", "short")
+
+
+    def __init__(self, long, short):
+        self._set(long=long, short=short)
 
 
 class Benchmark(_Frozen):
@@ -807,13 +834,21 @@ class Statistics(Mapping):
     def __repr__(self):
         if _frames.pandas() is None:
             return f"Statistics({dict(self)!r})"
-        return _frames.text_of(*_frames.noted(self.to_pandas()))
+        return _frames.text_of(*self._shown())
 
 
     def _repr_html_(self):
         if _frames.pandas() is None:
             return None
-        return _frames.html_of(*_frames.noted(self.to_pandas()))
+        return _frames.html_of(*self._shown())
+
+
+    def _shown(self):
+        """The record as it shows, each number as a summary shows its row's, with no
+        frame beside it and the frame of its reasons under it."""
+        from ._result import _figure
+        frame, reasons = _frames.shown(self.to_pandas(), ("value", "low", "high"), _figure)
+        return frame, None, reasons
 
 
     def to_pandas(self):
@@ -1501,13 +1536,13 @@ def trade_stats(result):
 
 
 def long_short_split(result):
-    """``trade_stats`` of a Result's long round trips and of its short ones, under
-    ``"long"`` and ``"short"`` (Specification, Round trips)."""
+    """``trade_stats`` of a Result's long round trips and of its short ones, as Sides
+    (Specification, Round trips)."""
     result = _ran(result, "long_short_split")
     pnl, held, side, _ = _trips(result)
     opening = float(result.equity[0])
-    return {name: _traded(pnl[side == name], held[side == name], opening)
-            for name in ("long", "short")}
+    return Sides(*(_traded(pnl[side == name], held[side == name], opening)
+                   for name in ("long", "short")))
 
 
 def session_buckets(result, by="hour"):
