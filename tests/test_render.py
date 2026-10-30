@@ -22,7 +22,7 @@ import pytest
 playwright = pytest.importorskip("playwright.sync_api")
 
 import probatum
-from probatum.chart.marks import Background, Band, Level, Line, Marker, Panel
+from probatum.chart.marks import Background, Band, Histogram, Level, Line, Marker, Panel
 
 HOUR = 3_600 * 10**9
 # 2024-01-01 at midnight, UTC
@@ -511,6 +511,10 @@ def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_pat
                   return n.top < t.top;
                 }"""
             ),
+            "cursors": page.evaluate(
+                "['#nbody tr', '#tbody tr'].map(s => "
+                "getComputedStyle(document.querySelector(s)).cursor)"
+            ),
         }
         browser.close()
 
@@ -523,9 +527,11 @@ def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_pat
     assert seen["trades_shown"] and seen["notes_shown"]
 
     # the caller's table first. 1.3.0 had it second, and a walk forward with 22
-    # fills then hid the windows its own title was about inside a panel that
-    # scrolls; a year of fills would have put them out of reach entirely
+    # round trips then hid the windows its own title was about inside a panel that
+    # scrolls; a year of them would have put them out of reach entirely
     assert seen["notes_first"]
+    # only the trade log's rows answer a click, so only they look as if they would
+    assert seen["cursors"] == ["auto", "pointer"]
 
 
 def test_notes_keep_the_table_button_on_a_chart_that_never_traded(tmp_path):
@@ -969,6 +975,33 @@ def test_the_theme_toggle_rewrites_the_palette_in_a_saved_file(tmp_path):
     assert light["errors"] == []
 
 
+def test_the_theme_toggle_recolours_every_mark_drawn_in_the_palette_s_colours(tmp_path):
+    # a line, a histogram and a level in the palette's colours each kept the one it
+    # was made in, so a line in the ink went white on white
+    tint   = {"dark": dict.fromkeys(("s1", "s4", "muted"), "#ff00ff"),
+              "light": dict.fromkeys(("s1", "s4", "muted"), "#00ffff")}
+    data   = bars()
+    built  = run(data).chart(Line(data.close, "close"),
+                             Histogram(data.close - data.close.mean(), "swing",
+                                       panel="swing"),
+                             Level(float(data.close.mean()), "mid"),
+                             palette=tint, theme="dark")
+    toggle = lambda page: page.click("#theme")
+
+    assert drawn_colours(built, tmp_path, "stale.html", [255, 0, 255], act=toggle) == 0
+    assert drawn_colours(built, tmp_path, "fresh.html", [0, 255, 255], act=toggle) > 100
+
+
+def test_a_histogram_s_legend_swatch_is_its_bars_colour(tmp_path):
+    # its bars took the fourth colour and its swatch the first
+    data  = bars()
+    tint  = {"dark": {"s1": "#ff00ff", "s4": "#00ffff"}}
+    built = data.chart(Histogram(data.close - data.close.mean(), "swing", panel="swing"),
+                       palette=tint, theme="dark")
+
+    assert drawn_colours(built, tmp_path, "swatch.html", [255, 0, 255]) == 0
+
+
 def test_a_title_reaches_the_document_and_survives_angle_brackets(tmp_path):
     built = run(bars()).chart(title="BTC <perp> 10x")
     seen  = observe(built, tmp_path)
@@ -977,9 +1010,10 @@ def test_a_title_reaches_the_document_and_survives_angle_brackets(tmp_path):
     assert seen["title"]  == "BTC <perp> 10x"
 
 
-def drawn_colours(built, tmp_path, name, want):
-    # how many pixels of one colour the chart actually painted. The counted colour
-    # is unique to the mark under test, so zero means it was not drawn at all
+def drawn_colours(built, tmp_path, name, want, act=None):
+    # how many pixels of one colour the chart actually painted, after ``act`` where
+    # one is given. The counted colour is unique to the mark under test, so zero
+    # means it was not drawn at all
     path = built.save(str(tmp_path / name))
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
@@ -988,6 +1022,9 @@ def drawn_colours(built, tmp_path, name, want):
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(400)
+        if act is not None:
+            act(page)
+            page.wait_for_timeout(300)
         hits = page.evaluate(
             """
             (want) => {

@@ -91,8 +91,16 @@ const SERIES_SLOTS = 4;
 
 const slotColor = function (spec) {
   if (spec.color) return spec.color;
-  if (spec.slot === undefined) return T().s1;
-  return T()["s" + (spec.slot + 1)] || T().s1;
+  // a histogram takes no slot, and draws in the fourth
+  if (spec.slot === undefined) return T().s4;
+  return T()["s" + (spec.slot + 1)];
+};
+
+// the colours a mark's series takes from the theme, given as it is made and again on
+// every toggle: an area its line, any other its colour, the muted one under a ramp
+const lookOf = function (spec) {
+  if (spec.fill) return { lineColor: slotColor(spec) };
+  return { color: isRamp(spec.color) ? T().muted : slotColor(spec) };
 };
 
 const fmt = function (v, d) {
@@ -332,8 +340,7 @@ const addLine = function (spec, panel, index) {
   // refused at construction rather than resolved in favour of one half
   if (spec.fill) {
     const stops = spec.fill;
-    return chart.addSeries(LWC.AreaSeries, Object.assign({
-      lineColor: slotColor(spec),
+    return chart.addSeries(LWC.AreaSeries, Object.assign(lookOf(spec), {
       bottomColor: stops[0],
       topColor: stops[stops.length - 1],
     }, shared), index);
@@ -345,15 +352,11 @@ const addLine = function (spec, panel, index) {
   // grey. That is the colour rule of ADR 0042 leaking out through a hole the
   // asset grep cannot see, since the literal lives in the vendored bundle rather
   // than in ours
-  return chart.addSeries(LWC.LineSeries, Object.assign({
-    color: isRamp(spec.color) ? T().muted : slotColor(spec),
-  }, shared), index);
+  return chart.addSeries(LWC.LineSeries, Object.assign(lookOf(spec), shared), index);
 };
 
 const addHistogram = function (spec, panel, index) {
-  const s = chart.addSeries(LWC.HistogramSeries, Object.assign({
-    // not undefined: see addLine. The bundle's own default would show through
-    color: isRamp(spec.color) ? T().muted : (spec.color || T().s4),
+  const s = chart.addSeries(LWC.HistogramSeries, Object.assign(lookOf(spec), {
     base: spec.base,
     priceLineVisible: false, lastValueVisible: false,
     priceFormat: priceFormat(spec.digits),
@@ -381,7 +384,8 @@ const runsOf = function (rows) {
 };
 
 // per-item colour is data, so it is written into the point rather than into the
-// series options, and it has to be rewritten on a theme change.
+// series options, and it has to be rewritten on a theme change, as the options'
+// colours, the entry's look, are given again here.
 //
 // The one series per contiguous run below is not in the spec because the spec
 // was never wrong: it is what it takes to paint a gap the renderer would
@@ -404,12 +408,16 @@ const paint = function (entry) {
   }
   if (!entry.make) {
     entry.series.setData(rows);
+    entry.series.applyOptions(entry.look());
     return;
   }
   const runs = runsOf(rows);
   while (entry.siblings.length < runs.length - 1) entry.siblings.push(entry.make());
   const drawn = [entry.series].concat(entry.siblings);
-  for (let k = 0; k < drawn.length; k++) drawn[k].setData(runs[k] || []);
+  for (let k = 0; k < drawn.length; k++) {
+    drawn[k].setData(runs[k] || []);
+    drawn[k].applyOptions(entry.look());
+  }
 };
 
 const paintCandles = function () {
@@ -448,7 +456,8 @@ const paintVolume = function () {
 
 let CANDLES = null;
 let VOLUME = null;
-let SERIES = [];                       // {spec, series} for every value-carrying mark
+let SERIES = [];                       // {spec, series, look} for every value-carrying mark
+let LEVELS = [];                       // {spec, line} for every level
 
 
 // ------------------------------------------------------------------- theme
@@ -509,6 +518,9 @@ const applyTheme = function (mode) {
   paintCandles();
   paintVolume();
   SERIES.forEach(paint);
+  LEVELS.forEach(function (level) {
+    level.line.applyOptions({ color: level.spec.color || t.muted });
+  });
   repaintTrades();
   invalidate();
 };
@@ -727,6 +739,7 @@ const mount = function (spec, root) {
   });
 
   SERIES = [];
+  LEVELS = [];
 
   // slots are handed out per panel, in argument order, over the lines that named
   // no colour. Per panel rather than per chart because two colours only have to
@@ -751,13 +764,14 @@ const mount = function (spec, root) {
   spec.series.forEach(function (s) {
     const index = panelIndex(s.panel);
     const panel = spec.panels[index];
+    const look  = function () { return lookOf(s); };
     if (s.kind === "line") {
       // the factory is what lets a gapped line grow a sibling per run in paint;
       // a histogram needs none, since its bars are already separate marks
       const make = function () { return addLine(s, panel, index); };
-      SERIES.push({ spec: s, series: make(), make: make, siblings: [] });
+      SERIES.push({ spec: s, series: make(), make: make, siblings: [], look: look });
     } else if (s.kind === "histogram") {
-      SERIES.push({ spec: s, series: addHistogram(s, panel, index) });
+      SERIES.push({ spec: s, series: addHistogram(s, panel, index), look: look });
     }
   });
 
@@ -765,7 +779,7 @@ const mount = function (spec, root) {
   // the gap split in `paint` only runs for an entry that has one: both are dense
   // by construction today, so this is a guard rather than a fix, and the reason to
   // write it is that the next curve added here will not be
-  const addCurve = function (name, track, options, type) {
+  const addCurve = function (name, track, look, options, type) {
     const index = panelIndex(name);
     const panel = spec.panels[index];
     // by name, not by index: panelIndex answers 0 for a name it does not hold, so
@@ -782,30 +796,29 @@ const mount = function (spec, root) {
       return chart.addSeries(type || LWC.AreaSeries, Object.assign({
         priceLineVisible: false, lastValueVisible: false,
         priceFormat: priceFormat(panel.digits, unit),
-      }, options, pinned(panel)), index);
+      }, look(), options, pinned(panel)), index);
     };
     SERIES.push({
       spec: {
-        panel: name, color: options.lineColor, equityBase: base,
+        panel: name, equityBase: base,
         i0: track.i0, v: track.v, digits: panel.digits, unit: unit, own: true,
       },
       series: make(),
       make: make,
       siblings: [],
+      look: look,
     });
   };
 
   if (spec.equity) {
-    addCurve("equity", spec.equity, {
-      base: spec.equity.v[0], color: t.win, lineWidth: 2,
+    addCurve("equity", spec.equity, function () { return { color: T().win }; }, {
+      base: spec.equity.v[0], lineWidth: 2,
     }, LWC.LineSeries);
   }
   if (spec.drawdown) {
-    addCurve("drawdown", spec.drawdown, {
-      unit: "%",
-      lineColor: t.loss, topColor: t.ddTop, bottomColor: t.ddBottom,
-      lineWidth: 1, invertFilledArea: true,
-    });
+    addCurve("drawdown", spec.drawdown, function () {
+      return { lineColor: T().loss, topColor: T().ddTop, bottomColor: T().ddBottom };
+    }, { unit: "%", lineWidth: 1, invertFilledArea: true });
   }
 
   // after the two curves above, not before them: the engine's own panels get
@@ -817,14 +830,14 @@ const mount = function (spec, root) {
     // muted, not axis: the axis colour is chosen to sit almost invisibly
     // against the plane, which is right for a gridline and wrong for a
     // reference the reader is meant to see
-    frameFor(index).createPriceLine({
+    LEVELS.push({ spec: s, line: frameFor(index).createPriceLine({
       price: s.value,
       color: s.color || T().muted,
       lineWidth: s.width,
       lineStyle: STYLE[s.style],
       axisLabelVisible: true,
       title: s.name || "",
-    });
+    }) });
   });
 
   chart.panes().forEach(function (pane, i) {

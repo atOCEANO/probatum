@@ -142,9 +142,10 @@ const legendRows = function (index) {
     const spec = entry.spec;
     if (spec.panel !== panel.name) return;
     const at = spec.equityBase === undefined ? null : legendValueAt(spec, i);
+    const look = entry.look();
     const swatch = spec.equityBase !== undefined
       ? (at === null || at >= spec.equityBase ? T().win : T().loss)
-      : isRamp(spec.color) ? colorAt(spec.color, i) : slotColor(spec);
+      : isRamp(spec.color) ? colorAt(spec.color, i) : look.lineColor || look.color;
     rows.push({
       swatch: swatch || T().muted,
       label: spec.own ? "" : spec.name || "",

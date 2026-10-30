@@ -182,11 +182,11 @@ th, td { white-space: nowrap; }
 #trades th[data-key]:hover { color: var(--ink); }
 #trades th[aria-sort="ascending"]::after { content: " \2191"; }
 #trades th[aria-sort="descending"]::after { content: " \2193"; }
-tbody tr { cursor: pointer; }
-tbody tr:hover { background: var(--hairline); }
-tbody tr.sel { background: color-mix(in srgb, var(--s1) 18%, transparent); }
-tbody tr.sel td { color: var(--ink); }
-tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--s1); }
+#trades tbody tr { cursor: pointer; }
+#trades tbody tr:hover { background: var(--hairline); }
+#trades tbody tr.sel { background: color-mix(in srgb, var(--s1) 18%, transparent); }
+#trades tbody tr.sel td { color: var(--ink); }
+#trades tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--s1); }
 .win { color: var(--win); } .loss { color: var(--loss); }
 .liq { color: var(--loss); font-weight: 600; }
 
