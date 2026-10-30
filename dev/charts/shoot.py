@@ -48,14 +48,17 @@ def main():
             shot   = shots[name]
             width  = shot["width"]
             height = shot["height"] + shot.get("below", 0)
+            # a chart opens on its reader's scheme, and these pictures are of the dark
             page   = browser.new_page(
                 viewport={"width": width, "height": height},
                 device_scale_factor=SCALE,
+                color_scheme="dark",
             )
 
             page.goto((CHARTS / f"{name}.html").as_uri())
             page.wait_for_timeout(SETTLE_MS)
-            if shot.get("open"):
+            # a table of the caller's opens the panel by itself
+            if shot.get("open") and page.locator("#tablePanel").is_hidden():
                 page.click("#tbl")
                 # opening the panel shrinks the plot above it, so the row that
                 # slides up under the cursor comes out of the shot wearing its
