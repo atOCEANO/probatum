@@ -727,31 +727,6 @@ class Result:
         return head, rows
 
 
-    def report(self, path):
-        """Write the run's tear sheet to ``path`` as one HTML file with no JavaScript,
-        its folders made where they are missing, and return ``path``: its headline
-        numbers with their intervals, each naming its method; its equity and drawdown
-        beside its baselines, its returns and each month's, its rolling Sharpe and
-        volatility, its exposure, each instrument's weight and pnl where it holds
-        several, its costs and its round trips, as static figures; the three baselines
-        with the Sharpe difference against buying and holding; its assumptions, the
-        optimistic ones named at the top; and its provenance. It needs matplotlib,
-        which the plot extra installs (ADR 0041)."""
-        from .report import _written
-        return _written("report", path, "sheet", self)
-
-
-    def figure(self, name):
-        """One figure of the run's tear sheet alone, as a matplotlib Figure to save as
-        PNG, SVG or PDF, drawn as ``report`` draws it: ``"equity"``, ``"drawdown"``,
-        ``"returns"``, ``"monthly"``, ``"rolling_sharpe"``, ``"rolling_volatility"``,
-        ``"exposure"``, ``"weights"``, ``"pnl"``, ``"costs"`` or ``"trips"``, one that
-        draws nothing of this run, as weights for a run of one instrument, refused. It
-        needs matplotlib, which the plot extra installs (ADR 0041)."""
-        from .report import _figure
-        return _figure(name, "sheet", self)
-
-
     def chart(self, *marks, instrument=None, data=None, panels=None, focus=None,
               candle_color=None, theme=None, palette=None, height=None, title=None,
               future=0, stats=None, trades=True, drawdown=None, notes=None):

@@ -59,7 +59,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn matplotlib pytest \
+    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest \
     && python -c "import probatum; print('py313 wheel import OK')" \
     && pytest -q /tests
 
@@ -72,7 +72,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn matplotlib pytest \
+    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest \
     && python -c "import probatum; print('py314 wheel import OK')" \
     && pytest -q /tests
 
@@ -124,7 +124,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
-    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn matplotlib pytest \
+    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest \
     && pytest -q --slow -m slow /tests
 
 # The coverage cells simulate every interval probatum.stats gives on the shapes a
@@ -266,7 +266,7 @@ COPY Dockerfile /Dockerfile
 COPY dev /devtools
 WORKDIR /
 RUN PIP_CONSTRAINT=/constraints.txt pip install --no-cache-dir /sdist/*.tar.gz \
-    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn matplotlib pytest \
+    numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest \
     && pytest -q -p no:cacheprovider /tests
 
 # Mutation testing of the two pure-Rust crates: cargo-mutants changes one line at a

@@ -231,8 +231,6 @@ Read `trade_stats` before any of the ratios. A win rate and a profit factor are 
 
 For how far the numbers can be trusted, `probatum.stats` gives each statistic of a run its interval, named for its method: the Sharpe's by the delta method over a long-run variance that autocorrelation widens and never narrows, with its probability of beating a benchmark and the track record that would show it, the others by a bootstrap of the returns or of the round trips. It also tests two Sharpes on the same bars and measures alpha and beta against buying and holding, and `result.summary()` prints the run with its Sharpe's interval ([Python API](.Documentation/Python_API.md#inference)). `probatum.stats.deflated_sharpe(study, null)` asks whether a search's winner beats what the best of that many trials would have reached by luck; it requires a random-search null and refuses to guess one.
 
-`result.report("run.html")` writes the run's tear sheet, one HTML file of its numbers with their intervals beside static figures of its equity and its baselines, its drawdown, its returns, its costs and its round trips, and `study.report("search.html")` a search's, with its trials and how much of their scores each parameter explains; both need the `plot` extra ([Python API](.Documentation/Python_API.md#reports)).
-
 ### Looking at the result
 
 The five paths above produce numbers. `result.chart()` is how you look at a run: its candles, the fills on the bars they happened on, the account's equity with its drawdown shaded onto it, a trade log, and any array of your own beside them. `data.chart()` draws bars with no run.
@@ -366,7 +364,6 @@ The optional extras go in brackets before the `@`, and stack:
 | `data` | pandas, pyarrow | DataFrame and parquet input |
 | `search` | optuna, cloudpickle | `probatum.search`'s TPE sampler and its workers |
 | `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
-| `plot` | matplotlib | a run's tear sheet and a search's report |
 
 ```bash
 pip install "emsl[search,sb3] @ <the URL for your platform, from above>"

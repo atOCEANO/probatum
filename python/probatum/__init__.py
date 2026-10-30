@@ -31,10 +31,7 @@ series of returns: the Sharpe's interval, its probability of beating a benchmark
 the track record that would show it; what else describes a run, its drawdowns, its
 statistics over time, its round trips and where its money went, with ``compare``
 setting runs side by side; and how far a search's winner can, judged across all its
-trials. ``Result.report`` and ``Study.report`` write a run's tear sheet and a search's
-or a validation's report, each one HTML file of static figures that ``report`` draws
-from what they hold, with the plot extra's matplotlib, and ``figure`` hands out each
-figure alone.
+trials.
 Every error probatum raises is a ``ProbatumError`` and the built-in it means, and
 every warning a ``ProbatumWarning``.
 """

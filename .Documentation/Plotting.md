@@ -614,8 +614,6 @@ chart.spec()                            # the underlying document, for tests
 
 `show` embeds an iframe whose content is stored in the `.ipynb`, so the chart survives the notebook being saved and reopened with **no kernel and no network**. A chart left as a cell's last line is drawn the same way with no `show()`, and `show()` draws one anywhere in a cell, as inside a loop. Outside a notebook `show` raises and points at `save`.
 
-A paper takes static figures instead: `result.figure(name)` hands out one figure of the run's tear sheet as a matplotlib Figure, to save as PNG, SVG or PDF ([Python API](Python_API.md#reports)).
-
 <br>
 
 ### Where it renders

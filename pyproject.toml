@@ -26,7 +26,6 @@ classifiers = [
 data = ["pandas", "pyarrow"]
 search = ["optuna>=5.0", "cloudpickle>=2.0"]
 sb3 = ["stable-baselines3>=2.0"]
-plot = ["matplotlib>=3.10"]
 
 [project.urls]
 Repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
