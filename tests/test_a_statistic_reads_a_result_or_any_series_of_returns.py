@@ -166,7 +166,7 @@ def test_each_result_says_its_numbers_never_changes_and_pickles_as_it_was():
     assert (interval.statistic, interval.method, interval.count, interval.lag,
             interval.floored, interval.level) == ("sharpe", "delta method", 8, 2, True, 0.95)
     assert str(probability) == "probabilistic sharpe 0.705 against 1.00, one-sided"
-    assert repr(record).startswith("TrackRecord(minimum track record 1.0 years for 95% ")
+    assert repr(record) == repr(record.to_pandas())
 
     for made in (interval, probability, record):
         assert pickle.loads(pickle.dumps(made))       == made
@@ -241,7 +241,7 @@ def test_a_bootstrap_refuses_what_its_sample_cannot_support_by_name(result, trad
                        "which a plain series does not hold; pass the Result"):
         stats.bootstrap(MONTHLY, "win_rate", periods_per_year=12)
     with pytest.raises(ProbatumValueError, match=f"round trips: "
-                       f"{result.stats['num_trades']} closed; an interval of win_rate "
+                       f"{result.stats['num_trades']} closed; an interval of them "
                        f"needs at least 60"):
         stats.bootstrap(result, "win_rate")
     with pytest.raises(ProbatumValueError, match="sortino: inf, a reward over no measured "

@@ -11,7 +11,6 @@ import numpy as np
 from ._backtest import _backtested, _real, _slots
 from ._data import Data
 from ._errors import ProbatumTypeError, ProbatumValueError, ProbatumWarning, VenueError
-from ._result import _money
 from ._venue import _balance, _python, _run, _venue_of
 from .stats import PACKAGE, _Frozen, _notional
 
@@ -51,23 +50,6 @@ class Capacity(_Frozen):
         )
 
 
-    def __repr__(self):
-        return f"Capacity({_counted(self.balances, 'balance')})"
-
-
-    def __str__(self):
-        header = ("balance", "return", "sharpe", "impact paid", "held by the budget",
-                  "round trip", "turnover")
-        rows   = [(_opened(balance), _cell(gain, "{:+.1f}%"), _cell(sharpe, "{:.2f}"),
-                   _money(-impact + 0.0), _cell(held, "{:.0%}"),
-                   _cell(cost, "{:.1f} bps"), _cell(turnover, "{:,.1f}"))
-                  for balance, gain, sharpe, impact, held, cost, turnover in zip(
-                      self.balances, self.total_return_pct, self.sharpe, self.impact,
-                      self.held, self.cost_bps, self.turnover)]
-
-        return _table(header, rows)
-
-
 class CostCurve(_Frozen):
     """What a policy kept as its costs grew, a run a scale in the order given:
     ``scales``, the multiples of every cost its venue charges for trading;
@@ -95,24 +77,6 @@ class CostCurve(_Frozen):
             impact           = _floats(impact),
             turnover         = _floats(turnover),
         )
-
-
-    def __repr__(self):
-        return f"CostCurve({_counted(self.scales, 'scale')})"
-
-
-    def __str__(self):
-        header = ("scale", "round trip", "return", "sharpe", "trades", "fees", "spread",
-                  "slippage", "impact", "turnover")
-        rows   = [(f"{scale:g}", _cell(cost, "{:.1f} bps"), _cell(gain, "{:+.1f}%"),
-                   _cell(sharpe, "{:.2f}"), f"{trades:,}",
-                   *(_money(-paid + 0.0) for paid in costs), _cell(turnover, "{:,.1f}"))
-                  for scale, cost, gain, sharpe, trades, turnover, *costs in zip(
-                      self.scales, self.cost_bps, self.total_return_pct, self.sharpe,
-                      self.num_trades, self.turnover, self.fees, self.spread,
-                      self.slippage, self.impact)]
-
-        return _table(header, rows)
 
 
 def capacity(policy, data, venue, balances, sizing="weight", stop=None,
@@ -380,11 +344,6 @@ def _floats(values):
     return tuple(float(value) for value in values)
 
 
-def _counted(levels, unit):
-    """How many levels a record holds, as its repr names them."""
-    return f"{len(levels):,} {unit}{'s' * (len(levels) != 1)}"
-
-
 class _Wallets(collections.abc.Mapping):
     """A balance of two wallets as a Capacity holds it: read as the dict it was given,
     and set once and hashed, as the record is."""
@@ -418,25 +377,3 @@ class _Wallets(collections.abc.Mapping):
 
     def __repr__(self):
         return repr(self._cash)
-
-
-def _opened(balance):
-    """A balance as a table prints it: an amount, or each wallet's."""
-    if isinstance(balance, _Wallets):
-        return f"{_money(balance['spot'])} spot, {_money(balance['margin'])} margin"
-    return _money(balance)
-
-
-def _cell(value, form):
-    """A number as a table prints it, "none" where it is NaN."""
-    return "none" if math.isnan(value) else form.format(value)
-
-
-def _table(header, rows):
-    """``rows`` of text under ``header``, each column as wide as its widest cell, the
-    first left-aligned and the rest right-aligned."""
-    widths = [max(len(cell) for cell in column) for column in zip(header, *rows)]
-    return "\n".join("   ".join([cells[0].ljust(widths[0])]
-                                + [cell.rjust(width)
-                                   for cell, width in zip(cells[1:], widths[1:])])
-                     for cells in (header, *rows))

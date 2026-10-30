@@ -934,6 +934,6 @@ def test_the_assumptions_go_wherever_the_result_goes(tmp_path):
     assert plain["cost"][fees] == result.assumptions[fees]["cost"] == result.costs[
         "fees"]
 
-    shown = repr(result.assumptions).splitlines()
-    assert shown[0].split() == ["name", "value", "source", "grade", "direction", "cost"]
-    assert len(shown)       == 1 + len(result.assumptions)
+    shown = result.assumptions.to_pandas()
+    assert list(shown.columns) == ["name", "value", "source", "grade", "direction", "cost"]
+    assert repr(result.assumptions) == repr(shown) and len(shown) == len(result.assumptions)

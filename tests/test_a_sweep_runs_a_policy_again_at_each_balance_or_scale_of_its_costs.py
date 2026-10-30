@@ -375,18 +375,19 @@ def test_an_inverse_contract_counts_what_it_traded_in_its_coin():
     assert found.cost_bps[0] == pytest.approx(12.0, rel=1e-3)
 
 
-def test_a_sweep_prints_a_table_and_a_run_that_trades_nothing_reads_none():
+def test_a_sweep_shows_a_row_a_level_and_a_run_that_trades_nothing_reads_nan():
     found = probatum.capacity(POLICY, DATA, VENUE, [10_000.0, 1_000_000.0])
-    assert repr(found) == "Capacity(2 balances)"
+    frame = found.to_pandas()
 
-    lines = str(found).splitlines()
-    assert lines[0].split() == ["balance", "return", "sharpe", "impact", "paid", "held",
-                                "by", "the", "budget", "round", "trip", "turnover"]
-    assert lines[1].startswith("10,000 ") and lines[2].startswith("1,000,000 ")
+    assert (frame.index.name, list(frame.index)) == ("balance", [10_000.0, 1_000_000.0])
+    assert list(frame.columns) == ["total_return_pct", "sharpe", "impact", "held", "cost_bps",
+                                   "turnover"]
+    assert repr(found) == repr(frame)
 
     curve = probatum.cost_curve(np.zeros(len(DATA)), DATA, VENUE, scales=(1.0,))
-    assert repr(curve) == "CostCurve(1 scale)"
-    assert math.isnan(curve.cost_bps[0]) and " none " in str(curve).splitlines()[1]
+
+    assert curve.to_pandas().index.name == "scale"
+    assert math.isnan(curve.cost_bps[0]) and math.isnan(curve.to_pandas()["cost_bps"][1.0])
 
 
 @pytest.mark.parametrize("call, error, said", [

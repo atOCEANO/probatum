@@ -397,7 +397,7 @@ def test_a_table_reads_by_column_row_slice_and_mask(results):
 
     assert trades[0] in trades
     assert trades == results["pair"].trades and trades != results["idle"].trades
-    assert repr(trades).startswith(f"Table({count} rows: instrument, side, size")
+    assert repr(trades) == repr(trades.to_pandas())
     with pytest.raises(ProbatumKeyError, match="table: no column 'symbol'; use one of "
                                                "instrument, side"):
         trades["symbol"]
@@ -644,7 +644,7 @@ hours = np.arange(60, dtype=np.int64) * 3_600_000_000_000
 data = probatum.Data(bars, symbol="BTCUSDT", market="linear", time=hours)
 rows = np.where(np.arange(60) % 10 < 5, 1.0, 0.0)
 frame = probatum.backtest(rows, data, "frictionless").trades.to_pandas()
-assert str(frame["close_bar"].dtype) == "Int64", frame.dtypes
+assert str(frame["close_bar"].dtype) == ("Int64" if frame["open"].any() else "int64")
 assert str(frame["close_time"].dtype) == "datetime64[ns, UTC]", frame.dtypes
 assert frame["close_bar"].isna().sum() == frame["open"].sum()
 """

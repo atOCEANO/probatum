@@ -21,6 +21,7 @@ from collections.abc import Mapping
 
 import numpy as np
 
+from . import _frames
 from ._data import DAY, HOUR, _chosen
 from ._errors import (DataError, ProbatumAttributeError, ProbatumKeyError,
                       ProbatumTypeError, ProbatumValueError, ProbatumWarning)
@@ -106,13 +107,22 @@ TRADES = {
     "profit_factor": ("profit factor", "", "BCa bootstrap of round trips"),
     "avg_trade_pct": ("average trade", "%", "studentized bootstrap of round trips"),
 }
+# the field a record's lists are rows by, and the name of the index it makes of them
+INDEXED = (("names", "parameter"), ("window", "window"), ("numbers", "trial"),
+           ("radii", "radius"), ("balances", "balance"), ("scales", "scale"))
 
 
 class _Frozen:
     """What the module's results share: set once, compared and hashed by what they
-    hold, and pickled as the values they were made from."""
+    hold, pickled as the values they were made from, and shown as the frame
+    ``to_pandas()`` gives, what holds for every row said once under it (ADR 0041)."""
 
     __slots__ = ()
+    # two tests a record holds in fields of its own, each a row of its p-value and its
+    # statistic by the fields that hold them
+    _tests = ()
+    # the fields that hold times, int64 nanoseconds since 1970, which a frame gives in UTC
+    _times = ()
 
 
     def __setattr__(self, name, value):
@@ -138,7 +148,82 @@ class _Frozen:
 
 
     def __repr__(self):
-        return f"{type(self).__name__}({self})"
+        if _frames.pandas() is None:
+            held = ", ".join(f"{name}={value!r}"
+                             for name, value in zip(self.__slots__, self._args()))
+            return f"{type(self).__name__}({held})"
+
+        table, settings = self._frame()
+        return _frames.text_of(table, [_frames.line(settings)])
+
+
+    def _repr_html_(self):
+        if _frames.pandas() is None:
+            return None
+
+        table, settings = self._frame()
+        return _frames.html_of(table, [_frames.line(settings)])
+
+
+    def to_pandas(self):
+        """The record as a pandas DataFrame, the frame it shows as: a row each of the two
+        tests it holds, a row each of the records it holds, a row an item of its lists,
+        or one row of its fields, what holds for every row left out of it."""
+        return self._frame()[0]
+
+
+    def _frame(self):
+        """The record as a frame and what holds for all of it, as (name, value) pairs;
+        a field no row holds, None, is left out."""
+        pd   = _frames.pandas("to_pandas")
+        held = dict(zip(self.__slots__, self._args()))
+        for name in self._times:
+            held[name] = list(pd.to_datetime(list(held[name]), unit="ns", utc=True))
+
+        if self._tests:
+            rows  = [[held[p], held[statistic]] for _, p, statistic in self._tests]
+            table = pd.DataFrame(rows, index=[name for name, *_ in self._tests],
+                                 columns=["p", "statistic"])
+            used  = {field for _, *fields in self._tests for field in fields}
+            return _frames.typed(table), [(name, value) for name, value in held.items()
+                                          if name not in used]
+
+        tests = {name: value for name, value in held.items() if isinstance(value, _Frozen)}
+        if tests:
+            # objects, as the records hold them, which a column of floats would not keep
+            read  = {name: dict(zip(value.__slots__, value._args()))
+                     for name, value in tests.items()}
+            keys  = list(dict.fromkeys(key for values in read.values() for key in values))
+            table = pd.DataFrame({key: pd.Series([read[name].get(key) for name in read],
+                                                 index=list(read), dtype=object)
+                                  for key in keys}).dropna(axis=1, how="all")
+            settings = [(name, value) for name, value in held.items() if name not in tests]
+            # a column every row shares is said once, beside the record's own fields
+            for name in list(table.columns):
+                values = table[name].tolist()
+                if all(value == values[0] for value in values[1:]):
+                    if all(name != given for given, _ in settings):
+                        settings.append((name, values[0]))
+                    table = table.drop(columns=name)
+            return _frames.typed(table), settings
+
+        sizes = [len(value) for value in held.values() if isinstance(value, (tuple, list))]
+        if sizes:
+            size     = max(set(sizes), key=sizes.count)
+            columns  = {name: list(value) for name, value in held.items()
+                        if isinstance(value, (tuple, list)) and len(value) == size}
+            settings = [(name, value) for name, value in held.items() if name not in columns]
+            table    = pd.DataFrame(columns)
+            for name, axis in INDEXED:
+                if name in table.columns:
+                    table = table.set_index(name).rename_axis(axis)
+            return table, settings
+
+        # an interval names its statistic, which names its row
+        named = held.pop("statistic") if isinstance(held.get("statistic"), str) else None
+        return (pd.DataFrame({name: [value] for name, value in held.items()
+                              if value is not None}, index=[named or type(self).__name__]),
+                [])
 
 
     def _args(self):
@@ -406,6 +491,7 @@ class Decay(_Frozen):
 
     __slots__ = ("window", "first", "last", "fitted", "earned", "gaps", "mean", "error",
                  "objective", "direction")
+    _times    = ("first", "last")
 
 
     def __init__(self, window, first, last, fitted, earned, gaps, mean, error, objective,
@@ -709,6 +795,7 @@ class RealityCheck(_Frozen):
 
     __slots__ = ("p", "spa", "statistic", "spa_statistic", "best", "block", "resamples",
                  "trials", "excluded", "benchmark", "descriptive")
+    _tests    = (("reality check", "p", "statistic"), ("spa", "spa", "spa_statistic"))
 
 
     def __init__(self, p, spa, statistic, spa_statistic, best, block, resamples, trials,
@@ -921,7 +1008,35 @@ class Statistics(Mapping):
 
 
     def __repr__(self):
-        return f"Statistics({dict(self)!r})"
+        if _frames.pandas() is None:
+            return f"Statistics({dict(self)!r})"
+        return _frames.text_of(*_frames.noted(self.to_pandas()))
+
+
+    def _repr_html_(self):
+        if _frames.pandas() is None:
+            return None
+        return _frames.html_of(*_frames.noted(self.to_pandas()))
+
+
+    def to_pandas(self):
+        """The record as a pandas DataFrame, a row a statistic: its ``value``, NaN where
+        the record holds none; ``low``, ``high``, ``level`` and ``method``, its interval
+        at 0.95 and how it was found; and ``why_none``, why it has no value or no
+        interval, empty where it has both or has no interval by its nature, as exposure,
+        the counts and funding paid."""
+        pd   = _frames.pandas("to_pandas")
+        rows = []
+        for name in self:
+            found, why = self._found(name, 0.95)
+            value      = self[name]
+            rows.append((math.nan if value is None else float(value),
+                         *((math.nan,) * 3 + ("",) if found is None else
+                           (found.low, found.high, found.level, _method(found))),
+                         why or ""))
+
+        return pd.DataFrame(rows, index=pd.Index(list(self), name="statistic"),
+                            columns=["value", "low", "high", "level", "method", "why_none"])
 
 
     def interval(self, name, level=0.95):
@@ -931,34 +1046,56 @@ class Statistics(Mapping):
         if name not in self._values:
             raise ProbatumKeyError(f"name: {name!r}; give one of {', '.join(self._values)}")
 
-        level = _fraction("level", level)
+        return self._found(name, _fraction("level", level))[0]
+
+
+    def _found(self, name, level):
+        """Statistic ``name``'s Interval at ``level`` beside None, or None beside why it
+        has none, None where it has none by its nature, computed when first read and
+        kept."""
         if (name, level) not in self._kept:
             self._kept[(name, level)] = self._made(name, level)
-
         return self._kept[(name, level)]
 
 
     def _made(self, name, level):
+        if name in self._withheld:
+            return None, self._withheld[name]
+        if name != "sharpe" and name not in TRADES and name not in RETURNS:
+            return None, None
+
         apart = _rank(2000, (1.0 - level) / 2.0) != _rank(2000, (1.0 + level) / 2.0)
-        if name in self._withheld or (name in TRADES or name in RETURNS) and not apart:
-            return None
+        if name != "sharpe" and not apart:
+            return None, (f"level: {level:g}, at which 2,000 resamples put both bounds on "
+                          f"one; give a wider level")
 
         if name in TRADES:
-            return (None if _thin_trips(self._pnl, name)
-                    else _trips_core(self._pnl, self._opening, name, level, 2000,
-                                     None)[0])
+            said = _thin_trips(self._pnl, name)
+            return ((None, said) if said else
+                    _trips_core(self._pnl, self._opening, name, level, 2000, None))
 
-        if name != "sharpe" and name not in RETURNS:
-            return None
-
-        x = self._returns - self._risk_free / self._rate
-        if _thin(x):
-            return None
+        x    = self._returns - self._risk_free / self._rate
+        said = _thin(x)
+        if said:
+            return None, said
 
         if name == "sharpe":
-            return _sharpe_core(x, self._rate, level)[0]
+            return _sharpe_core(x, self._rate, level)
         return _return_core(np.asarray(self._returns), x, self._rate, (name,), level, 2000,
-                            None)[name][0]
+                            None)[name]
+
+
+def _method(interval):
+    """How ``interval`` was found, as a frame's ``method`` gives it: its method, the
+    delta method's lag and whether its variance was floored at lag zero, a bootstrap's
+    mean block, and for the middle of resampled histories that it is no interval."""
+    told = interval.method
+    if interval.lag is not None:
+        told += f", Newey-West lag {interval.lag}"
+        told += ", floored at lag zero" if interval.floored else ""
+    if interval.block is not None:
+        told += f", blocks of {interval.block:.1f}".removesuffix(".0") + " bars"
+    return f"middle of resampled histories, {told}" if interval.kind == "range" else told
 
 
 def _withheld(returns, pnl, rate):
@@ -2554,8 +2691,7 @@ def _thin_trips(pnl, statistic):
     won, lost = np.count_nonzero(pnl > 0.0), np.count_nonzero(pnl < 0.0)
 
     if count < FLOOR:
-        return (f"round trips: {count} closed; an interval of {statistic} needs at least "
-                f"{FLOOR}")
+        return f"round trips: {count} closed; an interval of them needs at least {FLOOR}"
 
     if statistic == "win_rate" and not 0 < won < count:
         return (f"win_rate: {won} of {count} round trips won; an interval needs one that "

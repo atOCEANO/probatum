@@ -18,7 +18,7 @@ import textwrap
 
 import numpy as np
 
-from . import _assumptions, _ipc
+from . import _assumptions, _frames, _ipc
 from ._data import DAY, INTERVALS, _chosen, _when
 from ._errors import (MissingDependency, ProbatumAttributeError, ProbatumIndexError,
                       ProbatumKeyError, ProbatumTypeError, ProbatumValueError)
@@ -183,8 +183,9 @@ class Table:
     None where a value is missing, and a slice, a boolean mask or an array of positions
     gives a table of those rows, a masked position refused, since it names no row;
     iterating gives the rows in order, ``len(table)`` counts them and ``columns`` names
-    the columns. ``to_pandas()`` and ``to_polars()`` make a frame of it. Two tables are
-    equal where their columns and their values are."""
+    the columns. ``to_pandas()`` and ``to_polars()`` make a frame of it, and it shows
+    as the frame ``to_pandas()`` gives where pandas is installed (ADR 0041). Two tables
+    are equal where their columns and their values are."""
 
     __slots__ = ("_held", "_kinds", "_read")
 
@@ -322,7 +323,13 @@ class Table:
 
 
     def __repr__(self):
-        return f"{type(self).__name__}({len(self):,} rows: {', '.join(self.columns)})"
+        if _frames.pandas() is None:
+            return f"{type(self).__name__}({len(self):,} rows: {', '.join(self.columns)})"
+        return repr(self.to_pandas())
+
+
+    def _repr_html_(self):
+        return None if _frames.pandas() is None else self.to_pandas()._repr_html_()
 
 
     def __reduce__(self):
@@ -336,19 +343,18 @@ class Table:
     def to_pandas(self):
         """The table as a pandas DataFrame, made from its columns with no pyarrow: times
         as UTC datetimes, NaT where one is missing, and an integer or a boolean column
-        that can miss a value as pandas' nullable Int64 or boolean."""
-        pd  = _imported("pandas", "to_pandas")
+        that misses a value as pandas' nullable Int64 or boolean, one that misses none
+        as plain integers or booleans."""
+        pd  = _frames.pandas("to_pandas")
         out = {}
 
         for name, kind, nullable, values, valid, _ in self._held.parts():
             if kind == "time":
                 out[name] = pd.DatetimeIndex(values.view("M8[ns]")).tz_localize("UTC")
-            elif kind in ("int", "bool") and nullable:
-                missing = (np.zeros(len(values), dtype=bool) if valid is None
-                           else ~valid)
+            elif kind in ("int", "bool") and nullable and valid is not None:
                 made = (pd.arrays.IntegerArray if kind == "int"
                         else pd.arrays.BooleanArray)
-                out[name] = made(values.copy(), missing)
+                out[name] = made(values.copy(), ~valid)
             elif kind == "text":
                 out[name] = self._column(name, kept=False)
             else:
@@ -381,8 +387,7 @@ class Assumptions(Table):
     ``venue``, ``simplified`` or ``optimistic``, the ``direction`` its error leans where
     it is simplified, and its ``cost`` where the run's ledger and fill log measure it,
     or below the full level its ledger and round trips, in the asset the account
-    settles in. Its repr shows every row, and
-    ``table[table.grade == "optimistic"]`` keeps the optimistic ones."""
+    settles in. ``table[table.grade == "optimistic"]`` keeps the optimistic ones."""
 
     __slots__ = ()
 
@@ -404,15 +409,6 @@ class Assumptions(Table):
                 parts.append((name, kind, nullable, floats, None, None))
 
         return cls(_Held(parts))
-
-
-    def __repr__(self):
-        lines = [list(self.columns)] + [
-            ["" if value is None else f"{value:,.6g}" if isinstance(value, float)
-             else value for value in row.values()] for row in self]
-        widths = [max(len(line[k]) for line in lines) for k in range(len(lines[0]))]
-        return "\n".join("  ".join(text.ljust(width) for text, width in zip(line, widths))
-                         .rstrip() for line in lines)
 
 
 CLASSES = {"orders": OrderLog, "assumptions": Assumptions}
@@ -1037,7 +1033,7 @@ class Result:
     def to_pandas(self):
         """``equity`` and ``returns`` as a pandas DataFrame on a UTC DatetimeIndex named
         time."""
-        pd    = _imported("pandas", "to_pandas")
+        pd    = _frames.pandas("to_pandas")
         index = pd.DatetimeIndex(self.time.view("M8[ns]"), name="time").tz_localize("UTC")
         return pd.DataFrame({"equity": self.equity, "returns": self.returns}, index=index)
 
