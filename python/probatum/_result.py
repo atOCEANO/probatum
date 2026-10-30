@@ -767,16 +767,17 @@ class Result:
                       trades=trades, drawdown=drawdown, notes=notes)
 
 
-    def _rows(self, stats):
+    def _rows(self, record):
         """The summary's rows that read the run's record of statistics, each its label,
         its value and its words."""
-        rows = []
+        stats = record._values
+        rows  = []
         rows.append(("return", f"{stats['total_return_pct']:+.1f}%",
                      f"CAGR {stats['cagr_pct']:+.1f}%, volatility "
                      f"{stats['volatility_pct']:.1f}%, in the market "
                      f"{stats['exposure_pct']:.0f}% of bars"))
 
-        held = stats.interval("sharpe")
+        held = record.interval("sharpe")
         if held is None:
             count = len(self.time) - 1
             told  = (f"no interval: {count} returns, where one needs 4" if count < 4
@@ -1028,7 +1029,7 @@ class Result:
         # plays no policy, so it carries the baselines only once they are computed
         policy = self.policy if isinstance(self.policy, np.ndarray) else None
         tables = {name: self._table(name) for name in SCHEMAS}
-        stats  = None if self.stats is None else dict(self.stats)
+        stats  = None if self.stats is None else dict(self.stats._values)
         return Result, (self.time, self.equity, tables, stats, policy, self.bust,
                         self.provenance, None, self._transitions)
 
@@ -1055,9 +1056,9 @@ class Result:
         each table as a dict of its columns as lists, None where a value is missing,
         the baselines None until they are computed, since this plays no policy,
         ``costs``, and ``stats``, a ratio infinite where it earned something against no
-        measured risk, ``policy`` where it is an array, ``bust``, ``liquidations``,
-        ``provenance`` and ``transitions``, its columns as lists beside its
-        ``metadata``, None where the run kept none."""
+        measured risk and None where the record holds none, ``policy`` where it is an
+        array, ``bust``, ``liquidations``, ``provenance`` and ``transitions``, its
+        columns as lists beside its ``metadata``, None where the run kept none."""
         out = dict(time=self.time.tolist(), equity=self.equity.tolist(),
                    returns=self.returns.tolist())
 
@@ -1073,7 +1074,9 @@ class Result:
             "metadata": json.loads(json.dumps(steps.metadata))}
 
         out.update(costs=self.costs,
-                   stats=None if self.stats is None else dict(self.stats),
+                   stats=None if self.stats is None else {
+                       name: None if name in self.stats._withheld else value
+                       for name, value in self.stats.items()},
                    policy=(_listed(self.policy) if isinstance(self.policy, np.ndarray)
                            else None),
                    bust=self.bust, liquidations=self.liquidations,
@@ -1124,7 +1127,7 @@ class Result:
         files = ([f"{name}.npy" for name in arrays] + [f"{name}.arrow" for name in written]
                  + steps + ["stats.arrow", "result.json"])
 
-        stats    = self.stats or {}
+        stats    = {} if self.stats is None else self.stats._values
         manifest = dict(format=FORMAT, version=_version(),
                         policy=None if array is None else "array", bust=self.bust,
                         provenance=self.provenance)

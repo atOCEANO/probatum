@@ -155,10 +155,12 @@ def load(path):
             bars     = bars,
         )
 
-    if kind == "trials" and any(results["best"].stats[key] != study._winner.stats[key]
-                                for key in STATS):
-        raise ProbatumValueError(f"path: {str(path)!r}'s best is not the run of the "
-                                 f"winner its trials hold; {fix}")
+    if kind == "trials":
+        # the engine's values, which its trials hold, where the record withholds some
+        ranked = results["best"].stats._values
+        if any(ranked[key] != study._winner.stats[key] for key in STATS):
+            raise ProbatumValueError(f"path: {str(path)!r}'s best is not the run of the "
+                                     f"winner its trials hold; {fix}")
 
     study._looks, study._best = manifest["looks"], results["best"]
     study._holdout = results.get("holdout")
@@ -641,7 +643,7 @@ def _validated(provenance, best):
     """A validation's winner, as its Study holds it: its first search's, or a model's
     final fit with no parameters and its best's Sharpe as its score."""
     if "model" in provenance:
-        return _Trial(0, {}, "complete", float(best.stats["sharpe"]), best.stats)
+        return _Trial(0, {}, "complete", float(best.stats._values["sharpe"]), best.stats)
 
     final = provenance["final"]
     return _Trial(final["winner"], dict(final["params"]), "complete", final["score"])

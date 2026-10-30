@@ -55,7 +55,7 @@ def test_every_trial_run_together_is_the_run_backtest_makes_of_its_weights(chunk
     for row, returns in zip(study.trials, study.returns):
         given  = swing(inside, row["fast"], row["slow"], row["stop"])
         result = probatum.backtest(given["policy"], inside, VENUE, stop=given["stop"])
-        assert {key: row[key] for key in STATS} == result.stats
+        assert {key: row[key] for key in STATS} == result.stats._values
         np.testing.assert_array_equal(returns, result.returns)
 
 
@@ -88,7 +88,7 @@ def test_trials_run_together_score_at_the_search_s_objective_direction_and_rate(
         given  = swing(inside, row["fast"], row["slow"], row["stop"])
         result = probatum.backtest(given["policy"], inside, VENUE, stop=given["stop"],
                                    risk_free=0.04)
-        assert {key: row[key] for key in STATS} == result.stats
+        assert {key: row[key] for key in STATS} == result.stats._values
 
     winner = min(study.trials, key=lambda row: (row["score"], row["number"]))
     assert study.best_params == {name: winner[name] for name in SPACE}
@@ -106,7 +106,7 @@ def test_a_universe_s_grid_runs_together_as_backtest_runs_each_point(chunks):
     for row in study.trials:
         result = probatum.backtest(np.full((30, 2), row["size"]), pair().split(30)[0],
                                    VENUE)
-        assert {key: row[key] for key in STATS} == result.stats
+        assert {key: row[key] for key in STATS} == result.stats._values
 
 
 def test_a_trial_that_raises_or_returns_a_strategy_in_a_chunk_fails_alone(chunks):

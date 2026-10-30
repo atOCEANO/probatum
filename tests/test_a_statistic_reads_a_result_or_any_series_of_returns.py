@@ -68,8 +68,9 @@ def test_returns_that_never_vary_have_no_deviation_at_any_rate():
     )
 
     idle = probatum.backtest(np.zeros(400), data, "frictionless", risk_free=0.04)
-    assert stats.sharpe(idle) == stats.sharpe(idle, long_run=True) == idle.stats["sharpe"]
-    assert idle.stats["sharpe"] == 0.0 and "long-run sharpe" not in idle.summary()
+    assert stats.sharpe(idle) == stats.sharpe(idle, long_run=True) == 0.0
+    assert idle.stats._values["sharpe"] == 0.0 and math.isnan(idle.stats["sharpe"])
+    assert "long-run sharpe" not in idle.summary()
 
     # the excess of zeros over a rate is one value only as far as its mean rounds
     for count in range(2, 60):
@@ -199,7 +200,7 @@ def test_a_bootstrap_repeats_on_every_read_for_a_result_and_its_series(traded):
     assert once == stats.bootstrap(traded, "cagr_pct")
     assert once == stats.bootstrap(traded.returns[1:], "cagr_pct", periods_per_year=rate)
     assert once != stats.bootstrap(traded, "cagr_pct", seed=3)
-    assert once.estimate == pytest.approx(traded.stats["cagr_pct"], rel=1e-9)
+    assert once.estimate == pytest.approx(traded.stats._values["cagr_pct"], rel=1e-9)
     assert (once.method, once.kind, once.count) == (
         "studentized stationary block bootstrap", "interval", 999)
     assert once.block >= 1.0 and once.lag is None and once.floored is None
@@ -223,8 +224,7 @@ def test_a_result_s_trade_statistics_take_a_bootstrap_of_its_round_trips(traded)
     assert traded.stats["num_trades"] == 251
 
     for name, method in (("win_rate", "percentile bootstrap of round trips"),
-                         ("profit_factor", "bias-corrected and accelerated bootstrap of "
-                                           "round trips"),
+                         ("profit_factor", "BCa bootstrap of round trips"),
                          ("avg_trade_pct", "studentized bootstrap of round trips")):
         interval = stats.bootstrap(traded, name)
         assert interval.estimate == pytest.approx(traded.stats[name], rel=1e-12)
@@ -511,9 +511,9 @@ def test_a_window_a_count_and_a_choice_are_refused_by_name(result):
     with pytest.raises(ProbatumValueError, match="top: 0; give a whole number of "
                        "drawdowns from 1"):
         stats.drawdown_table(MONTHLY, top=0)
-    with pytest.raises(ProbatumValueError, match="by: 'week'; give \"month\", "
-                       "\"quarter\" or \"year\""):
-        stats.period_returns(result, by="week")
+    with pytest.raises(ProbatumValueError, match="by: 'minute'; give \"hour\", \"day\", "
+                       "\"week\", \"month\", \"quarter\" or \"year\""):
+        stats.period_returns(result, by="minute")
     with pytest.raises(ProbatumTypeError, match="by: 1; give \"hour\" or \"weekday\""):
         stats.session_buckets(result, by=1)
     with pytest.raises(ProbatumValueError, match="alpha: 1.0; give a fraction"):
@@ -584,7 +584,8 @@ def test_a_run_kept_at_the_account_level_counts_no_fills_and_no_turnover():
     assert stats.segment(kept, 100)["num_fills"] is None
     for name in kept.stats:
         if name != "num_fills":
-            assert stats.segment(kept, 100)[name] == stats.segment(full, 100)[name]
+            assert (stats.segment(kept, 100)._values[name]
+                    == stats.segment(full, 100)._values[name])
     assert "turnover none" in str(stats.decompose(kept))
 
 
@@ -618,3 +619,45 @@ def test_a_key_no_run_reports_is_refused(result):
     with pytest.raises(probatum.ProbatumKeyError, match="keys: 'alpha', which no run "
                        "reports"):
         probatum.compare([result], keys=["alpha"])
+
+
+def hourly(seed, rows):
+    close = 100.0 + np.random.default_rng(seed).normal(0.0, 1.0, rows).cumsum()
+    bars  = np.column_stack([close, close + 0.5, close - 0.5, close, np.full(rows, 1e3)])
+    return probatum.Data(
+        bars,
+        symbol = "BTCUSDT",
+        market = "linear",
+        time   = np.arange(rows, dtype=np.int64) * 3_600_000_000_000,
+    )
+
+
+def test_runs_beside_a_reference_test_their_sharpe_against_its_on_the_same_rows():
+    data   = hourly(5, 2_000)
+    bars   = np.arange(2_000)
+    held   = probatum.backtest(np.where(bars % 40 < 20, 1.0, 0.0), data, "frictionless")
+    other  = probatum.backtest(np.where(bars % 60 < 25, 1.0, 0.0), data, "frictionless")
+    apart  = probatum.backtest(np.ones(1_000), hourly(6, 1_000), "frictionless")
+    runs   = {"held": held, "other": other, "apart": apart}
+    table  = probatum.compare(runs, keys=["sharpe"], reference="held")
+    tested = ("sharpe_difference", "difference_low", "difference_high", "p_delta",
+              "p_bootstrap")
+
+    assert table.columns == ("name", *tested, "sharpe", "venue", "policy", "data", "rows")
+
+    found  = stats.sharpe_difference(other, held)
+    booted = found.bootstrap
+    thin   = booted.count < stats.SPAN or booted.count < stats.BLOCKS * booted.block
+    row    = table[1]
+
+    assert [row[name] for name in tested[:4]] == [found.estimate, found.delta.low,
+                                                  found.delta.high, found.delta.p]
+    assert row["p_bootstrap"] is None if thin else row["p_bootstrap"] == booted.p
+    assert all(table[at][name] is None for at in (0, 2) for name in tested)
+
+    with pytest.raises(probatum.ProbatumKeyError, match="reference: 'nobody', which "
+                       "names 0 of the runs; give one of held, other, apart"):
+        probatum.compare(runs, reference="nobody")
+    with pytest.raises(probatum.ProbatumKeyError, match="reference: 'frictionless', "
+                       "which names 2 of the runs; give one of frictionless, or a mapping"):
+        probatum.compare([held, other], reference="frictionless")

@@ -383,7 +383,7 @@ def test_a_window_s_statistics_are_the_engine_s_over_the_same_rows():
     stats, costs = _owned(result, holding, 1, len(result.time) - 1, _annualised(data),
                           0.0)
 
-    assert stats == pytest.approx(result.stats, nan_ok=True)
+    assert stats == pytest.approx(result.stats._values, nan_ok=True)
     assert costs == pytest.approx(result.costs)
     assert result.stats["funding_paid"] != 0.0 and costs["fees"] != 0.0
 

@@ -74,7 +74,7 @@ def test_two_copies_of_a_book_are_twice_it():
     assert book.returns.tobytes() == result.returns.tobytes()
     for key in ("total_return_pct", "cagr_pct", "sharpe", "sortino", "calmar",
                 "max_drawdown_pct", "volatility_pct", "exposure_pct", "win_rate"):
-        assert book.stats[key] == result.stats[key], key
+        assert book.stats._values[key] == result.stats._values[key], key
     for key in ("num_trades", "num_fills", "funding_paid"):
         assert book.stats[key] == 2 * result.stats[key], key
     assert book.stats["avg_trade_pct"] == pytest.approx(result.stats["avg_trade_pct"] / 2)

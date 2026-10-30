@@ -938,7 +938,7 @@ def _modelled(model, data, venue, cv, space, search, features, labels, to_weight
                 sum(walk.state == "complete" for walk in walks), len(walks))
     tables = dict(paths=_paths(walks, forecasts), fits=_model_fits(fits),
                   windows=_windows(walks, inside.time[printed]))
-    winner      = _Trial(0, {}, "complete", float(best.stats["sharpe"]), best.stats)
+    winner      = _Trial(0, {}, "complete", float(best.stats._values["sharpe"]), best.stats)
     study       = Study(None, returns, winner, ran, provenance, tables, forecast=pooled)
     study._best = best
     return study

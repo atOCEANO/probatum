@@ -1581,6 +1581,7 @@ def test_three_of_four_stretches_score_above_0_and_three_windows_decay_by_1_07()
 
     gaps, mean = statistics.decay([1.8, 1.2, 2.0], [0.6, 1.4, -0.2], "maximize")
     assert ([round(gap, 9) for gap in gaps], round(mean, 2)) == ([1.2, -0.2, 2.2], 1.07)
+    assert round(statistics.decay_error(gaps), 2) == 0.70
 
 
 def test_six_daily_rows_fall_25_percent_and_10_and_stay_under_water_3_days_at_most():

@@ -219,7 +219,7 @@ from probatum import stats
 print(result.summary())                         # the headline, its Sharpe's interval read
 stats.decompose(result)                         # the price pnl, each cost, the turnover
 stats.trade_stats(result)                       # payoff, expectancy, worst losing streak
-stats.period_returns(result, by="month")        # or by quarter or year
+stats.period_returns(result, by="month")        # or by hour, day, week, quarter or year
 probatum.compare({"cheap": a, "dear": b})       # several runs, side by side
 ```
 

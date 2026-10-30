@@ -4,6 +4,7 @@ first read and kept, None where a statistic has none or its sample cannot suppor
 and the same after a pickle, a save and a load (Specification, Inference).
 """
 
+import math
 import pickle
 from collections.abc import Mapping
 
@@ -41,7 +42,7 @@ def test_the_record_reads_as_the_dict_it_replaced(traded):
     assert isinstance(record, Mapping) and isinstance(record, stats.Statistics)
     assert record == dict(record) and dict(record) == record and len(record) == 15
     assert record.sharpe == record["sharpe"] and record.get("sharp") is None
-    assert pytest.approx(dict(record)) == record
+    assert pytest.approx(dict(record), nan_ok=True) == record
 
     with pytest.raises(ProbatumAttributeError, match="a run's record does not change; "
                        "run again for another"):
@@ -58,11 +59,11 @@ def test_each_statistic_s_interval_is_the_module_s_and_is_kept(traded):
     record = traded.stats
 
     assert record.interval("sharpe") == stats.sharpe_interval(traded)
-    for name in ("total_return_pct", "cagr_pct", "sortino", "max_drawdown_pct", "calmar",
-                 "volatility_pct", "win_rate", "profit_factor", "avg_trade_pct"):
+    for name in ("total_return_pct", "sortino", "max_drawdown_pct", "calmar", "volatility_pct",
+                 "win_rate", "profit_factor", "avg_trade_pct"):
         assert record.interval(name) == stats.bootstrap(traded, name)
 
-    assert record.interval("cagr_pct") is record.interval("cagr_pct")
+    assert record.interval("total_return_pct") is record.interval("total_return_pct")
     assert record.interval("sharpe", level=0.9) == stats.sharpe_interval(traded, level=0.9)
 
     # a level so narrow that both bounds of 2,000 resamples are one of them
@@ -89,6 +90,30 @@ def test_a_sample_that_cannot_support_an_interval_gives_none():
     assert few.stats.interval("win_rate") is None
     assert few.stats.interval("avg_trade_pct") is None
     assert few.stats.interval("sharpe") == stats.sharpe_interval(few)
+
+
+def test_the_record_holds_none_where_its_number_would_describe_nothing():
+    idle   = run(np.zeros(400, dtype=bool))
+    record = idle.stats
+    none   = ("cagr_pct", "sharpe", "sortino", "calmar", "win_rate", "profit_factor",
+              "avg_trade_pct")
+
+    assert [name for name in record if math.isnan(record[name])] == list(none)
+    assert all(record.interval(name) is None for name in none)
+    assert (record["total_return_pct"], record["num_trades"]) == (0.0, 0)
+    assert record._values["sharpe"] == 0.0 and pickle.loads(pickle.dumps(record)) == record
+    assert record._withheld == {
+        "cagr_pct": "cagr_pct: 400 rows, 0.0457 of a year at 8,760 a year; a rate "
+                    "compounded to a year needs a year of rows",
+        **dict.fromkeys(("sharpe", "sortino", "calmar"), "returns: all 399 are the same; "
+                        "a ratio needs returns that vary"),
+        **dict.fromkeys(("win_rate", "profit_factor", "avg_trade_pct"), "round trips: "
+                        "none closed; a rate of round trips needs one that closed"),
+    }
+
+    kept, short = (run(np.zeros(rows, dtype=bool)) for rows in (8_760, 8_759))
+
+    assert kept.stats["cagr_pct"] == 0.0 and math.isnan(short.stats["cagr_pct"])
 
 
 def test_the_intervals_are_the_same_after_a_pickle_a_save_and_a_load(traded, tmp_path):

@@ -166,7 +166,7 @@ def test_a_minimizing_search_wins_on_its_lowest_score_at_its_risk_free_rate():
     again  = probatum.backtest(swing(inside, winner["fast"], winner["slow"])["policy"],
                                inside, VENUE, risk_free=0.04)
 
-    assert again.stats == {key: winner[key] for key in STATS} == study.best.stats
+    assert again.stats._values == {key: winner[key] for key in STATS} == study.best.stats._values
 
 
 def test_no_complete_trial_raises_for_its_floor_or_its_last_failure():
@@ -228,8 +228,8 @@ def test_the_winner_runs_again_as_the_result_its_trial_was_scored_on():
         complete = np.flatnonzero(trials.state == "complete")
         winner   = trials[int(complete[np.argmax(trials.score[complete])])]
 
-        assert {key: winner[key] for key in STATS} == study.best.stats
-        assert study.best_score == winner["score"] == study.best.stats["sharpe"]
+        assert {key: winner[key] for key in STATS} == study.best.stats._values
+        assert study.best_score == winner["score"] == study.best.stats._values["sharpe"]
 
         given = (Cross(**study.best_params) if policy is Cross
                  else policy(data.split(30)[0], **study.best_params))

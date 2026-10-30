@@ -779,6 +779,11 @@ def decay(fitted, earned, direction):
     return gaps, mean(gaps)
 
 
+def decay_error(gaps):
+    """Consistency and decay: the standard error of the gaps' mean, None for one."""
+    return None if len(gaps) < 2 else deviation(gaps, 1) / math.sqrt(len(gaps))
+
+
 def returned(equity):
     """What a statistic reads: each row's return after the first, zero after a row
     whose equity is not above zero."""
@@ -905,10 +910,16 @@ def utc(time):
 
 
 def period_returns(times, equity, by="month"):
-    """Over time: each calendar period's name, first row, count of rows and return in
-    percent, its rows' returns compounded, the first row's none."""
+    """Over time: each period's name, first row, count of rows and return in percent,
+    its rows' returns compounded, the first row's none, a week named by its Monday."""
     def named(time):
         when = utc(time)
+        if by == "hour":
+            return when.strftime("%Y-%m-%d %H:00")
+        if by == "day":
+            return when.strftime("%Y-%m-%d")
+        if by == "week":
+            return (when - datetime.timedelta(days=when.weekday())).strftime("%Y-%m-%d")
         if by == "month":
             return f"{when.year}-{when.month:02d}"
         if by == "quarter":
@@ -1239,7 +1250,8 @@ def onc(rows, draw):
 
 def combined(rows):
     """The effective number of trials: a cluster's series at minimum variance under one
-    correlation, or inverse variance where that correlation is out of its range."""
+    correlation, or inverse variance where that correlation is out of its range or the
+    weights it gives sum to under 1e-9 of the inverse variances' sum."""
     if len(rows) == 1:
         return list(rows[0])
 
@@ -1247,13 +1259,14 @@ def combined(rows):
     sd   = [deviation(row, 1) for row in rows]
     rbar = mean([correlation(rows[i], rows[j])
                  for i in range(m) for j in range(i + 1, m)])
+    raw  = [1.0 / s ** 2 for s in sd]
 
     if -1.0 / (m - 1) < rbar < 1.0:
         inverse = sum(1.0 / s for s in sd)
-        raw     = [1.0 / s ** 2 - rbar * inverse / ((1.0 + (m - 1) * rbar) * s)
+        shaped  = [1.0 / s ** 2 - rbar * inverse / ((1.0 + (m - 1) * rbar) * s)
                    for s in sd]
-    else:
-        raw = [1.0 / s ** 2 for s in sd]
+        if sum(shaped) > 1e-9 * sum(raw):
+            raw = shaped
 
     total = sum(raw)
     return [sum(raw[i] / total * rows[i][t] for i in range(m))

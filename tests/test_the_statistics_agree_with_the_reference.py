@@ -841,7 +841,7 @@ def test_a_run_s_calendar_periods_agree_and_compound_to_it(seed):
     result, _ = run(seed)
     equity, times = result.equity.tolist(), result.time.tolist()
 
-    for by in ("month", "quarter", "year"):
+    for by in ("hour", "day", "week", "month", "quarter", "year"):
         table  = stats.period_returns(result, by=by)
         theirs = statistics.period_returns(times, equity, by)
         last   = [first + rows - 1 for _, first, rows, _ in theirs]
@@ -873,12 +873,12 @@ def test_a_run_s_segments_agree_and_the_whole_is_its_record(seed):
                                     holding.tolist(), start, stop, rate, 0.04)
 
         for name, value in theirs.items():
-            assert found[name] == pytest.approx(value, **NEAR), name
+            assert found._values[name] == pytest.approx(value, **NEAR), name
         assert found["num_fills"] == np.count_nonzero((bars >= start) & (bars < stop))
 
     whole = stats.segment(result)
     assert {name: whole[name] for name in result.stats} == pytest.approx(
-        dict(result.stats), rel=1e-12, abs=1e-12)
+        dict(result.stats), rel=1e-12, abs=1e-12, nan_ok=True)
 
 
 @pytest.mark.parametrize("seed", CASES[:80])
@@ -1062,8 +1062,9 @@ def test_runs_set_side_by_side_hold_each_one_s_record():
                                       two.provenance["data"]["fingerprint"]]
     assert table["rows"].tolist() == [len(one.time), len(two.time)]
     for key in one.stats:
-        assert table[key].tolist() == [one.stats[key], two.stats[key]]
+        assert table[key].tolist() == pytest.approx([one.stats[key], two.stats[key]],
+                                                    nan_ok=True)
 
     picked = probatum.compare([one, two], keys=["sharpe"])
-    assert picked.columns == ("name", "venue", "policy", "data", "rows", "sharpe")
+    assert picked.columns == ("name", "sharpe", "venue", "policy", "data", "rows")
     assert picked["name"].tolist() == ["binance_perp"] * 2

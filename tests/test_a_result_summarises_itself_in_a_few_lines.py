@@ -91,7 +91,7 @@ def test_a_run_s_summary_reads_its_record_line_by_line(traded):
     assert lines[:2] == ["a (1000, 1) array of weights, binance_perp, BTCUSDT 1h",
                          "1970-01-01 to 1970-02-11, 1,000 bars, opening balance 10,000"]
     assert lines[2] == line("return", f"{record['total_return_pct']:+.1f}%",
-                            f"CAGR {record['cagr_pct']:+.1f}%, volatility "
+                            f"CAGR {record._values['cagr_pct']:+.1f}%, volatility "
                             f"{record['volatility_pct']:.1f}%, in the market "
                             f"{record['exposure_pct']:.0f}% of bars")
 
@@ -135,7 +135,7 @@ def test_the_long_run_sharpe_is_shown_where_it_parts_from_the_sharpe_by_more_tha
 def test_a_sharpe_with_no_interval_says_why(steps, weight, why):
     run = probatum.backtest(np.full(steps.size + 1, weight), stepped(steps), FREE)
 
-    assert line("sharpe", f"{run.stats['sharpe']:.2f}",
+    assert line("sharpe", f"{run.stats._values['sharpe']:.2f}",
                 f"no interval: {why}") in run.summary().split("\n")
 
 

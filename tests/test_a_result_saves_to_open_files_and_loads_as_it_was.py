@@ -136,7 +136,7 @@ def test_the_directory_holds_open_files_any_tool_reads(results, tmp_path):
 
     stats = pyarrow.ipc.open_file(tmp_path / "stats.arrow").read_all().to_pylist()
 
-    assert stats == [result.stats]
+    assert stats == [result.stats._values]
 
     results["winner"].save(tmp_path / "winner")
     kept = pyarrow.ipc.open_file(tmp_path / "winner" / "stats.arrow").read_all()

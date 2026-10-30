@@ -201,7 +201,9 @@ def test_the_holdout_reads_as_it_stands_and_decay_follows_it():
         f"{looked.low:.2f} to {looked.high:.2f}, look 1 of 1")
 
     gap = fresh.best_score - held.stats["sharpe"]
-    assert fresh.decay() == stats.Decay([gap], gap, "sharpe", "maximize")
+    assert fresh.decay() == stats.Decay(["holdout"], [held.time[0]], [held.time[-1]],
+                                        [fresh.best_score], [held.stats["sharpe"]], [gap],
+                                        gap, None, "sharpe", "maximize")
 
     raised = searched(policy=raising_on_the_tail)
 
@@ -320,10 +322,17 @@ def test_a_validation_reads_its_windows_and_its_fits(validated):
 
     fitted = dict(zip(np.asarray(fits["number"]).tolist(),
                       np.asarray(fits["fitted"], dtype=np.float64).tolist()))
-    gaps = [fitted[fit] - score
-            for fit, score in zip(np.asarray(windows["fit"]).tolist(), scores.tolist())]
-    assert validated.decay() == stats.Decay(gaps, sum(gaps) / len(gaps), "sharpe",
-                                            "maximize")
+    made = [fitted[fit] for fit in np.asarray(windows["fit"]).tolist()]
+    gaps = [fit - score for fit, score in zip(made, scores.tolist())]
+    decayed = validated.decay()
+
+    assert decayed.window == tuple(range(len(windows)))
+    assert decayed.first  == tuple(np.asarray(windows["first_time"]).tolist())
+    assert decayed.last   == tuple(np.asarray(windows["last_time"]).tolist())
+    assert decayed.fitted == tuple(made) and decayed.earned == tuple(scores.tolist())
+    assert decayed.gaps   == tuple(gaps) and decayed.mean == sum(gaps) / len(gaps)
+    assert decayed.error  == pytest.approx(np.std(gaps, ddof=1) / math.sqrt(len(gaps)),
+                                           rel=1e-12)
 
     with pytest.raises(ProbatumValueError, match="stretches: given to a validation"):
         validated.consistency(stretches=4)

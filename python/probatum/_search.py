@@ -1106,7 +1106,7 @@ class Study:
             ran    = self._ran
             result = ran(self.best_params, ran.inside)
 
-            row, again = self._winner.stats, result.stats
+            row, again = self._winner.stats, result.stats._values
             changed = [key for key in STATS if again[key] != row[key]]
             if changed:
                 key = changed[0]
@@ -1327,10 +1327,13 @@ class Study:
             windows, fits = self._tables["windows"], self._tables["fits"]
             fitted = dict(zip(np.asarray(fits["number"]).tolist(),
                               np.asarray(fits["fitted"], dtype=np.float64).tolist()))
-            pairs = [(fitted[fit], score) for fit, score in zip(
-                np.asarray(windows["fit"]).tolist(),
-                np.asarray(windows["score"], dtype=np.float64).tolist())]
-            pairs = [(a, b) for a, b in pairs if not (math.isnan(a) or math.isnan(b))]
+            rows = [(at, first, last, fitted[fit], score)
+                    for at, (fit, first, last, score) in enumerate(zip(
+                        np.asarray(windows["fit"]).tolist(),
+                        np.asarray(windows["first_time"]).tolist(),
+                        np.asarray(windows["last_time"]).tolist(),
+                        np.asarray(windows["score"], dtype=np.float64).tolist()))]
+            rows = [row for row in rows if not (math.isnan(row[3]) or math.isnan(row[4]))]
         else:
             noun = "the search"
             if self._bars.cut == self._bars.rows:
@@ -1360,14 +1363,20 @@ class Study:
                                          f"evaluate_holdout() runs it, and spends a "
                                          f"look")
 
-            pairs = [(self.best_score, float(self._holdout.stats[objective]))]
+            # the score the holdout's run ranks at, as the trials' are, which its record
+            # withholds where it would describe nothing
+            held = self._holdout
+            rows = [("holdout", held.time[0], held.time[-1], self.best_score,
+                     float(held.stats._values[objective]))]
 
-        gaps = [a - b if direction == "maximize" else b - a for a, b in pairs]
+        gaps = [a - b if direction == "maximize" else b - a for *_, a, b in rows]
         if not gaps:
             raise ProbatumValueError("decay: no window completed, so no fit has bars it "
                                      "earned on")
 
-        return Decay(gaps, sum(gaps) / len(gaps), objective, direction)
+        error = (float(np.std(gaps, ddof=1)) / math.sqrt(len(gaps)) if len(gaps) > 1
+                 else None)
+        return Decay(*zip(*rows), gaps, sum(gaps) / len(gaps), error, objective, direction)
 
 
     def _held(self):
@@ -1404,7 +1413,7 @@ class Study:
         objective = self.provenance["objective"]
         record    = self._holdout.stats
         flip      = _signed(objective)
-        said      = f"{objective} {flip * record[objective] + 0.0:.2f}"
+        said      = f"{objective} {flip * record._values[objective] + 0.0:.2f}"
         held      = record.interval(objective)
 
         if held is not None:
