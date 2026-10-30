@@ -67,45 +67,49 @@ _AUTO    = ("price", "volume", "equity", "drawdown")
 # the bar count, because the width of a row depends on how many series are on it
 _BIG_BYTES = 8_000_000
 
-# ``down`` is a filled candle body against ``surface`` and ``up`` is a hollow one,
-# so the two are told apart by form and the colour only has to be seen at all. It
-# was not: dark sat at 1.94:1 against its own panel while up sat at 13.18:1, and on
-# a series that falls, which is most of the ones worth looking at, the majority of
-# the bars were the invisible half. Light repeated it inverted at 2.59:1.
-#
-# s1 through s4 are the series palette, handed out in order to lines that named no
-# colour. Only s1 and s4 existed, so every unstyled line took s1 and the library's
-# own flagship chart drew EMA 20 and EMA 60 in one blue under two identical legend
-# swatches. Green and red are spent on win and loss and cannot be reused here, so
-# the four are blue, amber, violet and grey, which is also the order they read
-# apart in: no adjacent pair shares a hue family, and each clears 5:1 on its ground
+# the candles rise in #089981 and fall in #f23645, both filled, in either theme: the
+# one pair that clears 3:1 on both grounds and stands 11.1 apart for a deuteranope, so
+# a round trip's win and loss and the equity's two sides take it too. The rest is the
+# site's ink at its strengths, the muted text at 4.5:1 on its ground or better, and s1
+# to s4 are the series handed out in order to lines that named no colour, s1 the ink
 _PALETTES = {
     "dark":  {
         "surface": "#070d13", "plane": "#05090e", "grid": "#131c26",
         "axis": "#1f2a36", "ink": "#e9ebee", "ink2": "#aab1bb",
-        "muted": "#717a85", "hairline": "rgba(255,255,255,0.16)",
-        "up": "#cdd5df", "down": "#7d8a99", "win": "#2fe0a8", "loss": "#ff5470",
-        "s1": "#4d9fff", "s2": "#f2a33c", "s3": "#d8b4ff", "s4": "#8b97a5",
-        "selected": ["rgba(47,224,168,0.24)", "rgba(47,224,168,0.10)",
-                     "rgba(47,224,168,0.02)"],
+        "muted": "#8a939e", "hairline": "rgba(255,255,255,0.16)",
+        "up": "#089981", "down": "#f23645", "win": "#089981", "loss": "#f23645",
+        "s1": "#e9ebee", "s2": "#f2a33c", "s3": "#d8b4ff", "s4": "#8b97a5",
+        "selected": ["rgba(8,153,129,0.24)", "rgba(8,153,129,0.10)",
+                     "rgba(8,153,129,0.02)"],
     },
     "light": {
         "surface": "#ffffff", "plane": "#eef1f5", "grid": "#e3e8ee",
         "axis": "#c8d0d9", "ink": "#070d13", "ink2": "#48525e",
-        "muted": "#78828e", "hairline": "rgba(7,13,19,0.14)",
-        "up": "#2b3441", "down": "#66717f", "win": "#00996b", "loss": "#e0243f",
-        "s1": "#1a73e8", "s2": "#a15600", "s3": "#7a3fc4", "s4": "#6b7684",
-        "selected": ["rgba(0,153,107,0.20)", "rgba(0,153,107,0.09)",
-                     "rgba(0,153,107,0.02)"],
+        "muted": "#5f6874", "hairline": "rgba(7,13,19,0.14)",
+        "up": "#089981", "down": "#f23645", "win": "#089981", "loss": "#f23645",
+        "s1": "#070d13", "s2": "#a15600", "s3": "#7a3fc4", "s4": "#6b7684",
+        "selected": ["rgba(8,153,129,0.20)", "rgba(8,153,129,0.09)",
+                     "rgba(8,153,129,0.02)"],
     },
 }
+# the colours a palette may name beside those, each its candle's own where it names none
+_ADDED = ("wick_up", "wick_down", "volume_up", "volume_down")
+_HEX   = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})")
+_RGB   = re.compile(r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*"
+                    r"(?:,\s*(\d*\.?\d+)\s*)?\)")
 
-_DEFAULTS = {"theme": "dark", "height": 660, "palette": None, "drawdown": "under"}
+# an empty palette rather than None, so the settings defaults() hands back put a
+# session's palette back as they put back the rest
+_DEFAULTS = {"theme": "auto", "height": 660, "palette": {}, "drawdown": "under",
+             "price": "candles"}
 
 # "auto" is not a third palette, it is a deferral: both of them ship in every
 # document already, so the answer is read in the browser, where Python is not
 # standing when a saved chart is opened a month later
 _THEMES = ("dark", "light", "auto")
+# the price as filled candles, candles whose rising bodies are their outline, OHLC bars
+# or a line of the closes
+_PRICES = ("candles", "hollow", "bars", "line")
 
 # A background nobody gave a fill. Flat alpha at full height with a hard edge
 # either side is the banding recipe, so this runs strongest at the floor and is
@@ -117,7 +121,16 @@ _BACKGROUND_FILL = ["rgba(139,151,165,0.20)", "rgba(139,151,165,0.02)"]
 def _theme_mode(value):
     if value not in _THEMES:
         raise ProbatumValueError(f"theme: {value!r}; give 'dark', 'light' or 'auto', "
-                                 f"which opens on whichever the reader's system asks for")
+                                 f"which opens on the notebook's theme or else the "
+                                 f"reader's system's")
+
+    return value
+
+
+def _price(value):
+    if value not in _PRICES:
+        raise ProbatumValueError(f"price: {value!r}; give 'candles', 'hollow' for a rising "
+                                 f"candle drawn as its outline, 'bars' or 'line'")
 
     return value
 
@@ -127,6 +140,7 @@ def _palette(palette):
         raise ProbatumTypeError(f"palette: {palette!r}; give a dict of 'dark' or 'light' "
                                 f"to the colours each overrides")
 
+    known  = sorted(set(_PALETTES["dark"]) | set(_ADDED))
     merged = {}
     for mode, values in palette.items():
         if mode not in _PALETTES:
@@ -135,9 +149,51 @@ def _palette(palette):
         if not isinstance(values, dict):
             raise ProbatumTypeError(f"palette: {mode!r} to {values!r}; give {mode!r} a "
                                     f"dict of colour names to colours")
-        merged[mode] = {k: _safe_value(v, "palette") for k, v in values.items()}
+
+        kept = {}
+        for key, value in values.items():
+            if key not in known:
+                raise ProbatumKeyError(f"palette: {key!r} under {mode!r}, a colour the "
+                                       f"chart does not draw; use one of {', '.join(known)}")
+            # a list only where the chart's own colour is one, a selected trade's fill,
+            # whose stops one colour gives as a list of one
+            listed = isinstance(_PALETTES["dark"].get(key), list)
+            if listed and isinstance(value, str):
+                value = [value]
+            for colour in value if listed and isinstance(value, (list, tuple)) else [value]:
+                if not isinstance(colour, str) or _channels(colour) is None:
+                    raise ProbatumValueError(f"palette: {colour!r} for {key!r}; give a "
+                                             f"colour as #rrggbb, #rrggbbaa or rgb(r, g, b)")
+            kept[key] = _safe_value(value, "palette")
+        merged[mode] = kept
 
     return merged
+
+
+def _channels(value):
+    """``value``'s red, green and blue and its opacity, or None for a colour the chart
+    does not read."""
+    if _HEX.fullmatch(value):
+        digits = value[1:]
+        if len(digits) < 6:
+            digits = "".join(digit * 2 for digit in digits)
+        parts = [int(digits[at:at + 2], 16) for at in range(0, len(digits), 2)]
+        return (*parts[:3], parts[3] / 255.0 if len(parts) == 4 else 1.0)
+
+    found = _RGB.fullmatch(value)
+    if found is None:
+        return None
+
+    red, green, blue = (int(found.group(k)) for k in (1, 2, 3))
+    opacity          = 1.0 if found.group(4) is None else float(found.group(4))
+    if max(red, green, blue) > 255 or opacity > 1.0:
+        return None
+    return red, green, blue, opacity
+
+
+def _faded(value, share):
+    red, green, blue, opacity = _channels(value)
+    return f"rgba({red},{green},{blue},{round(opacity * share, 3)})"
 
 
 # How a run's drawdown is drawn. It is a fall from the running peak either way, so
@@ -172,18 +228,18 @@ _STAT_LABELS = {
     "sharpe":           ("sharpe", "{:.2f}"),
     "sortino":          ("sortino", "{:.2f}"),
     "calmar":           ("calmar", "{:.2f}"),
-    "max_drawdown_pct": ("max dd", "{:.1f}%"),
+    "max_drawdown_pct": ("max drawdown", "{:.1f}%"),
     "volatility_pct":   ("vol", "{:.1f}%"),
     "exposure_pct":     ("exposure", "{:.1f}%"),
     "win_rate":         ("win rate", "{:.0%}"),
     "profit_factor":    ("profit factor", "{:.2f}"),
     "avg_trade_pct":    ("avg trade", "{:+.2f}%"),
-    "num_trades":       ("trades", "{:.0f}"),
+    "num_trades":       ("round trips", "{:,.0f}"),
     "num_fills":        ("fills", "{:.0f}"),
     "funding_paid":     ("funding", "{:+.2f}"),
 }
 
-_FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+_FONT = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace'
 
 _bundled = None
 
@@ -535,7 +591,7 @@ def _collect(given):
     return marks
 
 
-def defaults(theme=None, height=None, palette=None, drawdown=None):
+def defaults(theme=None, height=None, palette=None, drawdown=None, price=None):
     """Set how every later chart looks, and return the previous settings.
 
     Explicit keywords rather than ``**options``, so ``defaults(them="dark")`` is a
@@ -549,13 +605,14 @@ def defaults(theme=None, height=None, palette=None, drawdown=None):
     width anywhere: a chart fills whatever contains it.
 
     ``theme`` and ``palette`` are both here and on each chart, and mean the same
-    thing in either place. ``theme="auto"`` opens each chart on whichever of the
-    two palettes the reader's system asks for, which is worth setting once for a
-    notebook that will be read by someone else on a machine you have never seen.
+    thing in either place. ``theme="auto"``, the default, opens each chart on the
+    notebook's own theme, or else on whichever of the two palettes the reader's
+    system asks for.
 
     ``drawdown`` is ``"under"``, ``"panel"`` or ``False``, and it is here as well
     as on ``Result.chart`` so a session that wants the separate pane back gets it
-    in one line rather than at every call site.
+    in one line rather than at every call site. ``price`` is ``"candles"``,
+    ``"hollow"``, ``"bars"`` or ``"line"``, as on each chart.
     """
     previous = dict(_DEFAULTS)
     pending  = {}
@@ -568,6 +625,8 @@ def defaults(theme=None, height=None, palette=None, drawdown=None):
         pending["drawdown"] = _drawdown_mode(drawdown)
     if palette is not None:
         pending["palette"] = _palette(palette)
+    if price is not None:
+        pending["price"] = _price(price)
 
     # applied only once every argument has passed. A call that raised halfway
     # through used to leave the theme set and the height not, and the caller never
@@ -699,7 +758,8 @@ def _build_panels(order, config, marks, names, num_bars, ohlc, vol, equity, dd,
             # escaping cannot reach because the script reads the payload as a
             # literal, whose escapes give back the original
             "name": _safe(name, "panel"),
-            "weight": float(cfg.weight) if cfg else _WEIGHTS.get(name, 1.5),
+            "weight": (float(cfg.weight) if cfg and cfg.weight is not None
+                       else _WEIGHTS.get(name, 1.5)),
             "scale": cfg.scale if cfg else "linear",
             "digits": _digits(extent),
         }
@@ -794,29 +854,38 @@ def _focus(value, num_bars, rows, ahead=0):
 
 
 def _trades(result, name, rows):
-    # the round trips the run closed on the instrument drawn, each on the Data's rows
-    # of the run's bars it opened and closed on. Columns rather than rows, so a run of
-    # many trips builds its list from arrays
+    # the round trips the run made on the instrument drawn, each on the Data's rows of
+    # the run's bars it opened and closed on, one still open standing at the run's last
+    # bar with its pnl so far. Columns rather than rows, so a run of many trips builds
+    # its list from arrays
     trades = result.trades
-    kept   = np.flatnonzero((trades["instrument"] == name) & ~trades["open"])
+    kept   = np.flatnonzero(trades["instrument"] == name)
     if not kept.size:
         return []
 
+    still  = np.asarray(trades["open"])[kept]
     opened = trades["open_bar"][kept]
-    closed = np.ma.getdata(trades["close_bar"])[kept]
-    money  = [[round(value, 8) for value in trades[column][kept].tolist()]
-              for column in ("size", "entry", "exit", "fees", "pnl")]
+    closed = np.where(still, len(rows) - 1, np.ma.getdata(trades["close_bar"])[kept])
+    money  = [[round(value, 8) if math.isfinite(value) else None
+               for value in trades[column][kept].tolist()]
+              for column in ("size", "entry", "exit", "fees", "funding", "pnl", "ret",
+                             "best", "worst")]
 
     out = []
-    for number, (start, end, bars, side, size, entry, exit, fees, pnl, reason) in (
-            enumerate(zip(rows[opened].tolist(), rows[closed].tolist(),
-                          (closed - opened).tolist(), trades["side"][kept].tolist(),
-                          *money, trades["reason"][kept].tolist()), 1)):
+    for number, (start, end, bars, side, size, entry, exit, fees, funding, pnl, ret, best,
+                 worst, reason, held) in enumerate(zip(
+                     rows[opened].tolist(), rows[closed].tolist(),
+                     (closed - opened).tolist(), trades["side"][kept].tolist(), *money,
+                     trades["reason"][kept].tolist(), still.tolist()), 1):
         trade = {"i": number, "in": start, "out": end, "side": side, "size": size,
-                 "px_in": entry, "px_out": exit, "fees": fees, "net": pnl, "bars": bars}
+                 "px_in": entry, "px_out": exit, "fees": fees, "fund": funding,
+                 "net": pnl, "ret": ret, "best": best, "worst": worst, "bars": bars,
+                 "why": "open" if held else reason or ""}
 
         # only when it is set, so an ordinary run spends no bytes on it. A forced
         # close is the one row a reader must not mistake for a decision
+        if held:
+            trade["open"] = True
         if reason == "liquidation":
             trade["liq"] = True
 
@@ -825,7 +894,8 @@ def _trades(result, name, rows):
     return out
 
 
-def _headline(stats, chosen):
+def _headline(result, chosen, name, several):
+    stats = result.stats
     if chosen is None:
         keys = _HEADLINE
     elif isinstance(chosen, str) or not hasattr(chosen, "__iter__"):
@@ -842,9 +912,24 @@ def _headline(stats, chosen):
 
         value = float(stats[key])
         label, form = _STAT_LABELS.get(key, (key, "{:.2f}"))
-        out.append([label, form.format(value) if math.isfinite(value) else "n/a"])
+        shown = form.format(value) if math.isfinite(value) else "n/a"
+        out.append([label, _tripped(result, name, several, shown)
+                    if key == "num_trades" else shown])
 
     return out
+
+
+def _tripped(result, name, several, shown):
+    """The round trips a headline counts, ``shown``: one instrument's of the account's
+    where the account trades several, and those still open."""
+    trades = result.trades
+    still  = np.asarray(trades["open"])
+    mine   = np.asarray(trades["instrument"] == name) if several else ~np.zeros_like(still)
+    if several:
+        shown = f"{int((mine & ~still).sum()):,} of {shown}"
+
+    held = int((mine & still).sum())
+    return shown + (f", {held:,} open" if held else "")
 
 
 def _cell(value):
@@ -855,6 +940,9 @@ def _cell(value):
         return f"{value:.6g}" if math.isfinite(value) else "n/a"
     if value is None:
         return ""
+    # pandas' missing values read as a missing float does, not as their names
+    if type(value).__name__ in ("NAType", "NaTType"):
+        return "n/a"
     return str(value)
 
 
@@ -914,25 +1002,23 @@ def _notes(notes):
     return {"head": head, "rows": rows}
 
 
-# alpha compositions the renderer would otherwise build by concatenating a byte
-# onto one of these, in two files that had to agree on the byte. An alpha is a
-# reading somebody could disagree with, so it is chosen here and crosses the seam
-# as a colour (ADR 0042)
-_ALPHAS = (
-    ("volUp", "up", "66"), ("volDown", "down", "66"),
-    ("equityTop", "s1", "44"), ("equityBottom", "s1", "00"),
-    ("ddTop", "loss", "00"), ("ddBottom", "loss", "44"),
-)
-
-
 def _theme(mode, palette):
+    """Both palettes as the document carries them: the caller's colours over the
+    chart's, the wicks and the volume the bodies' where the caller names none, and the
+    washes faded here from whatever form a colour came in, so the renderer composes no
+    alpha of its own (ADR 0042)."""
     out = {"mode": mode, "font": _FONT}
     for key in ("dark", "light"):
         merged = dict(_PALETTES[key])
         if palette and key in palette:
             merged.update(palette[key])
-        for name, base, alpha in _ALPHAS:
-            merged[name] = merged[base] + alpha
+
+        merged.setdefault("wick_up", merged["up"])
+        merged.setdefault("wick_down", merged["down"])
+        merged.setdefault("volume_up", _faded(merged["up"], 0.4))
+        merged.setdefault("volume_down", _faded(merged["down"], 0.4))
+        merged.update(ddTop=_faded(merged["loss"], 0.0), ddBottom=_faded(merged["loss"], 0.267),
+                      edge=_faded(merged["ink"], 0.07), edgeClear=_faded(merged["ink"], 0.0))
         out[key] = merged
 
     return out
@@ -1219,7 +1305,7 @@ def _candles(ohlc, shown):
 
 def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, focus=None,
            candle_color=None, theme=None, palette=None, height=None, title=None,
-           future=0, stats=None, trades=True, drawdown=None, notes=None):
+           future=0, stats=None, trades=True, drawdown=None, notes=None, price=None):
     """The chart of ``data``'s bars of ``instrument`` with the marks ``given`` and, where
     it is given, ``result``, a run on them whose rows are the Data's ``rows``, as
     `Data.chart` and `Result.chart` describe."""
@@ -1348,14 +1434,18 @@ def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, fo
             else:
                 entry["base"] = mark.base
         elif mark.kind == "band":
+            # each edge to the places a line of its values takes, so a band between
+            # two named lines ships their very numbers, which the legend finds them by
             entry.update(
-                _track(mark.upper, num_bars, f"{label} upper", places(on), future)
+                _track(mark.upper, num_bars, f"{label} upper",
+                       _digits(_extent(mark.upper)) + 2, future)
             )
             if mark.lower is None:
                 entry["level"] = mark.level
             else:
                 lower = _track(
-                    mark.lower, num_bars, f"{label} lower", places(on), future
+                    mark.lower, num_bars, f"{label} lower",
+                    _digits(_extent(mark.lower)) + 2, future
                 )
                 # both edges are one shape, so they share one start
                 start = max(entry["i0"], lower["i0"])
@@ -1464,12 +1554,12 @@ def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, fo
             "i0": at,
             "v": upper["v"][at - upper["i0"]:],
             "v2": lower["v"][at - lower["i0"]:],
-            # translucent rather than a theme key, for the same reason the default
+            # translucent grey rather than a theme key, for the same reason the default
             # band fill is one: a band's colours are baked into the document and a
             # theme toggle repaints series rather than primitives. Denser at the
             # curve, where the fall is measured to, fading toward the peak it fell
             # from
-            "fill": ["rgba(255,84,112,0.22)", "rgba(255,84,112,0.03)"],
+            "fill": ["rgba(138,147,158,0.26)", "rgba(138,147,158,0.03)"],
         })
 
     mode = _theme_mode(theme) if theme is not None else _DEFAULTS["theme"]
@@ -1479,14 +1569,17 @@ def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, fo
     tint = _palette(palette) if palette is not None else _DEFAULTS["palette"]
 
     spec = {
-        "schema": 6,
+        "schema": 7,
         "n": num_bars,
         # numpy's own tolist(), never a comprehension, for the reason _candles gives
         "t": times.tolist(),
         # the interval is the Data's own, as the router names it
         "interval": data.interval,
         "ohlc": _candles(ohlc, shown),
-        "candles": {"panel": "price"},
+        "candles": {"panel": "price",
+                    "style": _DEFAULTS["price"] if price is None else _price(price)},
+        # the instrument the candles are, which the price pane's legend names
+        "symbol": name,
         "panels": panels_out,
         "series": series,
         "trades": _trades(result, name, rows) if result is not None and trades else [],
@@ -1494,6 +1587,9 @@ def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, fo
         "height": _height(height) if height is not None else _DEFAULTS["height"],
     }
 
+    if title is None and result is not None and len(data.names) > 1:
+        # the equity and the headline are the account's, which nothing else says
+        title = f"{name}, one of the account's {len(data.names)} instruments"
     if title is not None:
         spec["title"] = str(title)
     if notes is not None:
@@ -1527,7 +1623,7 @@ def _drawn(data, given, instrument=None, result=None, rows=None, panels=None, fo
             key: (float(v) if math.isfinite(float(v)) else None)
             for key, v in result.stats.items()
         }
-        headline = _headline(result.stats, stats)
+        headline = _headline(result, stats, name, len(data.names) > 1)
         if headline:
             spec["headline"] = headline
     elif stats:

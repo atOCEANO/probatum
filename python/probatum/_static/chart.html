@@ -19,18 +19,32 @@
     <div id="paneCtls"></div>
   </div>
   <div class="footer" id="tools">
-    <button id="fit" title="Fit all bars">FIT</button>
-    <button id="tbl" aria-pressed="false" title="Trade log">TABLE</button>
+    <button id="fit" title="Fit all bars" aria-label="Fit all bars">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+           focusable="false">
+        <path d="m18 8 4 4-4 4"/><path d="M2 12h20"/><path d="m6 8-4 4 4 4"/>
+      </svg>
+    </button>
+    <button id="tbl" aria-pressed="false" title="Trade log" aria-label="Trade log">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+           focusable="false">
+        <path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/>
+        <path d="M3 9h18"/><path d="M3 15h18"/>
+      </svg>
+    </button>
     <span class="grow"></span>
     <span class="hint" id="hint"></span>
-    <!-- last, and across the gap, because it is not a third of the same thing.
-         FIT does something once and TABLE holds a state, and both say what they
-         do to the chart. This one names the mode it will switch TO rather than
-         the one it is in, which is why it never looks pressed and never could,
-         and it changes the whole document rather than the plot. Moved in the
-         markup rather than with order:, so the tab order still matches what a
-         reader sees -->
-    <button id="theme" title="Toggle theme">LIGHT</button>
+    <a class="credit" href="https://www.tradingview.com/" target="_blank"
+       rel="noopener">TradingView Lightweight Charts&trade; Copyright (c) 2026 TradingView, Inc.</a>
+    <!-- last, and across the gap, because it is not a third of the same thing: fit
+         does something once and the trade log holds a state, both to the chart,
+         where this one shows the mode it will switch to and changes the whole
+         document. Placed in the markup rather than with order:, so the tab order
+         still matches what a reader sees. Its icon and its title are the mode's,
+         which applyTheme sets as the chart mounts -->
+    <button id="theme"></button>
   </div>
 </div>
 
@@ -50,8 +64,13 @@
     <thead><tr>
       <!-- Opened and Closed rather than Entry bar and Exit bar: those two now
            carry a timestamp, and Entry and Exit four columns along are prices -->
-      <th>#</th><th>Side</th><th>Opened</th><th>Closed</th><th>Size</th>
-      <th>Entry</th><th>Exit</th><th>Fees</th><th>Net PnL</th><th>Bars</th>
+      <th data-key="i">#</th><th data-key="side">Side</th><th data-key="in">Opened</th>
+      <th data-key="out">Closed</th><th data-key="size">Size</th>
+      <th data-key="px_in">Entry</th><th data-key="px_out">Exit</th>
+      <th data-key="fees">Fees</th><th data-key="fund">Funding</th>
+      <th data-key="net">Net PnL</th><th data-key="ret">Return</th>
+      <th data-key="best">Best</th><th data-key="worst">Worst</th>
+      <th data-key="bars">Bars</th><th data-key="why">Reason</th>
     </tr></thead>
     <tbody id="tbody"></tbody>
   </table>

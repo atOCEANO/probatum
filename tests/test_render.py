@@ -192,8 +192,9 @@ def test_the_renderer_draws_rather_than_mounting_an_empty_canvas(tmp_path):
     assert max(seen["colours"]) > 20
 
 
-def test_the_renderer_shows_its_attribution_and_links_it(tmp_path):
-    # the library's licence asks for its attribution, which record 0042 shows
+def test_the_renderer_s_notice_and_link_sit_in_the_footer(tmp_path):
+    # the renderer's licence asks for its notice and a link to TradingView on the
+    # page, which the footer gives with nothing painted over the plot (ADR 0042)
     path = bars().chart().save(str(tmp_path / "attribution.html"))
 
     with playwright.sync_playwright() as driver:
@@ -204,12 +205,13 @@ def test_the_renderer_shows_its_attribution_and_links_it(tmp_path):
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(400)
 
-        logo = page.locator("#tv-attr-logo")
-        seen = (logo.count(), logo.first.get_attribute("href"))
+        credit = page.locator("a.credit")
+        seen   = (page.locator("#tv-attr-logo").count(), credit.count(),
+                  credit.first.get_attribute("href"), credit.first.text_content())
         browser.close()
 
-    assert seen[0] == 1
-    assert seen[1].startswith("https://www.tradingview.com/")
+    assert seen[:3] == (0, 1, "https://www.tradingview.com/")
+    assert seen[3] == "TradingView Lightweight Charts\u2122 Copyright (c) 2026 TradingView, Inc."
 
 
 def test_every_panel_becomes_a_pane_carrying_its_own_name(tmp_path):
@@ -233,27 +235,32 @@ def test_every_panel_becomes_a_pane_carrying_its_own_name(tmp_path):
     ]
 
 
-def test_every_closed_trade_becomes_a_row_carrying_its_numbers(tmp_path):
+def test_every_round_trip_becomes_a_row_carrying_its_numbers(tmp_path):
     data   = bars()
     result = run(data)
     seen   = observe(result.chart(), tmp_path)
-    closed = [trade for trade in result.trades if not trade["open"]]
+    trips  = list(result.trades)
     times  = stamps(data)
 
     assert seen["errors"]    == []
-    assert len(seen["rows"]) == len(closed)
-    assert len(closed) > 0
+    assert len(seen["rows"]) == len(trips)
+    assert any(not trade["open"] for trade in trips)
 
     # the two bar columns read as a time, because the axis over them does and a
     # row saying 4856 under an axis saying November has to be counted back by
-    # hand. The tick is still reachable, in the cell's title
-    for row, title, trade in zip(seen["rows"], seen["titles"], closed):
+    # hand. The tick is still reachable, in the cell's title. A trip still open has
+    # no close or exit yet
+    for row, title, trade in zip(seen["rows"], seen["titles"], trips):
         assert row[1]   == trade["side"]
         assert row[2]   == times[trade["open_bar"]]
-        assert row[3]   == times[trade["close_bar"]]
         assert title[2] == "bar " + str(trade["open_bar"])
+        if trade["open"]:
+            assert (row[3], row[6], row[14]) == ("", "", "open")
+            continue
+        assert row[3]   == times[trade["close_bar"]]
         assert title[3] == "bar " + str(trade["close_bar"])
-        assert row[9]   == str(trade["close_bar"] - trade["open_bar"])
+        assert row[13]  == str(trade["close_bar"] - trade["open_bar"])
+        assert row[14]  == (trade["reason"] or "")
 
 
 def test_clicking_a_trade_row_selects_it_and_says_which(tmp_path):
@@ -366,10 +373,10 @@ def test_a_legend_too_wide_for_its_panel_counts_what_it_dropped(tmp_path):
         drawn = page.evaluate("window.__text")
         browser.close()
 
-    counters = [s for s in drawn if re.fullmatch(r"\+\d+", s)]
+    counters = [found for found in (re.fullmatch(r"\+(\d+) more", s) for s in drawn) if found]
     assert counters, f"nothing was counted as dropped; drew {drawn[:20]}"
     named = sum(1 for s in drawn if "long series name" in s)
-    assert named + int(counters[0][1:]) >= 8
+    assert named + int(counters[0][1]) >= 8
 
 
 def test_a_gap_in_a_series_leaves_the_legend_quiet_rather_than_reporting_a_fault(tmp_path):
@@ -484,10 +491,9 @@ def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_pat
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(400)
 
-        page.click("#tbl")
-        page.wait_for_timeout(300)
-
+        # a table of the caller's opens the panel under the plot, as asked
         seen = {
+            "open": page.evaluate("!document.getElementById('tablePanel').hidden"),
             "head": page.locator("#nhead th").all_text_contents(),
             "rows": page.locator("#nbody tr").evaluate_all(
                 "rs => rs.map(r => Array.from(r.cells).map(c => c.textContent))"
@@ -507,6 +513,7 @@ def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_pat
         browser.close()
 
     assert errors             == []
+    assert seen["open"]
     assert seen["head"]       == ["window", "traded", "sharpe"]
     assert seen["rows"][0][1] == "<script>alert(1)</script>"
     assert seen["rows"][1][2] == "-0.31"
@@ -590,6 +597,47 @@ def test_fit_puts_the_whole_series_back_after_a_row_framed_one_trade(tmp_path):
     assert back == whole, "FIT left the chart where the row had put it"
 
 
+def test_a_long_run_opens_on_every_bar(tmp_path):
+    # the renderer draws a bar no narrower than a floor of its own, which framed only
+    # the last few years of a long hourly run; the floor follows the plot's width and
+    # the bars it holds, so the first bar is in view when the chart opens
+    data = bars(30_000)
+    path = data.chart().save(str(tmp_path / "long.html"))
+
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page    = browser.new_page(viewport={"width": 1100, "height": 700})
+
+        page.add_init_script(_RECORDER)
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(800)
+
+        opened = stamp_under(page, 0.01)
+        browser.close()
+
+    assert stamps(data).index(opened) < 30_000 * 0.03, "the chart opened past its start"
+
+
+def test_the_trade_log_button_hides_on_a_chart_with_no_round_trips(tmp_path):
+    shown = {}
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+
+        for name, built in (("bars", bars().chart()), ("run", run(bars()).chart()),
+                            ("untraded", run(bars()).chart(trades=False))):
+            page = browser.new_page(viewport={"width": 1100, "height": 700})
+            page.goto(pathlib.Path(built.save(str(tmp_path / f"{name}.html"))).as_uri())
+            page.wait_for_selector("#chart canvas", timeout=20_000)
+            page.wait_for_timeout(300)
+            shown[name] = page.locator("#tbl").is_visible()
+            page.close()
+
+        browser.close()
+
+    assert shown == {"bars": False, "run": True, "untraded": False}
+
+
 def test_the_wheel_zooms_the_time_axis(tmp_path):
     # the renderer's own handler, which a synthetic event never reaches and no
     # test had ever driven with a real one
@@ -648,9 +696,11 @@ def test_dragging_a_pane_separator_resizes_the_panes_and_moves_their_controls(tm
         gap = page.evaluate(
             """
             () => {
+              // a pane draws on two canvases of one box, so each box is taken once
               const rs = Array.from(document.querySelectorAll('#chart canvas'))
                 .map(c => c.getBoundingClientRect())
                 .filter(r => r.width > 200)
+                .filter((r, i, all) => all.findIndex(o => o.top === r.top) === i)
                 .sort((a, b) => a.top - b.top);
               if (rs.length < 2) return null;
               return { x: rs[0].left + rs[0].width / 2,
@@ -739,10 +789,10 @@ def test_a_caption_near_the_top_moves_rather_than_printing_through_the_legend(tm
 
     assert "the high" in ys, f"the caption was not drawn; drew {list(ys)[:12]}"
 
-    # the panel's own name is the first thing the legend paints, so its baseline
-    # is where the band the legend owns is
-    assert "price" in ys
-    assert ys["the high"] > ys["price"], (
+    # the price pane's name, its instrument, is the first thing the legend paints,
+    # so its baseline is where the band the legend owns is
+    assert "BTCUSDT" in ys
+    assert ys["the high"] > ys["BTCUSDT"], (
         "the caption landed at or above the legend it is supposed to clear"
     )
 
@@ -809,14 +859,14 @@ def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
 
             seen[scheme] = (
                 page.evaluate("document.documentElement.getAttribute('data-theme')"),
-                page.locator("#theme").text_content(),
+                page.locator("#theme").get_attribute("title"),
             )
             page.close()
 
         browser.close()
 
-    assert seen["dark"]  == ("dark", "LIGHT")
-    assert seen["light"] == ("light", "DARK")
+    assert seen["dark"]  == ("dark", "Switch to the light theme")
+    assert seen["light"] == ("light", "Switch to the dark theme")
 
 
 def test_a_named_background_names_the_region_under_the_crosshair(tmp_path):
@@ -905,7 +955,7 @@ def test_the_theme_toggle_rewrites_the_palette_in_a_saved_file(tmp_path):
     # a saved chart carries both palettes so the toggle works with no process
     # behind it (ADR 0042), and the toggle writes the css variables the stylesheet
     # reads, which is what keeps the chart and its frame from drifting apart
-    built = run(bars()).chart()
+    built = run(bars()).chart(theme="dark")
     dark  = observe(built, tmp_path, name="dark.html")
     light = observe(built, tmp_path, name="light.html", act=lambda page: page.click("#theme"))
 
@@ -1248,10 +1298,10 @@ def test_an_exit_on_a_bar_its_instrument_never_printed_is_still_drawn(tmp_path):
     assert [(trip["close_bar"], trip["reason"]) for trip in result.trades
             if trip["instrument"] == "ETHUSDT"] == [(30, "delist")]
 
-    trips = drawn_colours(result.chart(instrument="ETHUSDT", palette=tint), tmp_path,
-                          "trips.html", [255, 0, 255])
-    none  = drawn_colours(result.chart(instrument="ETHUSDT", palette=tint, trades=False),
-                          tmp_path, "none.html", [255, 0, 255])
+    trips = drawn_colours(result.chart(instrument="ETHUSDT", palette=tint, theme="dark"),
+                          tmp_path, "trips.html", [255, 0, 255])
+    none  = drawn_colours(result.chart(instrument="ETHUSDT", palette=tint, theme="dark",
+                                       trades=False), tmp_path, "none.html", [255, 0, 255])
 
     assert trips - none > 20
 

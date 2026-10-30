@@ -8,18 +8,11 @@
 let markerApi = null;
 let tradeByTime = null;
 
-// a year of hourly bars holds fifty-odd fills, and every one labelled with its
-// size and its pnl turns the price panel into a wall of overlapping grey text
-// that hides the candles it is annotating. The arrows always draw; the words
-// arrive when you have zoomed in far enough to read them.
-//
-// Far enough is a question about pixels. Counting the trades was the first answer
-// and a count cannot tell twelve fills spread over five months, which read fine,
-// from twelve inside one month, which are a pile: every collision this guard
-// exists to prevent was happening at or under the old ceiling of twelve. What
-// decides it is the gap between neighbouring labels. Entries and exits are
-// measured apart, because one caption sits below its bar and the other above, so
-// each only ever collides inside its own band.
+// a year of hourly bars holds fifty-odd round trips, and every exit labelled with its
+// pnl turns the price panel into a wall of overlapping text that hides the candles it
+// is annotating. The arrows always draw, an entry's side being its arrow's; an exit's
+// pnl arrives when you have zoomed in far enough to read it, which is a question about
+// the pixels between neighbouring labels rather than about how many there are.
 const CAPTION_GAP = 80;
 const CAPTION_CEILING = 60;
 
@@ -29,21 +22,20 @@ const CAPTION_CEILING = 60;
 // literals, half toFixed and half toLocaleString, so a caption read -246 beside a
 // row reading -245.54 and a five-figure pnl lost its separator on the way up
 const TABLE_DP = { size: 4, money: 2 };
-const CAPTION_DP = { size: 3, money: 0 };
+const CAPTION_DP = { money: 0 };
 
 const captionsFit = function () {
   const ts = chart.timeScale();
   const range = ts.getVisibleLogicalRange();
   if (!range) return false;
 
-  const entries = [], exits = [];
+  const exits = [];
   SPEC.trades.forEach(function (tr) {
-    if (tr.in >= range.from && tr.in <= range.to) entries.push(tr.in);
-    if (tr.out >= range.from && tr.out <= range.to) exits.push(tr.out);
+    if (!tr.open && tr.out >= range.from && tr.out <= range.to) exits.push(tr.out);
   });
   // no amount of spacing rescues this many, and the coordinate lookups below are
   // a call into the renderer apiece
-  if (entries.length + exits.length > CAPTION_CEILING) return false;
+  if (exits.length > CAPTION_CEILING) return false;
 
   const gap = CAPTION_GAP * UI;
   const crowded = function (bars) {
@@ -56,7 +48,7 @@ const captionsFit = function () {
     }
     return false;
   };
-  return !crowded(entries) && !crowded(exits);
+  return !crowded(exits);
 };
 
 const tradeMarkers = function () {
@@ -64,19 +56,17 @@ const tradeMarkers = function () {
   const words = captionsFit();
   const out = [];
   SPEC.trades.forEach(function (tr) {
-    // an entry stays neutral while the exits are green and red, because it does
-    // not know its outcome yet and colouring it by the exit paints hindsight onto
-    // the bar. Neutral is not the same as faint though: muted is the colour
-    // chosen to sit almost out of sight against the plane, which is right for a
-    // gridline and wrong for the mark that says a position opened here
+    // an entry takes its side's colour, which it knew when it opened, rather than
+    // its outcome's, which would paint hindsight onto the bar; a trip still open
+    // has no exit yet
+    const long = tr.side !== "short";
     out.push({
-      time: SPEC.t[tr.in], position: "belowBar", shape: "arrowUp",
-      color: t.s4, size: 1,
-      text: words ? tr.side + " " + fmt(tr.size, CAPTION_DP.size) : "",
+      time: SPEC.t[tr.in], position: long ? "belowBar" : "aboveBar",
+      shape: long ? "arrowUp" : "arrowDown", color: long ? t.up : t.down, size: 1,
     });
-    out.push({
-      time: SPEC.t[tr.out], position: "aboveBar", shape: "arrowDown",
-      color: tr.net >= 0 ? t.win : t.loss, size: 1,
+    if (!tr.open) out.push({
+      time: SPEC.t[tr.out], position: long ? "aboveBar" : "belowBar",
+      shape: long ? "arrowDown" : "arrowUp", color: tr.net >= 0 ? t.win : t.loss, size: 1,
       text: words ? (tr.net >= 0 ? "+" : "") + fmt(tr.net, CAPTION_DP.money) : "",
     });
   });
@@ -173,7 +163,7 @@ const mountTrades = function () {
     claim(SPEC.t[at], tr);
   });
 
-  document.getElementById("tbody").innerHTML = SPEC.trades.map(function (tr) {
+  const rowOf = function (tr) {
     // a forced close reads as an ordinary exit otherwise, so the side says which
     // it was: the account ended this one, not the strategy
     const side = tr.liq ? tr.side + ' <span class="liq">liq</span>' : tr.side;
@@ -184,13 +174,41 @@ const mountTrades = function () {
     // a title, because it is what focus= and every guard message are phrased in
     return '<tr data-n="' + tr.i + '"><td>' + tr.i + '</td><td>' + side +
       '</td><td title="bar ' + tr.in + '">' + stamp(tr.in) +
-      '</td><td title="bar ' + tr.out + '">' + stamp(tr.out) +
+      (tr.open ? '</td><td>'
+        : '</td><td title="bar ' + tr.out + '">' + stamp(tr.out)) +
       '</td><td>' + fmt(tr.size, TABLE_DP.size) + '</td><td>' + fmt(tr.px_in, digits) +
-      '</td><td>' + fmt(tr.px_out, digits) + '</td><td>' + fmt(tr.fees, TABLE_DP.money) +
+      '</td><td>' + (tr.open ? "" : fmt(tr.px_out, digits)) +
+      '</td><td>' + fmt(tr.fees, TABLE_DP.money) +
+      '</td><td>' + fmt(tr.fund, TABLE_DP.money) +
       '</td><td class="' + (tr.net >= 0 ? "win" : "loss") + '">' +
       fmt(tr.net, TABLE_DP.money) +
-      '</td><td>' + tr.bars + '</td></tr>';
-  }).join("");
+      '</td><td>' + pct(tr.ret) + '</td><td>' + pct(tr.best) + '</td><td>' + pct(tr.worst) +
+      '</td><td>' + tr.bars + '</td><td>' + (tr.why || "") + '</td></tr>';
+  };
+  const pct = function (v) {
+    return v === null || v === undefined ? "" : fmt(v * 100, 2) + "%";
+  };
+  const order = SPEC.trades.slice();
+  const drawRows = function () {
+    document.getElementById("tbody").innerHTML = order.map(rowOf).join("");
+  };
+  drawRows();
+  document.querySelector("#trades thead").addEventListener("click", function (ev) {
+    const th = ev.target.closest("th[data-key]");
+    if (!th) return;
+    const key = th.dataset.key, back = th.getAttribute("aria-sort") === "ascending";
+    document.querySelectorAll("#trades th[data-key]").forEach(function (other) {
+      other.removeAttribute("aria-sort");
+    });
+    th.setAttribute("aria-sort", back ? "descending" : "ascending");
+    order.sort(function (a, b) {
+      const x = a[key], y = b[key];
+      const by = x === y ? a.i - b.i : x === null || x === undefined ? 1
+        : y === null || y === undefined ? -1 : x < y ? -1 : 1;
+      return back ? -by : by;
+    });
+    drawRows();
+  });
 
   chart.subscribeClick(function (p) {
     if (!p || !p.time) return;

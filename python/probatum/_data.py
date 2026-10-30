@@ -717,7 +717,8 @@ class Data:
 
 
     def chart(self, *marks, instrument=None, panels=None, focus=None, candle_color=None,
-              theme=None, palette=None, height=None, title=None, future=0, notes=None):
+              theme=None, palette=None, height=None, title=None, future=0, notes=None,
+              price=None):
         """The interactive chart of these bars, a `probatum.chart.Chart` to ``show()``
         in a notebook cell or ``save(path)`` as one HTML file that opens offline: the
         candles of ``instrument``, the Data's one where it holds one, a bar it printed
@@ -728,7 +729,8 @@ class Data:
         from .chart import _drawn
         return _drawn(self, marks, instrument, panels=panels, focus=focus,
                       candle_color=candle_color, theme=theme, palette=palette,
-                      height=height, title=title, future=future, notes=notes)
+                      height=height, title=title, future=future, notes=notes,
+                      price=price)
 
 
     def join(self, other):

@@ -693,6 +693,111 @@ def test_a_universe_draws_the_instrument_it_is_asked_for_and_its_trips_alone():
     assert spec["equity"]["v"] == pytest.approx(result.equity.tolist())
 
 
+def test_one_instrument_of_several_is_named_and_counted_as_the_account_s_share():
+    data   = pair()
+    result = probatum.backtest(Pairs(), data, "frictionless")
+    spec   = result.chart(instrument="ETHUSDT").spec()
+    total  = int((~np.asarray(result.trades["open"])).sum())
+    mine   = int(sum(1 for trip in result.trades
+                     if trip["instrument"] == "ETHUSDT" and not trip["open"]))
+
+    assert spec["symbol"] == "ETHUSDT"
+    assert spec["title"] == "ETHUSDT, one of the account's 2 instruments"
+    assert dict(spec["headline"])["round trips"] == f"{mine:,} of {total:,}"
+    assert result.chart(instrument="ETHUSDT", title="mine").spec()["title"] == "mine"
+
+
+def test_a_trip_still_open_stands_at_the_last_bar_with_its_pnl_so_far():
+    result = probatum.backtest(BuyAtOpen(), bars(8), "frictionless")
+    spec   = result.chart().spec()
+    [trip] = result.trades
+
+    assert trip["open"]
+    assert spec["trades"] == [{
+        "i": 1, "in": trip["open_bar"], "out": 7, "side": "long", "size": 50.0,
+        "px_in": trip["entry"], "px_out": None, "fees": trip["fees"],
+        "fund": trip["funding"], "net": trip["pnl"], "ret": round(trip["ret"], 8),
+        "best": round(trip["best"], 8), "worst": round(trip["worst"], 8),
+        "bars": 7 - trip["open_bar"], "why": "open", "open": True,
+    }]
+    assert dict(spec["headline"])["round trips"] == "0, 1 open"
+
+
+def test_the_price_is_candles_hollow_candles_bars_or_a_line():
+    data = bars(8)
+
+    assert data.chart().spec()["candles"]["style"] == "candles"
+    assert [data.chart(price=style).spec()["candles"]["style"]
+            for style in ("hollow", "bars", "line")] == ["hollow", "bars", "line"]
+
+    with pytest.raises(ProbatumValueError, match="price: 'area'; give 'candles', 'hollow' "
+                       "for a rising candle drawn as its outline, 'bars' or 'line'"):
+        data.chart(price="area")
+
+    previous = probatum.chart.defaults(price="line")
+    try:
+        assert data.chart().spec()["candles"]["style"] == "line"
+    finally:
+        probatum.chart.defaults(**previous)
+
+    assert data.chart().spec()["candles"]["style"] == "candles"
+
+
+def test_a_palette_names_the_wicks_and_the_volume_and_refuses_what_it_cannot_draw():
+    data  = bars(8)
+    given = {"dark": {"up": "#2962ff", "volume_down": "rgba(1, 2, 3, 0.5)"}}
+    theme = data.chart(palette=given).spec()["theme"]["dark"]
+
+    assert (theme["up"], theme["wick_up"], theme["volume_up"]) == (
+        "#2962ff", "#2962ff", "rgba(41,98,255,0.4)")
+    assert theme["volume_down"] == "rgba(1, 2, 3, 0.5)"
+
+    with pytest.raises(ProbatumKeyError, match="palette: 'rising' under 'dark', a colour "
+                       "the chart does not draw; use one of axis, down, "):
+        data.chart(palette={"dark": {"rising": "#000000"}})
+    with pytest.raises(ProbatumValueError, match=r"palette: 'red' for 'up'; give a colour "
+                       r"as #rrggbb, #rrggbbaa or rgb\(r, g, b\)"):
+        data.chart(palette={"light": {"up": "red"}})
+    # a list is a selected trade's fill, the one colour the chart's own palette lists
+    with pytest.raises(ProbatumValueError, match=r"palette: \['#ffffff'\] for 'up'; give a "
+                       r"colour"):
+        data.chart(palette={"dark": {"up": ["#ffffff"]}})
+
+    listed = data.chart(palette={"dark": {"selected": ["#ffffff", "#000000"]}})
+    one    = data.chart(palette={"dark": {"selected": "#ffffff"}})
+
+    assert listed.spec()["theme"]["dark"]["selected"] == ["#ffffff", "#000000"]
+    assert one.spec()["theme"]["dark"]["selected"] == ["#ffffff"]
+
+    # the settings handed back put the session's palette back, none at all included
+    previous = probatum.chart.defaults(palette={"dark": {"s1": "#ffffff"}})
+    probatum.chart.defaults(**previous)
+
+    assert data.chart().spec()["theme"]["dark"]["s1"] == "#e9ebee"
+
+
+def test_a_panel_named_for_its_scale_keeps_its_own_share():
+    shares = [{p["name"]: p["weight"] for p in run().chart(panels=[given]).spec()["panels"]}
+              for given in (Panel("equity", scale="percent"), Panel("equity", weight=3))]
+
+    assert (shares[0]["price"], shares[0]["equity"], shares[1]["equity"]) == (5.0, 2.0, 3.0)
+
+
+def test_a_marker_draws_every_glyph_it_names():
+    shapes = ("triangle_up", "triangle_down", "diamond", "cross", "flag")
+
+    assert [bars(8).chart(Marker(3, shape=shape)).spec()["series"][0]["shape"]
+            for shape in shapes] == list(shapes)
+
+
+def test_a_missing_value_in_notes_reads_as_a_missing_float_does():
+    pd    = pytest.importorskip("pandas")
+    frame = pd.DataFrame({"bar": pd.array([1, None], dtype="Int64"),
+                          "at": pd.to_datetime([0, None], utc=True), "x": [0.5, np.nan]})
+
+    assert bars(8).chart(notes=frame).spec()["notes"]["rows"][1] == ["n/a", "n/a", "n/a"]
+
+
 class Late(probatum.Strategy):
     """A buy of one at the close of the Data's row ``start`` and a close three rows
     later."""
@@ -743,7 +848,8 @@ def test_a_result_taken_part_way_through_a_run_draws_the_rows_it_holds():
     assert len(result.time) == 21 and spec["n"] == 40
     assert spec["equity"]["v"][:21] == pytest.approx(result.equity.tolist())
     assert spec["equity"]["v"][21:] == [None] * 19
-    assert [(t["in"], t["out"]) for t in spec["trades"]] == [(3, 7)]
+    assert [(t["in"], t["out"], t.get("open", False)) for t in spec["trades"]] == [
+        (3, 7, False), (16, 20, True)]
 
     # the trip still open runs to the run's last row, 20, not to the Data's
     held = result.trades[-1]
@@ -1071,6 +1177,20 @@ def test_a_band_with_two_edges_ships_them_at_one_start_and_one_length():
     assert len(entry["v"]) == len(entry["v2"]) == 5
 
 
+def test_a_band_between_two_named_lines_ships_the_numbers_the_lines_do():
+    # each line spans 95 where the panel, which the level stretches, spans 120, so a
+    # line keeps a place the panel does not; the legend finds a band's lines by value
+    upper = np.linspace(50.0, 145.0, 8) + 0.123456
+    lower = upper - 1.0
+    spec  = bars(8).chart(Line(upper, "upper", panel="x"), Line(lower, "lower", panel="x"),
+                          Band(upper, lower, "channel", panel="x"),
+                          Level(170.0, panel="x")).spec()
+    band  = [s for s in spec["series"] if s["kind"] == "band"][0]
+    lines = [s for s in spec["series"] if s["kind"] == "line"]
+
+    assert (band["v"], band["v2"]) == (lines[0]["v"], lines[1]["v"])
+
+
 def test_a_below_band_ships_its_fill_flipped_so_stop_zero_is_the_reference_edge():
     stops = ("#00000000", "#000000ff")
 
@@ -1104,8 +1224,10 @@ def test_a_trade_row_carries_the_keys_the_renderer_reads_and_no_more():
     assert spec["trades"] == [{
         "i": 1, "in": trip["open_bar"], "out": trip["close_bar"], "side": "long",
         "size": 1.0, "px_in": trip["entry"], "px_out": trip["exit"],
-        "fees": trip["fees"], "net": trip["pnl"],
-        "bars": trip["close_bar"] - trip["open_bar"],
+        "fees": trip["fees"], "fund": trip["funding"], "net": trip["pnl"],
+        "ret": round(trip["ret"], 8), "best": round(trip["best"], 8),
+        "worst": round(trip["worst"], 8), "bars": trip["close_bar"] - trip["open_bar"],
+        "why": trip["reason"],
     }]
 
 
@@ -1204,14 +1326,15 @@ def test_a_title_containing_markup_is_escaped_in_the_title_element():
     assert "<title>&lt;b&gt;hi&lt;/b&gt;</title>" in document
 
 
-def test_the_saved_file_carries_its_renderer_and_references_no_url(tmp_path):
+def test_the_saved_file_carries_its_renderer_and_loads_no_url(tmp_path):
     path     = run().chart().save(tmp_path / "run.html")
     document = pathlib.Path(path).read_text(encoding="utf-8")
 
     assert "TradingView" in document or "Lightweight Charts" in document
     assert 'src="http' not in document
     assert "src='http" not in document
-    assert 'href="http' not in document
+    # the one link is the renderer's credit, which its licence asks the page to give
+    assert re.findall(r'href="(http[^"]*)"', document) == ["https://www.tradingview.com/"]
 
 
 def test_save_returns_the_path_it_was_given(tmp_path):
@@ -1273,7 +1396,7 @@ def test_both_palettes_travel_so_the_theme_toggle_works_offline():
     theme = bars(8).chart().spec()["theme"]
 
     assert set(theme["dark"]) == set(theme["light"])
-    assert theme["mode"]      == "dark"
+    assert theme["mode"]      == "auto"
 
 
 def test_auto_reaches_the_document_undecided():
@@ -1350,12 +1473,15 @@ def test_the_vendored_renderer_keeps_its_licence():
     assert "Apache" in chart._asset("LICENSE-lightweight-charts")
 
 
-def test_the_renderer_shows_its_attribution_as_its_licence_asks():
-    # the library's licence asks for its attribution, which record 0042 shows
+def test_the_renderer_s_notice_and_link_sit_in_the_footer_as_its_licence_asks():
+    # the licence asks for its notice and a link to TradingView on the page; the logo
+    # over the plot would give the link alone, so the footer gives both (ADR 0042)
     from probatum import chart
 
-    assert "attributionLogo: true" in chart._asset("core.js")
-    assert "attributionLogo: false" not in chart._bundle()
+    assert "attributionLogo: false" in chart._asset("core.js")
+    assert ('<a class="credit" href="https://www.tradingview.com/" target="_blank" '
+            'rel="noopener">TradingView Lightweight Charts&trade; Copyright (c) 2026 '
+            'TradingView, Inc.</a>') in " ".join(chart._asset("chart.html").split())
 
 
 def test_the_manifest_lists_every_script_in_the_static_directory():
@@ -1440,7 +1566,7 @@ def test_a_run_puts_four_numbers_above_the_chart():
     assert spec["title"] == "a run"
 
     labels = [row[0] for row in spec["headline"]]
-    assert labels == ["return", "sharpe", "max dd", "trades"]
+    assert labels == ["return", "sharpe", "max drawdown", "round trips"]
 
 
 def test_the_headline_is_preformatted_so_the_renderer_decides_nothing():

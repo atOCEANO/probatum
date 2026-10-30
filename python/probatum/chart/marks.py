@@ -34,7 +34,8 @@ __all__ = [
 ]
 
 _STYLES = ("solid", "dashed", "dotted")
-_SHAPES = ("circle", "square", "arrow_up", "arrow_down")
+_SHAPES = ("circle", "square", "arrow_up", "arrow_down", "triangle_up", "triangle_down",
+           "diamond", "cross", "flag")
 _SCALES = ("linear", "log", "percent")
 _SIDES  = ("above", "below")
 
@@ -242,8 +243,9 @@ class Panel:
 
     ``show=False`` removes the panel and everything drawn on it, and its data is
     left out of the document rather than merely going unpainted. ``weight`` is a
-    stretch factor rather than pixels, so a layout holds at any size; ``height``
-    means pixels and lives on the chart. ``scale`` is ``"linear"``, ``"log"`` or
+    stretch factor rather than pixels, so a layout holds at any size, and the panel's
+    own share unless given, price 5, volume 1, equity 2 and any other 1.5;
+    ``height`` means pixels and lives on the chart. ``scale`` is ``"linear"``, ``"log"`` or
     ``"percent"``, matching the A / L / % buttons the panel draws in its own axis,
     and ``range`` pins the axis to a fixed window.
 
@@ -252,19 +254,20 @@ class Panel:
     """
 
 
-    def __init__(self, name, *, show=True, weight=1, scale="linear", range=None):
+    def __init__(self, name, *, show=True, weight=None, scale="linear", range=None):
         self.name = str(name)
         if not self.name:
             raise ProbatumValueError(f"Panel name: {name!r}; give the panel a name")
 
         self.show   = bool(show)
-        self.weight = _finite(weight, f"Panel {self.name!r} weight")
+        self.weight = (None if weight is None
+                       else _finite(weight, f"Panel {self.name!r} weight"))
 
         if self.weight == 0.0:
             raise ProbatumValueError(f"Panel {self.name!r} weight: 0, which used to mean "
                                      f"hidden; say so, with Panel({self.name!r}, "
                                      f"show=False)")
-        if self.weight < 0:
+        if self.weight is not None and self.weight < 0:
             raise ProbatumValueError(f"Panel {self.name!r} weight: {weight}; give a "
                                      f"positive number, its stretch against the others")
 

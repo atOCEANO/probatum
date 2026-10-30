@@ -12,23 +12,45 @@
 
 const calloutPrimitive = function (anchor, spec) {
 
-  const glyph = function (ctx, x, y, size, shape) {
+  const glyph = function (ctx, x, y, size, shape, color) {
+    const s = size, t = size * 0.45;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1.5, size * 0.45);
+    ctx.lineCap = "round";
     ctx.beginPath();
     if (shape === "square") {
-      ctx.rect(x - size, y - size, size * 2, size * 2);
-    } else if (shape === "arrow_up") {
-      ctx.moveTo(x, y - size);
-      ctx.lineTo(x + size, y + size);
-      ctx.lineTo(x - size, y + size);
+      ctx.rect(x - s, y - s, s * 2, s * 2);
+    } else if (shape === "triangle_up") {
+      ctx.moveTo(x, y - s); ctx.lineTo(x + s, y + s); ctx.lineTo(x - s, y + s);
       ctx.closePath();
-    } else if (shape === "arrow_down") {
-      ctx.moveTo(x, y + size);
-      ctx.lineTo(x + size, y - size);
-      ctx.lineTo(x - size, y - size);
+    } else if (shape === "triangle_down") {
+      ctx.moveTo(x, y + s); ctx.lineTo(x + s, y - s); ctx.lineTo(x - s, y - s);
       ctx.closePath();
+    } else if (shape === "arrow_up" || shape === "arrow_down") {
+      const d = shape === "arrow_up" ? 1 : -1;
+      ctx.moveTo(x, y - d * s * 1.3); ctx.lineTo(x + s, y - d * s * 0.2);
+      ctx.lineTo(x + t, y - d * s * 0.2); ctx.lineTo(x + t, y + d * s * 1.3);
+      ctx.lineTo(x - t, y + d * s * 1.3); ctx.lineTo(x - t, y - d * s * 0.2);
+      ctx.lineTo(x - s, y - d * s * 0.2); ctx.closePath();
+    } else if (shape === "diamond") {
+      ctx.moveTo(x, y - s * 1.25); ctx.lineTo(x + s, y); ctx.lineTo(x, y + s * 1.25);
+      ctx.lineTo(x - s, y); ctx.closePath();
+    } else if (shape === "cross") {
+      ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s);
+      ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s);
+      ctx.stroke();
+      return;
+    } else if (shape === "flag") {
+      ctx.moveTo(x - s * 0.7, y + s * 1.3); ctx.lineTo(x - s * 0.7, y - s * 1.3);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - s * 0.7, y - s * 1.3); ctx.lineTo(x + s * 1.1, y - s * 0.75);
+      ctx.lineTo(x - s * 0.7, y - s * 0.2); ctx.closePath();
     } else {
-      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.arc(x, y, s, 0, Math.PI * 2);
     }
+    ctx.fill();
   };
 
   return {
@@ -84,9 +106,7 @@ const calloutPrimitive = function (anchor, spec) {
                     ctx.stroke();
                   }
 
-                  glyph(ctx, x, cy, size, spec.shape);
-                  ctx.fillStyle = color;
-                  ctx.fill();
+                  glyph(ctx, x, cy, size, spec.shape, color);
 
                   if (spec.text) {
                     const fs = Math.round(11 * UI);
@@ -94,7 +114,7 @@ const calloutPrimitive = function (anchor, spec) {
                     ctx.font = "600 " + fs + "px " + FONT;
                     const w = ctx.measureText(spec.text).width + padX * 2;
                     const h = fs + padY * 2;
-                    const away = size + h / 2 + Math.round(3 * UI);
+                    const away = size * 1.35 + h / 2 + Math.round(3 * UI);
                     const side = Math.sign(spec.offset || 1);
                     let ty = cy - side * away;
 

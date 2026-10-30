@@ -53,7 +53,7 @@ data.chart(squeeze).show()
 result.chart().show()
 ```
 
-That last one puts an arrow at each end of every round trip on the bars it filled on, the account's equity with its drawdown shaded from the running peak, four of its statistics above the plot, and the round trips in a table under it. Clicking a row frames that trade, and clicking an arrow opens its row.
+That last one puts an arrow at each end of every round trip on the bars it filled on, an entry's by its side, under the bar for a long and over it for a short, and an exit's in the win or the loss colour, a trip still open drawn to the last bar with no exit; the account's equity, in the win colour at or above its opening balance and the loss colour below, with its drawdown shaded grey from the running peak; four of its statistics above the plot, the round trips counting those still open; and the round trips in a table under it, each with its funding, return, best, worst and reason, sorted by a click on a column's head. Clicking a row frames that trade, and clicking an arrow opens its row.
 
 All three together:
 
@@ -452,7 +452,7 @@ result.chart(
 ).show()
 ```
 
-`show=False` removes a panel and everything on it, and a hidden panel ships no data. `weight` is a stretch against the other panels rather than pixels, so a layout holds at any size. `scale` is `"linear"`, `"log"` or `"percent"`, the **A / L / %** buttons every panel draws on its axis, so a reader can change it in the saved file. Log on the equity panel draws compounding as a straight line.
+`show=False` removes a panel and everything on it, and a hidden panel ships no data. `weight` is a stretch against the other panels rather than pixels, so a layout holds at any size, and a panel named only for its scale or its range keeps its own: price 5, volume 1, equity 2 and any other 1.5. `scale` is `"linear"`, `"log"` or `"percent"`, the **A / L / %** buttons every panel draws on its axis, so a reader can change it in the saved file. Log on the equity panel draws compounding as a straight line.
 
 <br>
 
@@ -526,7 +526,7 @@ data.chart(Background(regime, "volatility", fill={"hi": "#4d9fff29", "lo": "#ff5
 
 With a `name` it takes a legend row reading the region under the crosshair; without one it draws and stays out of the legend. A mask has no region names, so its row is the swatch and the name.
 
-`Marker`'s **`offset` is a signed distance in pixels**, positive upward, so the glyph keeps its distance from the bar at every zoom. Its `shape` is `"circle"`, `"square"`, `"arrow_up"` or `"arrow_down"`. To anchor on the panel's own scale, pass `value=`, a price only on the price panel; without one the marker sits at the bar's own extreme.
+`Marker`'s **`offset` is a signed distance in pixels**, positive upward, so the glyph keeps its distance from the bar at every zoom. Its `shape` is `"circle"`, `"square"`, `"arrow_up"`, `"arrow_down"`, `"triangle_up"`, `"triangle_down"`, `"diamond"`, `"cross"` or `"flag"`. To anchor on the panel's own scale, pass `value=`, a price only on the price panel; without one the marker sits at the bar's own extreme.
 
 `Markers` is the same glyph on every bar a mask is true on:
 
@@ -575,7 +575,7 @@ result.chart(strategy.marks(), focus=worst).show()
 
 ## One instrument of several
 
-On a Data of several instruments, `instrument=` names whose candles are drawn. On a run, only the round trips the run closed on that instrument are drawn, and the equity panel is the whole account's.
+On a Data of several instruments, `instrument=` names whose candles are drawn. On a run, only the round trips the run made on that instrument are drawn, and the equity panel and the headline are the whole account's, which the title says unless you give one; its round trips read as that instrument's of the account's, `16 of 65`.
 
 ```python
 universe.chart(instrument="ETHUSDT").show()
@@ -640,7 +640,7 @@ A run shows four by default, its return, Sharpe, maximum drawdown and round trip
 
 ### The evidence, not just the claim
 
-`notes=` puts a table of your own under the plot, above the trade log and behind the same button: a pandas or polars DataFrame, a pyarrow Table, or rows whose first names the columns.
+`notes=` puts a table of your own under the plot, open as the chart opens and above the trade log, the one button showing and hiding both: a pandas or polars DataFrame, a pyarrow Table, or rows whose first names the columns.
 
 ```python
 result.chart(
@@ -696,7 +696,7 @@ chart.show(height=900)            # the same document, drawn taller
 chart.save("run.html")            # fills whatever window opens it
 ```
 
-There is no width: a chart fills whatever contains it, and panels are sized by `weight` for the same reason.
+There is no width: a chart fills whatever contains it, and panels are sized by `weight` for the same reason. It opens on every bar, its narrowest bar set from the plot's width and the bars it holds, and frames them again as a cell settles to its width until the reader moves the view.
 
 A year of hourly candles in a notebook cell is a fraction of a pixel a bar. Every bar is still fitted, and below one device pixel of bar spacing the candles are **aggregated to the column**, one drawn candle a pixel, from the first bar's open to the last's close and reaching the extremes of all of them; zooming in undoes it. The legend reads a real bar rather than the aggregate. The time axis holds one grain at a time, so at a year it names months.
 
@@ -709,18 +709,18 @@ Every chart carries its own copy of the renderer, about 300 KB, beside its data,
 Set the look once:
 
 ```python
-probatum.chart.defaults(theme="dark", height=560)
+probatum.chart.defaults(theme="dark", height=560, price="hollow")
 ```
 
-Both palettes travel in every document, so a saved file switches between light and dark offline and `theme` names the one it opens on. `palette` overrides colours inside either, and `theme` and `palette` given on a chart replace the session's for that chart rather than merging with them.
+Both palettes travel in every document, so a saved file switches between light and dark offline and `theme` names the one it opens on. The candles rise green and fall red, and the rest is drawn in the site's ink. `palette` overrides colours inside either, among them `wick_up`, `wick_down`, `volume_up` and `volume_down`, which follow the bodies unless given; a colour is `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()` or `rgba()`, and a name the chart does not draw or a colour it cannot read is refused. `theme` and `palette` given on a chart replace the session's for that chart rather than merging with them. `price` is `"candles"`, `"hollow"` for rising candles drawn as their outline, `"bars"` or `"line"`.
 
 ```python
 result.chart(theme="auto", palette={"light": {"s1": "#00695c"}}).save("report.html")
 ```
 
-`theme="auto"` opens on whichever the reader's system asks for, which the author of a chart cannot know.
+`theme="auto"`, the default, opens on the notebook's own theme where the chart can see the page around it, as in JupyterLab and VS Code, and otherwise on whichever the reader's system asks for, which the author of a chart cannot know.
 
-The renderer's attribution, which its licence asks for, is shown in the corner of the plot ([ADR 0042](Decisions.md)). Nothing else is painted over it.
+The renderer's notice and a link to TradingView, which its licence asks the page to give, sit in the footer beside the fit, trade log and theme buttons ([ADR 0042](Decisions.md)), and nothing is painted over the plot. The buttons are Lucide's icons, whose licence travels in every document's stylesheet.
 
 <br>
 

@@ -6,7 +6,6 @@
 
 const CTL_H = 46;                      // backdrop height in UI units
 let paneBands = [];                    // vertical extent of each pane, for hover
-let paneState = [];
 // the band at the top of every pane the legend has reserved, in css pixels.
 // Published rather than local because callout.js places a caption from a price
 // and has no other way of knowing the room is spoken for. The 11 and the 12.5
@@ -36,12 +35,20 @@ const placePaneCtls = function () {
   // than its label used, and the drawdown pane, at a fifth of the height, held
   // back less than a single line: its own curve was drawn through its own name.
   //
-  // A narrow pane wraps its legend onto a second line and the room has to follow
-  // it. This is a threshold rather than a measurement, because the wrap happens
-  // in a canvas this file cannot measure into; it is set where the OHLC row stops
-  // fitting on one line
+  // The room is what each legend took at rest, which legend.js measures as it draws.
+  // Until it has drawn, a narrow pane is guessed to wrap its legend onto a second
+  // line, below the width where the OHLC row stops fitting on one
+  const key = el.clientWidth + "x" + UI;
+  if (key !== legendKey) {
+    legendKey = key;
+    legendRest = [];
+  }
   const lines = el.clientWidth < 620 ? 2 : 1;
-  legendRoom = Math.round(11 * UI) + lines * Math.round(12.5 * UI * 1.5);
+  const guess = Math.round(11 * UI) + lines * Math.round(12.5 * UI * 1.5);
+  const roomOf = function (i) { return legendRest[i] || guess; };
+  legendRoom = Math.max.apply(null, [0].concat(hs.map(function (h, i) {
+    return roomOf(i);
+  })));
   panes.forEach(function (p, i) {
     const scale = p.priceScale("right");
     if (!scale || !hs[i]) return;
@@ -58,9 +65,11 @@ const placePaneCtls = function () {
       // by the time axis, so there is nowhere for a low label to overhang into,
       // and half a number is worse than a slightly shorter plot
       scaleMargins: {
-        top: Math.min(0.34, Math.max(0.15, legendRoom / hs[i])),
+        top: Math.min(marginCap(hs[i]), Math.max(0.15, roomOf(i) / hs[i])),
         bottom: 0.12,
       },
+      // a short pane's scale steps finer, so it keeps a second label to read by
+      tickMarkDensity: hs[i] < 120 ? 1.5 : 2.5,
     });
   });
 
@@ -143,9 +152,28 @@ const mountNotes = function () {
   });
 
   document.getElementById("notes").hidden = false;
+  document.getElementById("tablePanel").hidden = false;
+  document.getElementById("tbl").setAttribute("aria-pressed", "true");
   // a run is not required to have notes, and mountTrades hides the button when
   // there are no fills, so this puts it back
   document.getElementById("tbl").hidden = false;
+};
+
+const syncPaneCtls = function () {
+  const panes = chart.panes();
+  document.querySelectorAll("#paneCtls .panectl").forEach(function (g, i) {
+    const scale = panes[i] && panes[i].priceScale("right");
+    if (!scale) return;
+    const o = scale.options();
+    g.querySelector('[data-act="auto"]').setAttribute("aria-pressed", String(o.autoScale));
+    g.querySelector('[data-act="log"]').setAttribute("aria-pressed", String(o.mode === 1));
+    g.querySelector('[data-act="pct"]').setAttribute("aria-pressed", String(o.mode === 2));
+  });
+  invalidate();
+};
+
+const settle = function () {
+  requestAnimationFrame(function () { placePaneCtls(); syncPaneCtls(); });
 };
 
 const mountControls = function () {
@@ -154,25 +182,18 @@ const mountControls = function () {
   const plot = document.getElementById("plot");
   const paneCtls = document.getElementById("paneCtls");
 
-  paneState = SPEC.panels.map(function (p) {
-    return { auto: true, mode: SCALE[p.scale] };
-  });
-
   // the one place in the bundle that interpolates spec text into markup, and it
   // depends on a guard on the other side of the seam: `_safe` in
   // python/probatum/chart/__init__.py refuses a panel name carrying the characters
   // that would break out of the attribute, which the payload escaping cannot reach
   // because the script reads the payload as a literal, whose escapes give back the
-  // original
+  // original. Which buttons are pressed is read off each scale by syncPaneCtls
   paneCtls.innerHTML = SPEC.panels.map(function (p, i) {
     return '<div class="panectl" data-pane="' + i + '" role="group" aria-label="' +
       p.name + ' scale">' +
-      '<button data-act="auto" aria-pressed="true" title="Auto-fit the ' +
-      p.name + ' scale">A</button>' +
-      '<button data-act="log" aria-pressed="' + (paneState[i].mode === 1) +
-      '" title="Logarithmic ' + p.name + ' scale">L</button>' +
-      '<button data-act="pct" aria-pressed="' + (paneState[i].mode === 2) +
-      '" title="Percent ' + p.name + ' scale">%</button></div>';
+      '<button data-act="auto" title="Auto-fit the ' + p.name + ' scale">A</button>' +
+      '<button data-act="log" title="Logarithmic ' + p.name + ' scale">L</button>' +
+      '<button data-act="pct" title="Percent ' + p.name + ' scale">%</button></div>';
   }).join("");
 
   // only the hovered pane shows its buttons, driven by pointer position against
@@ -198,21 +219,16 @@ const mountControls = function () {
     const btn = ev.target.closest("button");
     if (!btn) return;
     const group = btn.closest(".panectl");
-    const i = Number(group.dataset.pane);
-    const st = paneState[i];
-    const scale = chart.panes()[i].priceScale("right");
+    const scale = chart.panes()[Number(group.dataset.pane)].priceScale("right");
 
     if (btn.dataset.act === "auto") {
-      st.auto = !st.auto;
-      scale.applyOptions({ autoScale: st.auto });
+      scale.applyOptions({ autoScale: !scale.options().autoScale });
     } else {
+      // log and percent are exclusive
       const want = btn.dataset.act === "log" ? 1 : 2;
-      st.mode = st.mode === want ? 0 : want;      // log and percent are exclusive
-      scale.applyOptions({ mode: st.mode });
+      scale.applyOptions({ mode: scale.options().mode === want ? 0 : want });
     }
-    group.querySelector('[data-act="auto"]').setAttribute("aria-pressed", String(st.auto));
-    group.querySelector('[data-act="log"]').setAttribute("aria-pressed", String(st.mode === 1));
-    group.querySelector('[data-act="pct"]').setAttribute("aria-pressed", String(st.mode === 2));
+    syncPaneCtls();
     placePaneCtls();
   });
 
@@ -220,14 +236,14 @@ const mountControls = function () {
     const btn = ev.target.closest("button");
     if (!btn) return;
     if (btn.id === "fit") {
+      floorSpacing();
       chart.timeScale().fitContent();
     } else if (btn.id === "tbl") {
       const p = document.getElementById("tablePanel");
       p.hidden = !p.hidden;
       btn.setAttribute("aria-pressed", String(!p.hidden));
     } else if (btn.id === "theme") {
-      // the label follows the mode inside applyTheme, because mount changes it
-      // too and setting it here left a chart opened light saying LIGHT
+      // the icon follows the mode inside applyTheme, which mount runs as well
       applyTheme(MODE === "dark" ? "light" : "dark");
     }
   });
@@ -237,7 +253,8 @@ const mountControls = function () {
 
   applyScale();
   placePaneCtls();
-  requestAnimationFrame(function () { applyScale(); placePaneCtls(); });
+  syncPaneCtls();
+  requestAnimationFrame(function () { applyScale(); placePaneCtls(); syncPaneCtls(); });
 
   // three things move these: the axis widening when the number format changes,
   // the chart resizing, and a pane separator being dragged. Only the first two
@@ -248,10 +265,15 @@ const mountControls = function () {
     // so this is the only thing that tells it the width moved
     remeasureAxis();
   });
-  el.addEventListener("mouseup", function () { requestAnimationFrame(placePaneCtls); });
+  el.addEventListener("mouseup", settle);
+  el.addEventListener("dblclick", settle);
+  el.addEventListener("touchend", settle);
   // a notebook cell dragged wider fires no window resize, so this observes the
   // element instead
   const frame = document.getElementById("frame");
-  if (window.ResizeObserver) new ResizeObserver(applyScale).observe(frame);
-  else window.addEventListener("resize", applyScale);
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () { applyScale(); settle(); }).observe(frame);
+  } else {
+    window.addEventListener("resize", applyScale);
+  }
 };

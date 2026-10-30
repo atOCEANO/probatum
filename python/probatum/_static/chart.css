@@ -9,11 +9,12 @@
   --surface:  #070d13;
   --ink:      #e9ebee;
   --ink-2:    #aab1bb;
-  --muted:    #717a85;
+  --muted:    #8a939e;
   --hairline: rgba(255,255,255,0.16);
-  --win:      #2fe0a8;
-  --loss:     #ff5470;
-  --s1:       #4d9fff;
+  --win:      #089981;
+  --loss:     #f23645;
+  --s1:       #e9ebee;
+  --mono:     "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -23,8 +24,9 @@ body {
   display: flex; flex-direction: column;
   background: var(--plane); color: var(--ink);
   overflow-x: hidden;
-  font: calc(13px * var(--ui))/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: calc(13px * var(--ui))/1.45 var(--mono);
 }
+html.embedded body { padding: 0; background: var(--surface); }
 
 /* a flex item will not shrink below its own content unless it is told it may, and
    both of these carry one long run: a sentence, and a stats row that must not
@@ -36,12 +38,14 @@ body {
   flex: 0 0 auto; min-width: 0;
   display: flex; align-items: baseline; flex-wrap: wrap;
   gap: calc(3px * var(--ui)) calc(14px * var(--ui));
-  padding: 0 calc(2px * var(--ui)) calc(8px * var(--ui));
+  padding: calc(4px * var(--ui)) calc(12px * var(--ui)) calc(10px * var(--ui));
 }
 .head[hidden] { display: none; }
+html.embedded .head { padding-top: calc(10px * var(--ui)); }
 #title {
   min-width: 0;
-  font: 600 calc(13px * var(--ui))/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 600 calc(13px * var(--ui))/1.3 var(--mono);
+  letter-spacing: .02em;
   color: var(--ink);
 }
 #stats {
@@ -53,6 +57,7 @@ body {
 #stats i {
   color: var(--muted); font-style: normal;
   margin-right: calc(4px * var(--ui));
+  text-transform: uppercase; letter-spacing: .12em; font-size: calc(10px * var(--ui));
 }
 #stats b {
   color: var(--ink-2); font-weight: 600; font-variant-numeric: tabular-nums;
@@ -98,20 +103,17 @@ body {
 .panectl[data-active="true"] { opacity: 1; pointer-events: auto; }
 .panectl button {
   width: var(--bw); height: calc(18px * var(--ui)); padding: 0; cursor: pointer;
-  font: 600 calc(10px * var(--ui))/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 600 calc(10px * var(--ui))/1 var(--mono);
   border: 1px solid var(--hairline); border-radius: 3px;
   background: var(--surface); color: var(--muted);
 }
 .panectl button:hover { color: var(--ink); border-color: var(--muted); }
 .panectl button[aria-pressed="true"] { color: var(--s1); border-color: var(--s1); }
 
-/* the controls take a real row of layout, so nothing is overlaid on the plot.
-   No boxes: three words, and a rule under whichever one is on. A bordered
-   control at this size is mostly border, and this one was a ghost outline at
-   16% white around a label sitting at the dimmest colour on the chart. The
-   pressed state is the same blue the pane buttons already use, because it was
-   indistinguishable from hover: both set the ink colour and the muted border,
-   so nothing said the trade table was open */
+/* the controls take a real row of layout, so nothing is overlaid on the plot. No
+   boxes, which at this size are mostly border: an icon each, and a rule under the
+   one that is on, in s1 where a hovered one's is muted, so an open trade log reads
+   as open */
 .footer {
   flex: 0 0 auto;
   display: flex; align-items: center; flex-wrap: wrap;
@@ -122,16 +124,14 @@ body {
 .footer .grow { flex: 1 1 auto; }
 .footer .hint { color: var(--muted); font-size: calc(11px * var(--ui)); }
 .footer button {
-  /* the box is taller than the word so the target is not the glyphs themselves,
-     and the rule then sits a few pixels clear of the baseline rather than on it */
-  padding: 0 calc(3px * var(--ui)); height: calc(22px * var(--ui));
-  line-height: 1; cursor: pointer;
-  font: 600 calc(10.5px * var(--ui))/1 system-ui, -apple-system, "Segoe UI", sans-serif;
-  /* caps at .02em read as one clot at this size */
-  letter-spacing: .09em;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: calc(26px * var(--ui)); height: calc(22px * var(--ui)); padding: 0;
+  cursor: pointer;
   border: 0; border-bottom: 2px solid transparent; border-radius: 0;
   background: transparent; color: var(--ink-2);
 }
+.footer button[hidden] { display: none; }
+.footer button svg { width: calc(16px * var(--ui)); height: calc(16px * var(--ui)); }
 .footer button:hover { color: var(--ink); border-bottom-color: var(--muted); }
 .footer button[aria-pressed="true"] { color: var(--s1); border-bottom-color: var(--s1); }
 /* the chart carries two control sets, this one and the per-pane A / L / %, and
@@ -139,6 +139,14 @@ body {
    and a pane button's is a hairline, so neither shows a default ring */
 .footer button:focus-visible,
 .panectl button:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+.footer .credit {
+  color: var(--muted); font-size: calc(10px * var(--ui)); letter-spacing: .02em;
+  text-decoration: none;
+}
+.footer .credit:hover, .footer .credit:focus-visible {
+  color: var(--ink-2); text-decoration: underline;
+}
+@media (max-width: 600px) { .footer .credit { order: 9; flex-basis: 100%; } }
 
 #tablePanel {
   flex: 0 0 auto;
@@ -170,6 +178,10 @@ td { text-align: right; padding: calc(3px * var(--ui)) calc(8px * var(--ui)); co
    lines apiece on a narrow chart. The panel already scrolls, so overflowing it
    sideways is the behaviour a table wants */
 th, td { white-space: nowrap; }
+#trades th[data-key] { cursor: pointer; }
+#trades th[data-key]:hover { color: var(--ink); }
+#trades th[aria-sort="ascending"]::after { content: " \2191"; }
+#trades th[aria-sort="descending"]::after { content: " \2193"; }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--hairline); }
 tbody tr.sel { background: color-mix(in srgb, var(--s1) 18%, transparent); }
@@ -177,3 +189,65 @@ tbody tr.sel td { color: var(--ink); }
 tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--s1); }
 .win { color: var(--win); } .loss { color: var(--loss); }
 .liq { color: var(--loss); font-weight: 600; }
+
+/* The footer's icons are Lucide's (https://lucide.dev), under this licence:
+
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The following Lucide icons are derived from the Feather project:
+
+airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle,
+arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left,
+arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right,
+arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right,
+chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle,
+clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right,
+corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left,
+corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign,
+download, external-link, feather, frown, hash, headphones, help-circle, info, italic,
+key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh,
+minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon,
+more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon,
+pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search,
+server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet,
+target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon,
+x-square, x, zoom-in, zoom-out
+
+The MIT License (MIT) (for the icons listed above)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/

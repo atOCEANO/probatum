@@ -18,7 +18,7 @@ let selection = null;                  // half open [from, to, fillIndex] of the
 let UI = 1;
 
 const LWC = LightweightCharts;
-const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+const FONT = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
 const STYLE = { solid: 0, dotted: 1, dashed: 2 };
 const SCALE = { linear: 0, log: 1, percent: 2 };
@@ -37,11 +37,31 @@ const T = function () {
 
 // "auto" is answered here and not in Python, and that is not a hole in ADR 0042:
 // the choice is between two palettes Python already shipped, on an input Python
-// was not in the room to see. The limit is worth knowing, because it reads the
-// operating system and not JupyterLab: a light machine running a dark notebook
-// still opens light
+// was not in the room to see
+
+// the notebook's own theme where the chart can see the page around it: JupyterLab
+// marks its body light or dark and VS Code names its theme in a class; a page of
+// another origin keeps both to itself, and then the reader's system decides
+const hostMode = function () {
+  try {
+    if (window.parent === window) return null;
+    const body = window.parent.document.body;
+    const light = body.getAttribute("data-jp-theme-light");
+    if (light === "true") return "light";
+    if (light === "false") return "dark";
+    if (body.classList.contains("vscode-light")) return "light";
+    if (body.classList.contains("vscode-dark")
+        || body.classList.contains("vscode-high-contrast")) return "dark";
+  } catch (error) {
+    return null;
+  }
+  return null;
+};
+
 const resolveMode = function (mode) {
   if (mode !== "auto") return mode;
+  const host = hostMode();
+  if (host) return host;
   const ask = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
   return ask && ask.matches ? "dark" : "light";
 };
@@ -187,8 +207,60 @@ const isRamp = function (c) {
   return c !== null && c !== undefined && typeof c === "object";
 };
 
-const priceFormat = function (digits) {
-  return { type: "price", precision: digits, minMove: Math.pow(10, -digits) };
+// the lowest value drawn on a pane, read once: its candles' lows, its volume, the
+// engine's curve on it, and every series and level placed on it
+const LOWEST = [];
+const lowest = function (index) {
+  if (LOWEST[index] === undefined) {
+    const panel = SPEC.panels[index];
+    let low = Infinity;
+    const take = function (v) { if (typeof v === "number" && v < low) low = v; };
+    if (panel.candles) SPEC.ohlc.forEach(function (o) { if (o !== null) take(o[2]); });
+    if (panel.volume && SPEC.vol) SPEC.vol.v.forEach(take);
+    if (panel.name === "equity" && SPEC.equity) SPEC.equity.v.forEach(take);
+    if (panel.name === "drawdown" && SPEC.drawdown) SPEC.drawdown.v.forEach(take);
+    SPEC.series.forEach(function (s) {
+      if (s.panel !== panel.name) return;
+      [s.v, s.v2, s.values].forEach(function (vs) { if (vs) vs.forEach(take); });
+      if (s.kind === "level") take(s.value);
+    });
+    LOWEST[index] = low;
+  }
+  return LOWEST[index];
+};
+
+// a tick inside the range a pane was pinned to, not under zero where nothing on the
+// pane goes below it, and clear of every level's label
+const ticked = function (index, price) {
+  const panel = SPEC.panels[index];
+  if (panel.range) {
+    const slack = 1e-9 * Math.abs(panel.range[1] - panel.range[0]);
+    if (price < panel.range[0] - slack || price > panel.range[1] + slack) return false;
+  }
+  if (price < 0 && lowest(index) >= 0) return false;
+  const frame = frameFor(index);
+  const y = frame.priceToCoordinate(price);
+  if (y === null) return true;
+  const near = Math.round(12 * UI) + 4;
+  return !SPEC.series.some(function (s) {
+    if (s.kind !== "level" || s.panel !== panel.name) return false;
+    const at = frame.priceToCoordinate(s.value);
+    return at !== null && Math.abs(at - y) < near;
+  });
+};
+
+const priceFormat = function (digits, unit, index) {
+  // thousands apart, as every other number on the page is
+  const format = function (price) { return fmt(price, digits) + (unit || ""); };
+  const made = { type: "custom", minMove: Math.pow(10, -digits), formatter: format };
+  if (index !== undefined) {
+    made.tickmarksFormatter = function (prices) {
+      return prices.map(function (price) {
+        return ticked(index, price) ? format(price) : "";
+      });
+    };
+  }
+  return made;
 };
 
 // a pinned range is honoured by every series on that panel rather than by the
@@ -221,14 +293,17 @@ const addAnchor = function (panel, index) {
   const s = chart.addSeries(LWC.LineSeries, Object.assign({
     color: "rgba(0,0,0,0)", lineWidth: 1,
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    priceFormat: priceFormat(panel.digits),
+    priceFormat: priceFormat(panel.digits, panel.name === "drawdown" ? "%" : "",
+                             index),
   }, pinned(panel)), index);
   s.setData(SPEC.t.map(function (time) { return { time: time }; }));
   return s;
 };
 
 const addCandles = function (panel, index) {
-  const s = chart.addSeries(LWC.CandlestickSeries, Object.assign({
+  const s = chart.addSeries(SPEC.candles.style === "bars" ? LWC.BarSeries
+    : SPEC.candles.style === "line" ? LWC.LineSeries : LWC.CandlestickSeries,
+    Object.assign({
     // the one series in the file that did not turn its badge off, and it read as
     // the omission it was. It covers an axis label rather than replacing one,
     // because the last price does not land on a gridline, and it says nothing
@@ -320,6 +395,13 @@ const paint = function (entry) {
       if (c !== null && rows[j].value !== undefined) rows[j].color = c;
     }
   }
+  if (spec.equityBase !== undefined) {
+    for (let j = 0; j < rows.length; j++) {
+      if (rows[j].value !== undefined) {
+        rows[j].color = rows[j].value >= spec.equityBase ? T().win : T().loss;
+      }
+    }
+  }
   if (!entry.make) {
     entry.series.setData(rows);
     return;
@@ -342,12 +424,13 @@ const paintCandles = function () {
       rows[i] = { time: SPEC.t[i] };
       continue;
     }
-    const row = { time: SPEC.t[i], open: o[0], high: o[1], low: o[2], close: o[3] };
+    const row = SPEC.candles.style === "line" ? { time: SPEC.t[i], value: o[3] }
+      : { time: SPEC.t[i], open: o[0], high: o[1], low: o[2], close: o[3] };
     const c = colorAt(tint, i);
     if (c !== null) {
       row.borderColor = c;
       row.wickColor = c;
-      row.color = o[3] >= o[0] ? "rgba(0,0,0,0)" : c;
+      row.color = o[3] >= o[0] && SPEC.candles.style === "hollow" ? "rgba(0,0,0,0)" : c;
     }
     rows[i] = row;
   }
@@ -359,7 +442,7 @@ const paintVolume = function () {
   const rows = track(SPEC.vol);
   for (let j = 0; j < rows.length; j++) {
     const o = SPEC.ohlc[SPEC.vol.i0 + j];
-    if (o !== null) rows[j].color = o[3] >= o[0] ? T().volUp : T().volDown;
+    if (o !== null) rows[j].color = o[3] >= o[0] ? T().volume_up : T().volume_down;
   }
   VOLUME.setData(rows);
 };
@@ -371,18 +454,34 @@ let SERIES = [];                       // {spec, series} for every value-carryin
 
 // ------------------------------------------------------------------- theme
 
+// Lucide's sun and moon, in the frame of the footer's other icons
+const ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ' +
+  'focusable="false">';
+const THEME_ICONS = {
+  light: ICON + '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/>' +
+    '<path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/>' +
+    '<path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/>' +
+    '<path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
+  dark: ICON + '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402' +
+    '.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>',
+};
+
 const applyTheme = function (mode) {
   MODE = mode;
   const t = T();
   const root = document.documentElement;
   root.setAttribute("data-theme", mode);
   root.style.setProperty("color-scheme", mode);
-  // the button names the mode it will switch TO, and it was named once in the
-  // markup and then only ever on a click, so it opened saying LIGHT on a chart
-  // that was already light and went on saying it. Everything that has to follow
-  // the mode follows it here, which is the only place that knows the mode moved
+  // the button shows the mode it will switch to, here, which is the only place that
+  // knows the mode moved, so a chart that opens light never offers light
   const button = document.getElementById("theme");
-  if (button) button.textContent = mode === "dark" ? "LIGHT" : "DARK";
+  if (button) {
+    const next = mode === "dark" ? "light" : "dark";
+    button.innerHTML = THEME_ICONS[next];
+    button.title = "Switch to the " + next + " theme";
+    button.setAttribute("aria-label", button.title);
+  }
   Object.keys(CSS_VARS).forEach(function (key) {
     if (t[key] !== undefined) root.style.setProperty(CSS_VARS[key], t[key]);
   });
@@ -391,7 +490,7 @@ const applyTheme = function (mode) {
     layout: {
       background: { type: LWC.ColorType.Solid, color: t.surface },
       textColor: t.ink2,
-      panes: { separatorColor: t.axis, separatorHoverColor: t.grid },
+      panes: { separatorColor: t.hairline, separatorHoverColor: t.grid },
     },
     grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
     crosshair: {
@@ -403,9 +502,10 @@ const applyTheme = function (mode) {
   });
 
   CANDLES.applyOptions({
-    upColor: "rgba(0,0,0,0)", downColor: t.down,
+    upColor: SPEC.candles.style === "hollow" ? "rgba(0,0,0,0)" : t.up, downColor: t.down,
     borderUpColor: t.up, borderDownColor: t.down,
-    wickUpColor: t.up, wickDownColor: t.down,
+    wickUpColor: t.wick_up, wickDownColor: t.wick_down,
+    color: t.s1, lineWidth: 2,
   });
 
   paintCandles();
@@ -469,6 +569,39 @@ const seedAnchors = function () {
   });
 };
 
+// the edge of each pane toward a separator, shaded faintly in ink
+const edgePrimitive = function (index, count) {
+  return {
+    updateAllViews: function () {},
+    attached: function (p) { redraws.push(p.requestUpdate); },
+    paneViews: function () {
+      return [{
+        zOrder: function () { return "bottom"; },
+        renderer: function () {
+          return {
+            draw: function (target) {
+              target.useMediaCoordinateSpace(function (scope) {
+                const ctx = scope.context;
+                const w = scope.mediaSize.width, h = scope.mediaSize.height;
+                const reach = Math.round(16 * UI);
+                const shade = function (from, to) {
+                  const g = ctx.createLinearGradient(0, from, 0, to);
+                  g.addColorStop(0, T().edge);
+                  g.addColorStop(1, T().edgeClear);
+                  ctx.fillStyle = g;
+                  ctx.fillRect(0, Math.min(from, to), w, reach);
+                };
+                if (index > 0) shade(0, reach);
+                if (index < count - 1) shade(h, h - reach);
+              });
+            },
+          };
+        },
+      }];
+    },
+  };
+};
+
 // band, background and marker are the kinds no native series can draw, so they
 // arrive here rather than in the series dispatch
 const mountPrimitives = function () {
@@ -490,25 +623,63 @@ const mountPrimitives = function () {
 
   panes.forEach(function (pane, i) {
     if (SPEC.panels[i]) pane.attachPrimitive(legendPrimitive(i));
+    if (panes.length > 1) pane.attachPrimitive(edgePrimitive(i, panes.length));
   });
 };
 
 
 // ------------------------------------------------------------------- mount
 
+// the narrowest a bar may be drawn, set from the plot's width and the bars it holds
+// so that fitting frames every one; reset as the plot is resized
+const floorSpacing = function (fallback) {
+  const width = chart.timeScale().width() || 0.8 * (fallback || 0);
+  const bars = SPEC.t.length + (chart.timeScale().options().rightOffset || 0);
+  if (width > 0 && bars > 0) {
+    chart.timeScale().applyOptions({ minBarSpacing: Math.min(0.04, 0.98 * width / bars) });
+  }
+};
+
+// the view the call asked for, every bar or its focus, framed again as the time axis
+// settles to its width, until the reader moves the view by hand. Fitting a projection
+// left as many empty bars before the first as it projected, so a projection is framed
+// from the first bar to its own last
+let reframe = true;
+const frameView = function () {
+  floorSpacing();
+  if (!reframe) return;
+  if (SPEC.focus) {
+    chart.timeScale().setVisibleLogicalRange({ from: SPEC.focus[0], to: SPEC.focus[1] });
+  } else if (SPEC.t.length > SPEC.n) {
+    chart.timeScale().setVisibleLogicalRange({ from: -0.5, to: SPEC.t.length - 0.5 });
+  } else {
+    chart.timeScale().fitContent();
+  }
+};
+
+// the bar the legend reads while no pointer is over the plot: the last one in view
+let pointed = false;
+const resting = function () {
+  const range = chart.timeScale().getVisibleLogicalRange();
+  const last = SPEC.n - 1;
+  return range ? Math.max(0, Math.min(last, Math.floor(range.to))) : last;
+};
+
 const mount = function (spec, root) {
+  if (window.frameElement) document.documentElement.classList.add("embedded");
   SPEC = spec;
   THEME = spec.theme;
   MODE = resolveMode(spec.theme.mode);
-  cursor = spec.n - 1;
+  cursor = spec.focus
+    ? Math.max(0, Math.min(spec.n - 1, Math.floor(spec.focus[1]))) : spec.n - 1;
 
   const t = T();
   chart = LWC.createChart(root, {
     autoSize: true,
     layout: {
       background: { type: LWC.ColorType.Solid, color: t.surface },
-      textColor: t.ink2, fontFamily: spec.theme.font || FONT, attributionLogo: true,
-      panes: { separatorColor: t.axis, separatorHoverColor: t.grid, enableResize: true },
+      textColor: t.ink2, fontFamily: spec.theme.font || FONT, attributionLogo: false,
+      panes: { separatorColor: t.hairline, separatorHoverColor: t.grid, enableResize: true },
     },
     grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
     crosshair: {
@@ -596,7 +767,7 @@ const mount = function (spec, root) {
   // the gap split in `paint` only runs for an entry that has one: both are dense
   // by construction today, so this is a guard rather than a fix, and the reason to
   // write it is that the next curve added here will not be
-  const addCurve = function (name, label, track, options) {
+  const addCurve = function (name, label, track, options, type) {
     const index = panelIndex(name);
     const panel = spec.panels[index];
     // by name, not by index: panelIndex answers 0 for a name it does not hold, so
@@ -606,16 +777,20 @@ const mount = function (spec, root) {
     // added to the candles: a series running -22 to 0 on a scale running 95k to
     // 212k, with invertFilledArea flooding everything above it
     if (!panel || panel.name !== name) return;
+    const unit = options.unit, base = options.base;
+    delete options.unit;
+    delete options.base;
     const make = function () {
-      return chart.addSeries(LWC.AreaSeries, Object.assign({
+      return chart.addSeries(type || LWC.AreaSeries, Object.assign({
         priceLineVisible: false, lastValueVisible: false,
-        priceFormat: priceFormat(panel.digits),
+        priceFormat: priceFormat(panel.digits, unit),
       }, options, pinned(panel)), index);
     };
     SERIES.push({
       spec: {
         kind: "line", panel: name, name: label, color: options.lineColor,
-        i0: track.i0, v: track.v, digits: panel.digits,
+        equityBase: base,
+        i0: track.i0, v: track.v, digits: panel.digits, unit: unit, own: true,
       },
       series: make(),
       make: make,
@@ -625,11 +800,12 @@ const mount = function (spec, root) {
 
   if (spec.equity) {
     addCurve("equity", "equity", spec.equity, {
-      lineColor: t.s1, topColor: t.equityTop, bottomColor: t.equityBottom, lineWidth: 2,
-    });
+      base: spec.equity.v[0], color: t.win, lineWidth: 2,
+    }, LWC.LineSeries);
   }
   if (spec.drawdown) {
-    addCurve("drawdown", "drawdown %", spec.drawdown, {
+    addCurve("drawdown", "drawdown", spec.drawdown, {
+      unit: "%",
       lineColor: t.loss, topColor: t.ddTop, bottomColor: t.ddBottom,
       lineWidth: 1, invertFilledArea: true,
     });
@@ -657,7 +833,7 @@ const mount = function (spec, root) {
   chart.panes().forEach(function (pane, i) {
     if (spec.panels[i]) pane.setStretchFactor(spec.panels[i].weight);
     const scale = pane.priceScale("right");
-    if (scale) scale.applyOptions({ mode: SCALE[spec.panels[i].scale] });
+    if (scale) scale.applyOptions({ mode: SCALE[spec.panels[i].scale], entireTextOnly: true });
   });
 
   paintCandles();
@@ -670,7 +846,8 @@ const mount = function (spec, root) {
   chart.subscribeCrosshairMove(function (p) {
     const last = spec.t.length - 1;
     const i = (p && p.logical !== null && p.logical !== undefined)
-      ? Math.max(0, Math.min(last, p.logical)) : spec.n - 1;
+      ? Math.max(0, Math.min(last, p.logical)) : resting();
+    pointed = Boolean(p && p.logical !== null && p.logical !== undefined);
     if (i !== cursor) { cursor = i; invalidate(); }
   });
 
@@ -688,6 +865,12 @@ const mount = function (spec, root) {
 
   applyTheme(MODE);
 
+  floorSpacing(root.clientWidth);
+  ["pointerdown", "wheel", "touchstart", "keydown"].forEach(function (name) {
+    document.addEventListener(name, function () { reframe = false; },
+                              { capture: true, passive: true });
+  });
+  chart.timeScale().subscribeSizeChange(frameView);
   if (spec.focus) {
     chart.timeScale().setVisibleLogicalRange({ from: spec.focus[0], to: spec.focus[1] });
   } else {
@@ -701,6 +884,7 @@ const mount = function (spec, root) {
     // reproduces it too
     const ahead = spec.t.length - spec.n;
     if (ahead > 0) chart.timeScale().applyOptions({ rightOffset: ahead });
-    chart.timeScale().fitContent();
+    floorSpacing(root.clientWidth);
+    frameView();
   }
 };
