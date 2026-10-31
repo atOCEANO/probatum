@@ -12,6 +12,7 @@ import threading
 
 import numpy as np
 import pytest
+from packaging.version import Version
 
 import probatum
 from probatum import (DataError, ProbatumKeyError, ProbatumTypeError,
@@ -1058,7 +1059,9 @@ def test_an_environment_cloned_or_forked_steps_on_as_it_would():
 def test_a_pickle_of_another_version_or_of_bytes_it_never_wrote_is_refused():
     restore, (version, held) = engine().__reduce__()
 
-    assert version == probatum.__version__
+    # the binding spells a pre-release as Cargo does, 2.0.0-rc.1, the wheel as Python
+    # does, 2.0.0rc1
+    assert Version(version) == Version(probatum.__version__)
 
     with pytest.raises(ProbatumValueError, match=re.escape(
             f"pickle: an engine probatum 0.0.1 wrote, which probatum {version} does not "

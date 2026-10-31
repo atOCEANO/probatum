@@ -12,6 +12,8 @@ import inspect
 import pathlib
 import re
 
+from packaging.version import InvalidVersion, Version
+
 import probatum
 from probatum import stats, ta
 from probatum.chart import marks
@@ -285,15 +287,21 @@ def test_the_documented_install_names_the_version_that_is_installed():
     # the install path rather than a convenience. A version bump is the one edit
     # always made in a hurry, and a stale one here sends a reader to a release
     # that predates everything the page around it describes. The wheel is built
-    # from Cargo.toml, so this holds the README to that number without reading it
-    want  = f"v{probatum.__version__}"
+    # from Cargo.toml, so this holds the README to that number without reading it. A
+    # tag spells a pre-release as Cargo does, v2.0.0-rc.1, and the wheel as Python
+    # does, 2.0.0rc1, so the two are compared as versions
+    want  = Version(probatum.__version__)
     wrong = []
 
     for page in pages():
-        for found in re.findall(r"\bv\d+\.\d+\.\d+\b",
+        for found in re.findall(r"\bv(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)",
                                 page.read_text(encoding="utf-8")):
-            if found != want:
-                wrong.append(f"{page.name} says {found}, the wheel is {want}")
+            try:
+                same = Version(found) == want
+            except InvalidVersion:
+                same = False
+            if not same:
+                wrong.append(f"{page.name} says v{found}, the wheel is {want}")
 
     assert not wrong, "\n".join(wrong)
 
