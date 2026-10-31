@@ -1,0 +1,14 @@
+The licences of the Rust crates probatum's extension module is built from, as
+Cargo.lock pins them, each with the crates it covers, written by cargo-about.
+{{#each licenses}}
+
+
+----------
+
+
+{{{name}}}
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}{{/each~}}

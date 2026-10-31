@@ -758,4 +758,4 @@ There is **no `offset=` on a mark.** In Pine, `plot(offset=26)` makes one name m
 
 ## Where it sits
 
-`python/probatum/chart/__init__.py` builds the document, `python/probatum/chart/marks.py` holds the marks, and the vendored renderer is under `python/probatum/_static/`. It needs the standard library and numpy alone: pandas is read by duck typing and never imported, and IPython is imported only inside `show`.
+`python/probatum/chart/__init__.py` builds the document, `python/probatum/chart/marks.py` holds the marks, and the vendored renderer is under `python/probatum/_static/`, beside TradingView's licence and notice. It needs the standard library and numpy alone: pandas is read by duck typing and never imported, and IPython is imported only inside `show`.

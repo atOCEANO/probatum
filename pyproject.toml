@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.5,<2"]
+requires = ["maturin>=1.9.3,<2"]
 build-backend = "maturin"
 
 [project]
@@ -7,7 +7,14 @@ name = "probatum"
 description = "Embeddable market simulation library: a Rust-core crypto market simulator for reinforcement learning, backtests, and parameter search."
 readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "MIT" }
+license = "MIT AND Apache-2.0 AND BSD-2-Clause AND ISC"
+license-files = [
+    "LICENSE",
+    "THIRD-PARTY-LICENSES",
+    "python/probatum/_static/LICENSE-lightweight-charts",
+    "python/probatum/_static/NOTICE-lightweight-charts",
+    "python/probatum/_static/LICENSE-lucide",
+]
 authors = [{ name = "Dinis Martinho" }]
 dynamic = ["version"]
 dependencies = [
@@ -16,7 +23,6 @@ dependencies = [
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Topic :: Office/Business :: Financial :: Investment",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]

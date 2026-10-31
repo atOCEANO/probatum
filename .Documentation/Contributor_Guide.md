@@ -79,7 +79,7 @@ Python-facing work (anything in `probatum-py` or `python/probatum`) is validated
 
 ### The dev directory
 
-`dev/` holds the tools that check the library, or write the data it ships, rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/probatum` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are four, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows. The second simulator the engine is compared with asserts rather than produces, so it is a test, in `tests/reference/`, and the [Validation Guide](Validation_Guide.md) is where it is explained.
+`dev/` holds the tools that check the library, or write the data it ships, rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/probatum` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are five, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows. The second simulator the engine is compared with asserts rather than produces, so it is a test, in `tests/reference/`, and the [Validation Guide](Validation_Guide.md) is where it is explained.
 
 `dev/charts/` produces every chart image the documentation shows. `build.py` runs the documented examples for real against a frozen parquet and saves each one as a chart, and `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn. Nothing is cropped or retouched, so what a reader sees is what the library drew, and the snippet printed beside a picture is the snippet that produced it. Both run in one opt-in stage, which needs the published [sample dataset](https://github.com/atOCEANO/sample-market-data) mounted because a picture built from live candles cannot be regenerated, only redrawn differently:
 
@@ -120,6 +120,16 @@ docker run --rm -v "${PWD}:/src" -w /src python:3.13-slim python dev/venues/buil
 ```
 
 A rerun rewrites every preset but frictionless, so its diff is what the venues changed since the last one.
+
+`dev/licences/` holds the settings and the template cargo-about writes `THIRD-PARTY-LICENSES` from: the licence of every crate in `Cargo.lock` the extension module is built from, in each crate's own text, which the wheel and the source archive ship beside probatum's `LICENSE` and the licences of the chart's renderer and icons. It reads `Cargo.lock`, so run it whenever that changes, in the same commit:
+
+```bash
+docker run --rm -v "${PWD}:/src" -w /src rust:1.88.0-slim sh -c \
+  "cargo install --locked cargo-about --version 0.9.3 --features cli && \
+   cargo about generate --locked --fail -c dev/licences/about.toml -o THIRD-PARTY-LICENSES dev/licences/about.hbs"
+```
+
+A rerun on an unchanged lock writes the same bytes. The settings name two crates' licence files by their checksums: libm's, the one file that carries the copyrights of the musl code it derives from, and pyo3's, which cargo-about otherwise lists twice. A new version of either can change its file, and cargo-about then only warns that the checksum no longer matches and writes that crate as it would unnamed, so read its warnings and update the checksum.
 
 <br>
 

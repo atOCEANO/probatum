@@ -1,0 +1,39 @@
+# the licences cargo-about may take, in this order, for the crates the extension
+# module is built from on every machine a wheel ships for
+accepted = ["MIT", "Apache-2.0", "BSD-2-Clause", "Unicode-3.0"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# probatum's own crates are under LICENSE
+[private]
+ignore = true
+
+# libm's one file holds its MIT and Apache texts beside the copyrights of the musl and
+# math library code it derives from, so it ships whole
+[libm.clarify]
+license = "MIT"
+
+[[libm.clarify.files]]
+path = "LICENSE.txt"
+license = "MIT"
+checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7"
+
+# pyo3's two files, unnamed, list it twice under its MIT text
+[pyo3.clarify]
+license = "MIT OR Apache-2.0"
+
+[[pyo3.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "afcbe3b2e6b37172b5a9ca869ee4c0b8cdc09316e5d4384864154482c33e5af6"
+
+[[pyo3.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "32c76dbe0e73d79100d5ece77c158399f2e2541bc5c78548a4ba45c1cb53c5c9"
