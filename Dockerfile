@@ -261,8 +261,8 @@ CMD ["sh", "-c", "nvidia-smi --query-gpu=name,driver_version,utilization.gpu,mem
 # The source archive a release ships, installed the way pip installs it where no
 # wheel fits, then tested, so a file it leaves out fails here. CI runs it:
 #   docker build --target test-sdist .
-# PIP_CONSTRAINT rather than -c, because only the environment variable reaches
-# the isolated environment pip builds the archive in, where maturin is installed.
+# --build-constraint beside -c, because pip holds the isolated environment it builds
+# the archive in, where maturin is installed, to build constraints alone.
 FROM builder AS test-sdist
 RUN maturin sdist --out /sdist
 COPY tests /tests
@@ -271,7 +271,8 @@ COPY README.md /README.md
 COPY Dockerfile /Dockerfile
 COPY dev /devtools
 WORKDIR /
-RUN PIP_CONSTRAINT=/constraints.txt pip install --no-cache-dir /sdist/*.tar.gz \
+RUN pip install --no-cache-dir -c /constraints.txt --build-constraint /constraints.txt \
+    /sdist/*.tar.gz \
     numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest \
     && pytest -q -p no:cacheprovider /tests
 
