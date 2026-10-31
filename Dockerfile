@@ -6,6 +6,10 @@
 #   docker build --target test313 -t probatum-gate313 .
 #   docker build --target test314 -t probatum-gate314 .
 #
+# builder makes the wheel for the machine it runs on, so the same stages on an ARM
+# machine, or under the emulation Docker Desktop carries, test the ARM wheel:
+#   docker build --platform linux/arm64 --target test313 .
+#
 # The rust-checks stage is the other half of the same gate: it runs the pure-Rust
 # format, lint, and test commands CI runs, so a Rust change is verified the same
 # way a Python one is, with no toolchain on the host:
@@ -15,18 +19,18 @@
 # so its timing never fails a test build:
 #   docker build --target bench   .
 
-FROM python:3.13-slim AS builder
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# The wheel, built by maturin in PyPA's manylinux_2_28 image, so it runs on any Linux
+# from glibc 2.28, as numpy's wheels do (ADR 0044). The digest is of the index over
+# every machine the image is built for, so one line serves x86_64 and ARM alike.
+FROM quay.io/pypa/manylinux_2_28:2026.10.16-1@sha256:f942fe46374fc45cc597affd63305edabc61b638138a60f75f95198b22419dfa AS builder
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain 1.88.0 --profile minimal
-ENV PATH="/root/.cargo/bin:${PATH}"
+ENV PATH="/opt/python/cp313-cp313/bin:/root/.cargo/bin:${PATH}"
 COPY dev/constraints.txt /constraints.txt
 RUN pip install --no-cache-dir -c /constraints.txt maturin
 WORKDIR /src
 COPY . .
-RUN maturin build --release --locked --out /wheels
+RUN maturin build --release --locked --compatibility manylinux_2_28 --out /wheels
 
 # The pure-Rust half of CI. rust-toolchain.toml pins only the channel, so the two
 # components are added here; declaring them in that file makes rustup install them

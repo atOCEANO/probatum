@@ -54,7 +54,13 @@ docker build --target test313 .
 docker build --target test314 .
 ```
 
-Because the wheel is `abi3-py313`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.13 and up" check, run before a Python-facing change is done, not on every edit. Every gate stage installs its packages with `-c dev/constraints.txt`, as CI does, so both test the versions pinned there.
+The `builder` stage makes the wheel with maturin in PyPA's manylinux_2_28 image, which holds it to what glibc 2.28 provides ([ADR 0044](Decisions.md)). Because the wheel is `abi3-py313`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.13 and up" check, run before a Python-facing change is done, not on every edit. Every gate stage installs its packages with `-c dev/constraints.txt`, as CI does, so both test the versions pinned there.
+
+The builder makes the wheel for the machine it runs on, so the same stages test the ARM wheel on an ARM machine, or on any other under the emulation Docker Desktop carries, where both the build and the suite run many times slower:
+
+```bash
+docker build --platform linux/arm64 --target test313 .
+```
 
 <br>
 
