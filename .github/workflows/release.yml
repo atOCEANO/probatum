@@ -19,69 +19,47 @@ permissions:
 
 jobs:
   wheels:
-    name: wheel ${{ matrix.runner }} ${{ matrix.target }}
+    name: wheel ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false # one platform failing must not cancel the others
       matrix:
-        include:
-          - runner: ubuntu-latest
-            target: x86_64
-          - runner: ubuntu-latest
-            target: aarch64
-            best_effort: true # cross-compiled, so it may not resolve
-          # one fat wheel covering Intel and Apple silicon, built on the runner
-          # that exists; the Intel-only macos-13 label is being retired, and a job
-          # asking for a retired label queues forever rather than failing
-          - runner: macos-latest
-            target: universal2-apple-darwin
-          - runner: windows-latest
-            target: x64
+        # each wheel built on the machine it is for, as CI builds and tests it, the two
+        # Linux ones by the gate's own builder
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash # so a step of two commands stops at the first that fails, on Windows too
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - if: runner.os == 'Linux'
+        run: docker build --target wheels --output dist .
+      - if: runner.os != 'Linux'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13" # pyo3 builds against an interpreter at the floor
-      - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
-      # The first attempt never fails the job, so the retry below always gets to
-      # run; the retry is the one that decides.
-      - name: build abi3 wheel
-        id: build
-        continue-on-error: true
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
-        with:
-          target: ${{ matrix.target }}
-          args: --release --locked --out dist
-          manylinux: auto
-      # The manylinux legs build inside a container that fetches its toolchain over
-      # the network, and a failed fetch exits 35, curl's SSL error, with nothing
-      # built. Since `release` needs every wheel, one flake blocked an entire
-      # release while the other four artifacts sat there fine. Try once more before
-      # giving up; a real compile error fails both attempts just as fast. The
-      # cross-compiled leg stays best effort and cannot sink the release either way.
-      - name: retry the wheel once
-        if: steps.build.outcome == 'failure'
-        continue-on-error: ${{ matrix.best_effort || false }}
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
-        with:
-          target: ${{ matrix.target }}
-          args: --release --locked --out dist
-          manylinux: auto
+      - if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
+      - if: runner.os != 'Linux'
+        run: |
+          pip install -c dev/constraints.txt maturin
+          maturin build --release --locked --out dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wheels-${{ matrix.runner }}-${{ matrix.target }}
+          name: wheel-${{ matrix.runner }}
           path: dist/*.whl
-          if-no-files-found: ignore # a best-effort leg may have produced nothing
 
   sdist:
     name: sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          command: sdist
-          args: --out dist
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
+      - run: pip install -c dev/constraints.txt maturin
+      - run: maturin sdist --out dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sdist

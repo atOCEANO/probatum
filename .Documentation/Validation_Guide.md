@@ -56,7 +56,7 @@ docker build --target test314 .
 
 The `builder` stage makes the wheel with maturin in PyPA's manylinux_2_28 image, which holds it to what glibc 2.28 provides ([ADR 0044](Decisions.md)). Because the wheel is `abi3-py313`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.13 and up" check, run before a Python-facing change is done, not on every edit. Every gate stage installs its packages with `-c dev/constraints.txt`, as CI does, so both test the versions pinned there.
 
-The builder makes the wheel for the machine it runs on, so the same stages test the ARM wheel on an ARM machine, or on any other under the emulation Docker Desktop carries, where both the build and the suite run many times slower:
+The builder makes the wheel for the machine it runs on, so the same stages test the ARM wheel on an ARM machine, as CI does on GitHub's ARM runners, or on any other under the emulation Docker Desktop carries, where both the build and the suite run many times slower:
 
 ```bash
 docker build --platform linux/arm64 --target test313 .
@@ -185,4 +185,4 @@ Every non-obvious behavior is settled as a numbered [decision](Decisions.md) bef
 
 ### Nothing ships unverified
 
-A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.13 and 3.14, and it builds the `test-slow`, `test-browser`, `test-sb3`, `test-sdist` and `miri` stages exactly as they are built locally; against the commit before, it runs cargo-mutants on the changed Rust lines and compares the step loop's instruction count (see [`.github/workflows/`](../.github/workflows/)).
+A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built on each of its four platforms and imported and tested there on 3.13 and 3.14, the Linux ones in the gate's own stages, and it builds the `test-slow`, `test-browser`, `test-sb3`, `test-sdist` and `miri` stages exactly as they are built locally; against the commit before, it runs cargo-mutants on the changed Rust lines and compares the step loop's instruction count (see [`.github/workflows/`](../.github/workflows/)).

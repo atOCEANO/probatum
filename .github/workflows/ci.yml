@@ -1,10 +1,11 @@
 # Continuous integration: the same two loops used locally. The pure-Rust crates
-# are tested, formatted, and linted; the one abi3 wheel is built once and imported
-# and tested across the Python version matrix, installing from dev/constraints.txt
-# as the Docker gate does. The slow tests and the browser, SB3, sdist and Miri
-# checks run as the same Docker stages they are locally, and against the commit
-# before, the changed Rust lines get mutation testing and the step loop an
-# instruction count.
+# are tested, formatted, and linted; the one abi3 wheel is built on each platform a
+# release ships one for, and imported and tested there on Python 3.13 and 3.14,
+# installing from dev/constraints.txt as the Docker gate does, the Linux wheels in
+# the gate's own stages. The slow tests and the browser, SB3, sdist and Miri checks
+# run as the same Docker stages they are locally, and against the commit before,
+# the changed Rust lines get mutation testing and the step loop an instruction
+# count.
 
 name: ci
 
@@ -29,41 +30,48 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-  build-wheel:
-    name: build abi3 wheel
-    runs-on: ubuntu-latest
+  linux:
+    name: wheel on Linux ${{ matrix.machine }}, ${{ matrix.stage }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false # one platform failing must not hide another's result
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        stage: [test313, test314]
+        include:
+          - runner: ubuntu-latest
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            machine: aarch64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: docker build --target ${{ matrix.stage }} .
+
+  wheel:
+    name: wheel on ${{ matrix.runner }}, Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, windows-latest]
+        python-version: ["3.13", "3.14"]
+    defaults:
+      run:
+        shell: bash # Windows' own shell hands pip the wheel's glob unexpanded
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.13"
+          python-version: "3.13" # the wheel is built at the floor, as a release builds it
       - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
       - run: pip install -c dev/constraints.txt maturin
       - run: maturin build --release --locked --out dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: wheel
-          path: dist/*.whl
-
-  test-wheel:
-    name: test wheel on Python ${{ matrix.python-version }}
-    needs: build-wheel
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: wheel
-          path: dist
       - run: |
           pip install -c dev/constraints.txt dist/*.whl \
-            numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle pytest
+            numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest
       - run: python -c "import probatum; print(probatum.__version__)"
       - run: pytest -q tests
 

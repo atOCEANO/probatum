@@ -146,7 +146,7 @@ Run the build loop above green before you submit, and the Docker gate too for an
 
 ### Cutting a release
 
-Releases are built by CI, never by hand. Pushing a `v*` tag runs the release workflow, which builds the `abi3` wheels for Linux (x86_64 and aarch64), macOS (one universal2 file covering Intel and Apple silicon), and Windows, plus an sdist, and attaches them all to a GitHub Release:
+Releases are built by CI, never by hand. Pushing a `v*` tag runs the release workflow, which builds the `abi3` wheels for Linux on x86_64 and aarch64, each by the gate's `wheels` stage on its own machine, macOS on Apple silicon and Windows, plus an sdist, and attaches them all to a GitHub Release:
 
 ```bash
 git tag -a vX.Y.Z -m "probatum X.Y.Z: one line on what changed"
@@ -155,7 +155,7 @@ git push origin vX.Y.Z
 
 Two things before you tag. The version in `Cargo.toml` is what names the wheels, so bump it first and let the tag match it, or the release says one number while its artifacts say another. And run the gate on the exact commit you intend to tag: a tag builds, it does not test, so nothing else will catch a regression at that point.
 
-To rehearse without releasing, run the workflow by hand from the Actions tab. A manual dispatch builds every wheel and stops there; only a tag creates the Release. That distinction is worth using, because the macOS and Windows legs exist nowhere but the runners, so a tag is the first time they are exercised.
+To rehearse without releasing, run the workflow by hand from the Actions tab. A manual dispatch builds every wheel and stops there; only a tag creates the Release. The macOS and Windows wheels are built nowhere but GitHub's runners, where CI builds and tests all four wheels on every push to main.
 
 Those wheels are the install path for anyone without a Rust toolchain, so a release is what makes a version usable at all. probatum is not published to PyPI.
 

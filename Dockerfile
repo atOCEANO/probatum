@@ -32,6 +32,11 @@ WORKDIR /src
 COPY . .
 RUN maturin build --release --locked --compatibility manylinux_2_28 --out /wheels
 
+# builder's wheel alone, which a release takes out on each Linux machine:
+#   docker build --target wheels --output dist .
+FROM scratch AS wheels
+COPY --from=builder /wheels /
+
 # The pure-Rust half of CI. rust-toolchain.toml pins only the channel, so the two
 # components are added here; declaring them in that file makes rustup install them
 # into an already-provisioned toolchain, which conflicts on some CI runners. The
