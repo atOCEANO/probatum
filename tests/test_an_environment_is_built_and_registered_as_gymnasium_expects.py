@@ -9,6 +9,7 @@ shown as its range, records what it was built from, and refuses what it cannot t
 from probatum's tree (Specification, The environment).
 """
 
+import importlib
 import subprocess
 import sys
 import warnings
@@ -61,6 +62,20 @@ def test_import_probatum_and_a_backtest_load_no_gymnasium():
             "assert 'gymnasium' not in sys.modules\n")
 
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_without_gymnasium_an_environment_names_the_line_that_installs_it(monkeypatch):
+    # the environment's modules are imported again with gymnasium missing, and the ones
+    # already loaded are put back once the test is done
+    monkeypatch.delitem(sys.modules, "probatum._env")
+    monkeypatch.delitem(sys.modules, "probatum.rl")
+    monkeypatch.setitem(sys.modules, "gymnasium", None)
+
+    for reach in (lambda: probatum.env, lambda: importlib.import_module("probatum.rl")):
+        with pytest.raises(probatum.MissingDependency, match="^env: needs gymnasium 1.2 "
+                           "or later, which is not installed; pip install "
+                           "\"gymnasium>=1.2\"$"):
+            reach()
 
 
 def test_the_spaces_follow_the_observation_and_the_actions():

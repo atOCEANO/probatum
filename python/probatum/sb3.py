@@ -20,25 +20,25 @@ observation statistics into the model's spec after each rollout, as the model's 
     model = PPO("MlpPolicy", venv)
     model.learn(total_timesteps=100_000)
 
-Needs stable-baselines3: ``pip install 'probatum[sb3]'``.
+Needs stable-baselines3, which probatum never installs: ``pip install stable-baselines3``.
 """
 
 from __future__ import annotations
 
 import copy
 
-import gymnasium
 import numpy as np
 
 from ._errors import MissingDependency, SpecError
 from ._storage import _plain
 
 try:
+    import gymnasium
     from stable_baselines3.common.callbacks import BaseCallback
     from stable_baselines3.common.vec_env import VecEnv
 except ImportError:
     raise MissingDependency("probatum.sb3: needs stable-baselines3, which is not "
-                            "installed; pip install \"probatum[sb3]\"") from None
+                            "installed; pip install stable-baselines3") from None
 
 __all__ = ["ProbatumVecEnv", "SpecCallback", "wrap"]
 

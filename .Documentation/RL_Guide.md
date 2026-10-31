@@ -51,7 +51,7 @@ for _ in range(1_000):
 env.close()
 ```
 
-`data` is a Data of one instrument's bars, from the router or a frame. With no features the market block is the candles: 64 bars of five values, then four account values for the instrument and four for the account, 328 in all. An action is a target weight, scaled by `max_leverage`. A plain `import probatum` never loads Gymnasium; `probatum.env` and `probatum.rl` load it when first reached.
+`data` is a Data of one instrument's bars, from the router or a frame. With no features the market block is the candles: 64 bars of five values, then four account values for the instrument and four for the account, 328 in all. An action is a target weight, scaled by `max_leverage`. A plain `import probatum` never loads Gymnasium, which the `rl` extra installs; `probatum.env` and `probatum.rl` load it when first reached.
 
 <br>
 
@@ -79,7 +79,7 @@ agent = stable_baselines3.PPO("MlpPolicy", venv)
 agent.learn(total_timesteps=100_000, callback=probatum.sb3.SpecCallback())
 ```
 
-`probatum.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (probatum is not on PyPI, so install from a release as the [README](../README.md#install) shows).
+`probatum.sb3` needs stable-baselines3, which probatum never installs, as it never installs torch: `pip install stable-baselines3`.
 
 <br>
 

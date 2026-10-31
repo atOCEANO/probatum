@@ -11,8 +11,10 @@ waits for the card (Specification, Tensors on a device; ADR 0040).
 """
 
 import copy
+import importlib
 import random
 import re
+import sys
 import time
 
 import numpy as np
@@ -151,6 +153,18 @@ def test_what_tensor_env_cannot_wrap_is_refused_naming_the_fix():
             "resident: True on an environment recording transitions, whose observations "
             "are kept whole on the host; record them with resident=False")):
         probatum.torch.TensorEnv(built(dict(record="transitions")), resident=True)
+
+
+def test_without_gymnasium_tensor_env_names_the_line_that_installs_it(monkeypatch):
+    # the adapter and the environment are imported again with gymnasium missing, and the
+    # ones already loaded are put back once the test is done
+    monkeypatch.delitem(sys.modules, "probatum._env")
+    monkeypatch.delitem(sys.modules, "probatum.torch")
+    monkeypatch.setitem(sys.modules, "gymnasium", None)
+
+    with pytest.raises(probatum.MissingDependency, match="^env: needs gymnasium 1.2 or "
+                       "later, which is not installed; pip install \"gymnasium>=1.2\"$"):
+        importlib.import_module("probatum.torch")
 
 
 def test_a_clone_of_an_environment_tensor_env_took_over_is_one_of_its_own():

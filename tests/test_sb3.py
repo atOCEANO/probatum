@@ -417,16 +417,20 @@ def test_the_callback_refuses_a_model_whose_action_space_carries_no_spec():
         model.learn(total_timesteps=32, callback=probatum.sb3.SpecCallback())
 
 
+@pytest.mark.parametrize("missing", [["stable_baselines3.common.callbacks"],
+                                     ["gymnasium", "stable_baselines3.common.callbacks"]],
+                         ids=["sb3", "sb3-and-gymnasium"])
 def test_without_stable_baselines3_the_adapter_names_the_line_that_installs_it(
-        monkeypatch):
-    # the module is imported again with SB3's callbacks missing, and the one already
-    # loaded is put back once the test is done
+        monkeypatch, missing):
+    # the module is imported again with SB3 missing, alone or with the gymnasium it
+    # brings, and what was already loaded is put back once the test is done
     monkeypatch.delitem(sys.modules, "probatum.sb3")
-    monkeypatch.setitem(sys.modules, "stable_baselines3.common.callbacks", None)
+    for name in missing:
+        monkeypatch.setitem(sys.modules, name, None)
 
     with pytest.raises(probatum.MissingDependency, match="^probatum.sb3: needs "
                        "stable-baselines3, which is not installed; pip install "
-                       "\"probatum\\[sb3\\]\"$"):
+                       "stable-baselines3$"):
         importlib.import_module("probatum.sb3")
 
 

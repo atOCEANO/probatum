@@ -7,11 +7,10 @@ each step (Specification, Tensors on a device; ADR 0040). It needs torch, which 
 installs, as the build for a device is the user's to choose.
 """
 
-import gymnasium
 import numpy as np
 
 from ._backtest import _kind
-from ._env import VectorEnv
+from ._env import VectorEnv, gymnasium
 from ._errors import MissingDependency, ProbatumTypeError, ProbatumValueError
 from ._space import _flag
 

@@ -79,7 +79,7 @@ RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
 FROM python:3.13-slim AS bench
 COPY --from=builder /wheels /wheels
 COPY benchmarks /benchmarks
-RUN pip install --no-cache-dir /wheels/*.whl numpy \
+RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium \
     && python /benchmarks/throughput.py
 
 # Per-surface throughput (Engine, an array and a Strategy through backtest, search,

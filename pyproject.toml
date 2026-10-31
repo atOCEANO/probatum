@@ -11,8 +11,7 @@ license = { text = "MIT" }
 authors = [{ name = "Dinis Martinho" }]
 dynamic = ["version"]
 dependencies = [
-    "numpy>=1.21",
-    "gymnasium>=1.2",
+    "numpy>=2.2",
 ]
 classifiers = [
     "Programming Language :: Rust",
@@ -23,9 +22,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-data = ["pandas", "pyarrow"]
+rl = ["gymnasium>=1.2"]
 search = ["optuna>=5.0", "cloudpickle>=2.0"]
-sb3 = ["stable-baselines3>=2.0"]
 
 [project.urls]
 Repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
