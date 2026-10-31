@@ -1057,6 +1057,8 @@ def _render(payload, title):
         "__TITLE__":   html.escape(title or "probatum chart"),
         "__CSS__":     _asset("chart.css"),
         "__LIBRARY__": _asset("lightweight-charts.js"),
+        "__LICENCE__": _asset("NOTICE-lightweight-charts") + "\n"
+                       + _asset("LICENSE-lightweight-charts"),
         "__BUNDLE__":  _bundle(),
         "__SPEC__":    payload,
     }

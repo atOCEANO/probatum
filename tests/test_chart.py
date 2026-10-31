@@ -1472,6 +1472,12 @@ def test_the_vendored_renderer_keeps_its_licence():
     assert "Apache" in chart._asset("lightweight-charts.js")[:2000]
     assert "Apache" in chart._asset("LICENSE-lightweight-charts")
 
+    # a document carries the renderer whole, so a saved or shared one carries its
+    # notice and licence too, as it carries the icons' through chart.css
+    document = bars(8).chart()._html()
+    for name in ("NOTICE-lightweight-charts", "LICENSE-lightweight-charts"):
+        assert chart._asset(name) in document
+
 
 def test_the_renderer_s_notice_and_link_sit_in_the_footer_as_its_licence_asks():
     # the licence asks for its notice and a link to TradingView on the page; the logo
