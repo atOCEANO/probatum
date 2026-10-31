@@ -276,6 +276,11 @@ RUN pip install --no-cache-dir -c /constraints.txt --build-constraint /constrain
     numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest \
     && pytest -q -p no:cacheprovider /tests
 
+# the source archive test-sdist built and tested, which a release takes out:
+#   docker build --target sdist --output dist .
+FROM scratch AS sdist
+COPY --from=test-sdist /sdist /
+
 # Mutation testing of the two pure-Rust crates: cargo-mutants changes one line at a
 # time and reruns their tests, and lists every change the tests did not notice.
 # The whole pass is slow and takes a lot of memory, and it has taken the Docker

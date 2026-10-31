@@ -1,10 +1,10 @@
-# Release: build the abi3 wheels and the sdist, then publish them as a GitHub
-# Release with the artifacts attached. One abi3 wheel per platform covers Python
-# 3.13 and up, so the four below cover the common targets without a per-version
-# matrix.
+# Release: a v* tag checks the tag against the version in Cargo.toml, runs the whole of
+# CI on the tagged commit, builds each wheel on the machine it is for and the source
+# archive, tests each there, and publishes them on a GitHub Release with their
+# checksums. One abi3 wheel per platform serves Python 3.13 and up.
 #
-# A v* tag builds AND releases. A manual dispatch builds only, so the whole
-# matrix can be dry-run before committing to a tag:
+# A manual dispatch runs all of it but the version check and the publishing, whatever
+# branch or tag it names, so a release can be rehearsed on any branch:
 #   Actions -> release -> Run workflow
 
 name: release
@@ -18,48 +18,113 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    name: the tag matches the version
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.read.outputs.python }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - run: pip install -c dev/constraints.txt packaging
+      - name: read the version out of Cargo.toml
+        id: read
+        run: |
+          src=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          echo "Cargo.toml -> ${src}"
+          if [ -z "$src" ]; then
+            echo "::error::could not read the workspace version out of Cargo.toml"
+            exit 1
+          fi
+          echo "cargo=${src}" >> "$GITHUB_OUTPUT"
+          # the files carry the version as Python spells it, 2.0.0rc1 for 2.0.0-rc.1
+          python -c 'import sys; from packaging.version import Version
+          print(f"python={Version(sys.argv[1])}")' "$src" >> "$GITHUB_OUTPUT"
+      - name: compare the tag against Cargo.toml
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          want="${{ steps.read.outputs.cargo }}"
+          echo "tag ${GITHUB_REF_NAME} -> ${tag}"
+          if [ "$tag" != "$want" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} is not version ${want} in Cargo.toml;" \
+                 "bump Cargo.toml or move the tag"
+            exit 1
+          fi
+
+  ci:
+    name: ci
+    needs: [version]
+    uses: ./.github/workflows/ci.yml
+
   wheels:
-    name: wheel ${{ matrix.runner }}
+    name: the ${{ matrix.machine }} wheel builds and passes
+    needs: [version, ci]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false # one platform failing must not cancel the others
       matrix:
-        # each wheel built on the machine it is for, as CI builds and tests it, the two
-        # Linux ones by the gate's own builder
-        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        include:
+          - runner: ubuntu-latest
+            machine: Linux x86_64
+          - runner: ubuntu-24.04-arm
+            machine: Linux aarch64
+          - runner: macos-latest
+            machine: macOS arm64
+          - runner: windows-latest
+            machine: Windows x64
     defaults:
       run:
         shell: bash # so a step of two commands stops at the first that fails, on Windows too
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # the gate's own stages, the wheel taken out of the cache its tests ran on
       - if: runner.os == 'Linux'
-        run: docker build --target wheels --output dist .
+        run: |
+          docker build --target test313 .
+          docker build --target test314 .
+          docker build --target wheels --output dist .
       - if: runner.os != 'Linux'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.13" # pyo3 builds against an interpreter at the floor
+          python-version: "3.13" # the wheel is built at the floor
       - if: runner.os != 'Linux'
         uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
       - if: runner.os != 'Linux'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0" # the tag the release body links
         run: |
           pip install -c dev/constraints.txt maturin
           maturin build --release --locked --out dist
+      - if: runner.os != 'Linux'
+        run: |
+          pip install -c dev/constraints.txt dist/*.whl \
+            numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest
+          pytest -q tests
+      - if: runner.os != 'Linux'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+      - if: runner.os != 'Linux'
+        run: |
+          pip install -c dev/constraints.txt dist/*.whl \
+            numpy gymnasium pandas pyarrow polars duckdb optuna cloudpickle scikit-learn pytest
+          pytest -q tests
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheel-${{ matrix.runner }}
           path: dist/*.whl
 
   sdist:
-    name: sdist
+    name: the sdist builds and passes
+    needs: [version, ci]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.13"
-      - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
-      - run: pip install -c dev/constraints.txt maturin
-      - run: maturin sdist --out dist
+      # the archive the gate's test-sdist stage built from source and tested
+      - run: docker build --target sdist --output dist .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sdist
@@ -67,9 +132,9 @@ jobs:
 
   release:
     name: publish the release
-    needs: [wheels, sdist]
+    needs: [version, wheels, sdist]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') # a dispatch builds only, never releases
+    if: github.event_name == 'push' # a dispatch builds and tests only, on any ref
     permissions:
       contents: write # creating a release writes to the repo
     steps:
@@ -77,42 +142,119 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: the built version matches the tag
+        run: |
+          v="${{ needs.version.outputs.python }}"
+          ls -l dist/
+          for file in "probatum-${v}-cp313-abi3-manylinux_2_28_x86_64.whl" \
+                      "probatum-${v}-cp313-abi3-manylinux_2_28_aarch64.whl" \
+                      "probatum-${v}-cp313-abi3-macosx_11_0_arm64.whl" \
+                      "probatum-${v}-cp313-abi3-win_amd64.whl" \
+                      "probatum-${v}.tar.gz"; do
+            test -f "dist/${file}" || { echo "::error::no ${file} in dist/"; exit 1; }
+          done
+          if [ "$(find dist -type f | wc -l)" -ne 5 ]; then
+            echo "::error::dist/ holds more than the five files"
+            exit 1
+          fi
+      - name: write the checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
+          prerelease: ${{ contains(github.ref_name, '-') }} # v2.0.0-rc.1, never the latest
           # the change list is derived rather than written out here: the
           # hand-written one went out unchanged on eleven tags, still describing a
-          # release three minor versions back. This repo commits straight to main,
-          # so what lands is the compare link against the previous tag
+          # release three minor versions back
           generate_release_notes: true
           body: |
-            `probatum` is a bar-level crypto market simulator: a Rust core with a small
-            Python surface. One engine drives a single backtest, a parameter search,
-            and a batched reinforcement-learning rollout, so all three see the same
-            fill model and the same costs.
+            `probatum` is a Rust market engine that behaves like a crypto venue, and the
+            research built on it. One engine runs a backtest, a parameter search, a
+            validation and a batch of reinforcement-learning environments, so each sees
+            the same fills, costs, funding and liquidations.
 
-            ## Install
+            ## Install it
 
-            Wheels are attached below, one per platform, each covering Python 3.13 and
-            up, and no compiler is needed. probatum is not on PyPI, so install the wheel
-            for your machine by its URL:
-
-            ```bash
-            pip install "probatum @ <the wheel's URL, from the Assets below>"
-            ```
-
-            The optional extras go in brackets before the `@`: `"probatum[rl,search] @ <URL>"`.
-
-            Building from source instead needs the [Rust toolchain](https://rustup.rs):
+            probatum is not on PyPI. Each wheel below serves Python 3.13 and later on its
+            machine; install yours by its URL:
 
             ```bash
-            pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@${{ github.ref_name }}"
+            # Linux x86_64
+            pip install "probatum @ https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/probatum-${{ needs.version.outputs.python }}-cp313-abi3-manylinux_2_28_x86_64.whl"
+            # Linux aarch64
+            pip install "probatum @ https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/probatum-${{ needs.version.outputs.python }}-cp313-abi3-manylinux_2_28_aarch64.whl"
+            # macOS on Apple silicon
+            pip install "probatum @ https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/probatum-${{ needs.version.outputs.python }}-cp313-abi3-macosx_11_0_arm64.whl"
+            # Windows x64
+            pip install "probatum @ https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/probatum-${{ needs.version.outputs.python }}-cp313-abi3-win_amd64.whl"
             ```
+
+            The extras go in brackets before the `@`: `rl` brings Gymnasium for the
+            environments and `search` Optuna and cloudpickle for the TPE sampler and the
+            search's workers, as in `"probatum[rl,search] @ <URL>"`. The Linux wheels need
+            glibc 2.28 or later. Any other machine can build the source archive, which
+            needs the [Rust toolchain](https://rustup.rs), though only the four above are
+            tested:
+
+            ```bash
+            pip install "probatum @ https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/probatum-${{ needs.version.outputs.python }}.tar.gz"
+            ```
+
+            ## A first run
+
+            Offline, on two hundred days of hourly bars drawn as a random walk, a rule that
+            holds the pair while its close is above the last day's average:
+
+            ```python
+            import numpy as np
+            import probatum
+
+            rng   = np.random.default_rng(7)
+            close = 30_000.0 * np.exp(np.cumsum(rng.normal(0.0, 0.004, 4_800)))
+            open_ = np.concatenate([[30_000.0], close[:-1]])
+            bars  = np.column_stack([open_, np.maximum(open_, close) * 1.001,
+                                     np.minimum(open_, close) * 0.999, close, np.full(4_800, 50.0)])
+            hours = np.datetime64("2025-01-01T00:00") + np.arange(4_800) * np.timedelta64(1, "h")
+            data  = probatum.Data(bars, symbol="BTCUSDT", market="spot", time=hours)
+
+            sums    = np.cumsum(close)
+            average = np.full(close.size, np.nan)
+            average[23:] = (sums[23:] - np.concatenate([[0.0], sums[:-24]])) / 24
+            weights = (close > average).astype(float)[:, None]
+
+            result = probatum.backtest(weights, data, "binance_spot")
+            print(result)
+            print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
+            ```
+
+            `print(result)` names the policy, the venue and the account at its start and its
+            end; with pandas installed, `result.summary()` is a frame of its headline
+            statistics beside buying and holding's.
+
+            ## Where to go next
+
+            The [README](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md)
+            shows each way to drive the engine, the
+            [Python API](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/Python_API.md)
+            is every public name, the
+            [Specification](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/Specification.md)
+            every rule the engine applies, with its worked examples, the
+            [RL Guide](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/RL_Guide.md)
+            the environments and the agent spec, and
+            [Plotting](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/Plotting.md)
+            the interactive chart.
 
             ## Scope
 
-            Bar-level and approximate by design. It does not model the order book
-            (L2), latency, or queue position, and it places no live orders. At bar
-            granularity the fill model cannot see the intrabar path, so it can be
-            slightly more generous than a live book would be; the costs it charges
-            are the real ones.
+            Bar-level by design. It fills orders against each bar's prices and trailing
+            volume and models no order book, latency or queue position, and it places no
+            live orders. What a bar cannot show, such as whether its high or its low came
+            first, the venue's `intrabar` setting decides, pessimistically unless set
+            otherwise.
+
+            ## Verified
+
+            Every file below was built from this tag on the machine it is for, after the
+            repository's CI passed on the same commit. Each wheel passed the test suite
+            there on Python 3.13 and 3.14, and the source archive passed it once built from
+            source. `SHA256SUMS` holds each file's checksum.

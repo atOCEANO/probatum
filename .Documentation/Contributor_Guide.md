@@ -156,16 +156,14 @@ Run the build loop above green before you submit, and the Docker gate too for an
 
 ### Cutting a release
 
-Releases are built by CI, never by hand. Pushing a `v*` tag runs the release workflow, which builds the `abi3` wheels for Linux on x86_64 and aarch64, each by the gate's `wheels` stage on its own machine, macOS on Apple silicon and Windows, plus an sdist, and attaches them all to a GitHub Release:
+`version` in `Cargo.toml`'s `[workspace.package]` is where the version is set: maturin names the wheels and the source archive from it, `probatum.__version__` reads it back from the installed package, and the install lines in the pages repeat it, which a test holds to it. **The tag must equal it**, and the release's first job stops a tag that does not. To cut a release, bump it in its own commit, with the install lines and with `Cargo.lock`, which `cargo update -w` brings along since every `--locked` build refuses a lock that disagrees, push that commit to main, then tag it `vX.Y.Z` and push the tag:
 
 ```bash
-git tag -a vX.Y.Z -m "probatum X.Y.Z: one line on what changed"
+git tag -a vX.Y.Z -m "probatum X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-Two things before you tag. The version in `Cargo.toml` is what names the wheels, so bump it first and let the tag match it, or the release says one number while its artifacts say another. And run the gate on the exact commit you intend to tag: a tag builds, it does not test, so nothing else will catch a regression at that point.
-
-To rehearse without releasing, run the workflow by hand from the Actions tab. A manual dispatch builds every wheel and stops there; only a tag creates the Release. The macOS and Windows wheels are built nowhere but GitHub's runners, where CI builds and tests all four wheels on every push to main.
+A pre-release takes Cargo's form, `vX.Y.Z-rc.N`, and is published as one. `.github/workflows/release.yml` checks the tag against `Cargo.toml`, then runs CI on the tagged commit, whose two comparisons with the commit before, the mutants and the instruction count, find none on a tag and ran when the commit reached main. It then builds each wheel on the machine it is for, Linux on x86_64 and aarch64, macOS on Apple silicon and Windows, and tests each there on Python 3.13 and 3.14. The Linux wheels pass the gate's test stages before the `wheels` stage hands them out, and the source archive is the one the `sdist` stage hands out once `test-sdist` has built and tested it. Last, the workflow checks every file's name against the version and publishes them on a GitHub Release with their SHA-256 checksums, its body written above GitHub's generated notes. A manual dispatch from the Actions tab runs all of it but the version check and the publishing, on whichever branch or tag it names, so a release can be rehearsed on any branch.
 
 Those wheels are the install path for anyone without a Rust toolchain, so a release is what makes a version usable at all. probatum is not published to PyPI.
 
