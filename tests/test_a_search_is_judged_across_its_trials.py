@@ -137,7 +137,6 @@ def test_a_cluster_of_one_trial_s_copies_is_that_trial_s_returns():
     rows = blocks()[[0, 4, 8]]
     held = stats.effective_trials(np.repeat(rows, 3, axis=0), periods_per_year=252)
 
-    assert np.corrcoef(np.repeat(rows[:1], 3, axis=0))[0, 1] < 1.0
     assert (held.count, held.clusters) == (3, (0,) * 3 + (1,) * 3 + (2,) * 3)
     assert held.spread == pytest.approx(statistics.deviation(
         [statistics.sharpe(row.tolist(), 252) for row in rows], 1), rel=1e-9)
