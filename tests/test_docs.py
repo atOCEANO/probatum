@@ -73,6 +73,12 @@ _API = {
     "CombinatorialPurged": probatum.cv.CombinatorialPurged,
     "validate": probatum.validate,
     "save": probatum.save,
+    "search": probatum.search,
+    "labels": probatum.labels,
+    "capacity": probatum.capacity,
+    "cost_curve": probatum.cost_curve,
+    "breakeven_bps": probatum.breakeven_bps,
+    "compare": probatum.compare,
 }
 # every public function of the two modules whose examples are all calls. Listed by
 # reflection rather than by hand: the hand-written dict above had gone four
