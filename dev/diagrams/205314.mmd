@@ -1,24 +1,26 @@
 flowchart TD
     S["<b>step()</b> advances one bar"]
-    T["transfers decided at the last<br/>close land in their wallets"]
-    G["funding stamped between the rows<br/>charged at the last marks"]
-    F["<b>0</b> the path of the perps carried in<br/>solved, each bar clipped where<br/>the margin ran out"]
-    A["<b>1</b> pending market orders<br/>fill at the open"]
-    B["<b>2</b> resting limits and stops<br/>fill against the clipped range,<br/>a take-profit held back on a bar<br/>that liquidates without it"]
-    D["<b>3</b> the path solved again for<br/>the account the fills left,<br/>debits inside the bar counted"]
-    C["<b>4</b> funding the row owns charged<br/>at the closes, on the positions<br/>still held"]
-    E["<b>5</b> equity marked at the close,<br/>new state returned"]
+    E1["<b>1</b> transfers decided at<br/>the last close land"]
+    E2["<b>2</b> funding stamped between<br/>the rows, at the last marks"]
+    E3["<b>3</b> the path of the perps carried in<br/>solved, the bars clipped where<br/>the margin runs out"]
+    E4["<b>4</b> a delisted instrument closed,<br/>market orders filled at the open"]
+    E5["<b>5</b> resting limits and stops filled<br/>against the clipped range"]
+    E6["<b>6</b> an exit held back where the path<br/>still liquidates without it"]
+    E7["<b>7</b> the check along the path for<br/>the account the fills left"]
+    E8["<b>8</b> the funding the row owns,<br/>at the closes"]
+    E9["<b>9</b> positions marked at the close,<br/>dust swept, the ledger row written"]
 
-    S --> T
-    T --> G
-    G --> F
-    F --> A
-    A --> B
-    B --> D
-    D --> C
-    C --> E
+    S --> E1
+    E1 --> E2
+    E2 --> E3
+    E3 --> E4
+    E4 --> E5
+    E5 --> E6
+    E6 --> E7
+    E7 --> E8
+    E8 --> E9
 
     classDef entry fill:#16232e,stroke:#4d9feb,stroke-width:2px,color:#e6edf3
     classDef stage fill:#16232e,stroke:#2ee6a6,stroke-width:2px,color:#e6edf3
     class S entry
-    class T,G,F,A,B,C,D,E stage
+    class E1,E2,E3,E4,E5,E6,E7,E8,E9 stage

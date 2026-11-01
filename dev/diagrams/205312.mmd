@@ -1,8 +1,8 @@
 flowchart LR
-    C["<b>probatum-core</b><br/>pure primitives<br/>units, orders, fills<br/>position, account<br/>costs, order book"]
-    B["<b>probatum-engine</b><br/>bar-level realization<br/>candles, next-bar fills<br/>step, reporter, stats<br/>rayon batch, sweep"]
-    P["<b>probatum-py</b><br/>the Python-linked crate<br/>PyO3, numpy bridge<br/>GIL release"]
-    W["<b>python / probatum</b><br/>thin wrappers<br/>backtest, env, search, validate"]
+    C["<b>probatum-core</b><br/>units, orders, fills<br/>position, account<br/>costs, tiers, order book<br/>Arrow tables"]
+    B["<b>probatum-engine</b><br/>candles and the clock<br/>the step, fills, liquidation<br/>funding, the ledger<br/>batch, environment, labels"]
+    P["<b>probatum-py</b><br/>the Python-linked crate<br/>PyO3, numpy, Arrow capsules<br/>the GIL released"]
+    W["<b>python / probatum</b><br/>Data, Venue, backtest<br/>search, validate, stats<br/>env, chart"]
 
     C --> B
     B --> P
