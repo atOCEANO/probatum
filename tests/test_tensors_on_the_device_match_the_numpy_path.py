@@ -338,8 +338,9 @@ def test_a_loop_of_4096_environments_never_waits_for_the_card(resident):
     obs, _ = env.reset()
     marks, ahead = [], []
     for _ in range(40):
-        # the policy's work on the card, about 40 ms of it, queued before each step
-        torch.cuda._sleep(60_000_000)
+        # the policy's work on the card, about 150 ms of it, queued before each step,
+        # several times what a step of 4,096 environments takes on a loaded host
+        torch.cuda._sleep(225_000_000)
         obs, reward, terminated, truncated, _ = env.step(space.sample())
 
         # the card has not yet finished the step before this one, so the host waited
