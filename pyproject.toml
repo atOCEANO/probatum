@@ -32,7 +32,7 @@ rl = ["gymnasium>=1.2"]
 search = ["optuna>=5.0", "cloudpickle>=2.0"]
 
 [project.urls]
-Repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
+Repository = "https://github.com/atOCEANO/probatum"
 
 [tool.maturin]
 manifest-path = "crates/probatum-py/Cargo.toml"
