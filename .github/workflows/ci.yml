@@ -90,8 +90,9 @@ jobs:
       - run: docker build --target miri .
 
   # Both jobs below compare against the commit before. A new branch, a rewritten
-  # history or a release's tag has none in reach, so nothing is compared; a tagged
-  # commit was compared on its way to main.
+  # history or a release's tag has none in reach, and a commit from before the crates
+  # were named probatum holds nothing to compare with, so nothing is compared; a
+  # tagged commit was compared on its way to main.
   mutants:
     name: mutants in the changed Rust lines
     runs-on: ubuntu-latest
@@ -103,7 +104,12 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
       - run: cargo install --locked cargo-mutants --version 27.1.0
-      - run: git diff "$BASE" HEAD > changes.diff || true > changes.diff
+      - run: |
+          if git cat-file -e "$BASE:crates/probatum-engine/Cargo.toml" 2>/dev/null; then
+            git diff "$BASE" HEAD > changes.diff
+          else
+            : > changes.diff
+          fi
       - run: |
           cargo mutants --package probatum-core --package probatum-engine \
             --in-diff changes.diff --jobs 4
