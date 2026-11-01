@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "probatum"
-description = "Embeddable market simulation library: a Rust-core crypto market simulator for reinforcement learning, backtests, and parameter search."
+description = "One simulated crypto exchange for backtests, parameter searches and reinforcement learning, stepped bar by bar in Rust"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT AND Apache-2.0 AND BSD-2-Clause AND ISC"

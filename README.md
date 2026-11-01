@@ -31,72 +31,201 @@
 
 ## Introduction
 
-`probatum` is **a bar-level crypto market simulator: a Rust core with a small Python surface.** Give it a table of candles and it stands in for the exchange: you step forward one bar at a time, place the order types a real venue offers, and read back your balance, position, and equity, with the real fees, funding, and slippage charged as you go.
+`probatum` is **one simulated crypto exchange for backtests, parameter searches and reinforcement learning, stepped bar by bar in Rust**. Every job, a validation among them, replays historical bars through the same fills and the same costs, so a number in one means the same in the others.
 
-The point is research speed. A single backtest, a parameter search over thousands of configurations, and a batched reinforcement-learning rollout all run on the same engine through one API, so the simulator is never the part you rebuild between experiments. You write a strategy or an agent once, against one fill model and one set of costs, and move between those jobs without reconciling separate simulators or second-guessing which costs each of them charged. The honest market stays a fixed point; only the question you are asking changes.
+Every run is a discrete simulation: it steps every bar in order, and each step settles that bar's orders, fills, funding and margin before the next bar is read. Even an array of weights is stepped this way, so no run is a vectorized backtest; stops, limits, funding and liquidations depend on the path a position took ([0003](.Documentation/Decisions.md)).
 
-The whole engine is one small loop: load candles, place an order if you want to, call `step` to advance exactly one candle, read your new state, repeat until the data runs out. Everything else, the RL env and the backtester, is a thin wrapper that drives that same loop for you.
+The loop runs in Rust, so stepping every bar stays fast. An array runs whole in one call into the engine, a random or grid search runs its trials in parallel, and `probatum.env` steps thousands of accounts at once with the GIL released.
 
-**Embeddable, not a framework.** You own the loop, so it drops into a system you already have instead of forcing you into its own. The core knows nothing about rewards or indicators; it advances a candle and returns a state. That is what lets one engine serve both a five-line backtest and a batched RL rollout, and it is why each word of the name is a fact rather than a brand. The chart layer sits outside that core and holds to the same rule: it computes nothing and knows no indicator names, it draws the arrays you hand it.
+You decide at a bar's close, and your order fills on a later bar, never on the one you saw. Every fill pays the venue's fee, and a market order or a stop also pays half the spread, slippage and impact. On perpetual futures the account pays or receives funding, and it is liquidated when its losses use up its margin.
+
+```python
+import pandas
+import probatum
+
+data = probatum.Data(pandas.read_parquet(path="btcusdt-1h.parquet"),
+                     symbol="BTCUSDT", market="spot")
+
+
+def trend(data, length):                     # all in above the average, flat below it
+    return (data.close > probatum.ta.sma(data.close, length=length)).astype(float)
+
+
+result = probatum.backtest(trend(data, length=200),
+                           data=data, venue="binance_spot")     # one run
+
+study = probatum.search(trend, space={"length": probatum.Int(low=20, high=400)},
+                        data=data, venue="binance_spot",
+                        sampler="random", holdout=0.3)          # a search of it
+
+env = probatum.env(data, venue="binance_spot", num_envs=4_096)  # accounts for an agent
+```
+
+By default a backtest keeps its fills, every order's events, its round trips and one ledger row per bar, as tables that `to_pandas()` turns into frames. It also totals its costs by kind and lists each modelling choice it made, graded `venue`, `simplified` or `optimistic`. `probatum.stats` puts an interval on a statistic where the sample supports one, names the method behind it, and judges a search against every trial it ran.
+
+It is a library your code calls, with no server or scheduler, and it fetches nothing itself. Bars come from a pandas, polars, pyarrow or DuckDB frame, a numpy array, or [exchange-router](https://github.com/atOCEANO/exchange-router). [Scope](#scope) lists what it leaves out.
+
+It works well in a Jupyter notebook. A Result shows in a cell as its summary, and every table and statistic as a pandas frame, or as plain text where pandas is not installed. `result.chart().show()` draws an interactive chart in the cell, in the notebook's theme, and needs no pandas; the `.ipynb` keeps it, so the notebook reopened shows it with no kernel running.
 
 <br>
 
 <div align="center">
-  <img src=".Documentation/imgs/205310.png" alt="One engine behind every surface" width="80%" />
-  <p style="margin: 0;"><i>One engine and one fill model behind a backtest, a Gymnasium RL env, and a parameter search</i></p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".Documentation/imgs/charts/run-dark.png">
+    <img src=".Documentation/imgs/charts/run-light.png" alt="A backtest drawn: the candles with a channel and its basis, a regime shaded behind them, each round trip's entry and exit, a MACD histogram, and the account's equity with its drawdown shaded under it" width="100%" />
+  </picture>
+  <p style="margin: 0;"><i>A channel breakout backtest on BTCUSDT, as result.chart() shows it in a Jupyter notebook, with the indicators the strategy was built on.</i></p>
 </div>
 
 <br>
 <br>
 
-## Scope and fidelity
+## Quick Start
 
-It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, a spread, slippage and market impact read off the bars before each fill, a liquidity budget per bar), a small Python API, and a chart layer that draws a run and your own arrays into one self-contained HTML file.
+probatum needs Python 3.13 or later and is not on PyPI. Each [release](https://github.com/atOCEANO/probatum/releases) carries a wheel for each machine below and a `SHA256SUMS` file with every file's hash. Install yours by its URL:
 
-It **does not**: model the full order book (L2), latency, or queue position, and it places no live orders. This is the bar-level, approximate member of a planned family; a future sibling is a tick and L2 engine at higher resolution. At bar granularity the fill model cannot see the intrabar path, so it can be slightly more generous than a live book would be; the costs it charges are the real ones. The bar-level resolution limits are recorded in [0012](.Documentation/Decisions.md).
+```bash
+# Linux x86_64
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v1.3.2/probatum-1.3.2-cp313-abi3-manylinux_2_28_x86_64.whl"
 
-**Who it is for.** Quant and machine-learning researchers. Not market makers or high-frequency desks, who run C++ and FPGA next to the exchange and need the order book this tier does not model. One decision per candle is the resolution most research works at.
+# Linux aarch64
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v1.3.2/probatum-1.3.2-cp313-abi3-manylinux_2_28_aarch64.whl"
 
-**How it differs from what you already use.** If you have driven a vectorized backtester, you know it cannot express a stop or a flip whose fill depends on the path the price took; probatum can, and runs thousands of such paths in parallel. If you have driven a general backtesting framework, you know it owns your loop; here you own it. If you have used an off-the-shelf RL trading env, you know the fills are a toy; here the backtest, the RL env, and the sweep share one fill model and the same costs.
+# macOS on Apple silicon
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v1.3.2/probatum-1.3.2-cp313-abi3-macosx_11_0_arm64.whl"
 
-<br>
-<br>
-
-## How it works
-
-You hand the engine your bars and walk it forward one bar at a time. On any bar you can place an order, a market buy or sell, a limit, or a stop, then call `step` to advance exactly one bar: it resolves whatever is pending, marks your account, its balances, position and equity, at the bar's close, and hands back that bar. Repeat to the end of the data. That loop is the whole engine; the backtester and the RL env are wrappers around it.
-
-The rule that keeps you honest is one bar of delay: you decide on the close of a bar and the order fills on the **next** one, never the bar the decision saw. That guard against same-bar lookahead is what separates a believable backtest from a fooled one.
-
-Point it at real candles with the sibling [`exchange-router-service`](https://github.com/atOCEANO/exchange-router-service), which hands back a ready-to-use DataFrame:
-
-```python
-from exchange_router_client import ExchangeRouterClient
-
-with ExchangeRouterClient("http://localhost:8040") as client:
-    candles = client.get_candles("binance", "spot", "BTCUSDT", interval="1h", limit=5000)
+# Windows x64
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v1.3.2/probatum-1.3.2-cp313-abi3-win_amd64.whl"
 ```
 
-Then step through it. `probatum.Data` reads that frame, which names its venue, market, symbol and interval itself, and `probatum.Engine` opens an account on it at a venue. Here a plain momentum rule: long above the last day's average, flat below it.
+The Linux wheels need glibc 2.28 or later. Any other machine builds the source archive, which needs the [Rust toolchain](https://rustup.rs):
+
+```bash
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v1.3.2/probatum-1.3.2.tar.gz"
+```
+
+The package itself needs only numpy. Extras go in brackets before the `@`, as in `"probatum[rl,search] @ <URL>"`:
+
+| Extra | Brings | For |
+| :--- | :--- | :--- |
+| `rl` | gymnasium | `probatum.env` and the agents trained on it |
+| `search` | optuna, cloudpickle | `search`'s default TPE sampler and its worker processes; without them, pass `sampler="random"` or `"grid"` |
+
+Stable-Baselines3 and torch are yours to install, and the adapters that use them print the install line when one is missing. [exchange-router](https://github.com/atOCEANO/exchange-router) fetches bars and funding from the venues' public market data, with no account or API key:
+
+```bash
+pip install "git+https://github.com/atOCEANO/exchange-router.git"
+```
+
+<br>
+
+### A first run
+
+This runs offline, on 200 days of hourly bars drawn as a random walk. The rule holds the pair while the close is above its 24-hour average:
 
 ```python
+import numpy
 import probatum
 
-data = probatum.Data(candles)
-close = data.close                             # a read-only view of every close
-engine = probatum.Engine(data, "binance_spot")
-bar = engine.reset()
-while not engine.done():
-    i = bar.i
-    if i >= 24:                                # a day of hourly history
-        average = close[i - 24:i].mean()
-        if engine.position == 0.0 and close[i] > average:
-            engine.buy(0.1)                    # decided now, fills on the next bar
-        elif engine.position > 0.0 and close[i] < average:
-            engine.close()                     # flatten below it
-    bar = engine.step()
+rng   = numpy.random.default_rng(seed=7)
+close = 30_000.0 * numpy.exp(numpy.cumsum(rng.normal(loc=0.0, scale=0.004, size=4_800)))
 
-print(engine.equity, engine.position)          # account value and position at the end
+open_ = numpy.concatenate([[30_000.0], close[:-1]])
+high  = numpy.maximum(open_, close) * 1.001
+low   = numpy.minimum(open_, close) * 0.999
+
+bars  = numpy.column_stack([open_, high, low, close,
+                            numpy.full(shape=4_800, fill_value=50.0)])
+hours = numpy.datetime64("2025-01-01") + numpy.arange(stop=4_800) * numpy.timedelta64(1, "h")
+data  = probatum.Data(bars, symbol="BTCUSDT", market="spot", time=hours)
+
+weights = (close > probatum.ta.sma(close, length=24)).astype(float)
+result  = probatum.backtest(weights, data=data, venue="binance_spot")
+print(result)
+```
+
+```text
+Result(a (4800, 1) array of weights on probatum.venues.binance_spot, 4,800 bars, equity 10,000.00 to 5,369.51)
+```
+
+With pandas installed, `result.summary()` gives the summary as a frame:
+
+```python
+print(result.summary().to_pandas()[["run", "buy_and_hold", "low", "high"]].round(decimals=2))
+```
+
+```text
+                      run  buy_and_hold    low   high
+total_return_pct   -46.30        -34.42 -64.68 -17.23
+cagr_pct              NaN           NaN    NaN    NaN
+volatility_pct      25.63         37.21  24.18  27.11
+sharpe              -4.30         -1.88  -7.23  -1.37
+max_drawdown_pct    48.58         37.45  27.28  65.95
+exposure_pct        46.20           NaN    NaN    NaN
+num_trades         254.00           NaN    NaN    NaN
+win_rate             0.19           NaN   0.14   0.24
+profit_factor        0.52           NaN   0.33   0.83
+costs             4304.21           NaN    NaN    NaN
+```
+
+A random walk gives the rule nothing to find, and its 254 round trips paid 4,304.21 in costs. `low` and `high` are the ends of the run's 95% interval for each statistic, and the CAGR is left out because the run is shorter than a year.
+
+`result.chart().show()` draws the run in a notebook cell, and `result.chart().save("run.html")` writes it to one file that opens offline.
+
+<br>
+
+### Your own bars
+
+A Data reads any frame with `open`, `high`, `low`, `close` and `volume` columns and the bars' open times in a datetime index or column:
+
+```python
+data = probatum.Data(pandas.read_parquet(path="btcusdt-1h.parquet"),
+                     symbol="BTCUSDT", market="spot")
+```
+
+A perpetual preset charges the funding events that come with the bars and refuses bars with none. To run perpetual bars of your own without funding, use `probatum.venues.binance_perp.replace(funding="none")`. exchange-router fetches bars with their funding:
+
+```python
+from exchange_router import Router
+
+with Router.local(exchanges=["binance"]) as router:
+    data = probatum.Data.from_router(router, exchange="binance", market="linear",
+                                     interval="1h", symbols=["BTCUSDT"],
+                                     start="2025-01-01", funding=True)
+
+data.save(path="bars/btc-2025")                    # Arrow files, loaded back unchanged
+data = probatum.Data.load(path="bars/btc-2025")
+```
+
+`"linear"` asks for the venue's linear perpetuals, margined in a quote currency such as USDT or USDC, and `"spot"` for its spot pairs.
+
+<br>
+
+### A strategy
+
+A `Strategy` decides at each close, through an account that takes the venue's order types:
+
+```python
+class Breakout(probatum.Strategy):
+    def __init__(self, length=48):
+        self.length = length
+
+    def init(self, data):                             # once, over every bar
+        # the channel up to the bar before, so a close can break it
+        self.high   = probatum.ta.shift(probatum.ta.highest(data.high, length=self.length))
+        self.low    = probatum.ta.shift(probatum.ta.lowest(data.low, length=self.length))
+        self.warmup = self.length + 1                 # next() runs from this bar on
+
+    def next(self, bar, account):                     # at each close
+        i = bar.i
+        if account.position == 0.0 and bar.close > self.high[i]:
+            account.target(weights=1.0)               # all of equity long, from the next open
+        elif account.position > 0.0 and bar.close < self.low[i]:
+            account.close()
+
+
+result = probatum.backtest(Breakout(), data=data, venue="binance_perp")
+print(result.summary())
 ```
 
 <br>
@@ -104,314 +233,111 @@ print(engine.equity, engine.position)          # account value and position at t
 
 ## Ways to drive it
 
-`probatum.backtest(policy, data, venue)` runs a policy on a Data at a venue and returns its `Result`: an array of weights or quantities, run whole in Rust in one call, a `Strategy` deciding at each close, or a trained agent. `probatum.Engine` is the same account in a loop you own, as above, and `probatum.env` steps many of them together for an agent. The venue is an argument of each, a preset's name or a `probatum.Venue`, so a cost has one place to be given and cannot arrive twice ([0002](.Documentation/Decisions.md)).
+A run's policy can be an array of weights, a `Strategy`, your own loop around the `Engine`, or a trained agent. All four record the same `Result`. They differ in what you write and in how much Python runs per bar.
 
-### Backtest
+| | an array | a `Strategy` | the `Engine` | an agent |
+| :--- | :--- | :--- | :--- | :--- |
+| you write | a target weight or quantity for each bar | `init` once, `next` at each close | the loop | a policy trained on `probatum.env` |
+| it can place | the targets, with a stop and a take-profit | every order a venue takes | every order a venue takes | target weights by default, or orders, from its actions |
+| Python per bar | none: the whole run is one call into Rust | one call into your `next` | one call to `step` | one call into the agent |
+| a run returns | `backtest(...)`, a `Result` | `backtest(...)`, a `Result` | `engine.result()`, a `Result` | `backtest(agent, ...)`, a `Result` |
 
-A `Strategy` class with `init` and `next`. `init(data)` runs once over the whole Data, where indicators are computed over every bar at once, and `next(bar, account)` runs at each close and places orders through the account, which fill on a later bar. Set `warmup` to the longest history a decision reads and `next` is not called until that many bars exist, which closes what an early guard was for: on an early bar `close[i - 50]` is a negative index, numpy resolves it from the **end** of the array, and the rule reads prices from the future without raising anything.
+**An array** suits a signal computed over all the bars at once. A random or grid search runs many array trials together in Rust.
 
-```python
-import probatum
+**A `Strategy`** suits a rule that reads the account or reacts bar by bar: a trailing stop, a size taken from equity, a limit at the last low, a bracket on each entry.
 
+**The `Engine`** suits a program with a loop of its own, which steps the account when it chooses.
 
-class BuyDip(probatum.Strategy):
-    warmup = 1                                # next() waits until a previous bar exists
-
-    def init(self, data):
-        self.close = data.close               # a read-only view of the closes
-
-    def next(self, bar, account):
-        i = bar.i
-        if account.position == 0.0 and self.close[i] < self.close[i - 1]:
-            account.buy(0.01)                 # buy after a down bar
-        elif account.position > 0.0 and self.close[i] > self.close[i - 1]:
-            account.close()                   # close into the next up bar
-
-
-result = probatum.backtest(BuyDip(), data, "binance_spot")
-print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
-print(len(result.trades), "round trips")
-```
-
-The account's verbs mirror a venue's: `buy` and `sell` at market, at a `limit`, or once a price reaches a `stop`, with `tif`, `post_only` and `reduce_only`; `buy_value` and `sell_value` in the quote currency; `bracket`, a stop and a take-profit as one OCO pair; `close`, `cancel`, `replace` and `cancel_all`; and `target`, each instrument to a weight of equity. The position is netted, long, short or flat, and never short on spot. The statistics, the round trips and every table a run records are in the [Python API](.Documentation/Python_API.md#backtesting).
-
-### Indicators
-
-`probatum.ta` carries 30 functions, a small closed set rather than an attempt at ta-lib. Every one returns **one value per bar** with the warm-up as a gap and never a shorter array, so the same object drives the rule and draws on the chart with no padding decision in between.
-
-```python
-class Cross(probatum.Strategy):
-    def init(self, data):
-        fast, slow = probatum.ta.ema(data.close, 20), probatum.ta.ema(data.close, 60)
-        self.up = probatum.ta.crossover(fast, slow)          # a cross, not a level
-        self.trend = probatum.ta.adx(data.high, data.low, data.close).adx
-        self.warmup = 80
-```
-
-`shift`, `crossover` and `crossunder` are there for a reason beyond convenience. Written by hand, `values[i - n]` on an early bar is a negative index, which numpy resolves from the end of the array and reads the future in silence; computed once as an array there is no index left to get wrong. `crossover` returns booleans and pads with `False` rather than `NaN`, because `bool(nan)` is `True` and a warm-up that reads as a signal is the one version of this that would be dangerous.
-
-An indicator library is mostly somebody's opinion about warm-up and smoothing, so each function states its own where implementations differ: `ema` seeds from the first window's average rather than its first value, `rsi` and `atr` use Wilder's smoothing, `stdev` is population because that is what `bbands` needs. The alternative to a stated convention is not no convention, it is yours, unwritten. Full list in the [Python API](.Documentation/Python_API.md#indicators).
-
-### Reinforcement learning
-
-A Gymnasium vector environment of accounts at a venue on a Data, stepped together in Rust. Each account is a backtest's, through the same fills, costs, funding and liquidation, and each environment draws its episodes from a stream of its own, so an episode runs again as a backtest from its start. You choose what the agent sees (the candles, or your own features), how it is rewarded (the log return, a differential Sharpe, or a function over the batched state) and what its actions are (target weights, discrete positions, or limit orders).
-
-```python
-def reward(state):                                 # batched, one value per env
-    return state.log_return - 0.5 * state.drawdown ** 2
-
-env = probatum.env(data, "binance_perp", window=64, features=my_features,
-                   reward=reward, num_envs=4096, seed=0)
-obs, info = env.reset(seed=0)                      # (4096, D) float32
-for _ in range(1000):
-    actions = policy(obs)                          # (4096, N) target weights
-    obs, reward, terminated, truncated, info = env.step(actions)
-    # 4096 envs stepped in parallel, GIL released; an ended episode resets
-    # on the next step, its start and number in info
-```
-
-Or skip the loop and hand it to Stable-Baselines3, which trains on the same env, and judge the agent with the same backtest as a rule, on bars it has not seen:
-
-```python
-from stable_baselines3 import PPO
-
-agent = PPO("MlpPolicy", probatum.sb3.wrap(env))       # A2C and SAC swap in
-agent.learn(total_timesteps=100_000)
-result = probatum.backtest(agent, later, "binance_perp", features=my_features)
-```
-
-The observation, reward, action, and autoreset contract, the full training examples and the backtest of an agent are in the [RL Guide](.Documentation/RL_Guide.md).
-
-### Parameter search
-
-Search a policy's parameters for the setting that maximizes an objective. `probatum.search` runs each trial as a full backtest on the bars of a `probatum.Data` before a holdout, and returns a `probatum.Study` of every trial.
-
-```python
-import numpy
-import probatum
-
-def crossing(data, fast, slow):                   # the parameters, as keyword arguments
-    up = probatum.ta.ema(data.close, fast)
-    down = probatum.ta.ema(data.close, slow)
-    weights = numpy.full(len(data), numpy.nan)    # NaN holds the position
-    weights[probatum.ta.crossover(up, down)] = 1.0
-    weights[probatum.ta.crossunder(up, down)] = 0.0
-    return weights
-
-space = {"fast": probatum.Int(5, 40), "slow": probatum.Int(40, 200, step=10)}
-study = probatum.search(crossing, space, data, "frictionless", sampler="random",
-                        trials=200, holdout=0.3, seed=7)   # search 70%, hold 30% back
-print(study.best_params)
-print(study.best_score)                           # in-sample: the best of 200 tries
-held = study.evaluate_holdout()                   # the one run on bars no trial saw
-print(held.stats["sharpe"])
-```
-
-**Read the second number, not the first.** `best_score` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `holdout=0.3` runs every trial on the first 70% of the rows and keeps the last 30% for one run of the winner, which `evaluate_holdout()` counts as a look. The gap between the two is what the search invented. Leave `holdout` out and every score is in-sample, which the search warns of ([0032](.Documentation/Decisions.md)).
-
-A Study also judges the search across its trials: `study.summary(null=null)`, given a random search of the same ground, deflates the winner's Sharpe for every trial asked and prints the probability the search overfit, and `study.reality_check()` asks whether any trial beats cash at all ([0033](.Documentation/Decisions.md)).
-
-A random or grid search of a policy that returns weights runs its trials together in Rust, many to a call; a `Strategy` subclass, built for each trial from its parameters, runs them one at a time, across worker processes with `n_jobs=-1`. `objective` takes any statistic's name, and `direction="minimize"` ranks a cost. The default sampler, `"tpe"`, needs optuna, and the workers need cloudpickle, which the `search` extra installs ([Install](#install)); the [Python API](.Documentation/Python_API.md#search) covers the policy, the space, the samplers and the Study in full.
-
-### Judging the result
-
-`result.summary()` shows the run beside buying and holding, and `probatum.stats` is what you read after it. The first thing to look at is where the money went, because a large share of what looks like alpha in crypto is a funding carry, and a larger share of dead strategies died on the fee line rather than on the idea.
-
-```python
-from probatum import stats
-
-print(result.summary())                         # the headline, its Sharpe's interval read
-stats.decompose(result)                         # the price pnl, each cost, the turnover
-stats.trade_stats(result)                       # payoff, expectancy, worst losing streak
-stats.period_returns(result, by="month")        # or by hour, day, week, quarter or year
-probatum.compare({"cheap": a, "dear": b})       # several runs, side by side
-```
-
-`decompose` splits the change in equity into the price pnl and each cost, which make up the whole of it: the costs are positive amounts paid away, so they subtract.
-
-How much friction a policy survives is a run of its own. `probatum.cost_curve(policy, data, venue)` runs it again with every cost the venue charges for trading, its fees, spread, slippage and impact, multiplied together by 0, 0.5, 1, 2 and 4, and `probatum.breakeven_bps(policy, data, venue)` finds the round-trip cost at which it stops making money, so "this dies at 8 basis points a round trip and you pay 6" is a number you read rather than guess, worth more in the first week than any probability. `probatum.capacity(policy, data, venue, balances=[...])` runs it at several balances, to show where its own size starts to cost it ([0045](.Documentation/Decisions.md)).
-
-Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `result.summary()` shows the win rate beside the profit factor and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
-
-For how far the numbers can be trusted, `probatum.stats` gives each statistic of a run its interval, named for its method: the Sharpe's by the delta method over a long-run variance that autocorrelation widens and never narrows, with its probability of beating a benchmark and the track record that would show it, the others by a bootstrap of the returns or of the round trips. It also tests two Sharpes on the same bars and measures alpha and beta against buying and holding, and `result.summary()` shows the run with its intervals ([Python API](.Documentation/Python_API.md#inference)). `probatum.stats.deflated_sharpe(study, null)` asks whether a search's winner beats what the best of that many trials would have reached by luck; it requires a random-search null and refuses to guess one.
-
-### Looking at the result
-
-The five paths above produce numbers. `result.chart()` is how you look at a run: its candles, the fills on the bars they happened on, the account's equity with its drawdown shaded onto it, a trade log, and any array of your own beside them. `data.chart()` draws bars with no run.
-
-```python
-import numpy as np
-
-import probatum
-from probatum.chart.marks import Background, Band, Histogram, Level, Line
-
-result = probatum.backtest(Channel(), data, "binance_spot")
-strategy = result.policy                      # the copy of the strategy the run used
-
-# the bars the rule was in the market, a round trip still open at the end running
-# to the last, its bars the run's placed on the Data's rows
-rows = np.searchsorted(data.time, result.time)
-held = np.zeros(len(data), dtype=bool)
-for trade in result.trades:
-    last = rows[-1] if trade["open"] else rows[trade["close_bar"]]
-    held[rows[trade["open_bar"]]:last + 1] = True
-
-result.chart(                                 # every array here is the strategy's
-    Background(strategy.uptrend, fill="#2fe0a814"),
-    Band(strategy.upper, strategy.lower, "channel 96", fill="#8b97a514"),
-    Line(strategy.basis, "basis 96", width=1, style="dashed"),
-    Histogram(strategy.hist, "MACD 12/26/9", panel="momentum",
-              color=np.where(strategy.hist >= 0.0, "#2fe0a8", "#ff5470")),
-    Level(0.0, panel="momentum", style="dotted"),
-    candle_color=np.where(held, "#4d9fff", None),
-).show()
-```
-
-Those are the arrays the rule decided on, handed over as they are. Nothing here recomputes an indicator, because a recomputed copy is a picture of a rule that was never run.
-
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".Documentation/imgs/charts/run-dark.png">
-    <img src=".Documentation/imgs/charts/run-light.png" alt="A backtest drawn: the candles with a channel and its basis, a regime shaded behind them, each round trip's entry and exit, a MACD histogram, and the account's equity with its drawdown shaded under it" width="100%" />
-  </picture>
-  <p style="margin: 0;"><i>A channel breakout on BTCUSDT 1h at binance_spot, a year's run framed on forty days: the round trips where they filled, the strategy's own arrays, and the account's equity with its drawdown</i></p>
-</div>
-
-<br>
-
-**Everything above the fold came free**, and everything else is one more mark in the same list. You add a `Line` for a moving average or an equity curve of your own, a `Band` for a channel or a conditional shading, a `Level` for a threshold, `Markers` for a glyph on every bar a condition holds, a `Background` for a regime, a `Histogram` for anything per-bar. Any of them goes on the candles or on a panel of its own, just by naming one, and panels are stretched, pinned to a range, put on a log scale, or hidden. Every mark takes one colour or **one colour per bar**, so a line can carry a second variable in its own shading, and the candles themselves can be tinted the same way. A series can even be drawn past the last candle, which is what an Ichimoku cloud needs.
-
-None of it is required. Bars alone are a chart, an array finds its own home, and a run brings its own panels.
-
-**`show()` draws it in the notebook cell**, inline, where you are already working. No second window, no server, no separate viewer.
-
-**The chart stays in the notebook.** It is stored in the `.ipynb` itself, so opening that file next year shows the same charts, scrollable and zoomable, with no kernel running and nothing re-executed. Send somebody the notebook and they see what you saw.
-
-**`save()` writes one HTML file** you open in a browser by double-clicking it, for the people who want the picture without the notebook.
-
-```python
-result.chart().save("reports/run.html")
-```
-
-It computes nothing and knows no indicator names: pass the strategy's own arrays and the line on screen cannot drift from the line that made the decision.
-
-The [Charts](.Documentation/Charts.md) page shows every one of those marks with the picture it draws, the length contract that keeps a series on the bar it belongs to, and what cannot be charted.
+**An agent** trains on `probatum.env`, a Gymnasium vector environment of accounts stepped together in Rust and registered as `probatum/Trading-v0`. By default each environment shows the agent the last 64 bars and its account, takes a target weight for each instrument, and rewards the log return of equity. `probatum.sb3.wrap` adapts it for Stable-Baselines3, and `probatum.torch.TensorEnv` hands out its observations and rewards as tensors on a GPU. A trained agent then runs through `backtest` like any other policy, on bars it has not seen ([RL Guide](.Documentation/RL_Guide.md)).
 
 <br>
 <br>
 
-## Speed
+## Scope
 
-Throughput depends on which path you drive, and they differ by orders of magnitude, so it is worth knowing which one you are on. Measured on a 28-thread x86_64 box against the built wheel over a 2,000-bar series:
+Each run simulates one account at one venue, on bars of crypto spot pairs and perpetual futures. A perpetual is linear, margined in a quote currency such as USDT, or inverse, margined in the coin. All of an account's perpetuals share one cross-margin wallet.
 
-| Path | Throughput | What bounds it |
-| :--- | :--- | :--- |
-| Single-env raw step | ~1.7M steps/s | the Python-to-Rust boundary, crossed on every `step` |
-| `backtest` with a Python `Strategy` | ~111K bars/s | the `next` called on every bar and the views it reads, not the engine |
-| Batched RL step | ~760K-1.3M env-steps/s | writing the observation, GIL released |
+### What it does not do
 
-The single-env rows say something worth internalizing: the engine steps at about 1.7M per second with nothing attached, and a `Strategy` that reads indicators computed once in `init` runs at about 111K, so a backtest stepped from Python is bound by the call to `next` on every bar, not by the engine. A policy given as an array runs in Rust in one call, with no Python on any bar. The batched RL step releases the GIL and moves every env together, bound by building the observation rather than by the fill. A parameter search scales the other way, across processes rather than per bar, so its rate is trials per second and it grows with the cores you give it.
+* **No order book.** It reads bars, not the book. The spread is fixed or estimated from the bars, impact grows with an order's size against the recent volume, and queue position and the depth at each price are not modelled.
+* **No intrabar path.** A bar holds four prices but not the order they came in. When a bar reaches both a stop and a target, the stop fills first: whatever a bar cannot show is decided against the account, unless the venue's `intrabar` setting is optimistic, or random for training.
+* **No latency model.** An order decided at a close fills no earlier than the next bar, and a market order fills at the next open.
+* **No mark price.** A perpetual is liquidated when the bar's traded prices reach its trigger, which errs toward liquidating.
+* **One margin mode.** Cross margin only: no isolated margin, price bands or auto-deleveraging.
+* **No live trading.** It places no order at any venue and holds no keys.
+* **No dated futures or options.** Spot pairs and perpetuals only.
 
-These move with hardware and workload, so treat them as shape, not a promise. Run `benchmarks/throughput.py` for your own machine, and the Criterion bench in `crates/probatum-engine/benches` for the pure-Rust step and the in-core sweep.
+The [Specification](.Documentation/Specification.md) states every rule a run applies, and lists what a bar cannot show with the direction each setting errs in.
 
-<br>
-<br>
+### When this is not the right fit
 
-## Compatibility
-
-A backtest is a number somebody acts on, so **the simulator's behaviour is part of the API, not an implementation detail**. A fill model that shifts quietly between patch releases makes every result you recorded last month unattributable.
-
-From 1.0, a **minor** release will not remove an exported name, remove a keyword, change what a keyword means, or change what a function returns. New keywords arrive with defaults that keep the old behaviour. Beyond that, these are rules you may build on, and changing any of them is a **major** release that arrives with an [ADR](.Documentation/Decisions.md) explaining what was wrong:
-
-- An order decided on bar `i` fills against bar `i + 1`, never the same bar, and a `T`-bar series calls `next` `T - 1` times.
-- A bar reaching both a stop and a target books the **worse** exit.
-- A liquidation is priced where the margin runs out, so bad debt is unreachable rather than clamped after the fact.
-- The statistics are never `NaN` and rank monotonically, so a bad run cannot win a search.
-- `probatum.ta` returns one value per bar, warm-up as a gap, never a shorter array.
-- A `T-1` array on a chart maps entry `i` to bar `i + 1`.
-- `search` holds out the **end** of a series, never a random slice.
-
-Not promised: an indicator's output to the last bit (the recursive ones trade 2e-15 for a 33-fold speedup, and that trade may be made again), anything whose name starts with an underscore, the wording of an error, the chart's JSON spec, and the Rust crates, which are workspace members rather than a published API. The [fidelity limits](#scope-and-fidelity) are limits and not promises: they may become *more* faithful in a minor release, because a simulator getting closer to a real venue is a fix, and your results will move when it does.
+* You need the order book, queue position or latency. Market making and high-frequency trading need every trade and the full book; probatum reads bars.
+* You need a system that trades live. probatum is a library a research loop calls, with no broker, scheduler or execution.
+* You trade markets other than crypto. A `probatum.Venue` built by hand runs any bars, but every preset is a crypto venue's.
 
 <br>
 <br>
 
-## Install
+## Supported Venues
 
-Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels, so installing one needs no compiler. **emsl is not on PyPI**, so install the wheel for your platform by its URL.
+Each preset but `frictionless` holds what its venue listed as trading on the day its tables were taken, which the preset records as `taken`: every instrument with its tick or price rule, its lot and, for a perpetual, its margin tiers, and the venue's base fees. Volume tiers, rebates and the stock, commodity and pre-market contracts that [Venue Notes](.Documentation/Venue_Notes.md#instruments) lists are left out. Each preset is a `probatum.Venue`, reached as `probatum.venues.NAME` or by its name, and [Venue Notes](.Documentation/Venue_Notes.md) gives each one's rates and says where every number came from.
 
-Each build covers one platform, and one wheel per platform serves **Python 3.13 and up**, because the extension is stable-ABI:
+| Venue | Spot | Linear perpetuals | Inverse perpetuals | Spot and linear, one account |
+| :--- | :--- | :--- | :--- | :--- |
+| Binance | `binance_spot` | `binance_perp` | `binance_inverse` | `binance` |
+| Bybit | `bybit_spot` | `bybit_perp` | `bybit_inverse` | `bybit` |
+| OKX | `okx_spot` | `okx_perp` | `okx_inverse` | `okx` |
+| Hyperliquid | | `hyperliquid_perp` | | |
 
-| Platform | Wheel | Built |
-| :--- | :--- | :--- |
-| Linux x86_64 | manylinux | every release |
-| Linux aarch64 | manylinux | best effort, cross-compiled; a release may not have one |
-| macOS, Intel and Apple silicon | one universal2 file covering both | every release |
-| Windows x64 | win_amd64 | every release |
+`frictionless` charges nothing and runs any market, for checking a rule apart from its costs. When an account's margin runs out, Binance, Bybit and OKX take the account over and keep what is left as the liquidation charge. Hyperliquid first sells each position on the book, and falls back to the takeover when the sale would leave too little.
 
-Any other platform, Windows on ARM for instance, builds from the source archive (the last command below), which needs the Rust toolchain. For another release, change the version in the URL, in both the tag and the file name.
-
-```bash
-# Linux x86_64
-pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-# Linux aarch64
-pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
-# macOS, Intel and Apple silicon
-pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl"
-# Windows x64
-pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-win_amd64.whl"
-# anything else, built from source
-pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2.tar.gz"
-```
-
-The optional extras go in brackets before the `@`, and stack:
-
-| Extra | Pulls | For |
-| :--- | :--- | :--- |
-| `data` | pandas, pyarrow | DataFrame and parquet input |
-| `search` | optuna, cloudpickle | `probatum.search`'s TPE sampler and its workers |
-| `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
-
-```bash
-pip install "emsl[search,sb3] @ <the URL for your platform, from above>"
-```
-
-Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you:
-
-```bash
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v1.3.2"
-```
-
-From a local checkout, either as a plain install or as a development build:
-
-```bash
-git clone https://github.com/atOCEANO/embeddable-market-simulation-library.git
-cd embeddable-market-simulation-library
-
-pip install .                    # a normal install from the checkout
-                                 # or, to work on the library itself:
-pip install maturin
-maturin develop --release        # compiles the abi3 extension into the active venv
-```
-
-Or build the wheel once and install that copy wherever you need it:
-
-```bash
-maturin build --release --out dist
-pip install dist/*.whl
-```
-
-`numpy` and `gymnasium` install with the package either way.
+Every preset but `frictionless` also charges a market order or a stop half the spread estimated from the last 24 bars, 1 bp of slippage and square-root impact, and lets one bar's orders take at most a tenth of the trailing volume. These defaults are a starting point rather than a measurement of anyone's costs. `probatum.cost_curve` and `probatum.breakeven_bps` show how much a result depends on them ([Research Guide](.Documentation/Research_Guide.md#costs-and-capacity)).
 
 <br>
 <br>
 
-## Building and validating
+## How it is checked
 
-The pure-Rust crates validate locally with cargo; the Python surface validates on a Docker gate that builds the one abi3 wheel and runs the test suite across Python 3.13 and 3.14. The riskiest code is adversarially verified, a process that has caught real bugs before they shipped; the full workflow is in the [Validation Guide](.Documentation/Validation_Guide.md).
+Every rule a run applies is written in the [Specification](.Documentation/Specification.md) as an equation with a worked example before it is coded, and every worked example is a test, to the cent. A second simulator, written in plain Python from that page and never from the engine, is compared with the engine on random accounts, universes, batches and environments. Other tests check that nothing reads a bar before it has closed and that each estimator reproduces its paper's numbers. CI adds Miri, mutation testing of the Rust a change touches, and a check on the step loop's instruction count. The [Validation Guide](.Documentation/Validation_Guide.md) names the test behind each claim.
 
-```bash
-cargo test -p probatum-core -p probatum-engine    # pure-Rust core
-cargo clippy --workspace --all-targets -- -D warnings
-docker build --target test313 .                   # wheel + pytest on Python 3.13
-```
+<br>
+<br>
+
+## Python API
+
+The names a user meets, each documented in full on the [Python API](.Documentation/Python_API.md) page:
+
+| Name | What it is |
+| :--- | :--- |
+| `probatum.Data` | the bars of one or many instruments on one clock, from a frame, a numpy array or exchange-router |
+| `probatum.Venue` | a venue's rules in one object, with the presets in `probatum.venues` |
+| `probatum.backtest` | one run of an array, a `Strategy` or an agent at a venue, returning a `Result` |
+| `probatum.Strategy` | a class whose `next(bar, account)` runs at each close and places orders with `account.buy`, `sell`, `target`, `bracket` and `close` |
+| `probatum.Engine` | the same account, in a loop you own |
+| `probatum.Result` | what a run recorded: its equity, ledger, fills, orders, round trips, costs, assumptions and statistics |
+| `probatum.search`, `probatum.validate` | `search` tries a policy's parameters on the bars before a held-out tail, and `validate` repeats it over walk-forward or purged k-fold splits from `probatum.cv` |
+| `probatum.stats` | intervals on a run's statistics, and tests of a search: the deflated Sharpe, the probability of backtest overfitting, the Reality Check and SPA |
+| `probatum.cost_curve`, `probatum.breakeven_bps`, `probatum.capacity` | a policy run again with its costs scaled, the cost at which it breaks even, and the same policy at larger balances |
+| `probatum.ta` | 30 indicators such as `sma`, `ema`, `rsi`, `macd`, `atr` and `bbands`, one value per bar, NaN during each one's warm-up (False for `crossover` and `crossunder`) |
+| `probatum.env` | `num_envs` accounts stepped together in Rust as a Gymnasium vector environment |
+| `result.chart()` | a run drawn, in a notebook cell or as one HTML file that opens offline |
+
+<br>
+<br>
+
+## Documentation
+
+| Page | Read it when |
+| :--- | :--- |
+| [Research Guide](.Documentation/Research_Guide.md) | searching a policy, validating it and reading the statistics that judge it |
+| [RL Guide](.Documentation/RL_Guide.md) | training an agent on `probatum.env` and backtesting it |
+| [Charts](.Documentation/Charts.md) | drawing a run, bars or arrays of your own |
+| [Python API](.Documentation/Python_API.md) | looking up a name, an argument or what it returns |
+| [Specification](.Documentation/Specification.md) | checking the exact rule for a fill, a fee, funding, margin or a liquidation |
+| [Venue Notes](.Documentation/Venue_Notes.md) | choosing or changing a preset |
+| [Validation Guide](.Documentation/Validation_Guide.md) | checking how the engine and the statistics are tested |
+| [Decisions](.Documentation/Decisions.md) | asking why a rule is the way it is, and what it costs |
+| [Architecture](.Documentation/Architecture.md) | reading the code, or asking what a release may change |
+| [Contributor Guide](.Documentation/Contributor_Guide.md) | changing the code |
+
+probatum is emsl, the embeddable market simulation library, renamed and released as 2.0.0. Where emsl simulated something no venue does, probatum's results differ from emsl's ([0001](.Documentation/Decisions.md)). It is MIT licensed. Its wheel also carries the chart's renderer, TradingView's Lightweight Charts, under Apache-2.0 and Lucide's icons under ISC, and the licences of the Rust crates it is built from are in `THIRD-PARTY-LICENSES`.
