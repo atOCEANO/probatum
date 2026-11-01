@@ -20,6 +20,7 @@
   <a href=".Documentation/Venue_Notes.md">Venue Notes</a> &nbsp;•&nbsp;
   <a href=".Documentation/Validation_Guide.md">Validation Guide</a> &nbsp;•&nbsp;
   <a href=".Documentation/Decisions.md">Decisions</a> &nbsp;•&nbsp;
+  <a href=".Documentation/Migration.md">Migration</a> &nbsp;•&nbsp;
   <a href=".Documentation/Architecture.md">Architecture</a> &nbsp;•&nbsp;
   <a href=".Documentation/Contributor_Guide.md">Contributor Guide</a>
 </sub>
@@ -337,7 +338,8 @@ The names a user meets, each documented in full on the [Python API](.Documentati
 | [Venue Notes](.Documentation/Venue_Notes.md) | choosing or changing a preset |
 | [Validation Guide](.Documentation/Validation_Guide.md) | checking how the engine and the statistics are tested |
 | [Decisions](.Documentation/Decisions.md) | asking why a rule is the way it is, and what it costs |
+| [Migration](.Documentation/Migration.md) | moving code from emsl 1.3.2 |
 | [Architecture](.Documentation/Architecture.md) | reading the code, or asking what a release may change |
 | [Contributor Guide](.Documentation/Contributor_Guide.md) | changing the code |
 
-probatum is emsl, the embeddable market simulation library, renamed and released as 2.0.0. Where emsl simulated something no venue does, probatum's results differ from emsl's ([0001](.Documentation/Decisions.md)). It is MIT licensed. Its wheel also carries the chart's renderer, TradingView's Lightweight Charts, under Apache-2.0 and Lucide's icons under ISC, and the licences of the Rust crates it is built from are in `THIRD-PARTY-LICENSES`.
+probatum is emsl, the embeddable market simulation library, renamed and released as 2.0.0. Where emsl simulated something no venue does, probatum's results differ from emsl's ([0001](.Documentation/Decisions.md)). [Migration](.Documentation/Migration.md) says where each emsl name went and why a result moves. It is MIT licensed. Its wheel also carries the chart's renderer, TradingView's Lightweight Charts, under Apache-2.0 and Lucide's icons under ISC, and the licences of the Rust crates it is built from are in `THIRD-PARTY-LICENSES`.
