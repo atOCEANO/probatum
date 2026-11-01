@@ -38,11 +38,6 @@ _GATE = (
     pathlib.Path(__file__).resolve().parent.parent / "Dockerfile",
 )
 
-# builder produces the wheel every other stage installs, and the one recipe that
-# does run it alone sits in dev/golden.py's docstring rather than in a page, so
-# the stage is exempt here for as long as that is where the recipe lives
-_INTERNAL_STAGES = {"builder"}
-
 _API = {
     # a chart is drawn by a method of whatever holds the bars, so a .chart( is read
     # against the Result's, whose keywords are the Data's and a run's, but on the
@@ -315,7 +310,7 @@ def test_every_gate_stage_a_contributor_can_run_is_written_down():
 
     text         = "\n".join(page.read_text(encoding="utf-8") for page in pages())
     undocumented = sorted(
-        stage for stage in stages - _INTERNAL_STAGES
+        stage for stage in stages
         if f"--target {stage}" not in text and f"`{stage}`" not in text
     )
 

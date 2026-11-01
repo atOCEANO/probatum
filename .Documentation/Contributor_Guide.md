@@ -31,43 +31,14 @@
 
 ## Contributor Guide
 
-The library is a cargo workspace of three crates plus a thin Python package. The one rule that shapes every change is that **logic flows up, never sideways**: each layer builds only on the one below it, and Python-specific concerns live only in the crate that links Python. Get the layer right and the change is small; put it in the wrong layer and it fights the design.
+The library is a cargo workspace of three crates under a Python package, laid out in [Architecture](Architecture.md). Each layer builds only on the one below it, and only `probatum-py` knows about Python, so a change belongs in the lowest layer that can hold it.
 
 <br>
-
-### Where a change belongs
-
-| If it is... | It goes in... |
-| :--- | :--- |
-| A fidelity-neutral primitive (a unit, an order, position or account math, a cost model) | `crates/probatum-core` |
-| Memory a C interface lends out and takes back (the Arrow export and its release) | `crates/probatum-core`, where Miri runs it |
-| A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/probatum-engine` |
-| A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/probatum-py` |
-| A convenience over the bindings (a new runner, a wrapper) | `python/probatum` |
-| A statistic or an interval read off a finished run, or a test across a search's trials | `python/probatum/stats.py`, and the same rule in plain loops in `tests/reference/statistics.py` |
-| How a table, a record or a summary shows | `python/probatum/_frames.py` for how a frame is laid out with what holds for every row beside it and the reasons under them, each record's own frame in `stats.py` and the summaries' rows in `_result.py` and `_search.py` ([0041](Decisions.md)) |
-| A label's trade, or how a function or a model is validated | `crates/probatum-engine/src/labels.rs` for the trade, `python/probatum/_labels.py` and `_validate.py` for the rest, and the reference's labels in `tests/reference/simulator.py` |
-| Capacity, a cost sweep or its break-even | `python/probatum/_costs.py`, the costs a sweep multiplies in `_venue.py`, and a scaled spread estimate in `crates/probatum-engine/src/execution.rs` |
-| How a Study is saved and loaded, or how a search keeps its storage and resumes from it | `python/probatum/_storage.py`, and the loop that takes a stored trial in its turn in `_search.py` |
-| The environment an agent trains on | `crates/probatum-engine/src/env.rs` for what each step works out, `python/probatum/_env.py` for the episodes drawn, the spaces and Gymnasium's API, and the reference's environment in `tests/reference/environment.py` |
-| What an agent's spec records, its probes and its normalisation statistics | `python/probatum/_agent.py`, the scaling each observation is written with in `crates/probatum-engine/src/env.rs`, and the same rules in plain loops in `tests/reference/environment.py` |
-| How an environment's tensors reach a device, or the resident mode's market block | `python/probatum/torch.py`, and the account block alone and the market's cells it reads in `crates/probatum-engine/src/env.rs` |
-| How an engine, a batch or an environment clones or pickles | the bytes and the forks in `crates/probatum-engine/src/engine/mod.rs`, `batch.rs` and `env.rs`, the pickles in `crates/probatum-py/src/lib.rs`, and the Python state they carry in `_engine.py`, `_strategy.py` and `_env.py` |
-| How transitions are recorded or exported | `python/probatum/_transitions.py` for the rows and the export, the recording in `_env.py`, the Result's in `_result.py`, and the Arrow lists in `_ipc.py` |
-| How a backtest runs an agent, or how the spec travels with it | `python/probatum/_agent.py` for the spec found, the slots, the warnings and `save`, the episode it plays in `_env.py`, and the SB3 adapter and its callback in `sb3.py` |
-| An indicator, which is a function of arrays and never sees the engine | `python/probatum/ta.py` |
-| Anything a chart draws (a mark, a guard, a panel rule) | `python/probatum/chart/__init__.py`, and the marks in `chart/marks.py` |
-| How a chart is painted (a primitive, the legend, the controls) | `python/probatum/_static` |
-
-A good test of placement: could a future tick or L2 engine reuse it? If yes, it is a core primitive and belongs in `probatum-core`, which holds no candle series and no bar-level logic. If it only makes sense per candle, it belongs in `probatum-engine`. The Python crate and package hold no simulation logic at all; they parse, convert, and orchestrate.
-
-The chart layer splits on the same principle one layer further out: Python decides what is drawn and where, and the JavaScript decides only how it is painted ([0042](Decisions.md)). That is the rule the seam is held to, not a description of what the assets already contain, and four exceptions ship. The axis grain thresholds decide when a tick set is ragged, the number locale carries its own grouping, the timestamp format is written there in full, and two precision maps keep a trade caption and its table row one number rather than two opinions about it. Each of those is a question about the surface being painted rather than about the run being drawn, and Python cannot answer it without knowing the viewport; a colour, an alpha, or a threshold measured in bars is the other kind and belongs on the Python side ([0042](Decisions.md)). Two tests hold that half: one greps the shipped assets for a colour and allows only full transparency, and one refuses an alpha composed onto a theme colour, which is the shape that walked past the first for the life of the layer. Every asset is a plain script that declares and executes nothing at load, which is what lets the same files run as separate script tags in the development harness and as one bundle in the wheel; there is no npm and no build step anywhere in the project.
-
 <br>
 
-### The build loop
+## Local Development
 
-Pure-Rust work needs no Python, so the loop is short. `rust-toolchain.toml` pins the compiler to 1.88.0; add the two components once, since the toolchain file deliberately does not (declaring them there makes rustup try to install them into an already-present toolchain, which conflicts on some CI runners):
+The two pure-Rust crates need no Python to test. Clippy over the workspace also builds `probatum-py`, which needs a Python 3.13 interpreter on the path, as the `rust-checks` stage has. `rust-toolchain.toml` pins the compiler to 1.88.0 and leaves its two components to add once per checkout, since declaring them there conflicts on some CI runners:
 
 ```bash
 rustup component add rustfmt clippy     # once per checkout
@@ -77,15 +48,51 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Python-facing work (anything in `probatum-py` or `python/probatum`) is validated on the Docker gate that builds the one abi3 wheel and runs the suite across Python versions; the full split is in the [Validation Guide](Validation_Guide.md). Four test stages sit outside that gate because each is much heavier; CI runs them, and a change to what they cover should run them locally before it is pushed: `--target test-browser` executes the chart's JavaScript in a real browser, `--target test-sb3` installs torch and exercises the Stable-Baselines3 adapter and TensorEnv on the CPU, `--target test-sdist` installs the source archive and runs the suite against it, and `--target miri` checks under Miri the candle memory behind every zero-copy view and the release of what a table lends through the Arrow C interfaces, down to the stream a capsule frees. Anything under `_static/` needs the first one, since nothing else in the project runs that code at all. A change to `python/probatum/torch.py` needs the gpu stage too, which CI cannot run, as its runners have no card; the [Validation Guide](Validation_Guide.md#the-stages-outside-the-gate) gives its two commands. The `probatum-py` crate is an `extension-module` cdylib, so it cannot be unit-tested with `cargo test` (there is no interpreter to link); it is checked with `cargo build` and `clippy`, then exercised through the wheel.
+`probatum-py` is an `extension-module` cdylib, which `cargo test` cannot link without an interpreter, so it is checked by `cargo build` and clippy and exercised through the wheel. For work on the Python side, maturin builds the extension into the active environment:
+
+```bash
+pip install maturin
+maturin develop --release        # the abi3 extension, into the active venv
+```
+
+Every local check that touches Python runs in Docker, on the wheel the release ships, as the [Validation Guide](Validation_Guide.md#the-stages) gives.
+
+<br>
+
+### Where a change belongs
+
+| If it is... | It goes in... |
+| :--- | :--- |
+| a primitive that holds no bars: a unit, an order, the position, the account, a cost | `crates/probatum-core` |
+| memory a C interface lends out and takes back, the Arrow export and its release | `crates/probatum-core`, where Miri runs it |
+| a bar-level rule: fills, the step, liquidation, funding, the ledger, the batch | `crates/probatum-engine`, its step's parts in `src/engine/` |
+| a Python binding: a pyclass method, an argument's type, a numpy or Arrow bridge | `crates/probatum-py` |
+| how bars are read, held, sliced and saved | `python/probatum/_data.py` and `_ipc.py` |
+| a venue's settings, or the presets' loader | `python/probatum/_venue.py` and `venues/__init__.py` |
+| how `backtest` reads a policy, and the Strategy's account | `python/probatum/_backtest.py` and `_strategy.py` |
+| a search: its samplers, its space, its workers, its causality check, its storage | `python/probatum/_search.py`, `_samplers.py`, `_space.py`, `_workers.py`, `_causality.py` and `_storage.py` |
+| a splitter, a validation or a label | `python/probatum/cv.py`, `_validate.py` and `_labels.py`, the label's trade in `crates/probatum-engine/src/labels.rs` |
+| capacity, a cost sweep or its break-even | `python/probatum/_costs.py`, the costs a sweep multiplies in `_venue.py` |
+| a statistic, an interval, or a test across a search's trials | `python/probatum/stats.py`, and the same rule in plain loops in `tests/reference/statistics.py` |
+| what a Result holds, its assumptions, its baselines, a fill or an order told in words | `python/probatum/_result.py`, `_assumptions.py`, `_baselines.py` and `_explain.py` |
+| how a table, a record or a summary shows | `python/probatum/_frames.py`, each record's frame in `stats.py` and the summaries' rows in `_result.py` and `_search.py` ([0041](Decisions.md)) |
+| the environment an agent trains on | `crates/probatum-engine/src/env.rs` for each step, `python/probatum/_env.py` for the episodes, the spaces and Gymnasium's API, and the reference's environment in `tests/reference/environment.py` |
+| an agent's spec, its backtest, its transitions | `python/probatum/_agent.py`, `_env.py` and `_transitions.py`, and the SB3 adapter in `sb3.py` |
+| how an environment's tensors reach a device | `python/probatum/torch.py`, and the account block it writes in `crates/probatum-engine/src/env.rs` |
+| an indicator, a function of arrays that never sees the engine | `python/probatum/ta.py` |
+| an error's class | `python/probatum/_errors.py` |
+| what a chart draws, a mark, a panel rule | `python/probatum/chart/__init__.py` and `chart/marks.py` |
+| how a chart is painted, the legend, the controls | `python/probatum/_static` |
+
+The chart splits on the same line one layer out: Python decides what is drawn and where, and the JavaScript only how it is painted ([0042](Decisions.md)). The JavaScript decides what depends on the plot's size: which of an axis's ticks to drop, the type scale and which exit captions fit. It also owns the number grouping, the timestamp format and the precision a trade's caption and its table row share. A colour, an alpha or a threshold in bars belongs to Python, and two tests hold it there: one finds no colour in the shipped assets but full transparency, and one refuses an alpha composed onto a theme colour. Every asset is a plain script, joined into each chart's document as it is built, with no npm and no build step.
 
 <br>
 
 ### The dev directory
 
-`dev/` holds the tools that check the library, or write the data it ships, rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/probatum` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are five, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows. The second simulator the engine is compared with asserts rather than produces, so it is a test, in `tests/reference/`, and the [Validation Guide](Validation_Guide.md) is where it is explained.
+`dev/` holds the tools that check the library or write the data it ships. None of it is packaged, and nothing in `python/probatum` imports it. A test asserts and fails a build; a tool here is run by hand and writes a file you then read and commit. Each is explained here rather than beside itself.
 
-`dev/charts/` produces every chart image the documentation shows. `build.py` runs the documented examples for real against a frozen parquet and saves each one as a chart, and `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn, in the dark and the light scheme, which a page shows by its reader's theme. Nothing is cropped or retouched, so what a reader sees is what the library drew, and the snippet printed beside a picture is the snippet that produced it. Both run in one opt-in stage, which needs the published [sample dataset](https://github.com/atOCEANO/sample-market-data) mounted because a picture built from live candles cannot be regenerated, only redrawn differently:
+`dev/charts/` draws every chart image the documentation shows. `build.py` runs the documented examples against the frozen [sample data](https://github.com/atOCEANO/sample-market-data) and saves each as a chart. `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn, in the dark and the light scheme, which a page shows by its reader's theme. Nothing is cropped or retouched, and the snippet printed beside a picture is the call that drew it. Both run in one opt-in stage, with the dataset mounted:
 
 ```bash
 docker build --target charts -t probatum-charts .
@@ -93,11 +100,18 @@ docker run --rm -v "<sample-market-data>/data:/data:ro" \
   -v "${PWD}/.Documentation:/out" probatum-charts
 ```
 
-A rerun changes no image whose drawing did not change, so one that rewrites an image you did not touch points at something that moved, and the fonts are the first place to look.
+A rerun changes no image whose drawing did not change, so one that rewrites an image you did not touch points at something that moved. The fonts are the first place to look: the stage installs JetBrains Mono, which the chart asks for.
 
-`dev/golden.py` rewrites `tests/chart_schema.json`, the key-path golden for the chart spec. The renderer is JavaScript and the gate has no browser, so the contract between the two halves is the one thing a Python test cannot reach directly: a key renamed in `python/probatum/chart/__init__.py` passes every test in the suite and draws a blank chart. Recording every key path the spec carries turns that rename into a one-line diff instead. Run it whenever the spec gains, loses or renames a key, in the same commit. It imports the test module rather than rebuilding the fixture itself, so the golden cannot be recorded against a different chart from the one the test checks.
+`dev/golden.py` rewrites `tests/chart_schema.json`, every key path the chart's document carries. The renderer is JavaScript and the gate has no browser, so a key renamed in `python/probatum/chart/__init__.py` would pass every Python test and draw a blank chart; the golden turns that rename into a one-line diff. Run it in the same commit whenever the document gains, loses or renames a key. It imports the test module, so the golden is recorded against the chart the test checks, and it runs on the wheel the `builder` stage makes:
 
-`dev/diagrams/` holds the mermaid source for every hand-made diagram in `.Documentation/imgs/`, one `.mmd` per image, and its own stage renders all of them:
+```bash
+docker build --target builder -t probatum-builder .
+docker run --rm -v "${PWD}:/repo" probatum-builder sh -c \
+  "pip install --no-cache-dir /wheels/*.whl numpy pandas pyarrow pytest \
+   && python /repo/dev/golden.py"
+```
+
+`dev/diagrams/` holds the mermaid source of every diagram in `.Documentation/imgs/`, one `.mmd` per image, and its own stage renders them:
 
 ```bash
 docker build --target diagrams -t probatum-diagrams .
@@ -107,17 +121,9 @@ docker run --rm --shm-size=1g \
   probatum-diagrams
 ```
 
-The sources are mounted rather than built into the image, so editing one and rerunning draws what is on disk. The router renders its set with the same two mounts and the same flags against the same digest, so the recipes differ only in that this one names a stage and that one names the image.
+The sources are mounted, so a rerun draws what is on disk. The images are numbered, their names in their alt text: 205310 is the README hero, 205312 the crate layering, 205314 the order of events within a step, 205316 no-lookahead and 205318 the RL loop. The renderer is pinned to a digest, and no diagram uses mermaid's stadium node, whose rounded outline renders a few pixels differently on every run; a rerun of an unchanged source then gives the same bytes. `puppeteer.json` points the renderer at the chromium the image ships, since its bundled headless shell does not start. The background is transparent, so an image reads on a light page and a dark one, and no width is set, so every wide diagram renders at the same size. `config.json` holds the palette, the cluster and edge-label colours among it, since mermaid derives whatever the palette leaves out. A source's `stage` class keeps the teal border, and its `entry` class, where it has one, gives what the caller invokes a blue one.
 
-The images are numbered rather than named and the descriptive name survives only in their alt text: 205310 is the README hero, 205312 the crate layering, 205314 the step lifecycle, 205316 no-lookahead, 205318 the RL loop. Four of the five were reconstructed by reading the rendered PNG, because the originals were never kept, so a rerun redraws them rather than reproducing them byte for byte; 205314 is the one whose source survived and it still renders identical, which is what says the pipeline is faithful rather than merely working.
-
-The renderer is pinned to a digest in the Dockerfile rather than tracked as `latest`, which is what makes a rerun evidence rather than a coin flip: `latest` and the version tag are different images, and the tag names the mermaid release rather than the `mmdc` build inside it. At this digest all five come back byte identical, not merely at the same dimensions. That holds because of the shapes as much as the digest: a stadium node's rounded outline anti-aliases a handful of edge pixels differently between runs, so a set containing one is visually identical and never byte identical, and every rerun shows it as a modified file carrying no change. Nothing here uses that shape and nothing should. The router keeps the same rule now, so both sets are byte reproducible and a diff from a rerun is a real one in either repo.
-
-Three things the setup depends on, each of which cost an afternoon. The image's bundled headless-shell is broken with an ENOENT, so `puppeteer.json` points `executablePath` at the chromium the image also ships, and its entrypoint is `mmdc` itself, so the stage clears it and calls the binary by full path. The background has to be `transparent` rather than white, or the images invert badly against GitHub's dark mode. And no `-w`: setting a width made every wide diagram 2304 across where the rest are 2352.
-
-The palette in `config.json` is the project's own: node fill `#16232e`, a teal `#2ee6a6` border for an engine stage, a blue `#4d9feb` one for anything the caller invokes, `#e6edf3` text, `#8b949e` arrows, trebuchet sans. It also names the cluster and edge-label colours, which look like padding and are not: mermaid derives whatever the palette leaves out, and left to itself it drew the no-lookahead frames as opaque brown boxes.
-
-`dev/venues/build.py` writes the venue presets in `python/probatum/venues/`: each venue's instruments, with each one's tick, lot and tier table, from its public endpoints, and the fee rates, liquidation models and Hyperliquid's price rule the venues document, as the script gives them. It asks the venues themselves, so it runs by hand and never in the gate, and each preset records the day it ran as the day its tables were taken:
+`dev/venues/build.py` writes every venue preset in `python/probatum/venues/` but `frictionless`, from each venue's public endpoints and the rates it documents, as [Venue Notes](Venue_Notes.md) describes. It asks the venues themselves, so it runs by hand and never in the gate, and each preset records the day it ran as `taken`:
 
 ```bash
 docker run --rm -v "${PWD}:/src" -w /src python:3.13-slim python dev/venues/build.py
@@ -125,7 +131,7 @@ docker run --rm -v "${PWD}:/src" -w /src python:3.13-slim python dev/venues/buil
 
 A rerun rewrites every preset but frictionless, so its diff is what the venues changed since the last one.
 
-`dev/licences/` holds the settings and the template cargo-about writes `THIRD-PARTY-LICENSES` from: the licence of every crate in `Cargo.lock` the extension module is built from, in each crate's own text, which the wheel and the source archive ship beside probatum's `LICENSE` and the licences of the chart's renderer and icons. It reads `Cargo.lock`, so run it whenever that changes, in the same commit:
+`dev/licences/` holds the settings and the template that cargo-about writes `THIRD-PARTY-LICENSES` from: the licence of every crate in `Cargo.lock` the extension is built from, in each crate's own text. The wheel and the source archive ship it beside probatum's `LICENSE` and the licences of the chart's renderer and icons. Run it in the same commit whenever `Cargo.lock` changes:
 
 ```bash
 docker run --rm -v "${PWD}:/src" -w /src rust:1.88.0-slim sh -c \
@@ -133,65 +139,93 @@ docker run --rm -v "${PWD}:/src" -w /src rust:1.88.0-slim sh -c \
    cargo about generate --locked --fail -c dev/licences/about.toml -o THIRD-PARTY-LICENSES dev/licences/about.hbs"
 ```
 
-A rerun on an unchanged lock writes the same bytes. The settings name two crates' licence files by their checksums: libm's, the one file that carries the copyrights of the musl code it derives from, and pyo3's, which cargo-about otherwise lists twice. A new version of either can change its file, and cargo-about then only warns that the checksum no longer matches and writes that crate as it would unnamed, so read its warnings and update the checksum.
+A rerun on an unchanged lock writes the same bytes. The settings name two crates' licence files by their checksums: libm's, the one file that carries the copyrights of the musl code it derives from, and pyo3's, which cargo-about otherwise lists twice. A new version of either can change its file. cargo-about then only warns that the checksum no longer matches and writes that crate as it would unnamed, so read its warnings and update the checksum.
+
+`dev/constraints.txt` pins every package the gate's stages and CI install, so both test the same versions.
 
 <br>
-
-### Code standards
-
-- **Clippy is a gate, not advice.** `clippy --all-targets -- -D warnings` must pass. Do not silence a lint without a comment saying why (the one crate-level allow, for a pyo3-macro false positive, is documented at its site).
-- **Unsafe carries a `SAFETY` comment.** Every `unsafe` block states the invariant that makes it sound. The zero-copy observation is the worked example.
-- **An error message names the offending argument as the caller typed it**, gives the value it got, and puts the fix after a semicolon. Every error is a `ProbatumError` and the built-in for what arrived, a `TypeError` for a value of the wrong type and a `ValueError` for one of its type the call cannot take: a kind where both its topic and its built-in are the kind's, `DataError` or `VenueError` for a wrong value in bars or a venue, `SpecError` for an agent's spec, `LookaheadError` for what the causality check finds, `PolicyError` for a policy `backtest` cannot run and `MissingDependency` for a package that is not installed, with the line that installs it; otherwise the class for its built-in, `ProbatumValueError` for a wrong value, `ProbatumTypeError` a wrong type, `ProbatumKeyError` an unknown name in a known set, `ProbatumIndexError` a position past the end, `ProbatumAttributeError` a missing attribute, `ProbatumRuntimeError` a search, an environment or a chart's display that cannot go on and `ProbatumNotImplementedError` what is not built yet. Every warning is a `ProbatumWarning`, long work logs to the `probatum` logger rather than printing, and every re-raise chains with `from`.
-- **Refusing beats lying.** A function handed something it cannot answer about raises and says what would have been wrong, rather than answering about the nearest thing it can. Most of the defects this library has shipped were a plausible number where an exception belonged.
-
 <br>
 
-### Recording a decision
+## Code Standards
 
-Every non-obvious decision, a PnL-booking rule, a cost convention, an autoreset semantics, is recorded in [Decisions](Decisions.md), numbered in order and settled before the code that depends on it. The entry states what was decided and why, so the next contributor reads the reasoning rather than reverse-engineering it. When you add behavior that had a real choice behind it, record its decision in the same change.
-
-<br>
-
-### Submitting a change
-
-Run the build loop above green before you submit, and the Docker gate too for anything Python-facing. A non-obvious decision lands its ADR in the same change, never a follow-up.
+- **Clippy passes** with `--all-targets -- -D warnings`.
+- **Every error is one of the classes** [Errors and warnings](Python_API.md#errors-and-warnings) **lists** ([0029](Decisions.md)), every warning a `ProbatumWarning`, long work logs to the `probatum` logger rather than printing, and every re-raise chains with `from`.
+- **A function refuses what it cannot answer**: it raises and says what would have been wrong, rather than answering about the nearest thing it can.
 
 <br>
+<br>
 
-### Cutting a release
+## Testing
 
-`version` in `Cargo.toml`'s `[workspace.package]` is where the version is set: maturin names the wheels and the source archive from it, `probatum.__version__` reads it back from the installed package, and the install lines in the pages repeat it, which a test holds to it. **The tag must equal it**, and the release's first job stops a tag that does not. To cut a release, bump it in its own commit, with the install lines and with `Cargo.lock`, which `cargo update -w` brings along since every `--locked` build refuses a lock that disagrees, push that commit to main, then tag it `vX.Y.Z` and push the tag:
+The [Validation Guide](Validation_Guide.md) gives the gate's stages, what each group of tests proves, and the markers that keep the slow, coverage and gpu tests out of the gate.
+
+The pages are held to the code too. `tests/test_docs.py` parses every Python block on every page, and checks each keyword passed to probatum's functions, a venue's `replace` and the chart's marks against their signatures. It also fails where:
+* the Python API page leaves an export out;
+* no page names a stage of the Dockerfile or a tool under `dev/`;
+* a page cites a record that does not exist, or links a page that does not exist;
+* or the install lines name another version than the package's.
+
+`tests/test_examples.py` runs the Charts page's examples, and `test_the_api_page_s_*.py` run the Python API's Quickstart and, after it, ten of its sections.
+
+A change is done when the gate passes on it, and so does the stage outside the gate that covers what it touched:
+
+| A change to | Also passes |
+| :--- | :--- |
+| an engine rule | `test-slow` |
+| `_static/` | `test-browser` |
+| `sb3.py`, `torch.py` | `test-sb3`, `test-gpu` |
+| the candle views, the Arrow tables | `miri` |
+| what the source archive carries | `test-sdist` |
+| a statistic | `coverage` |
+| the step | `bench-instructions`, since CI fails a rise of more than 10% in the step loop's instructions against the commit before |
+
+<br>
+<br>
+
+## Releasing
+
+`version` in `Cargo.toml`'s `[workspace.package]` sets the version. maturin names the wheels and the source archive from it, `probatum.__version__` reads it back from the installed package, and the install lines in the pages repeat it, which a test holds to it. **The tag must equal it**, and the release's first job stops a tag that does not. To cut a release:
+
+1. Bump the version in its own commit, with the install lines and with `Cargo.lock`, which `cargo update -w` brings along, since every `--locked` build refuses a lock that disagrees.
+2. Push that commit to main.
+3. Tag it `vX.Y.Z` and push the tag:
 
 ```bash
 git tag -a vX.Y.Z -m "probatum X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-A pre-release takes Cargo's form, `vX.Y.Z-rc.N`, and is published as one. `.github/workflows/release.yml` checks the tag against `Cargo.toml`, then runs CI on the tagged commit, whose two comparisons with the commit before, the mutants and the instruction count, find none on a tag and ran when the commit reached main. It then builds each wheel on the machine it is for, Linux on x86_64 and aarch64, macOS on Apple silicon and Windows, and tests each there on Python 3.13 and 3.14. The Linux wheels pass the gate's test stages before the `wheels` stage hands them out, and the source archive is the one the `sdist` stage hands out once `test-sdist` has built and tested it. Last, the workflow checks every file's name against the version and publishes them on a GitHub Release with their SHA-256 checksums, its body written above GitHub's generated notes. A manual dispatch from the Actions tab runs all of it but the version check and the publishing, on whichever branch or tag it names, so a release can be rehearsed on any branch.
+A pre-release takes Cargo's form, `vX.Y.Z-rc.N`, and is published as one. `.github/workflows/release.yml` checks the tag against `Cargo.toml` and runs CI on the tagged commit. It then builds each wheel on the machine it is for, Linux on x86_64 and aarch64, macOS on Apple silicon and Windows, and tests each there on Python 3.13 and 3.14. The Linux wheels pass the gate's test stages before the `wheels` stage hands them out, and the source archive is the one the `sdist` stage hands out once `test-sdist` has built and tested it. Last, it checks every file's name against the version and publishes them on a GitHub Release with their SHA-256 checksums, its body written above GitHub's generated notes.
 
-Those wheels are the install path for anyone without a Rust toolchain, so a release is what makes a version usable at all. probatum is not published to PyPI.
-
-<br>
-
-### Adding a wrapper
-
-A new way to drive the engine (say a different backtest style, or a distributed runner) is a Python module under `python/probatum/`, built on the compiled `Engine` or `Batch`. It holds no simulation logic: it configures the engine, drives the loop, and shapes the results. Re-export it from `python/probatum/__init__.py` if it belongs on the top level, and add a test file under `tests/` so the Docker gate covers it. Keep documentation in this `.Documentation/` set and the top-level README; there are no per-folder READMEs.
+A manual dispatch from the Actions tab runs all of it but the version check and the publishing, on whichever branch or tag it names. probatum is not published to PyPI; the release's wheels are its install path.
 
 <br>
+<br>
 
-### Adding a preset
+## Adding an engine rule
+
+A rule reaches the engine last:
+1. It is written in the [Specification](Specification.md), with its equation and a worked example. A record goes into [Decisions](Decisions.md) only where the rule is a choice someone could reasonably make the other way.
+2. It goes into the reference simulator in `tests/reference/simulator.py`, its worked example into `tests/test_every_worked_example_holds_to_the_cent.py`, and the comparisons learn to draw the cases that reach it.
+3. It goes into the engine, with unit tests in the module that applies it, until the comparisons agree on every case and reach the rule at length.
+
+<br>
+<br>
+
+## Adding a preset
 
 A venue preset is a TOML file in `python/probatum/venues/`, named for the preset, and a new venue or a corrected table is a change to such a file and nothing else ([0028](Decisions.md)). It holds four tables:
 
-- `[venue]`: its `name`; `taken`, the day its tables were taken, as `YYYY-MM-DD`; and `kind`, `spot`, `linear` or `inverse`, where every instrument it lists is of one kind, or `combines`, the presets of one kind each it puts in one account. A combining preset holds no other table: each part's instruments come under their kind, as `kind:SYMBOL`, each part's own settings and rates become its kind's, and the account's settings are the same in every part that gives one, but for `funding`, where a part's `"none"` yields to another's.
-- `[defaults]`: the venue's rates, `fees = { maker = r, taker = r }`, its `liquidation` and `backstop`, its `liquidation_fee`, which places the close point where no maintenance is kept, its `leverage`, the cap on a perpetual with no tier table, its `max_open_orders`, its `funding`, which is `"none"`, `"data"`, `{ every = hours, rate = r }` or `{ every_bars = n, rate = r }`, and any setting an instrument carries but its delisting time, for every instrument; and `[defaults.fills]`, its fill model: `limit`, `window`, `liquidity = { budget = f }`, `spread` (`"none"`, `"estimated"` or `{ fixed = bps }`), `slippage` (`"none"` or `{ fixed = bps }`), `impact` (`"none"`, `{ linear = k }` or `{ sqrt = k }`) and `sizes` (`"on"` or `"off"`).
+- `[venue]`: its `name`; `taken`, the day its tables were taken, as `YYYY-MM-DD`; and `kind`, `spot`, `linear` or `inverse`, where every instrument it lists is of one kind, or `combines`, the presets of one kind each it puts in one account. A combining preset holds no other table. Each part's instruments come under their kind, as `kind:SYMBOL`, each part's own settings and rates become its kind's, and the account's settings are the same in every part that gives one, except `funding`, where a part's `"none"` yields to another's.
+- `[defaults]`: the venue's rates, `fees = { maker = r, taker = r }`; its `liquidation` and `backstop`; its `liquidation_fee`, which places the close point where no maintenance is kept; its `leverage`, the cap on a perpetual with no tier table; its `max_open_orders`; its `funding`, which is `"none"`, `"data"`, `{ every = hours, rate = r }` or `{ every_bars = n, rate = r }`; and any setting an instrument carries but its delisting time, for every instrument. `[defaults.fills]` holds its fill model: `limit`, `window`, `liquidity = { budget = f }`, `spread` (`"none"`, `"estimated"` or `{ fixed = bps }`), `slippage` (`"none"` or `{ fixed = bps }`), `impact` (`"none"`, `{ linear = k }` or `{ sqrt = k }`) and `sizes` (`"on"` or `"off"`).
 - `[kinds.spot]`, `[kinds.linear]` and `[kinds.inverse]`, in a preset that mixes kinds: the settings every instrument of that kind carries, such as a market's own `fees`, but a delisting time.
 - `[instruments.KEY]`, one per instrument, keyed by the router's symbol, or by `kind:SYMBOL` in a preset that mixes kinds: its `tiers`, a list of `{ up_to, leverage, rate, amount }`, its `tiers_by`, any size rule or `fees` of its own, and `delist`, the time the venue delisted it, a TOML date or datetime read in UTC, which only an instrument's own table gives.
 
-An instrument takes the defaults, then its kind's settings, then its own. The loader checks a file's shape and the type of every setting, and every value passes the checks the compiled engine runs, on one row of placeholder bars, but a delisting time, which a run checks against the bars it falls among, so a preset is held to exactly what a venue built by hand is: a `probatum.Venue` passes the same checks, and each preset is reached as one, `probatum.venues.NAME`. The tests load every file in the folder, so a new preset is covered as soon as it is there.
+An instrument takes the defaults, then its kind's settings, then its own. The loader checks a file's shape and the type of every setting. Every value but a delisting time passes the checks the compiled engine runs, on one row of placeholder bars, so a preset is held to exactly what a venue built by hand is; a delisting time is checked by a run against the bars it falls among. The tests load every file in the folder, so a new preset is covered as soon as it is there.
 
 <br>
+<br>
 
-### Adding a fidelity tier
+## Adding a wrapper
 
-The larger extension the workspace is built for is a second engine at a different fidelity, a tick or L2 sibling. It would be a new crate beside `probatum-engine`, reusing `probatum-core` for the position, account, costs, and book, and replacing only the resolution layer (how a fill is decided). Nothing in `probatum-core` should assume bars, so that reuse stays clean; if a change to core starts to assume a candle, it belongs in `probatum-engine` instead.
+A new way to drive the engine is a Python module under `python/probatum/` built on the compiled `Engine` or `Batch`. It holds no simulation logic: it configures the engine, drives the loop and shapes the results. Re-export it from `python/probatum/__init__.py` if it belongs on the top level, document it on the [Python API](Python_API.md) page, and add a test file under `tests/` whose name states what it proves.
