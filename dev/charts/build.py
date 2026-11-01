@@ -1,21 +1,15 @@
 """Build every chart the documentation shows, from data that cannot move.
 
-The pictures in the guide are the output of the snippets printed beside them, so
-this is where those snippets run for real. No simulation logic lives here and
-nothing is drawn by hand: it loads a frozen parquet as a Data, works the features
-out the way a reader would, runs the strategies through ``probatum.backtest`` and
-calls ``Result.chart`` and ``Data.chart``.
+The pictures on the pages are the output of the snippets printed beside them, so
+this is where those snippets run. No simulation logic lives here and nothing is
+drawn by hand: it loads the frozen parquet files of the sample dataset as Data, works
+the features out the way a reader would, runs the strategies through
+``probatum.backtest`` and calls ``Result.chart`` and ``Data.chart``. Every chart reads
+the same published five-minute bars, so a rerun draws the same picture on any machine.
 
-The frozen part is the point. The chart on the front page of the
-README used to come from a year of live candles pulled off the router, so a
-rerun drew a different year and the picture nobody could reproduce was the one
-nearly everybody sees. Every chart here reads the same published five-minute
-parquet, so a rerun draws the same picture on any machine for as long as the file
-exists.
-
-Keep the documented examples character for character the same as the guide. That
-is the whole contract between a snippet and the picture under it, and it is worth
-being fussy about. Run it through the charts stage, which also takes the shots:
+A call a page prints is made here call for call, but for the ``height`` that sizes
+its shot. Run it through the charts stage, which also takes the shots, in the dark
+and the light scheme:
 
   docker build --target charts -t probatum-charts .
   docker run --rm -v "<sample-market-data>/data:/data:ro" \
@@ -30,16 +24,15 @@ import pandas
 
 import probatum
 from probatum.chart.marks import (
-    Background, Band, Histogram, Level, Line, Markers, Panel, Recorder, ramp,
+    Background, Band, Histogram, Level, Line, Markers, Panel, ramp,
 )
 
-DATA = pathlib.Path("/data/binance_spot_BTCUSDT_5m.parquet")
+DATA = pathlib.Path("/data")
 OUT  = pathlib.Path("/work/charts")
 
 GREEN = "#2fe0a8"
 RED   = "#ff5470"
 GREY  = "#8b97a5"
-BLUE  = "#4d9fff"
 
 AHEAD = 26
 
@@ -72,10 +65,8 @@ def held_by(result, data):
 
 
 def keep(name, chart, width, caption, below=0, open_table=False):
-    # the height is recorded here and read by the shooter rather than written out
-    # in both, because it drifted the first time either was edited. A chart sizes
-    # itself to its window, so a shot taken at a height the chart was not built
-    # for is either padded with empty plot or squeezed
+    # the height is recorded here and read by the shooter, since a chart sizes itself
+    # to its window and a shot taken at another height pads or squeezes the plot
     OUT.mkdir(parents=True, exist_ok=True)
     chart.save(str(OUT / f"{name}.html"))
 
@@ -86,21 +77,19 @@ def keep(name, chart, width, caption, below=0, open_table=False):
     }
 
     # the table panel opens under the plot and is not part of the chart's own
-    # height, so a shot that has to include it asks for the room rather than
-    # overstating how tall the chart was built. Absent unless asked for, so the
-    # manifest stays a description of the ordinary shots
+    # height, so a shot that has to include it asks for the room
     if below:
         SHOTS[name]["below"] = below
     if open_table:
         SHOTS[name]["open"] = True
 
 
-def load():
-    return probatum.Data(pandas.read_parquet(DATA), symbol="BTCUSDT", market="spot")
+def spot(symbol):
+    return pandas.read_parquet(DATA / f"binance_spot_{symbol}_5m.parquet")
 
 
 class Channel(probatum.Strategy):
-    """The README's strategy: hold above the channel basis while MACD agrees."""
+    """Hold above the channel basis while MACD agrees."""
 
 
     def __init__(self, length=96, fast=12, slow=26, signal=9, trend=480):
@@ -149,37 +138,7 @@ class Channel(probatum.Strategy):
         ]
 
 
-class CloudBreak(probatum.Strategy):
-    """Long above the cloud, out below its lower edge."""
-
-
-    def __init__(self, top, low):
-        self.top, self.low = top, low
-
-
-    def init(self, data):
-        self.log = Recorder(data)
-
-
-    def next(self, bar, account):
-        edge  = self.top[bar.i]
-        above = bool(bar.close > edge) if numpy.isfinite(edge) else False
-
-        self.log.at_bar(bar, above=above, edge=edge)
-        if not numpy.isfinite(edge):
-            return
-
-        if account.position == 0.0 and above:
-            account.target(1.0)
-        elif account.position > 0.0 and bar.close < self.low[bar.i]:
-            account.close()
-
-
-    def marks(self):
-        return [Background(self.log["above"], fill=BLUE + "14")]
-
-
-class ExampleCross(probatum.Strategy):
+class SmaCross(probatum.Strategy):
     """The plain cross the guide's examples are drawn against."""
 
 
@@ -208,60 +167,77 @@ class ExampleCross(probatum.Strategy):
         ]
 
 
-def start_here(raw):
+def gallery(raw):
     data     = raw.resample("1h")["2025":"2025"]
-    result   = probatum.backtest(Channel(), data, "binance_spot")
-    strategy = result.policy
-    held     = held_by(result, data)
+    breakout = probatum.backtest(Channel(), data, "binance_spot")
 
-    keep("chart-backtest", result.chart(
-        strategy.marks(),
-        candle_color=numpy.where(held, BLUE, None),
-        # deliberately no `panels=`. The README prints this call and claims the
-        # placement is the library's, so the claim has to be true of the picture
-        # beside it: four panels, their order and their weights are all chosen here
-        title="A channel breakout with a MACD filter, BTCUSDT 1h, binance spot, 2025",
+    # forty days of the year, the stretch that holds the most round trips
+    keep("run", breakout.chart(
+        breakout.policy.marks(),
+        focus=(5_568, 6_528),
+        title="A channel breakout with a MACD filter, BTCUSDT 1h, binance spot",
         height=760,
-    ), WIDE, "a channel, a momentum histogram, and the bars it was holding")
+    ), WIDE, "a run framed on forty days")
+    keep("table", breakout.chart(
+        breakout.policy.marks(),
+        focus=(5_568, 6_528),
+        title="A channel breakout with a MACD filter, BTCUSDT 1h, binance spot",
+        height=620,
+    ), WIDE, "the same run with its round trips' table open", below=300,
+        open_table=True)
+
+    data = raw.resample("1h")["2025-10":"2025-10"]
+    keep("price-hollow", data.chart(price="hollow", focus=160, height=420), NARROW,
+         'price="hollow"')
+    keep("price-bars", data.chart(price="bars", focus=160, height=420), NARROW,
+         'price="bars"')
+    keep("price-line", data.chart(price="line", focus=160, height=420), NARROW,
+         'price="line"')
+
+    data  = raw.resample("1h")["2025-09":"2025-11"]
+    close = data.close
+    bands = probatum.ta.bbands(close, 48, 2.0)
+    rsi   = probatum.ta.rsi(close, 14)
+    hist  = probatum.ta.macd(close, 12, 26, 9).histogram
+    keep("indicators", data.chart(
+        Band(bands.upper, bands.lower, "bands 48", fill="#4d9fff14"),
+        Line(probatum.ta.sma(close, 200), "SMA 200", color="#8b97a5", width=1),
+        Line(rsi, "RSI 14", panel="RSI"),
+        Level(70.0, panel="RSI", style="dotted"),
+        Level(30.0, panel="RSI", style="dotted"),
+        Histogram(hist, "MACD 12/26/9", panel="MACD",
+                  color=numpy.where(hist >= 0.0, "#2fe0a8", "#ff5470")),
+        focus=400,
+        height=720,
+    ), WIDE, "arrays of your own on the price and on panels of their own")
+
+    frames   = {symbol: spot(symbol) for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")}
+    universe = probatum.Data(frames, market="spot").resample("1h")["2025":"2025"]
+
+    weights = numpy.where(universe.closes > probatum.ta.sma(universe.closes, 200),
+                          1.0 / universe.closes.shape[1], 0.0)
+    book    = probatum.backtest(weights, universe, "binance_spot")
+    keep("universe", book.chart(
+        instrument="ETHUSDT", focus=24 * 60,
+        title="Four pairs above their 200-hour average, ETHUSDT of the four",
+        height=660,
+    ), WIDE, "one instrument of a four-pair account")
 
 
-def cloud_break(raw):
+def projection(raw):
     data = raw.resample("4h")["2024":"2025"]
 
-    tenkan = midpoint(data, 9)
-    kijun  = midpoint(data, 26)
-
     # senkou a and b belong AHEAD bars later than they were computed, so the
-    # shift is done here and the array is simply longer than the bars
+    # shift is done here and the array is longer than the bars
     lead     = numpy.full(AHEAD, numpy.nan)
-    senkou_a = numpy.concatenate([lead, (tenkan + kijun) / 2.0])
+    senkou_a = numpy.concatenate([lead, (midpoint(data, 9) + midpoint(data, 26)) / 2.0])
     senkou_b = numpy.concatenate([lead, midpoint(data, 52)])
 
-    cloud = numpy.where(senkou_a >= senkou_b, GREEN + "33", RED + "33")
-
-    result = probatum.backtest(CloudBreak(
-        top = numpy.maximum(senkou_a[:len(data)], senkou_b[:len(data)]),
-        low = numpy.minimum(senkou_a[:len(data)], senkou_b[:len(data)]),
-    ), data, "binance_spot")
-
-    keep("chart-projection", result.chart(
-        result.policy.marks(),
-        Line(tenkan, "tenkan", color=BLUE, width=1),
-        Line(kijun, "kijun", color=RED, width=1),
-        Band(senkou_a, senkou_b, "cloud", fill=cloud),
-        panels=[
-            Panel("equity", weight=1.6),
-            Panel("volume", show=False),
-        ],
-        future=AHEAD,
-        # framed on the tail, because that is the whole point of the picture. Over
-        # two years of 4h candles the twenty-six projected bars are one percent of
-        # the width, so the whole span would not show them. The integer form rather
-        # than a pair: it means the last N bars PLUS whatever was projected past
-        # them, where a pair ending on the last bar would clip the projection off
+    keep("chart-projection", data.chart(
+        Band(senkou_a, senkou_b, "cloud", fill="#2fe0a833"),
+        future=26,
         focus=180,
-        title="Ichimoku cloud break, BTCUSDT 4h, the cloud projected past the last candle",
-        height=780,
+        height=620,
     ), WIDE, "a cloud drawn twenty-six bars past the last candle")
 
 
@@ -290,12 +266,10 @@ def documented_examples(raw):
     regime  = numpy.where(vam72 > 2.0, "hi", numpy.where(vam72 < -2.0, "lo", "flat"))
     forward = numpy.concatenate([close[4:] / close[:-4] - 1.0, numpy.full(4, numpy.nan)])
 
-    result   = probatum.backtest(ExampleCross(fast=20, slow=50), data, "binance_spot")
+    result   = probatum.backtest(SmaCross(fast=20, slow=50), data, "binance_spot")
     strategy = result.policy
     held     = held_by(result, data)
     worst    = min(result.trades, key=lambda trade: trade["pnl"])
-    first, last = (numpy.datetime64(int(data.time[at]), "ns").astype("M8[D]")
-                   for at in (0, -1))
 
     keep("ex-line", data.chart(
         Line(probatum.ta.sma(data.close, 50), "SMA 50"),
@@ -359,34 +333,26 @@ def documented_examples(raw):
     keep("ex-focus", result.chart(
         strategy.marks(),
         focus=worst,
-        title=f"worst trade, net {worst['pnl']:,.0f}",
         height=660,
     ), NARROW, "the worst trade framed")
     keep("ex-notes", result.chart(
-        strategy.marks(),
-        trades=False,
-        panels=[Panel("volume", show=False)],
-        title="what produced this picture, carried by the file itself",
+        title="each stretch traded on parameters fitted only on the bars before it",
         notes=[
-            ["setting", "value"],
-            ["fast", strategy.fast],
-            ["slow", strategy.slow],
-            ["venue", "binance spot"],
-            ["bars", f"{len(data):,} at 1h"],
-            ["window", f"{first} to {last}"],
+            ["window", "fitted on", "traded", "sharpe"],
+            [1, "2025-01-01 to 2025-06-30", "2025-07-01 to 2025-09-30", 1.94],
+            [2, "2025-04-01 to 2025-09-30", "2025-10-01 to 2025-12-31", 0.71],
         ],
         height=440,
-    ), NARROW, "the settings behind the chart, in the document rather than the cell",
-        below=300, open_table=True)
+    ), NARROW, "a table of the caller's under the plot", below=300, open_table=True)
 
 
 def main():
-    raw  = load()
+    raw  = probatum.Data(spot("BTCUSDT"), symbol="BTCUSDT", market="spot")
     seen = raw.provenance
     print(f"{len(raw):,} five-minute bars, {seen['first']} to {seen['last']}\n")
 
-    start_here(raw)
-    cloud_break(raw)
+    gallery(raw)
+    projection(raw)
     documented_examples(raw)
 
     (OUT / "manifest.json").write_text(

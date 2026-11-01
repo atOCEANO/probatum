@@ -43,6 +43,7 @@ if PAGE is None:
 # A block whose point is prose rather than a call, keyed by a phrase it contains
 # so the list survives the page being edited around it. each one says why
 NOT_EXECUTABLE = {
+    "probatum.Data(frame,":             "the page's own setup, which prelude() binds from frame()",
     "class SmaCross":                   "declares the strategy the page stands on",
     "from probatum.chart.marks import": "the import the prelude already made",
 }
@@ -145,9 +146,9 @@ def prelude():
         "Background": Background, "Band": Band, "Histogram": Histogram,
         "Level": Level, "Line": Line, "Marker": Marker, "Markers": Markers,
         "Panel": Panel, "Recorder": Recorder, "ramp": ramp,
-        "at_bar": at_bar, "at_next": at_next, "SmaCross": SmaCross,
+        "at_bar": at_bar, "at_next": at_next, "SmaCross": SmaCross, "vam": vam,
         "data": data, "close": close, "universe": universe,
-        "strategy": strategy, "result": result, "win": result,
+        "strategy": strategy, "result": result, "win": result, "breakout": result,
         "neighbours": runs, "runs": runs,
         "fast": fast, "slow": slow,
         "rsi": probatum.ta.rsi(close, 14),

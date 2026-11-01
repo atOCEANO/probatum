@@ -447,10 +447,16 @@ def test_every_chart_image_that_ships_was_drawn_by_a_call_in_the_builder():
     dev = tools()
     assert dev is not None, "dev/ was not found in the gate or beside tests"
 
-    shipped = sorted((root / "imgs" / "charts").glob("*.png"))
-    build   = (dev / "charts" / "build.py").read_text(encoding="utf-8")
-    drawn   = re.findall(r'\bkeep\("', build)
+    # each call draws its chart in the dark and the light scheme
+    drawn = set()
+    for node in ast.walk(ast.parse((dev / "charts" / "build.py").read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "keep":
+            name = node.args[0].value
+            drawn |= {f"{name}-{scheme}.png" for scheme in ("dark", "light")}
 
-    assert len(shipped) == len(drawn), (
-        f"{len(shipped)} chart images ship and build.py draws {len(drawn)}"
+    shipped = {path.name for path in (root / "imgs" / "charts").glob("*.png")}
+
+    assert shipped == drawn, (
+        f"shipped and drawn by no call in build.py: {sorted(shipped - drawn)}; drawn "
+        f"and not shipped: {sorted(drawn - shipped)}"
     )
