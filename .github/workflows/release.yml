@@ -239,9 +239,11 @@ jobs:
             is every public name, the
             [Specification](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/Specification.md)
             every rule the engine applies, with its worked examples, the
+            [Research Guide](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/Research_Guide.md)
+            a search, a validation and the statistics that judge them, the
             [RL Guide](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/RL_Guide.md)
             the environments and the agent spec, and
-            [Plotting](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/Plotting.md)
+            [Charts](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/.Documentation/Charts.md)
             the interactive chart.
 
             ## Scope

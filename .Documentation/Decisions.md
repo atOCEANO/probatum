@@ -1,23 +1,27 @@
-<h1>OCEΛNO <small><code>embeddable-market-simulation-library</code></small></h1>
+<h1>OCEΛNO <small><code>probatum</code></small></h1>
 
 
 <div style="padding-top: 0px;">
-  <a href="https://github.com/atOCEANO/embeddable-market-simulation-library/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/embeddable-market-simulation-library?label=release&color=2ea043" alt="Latest release" /></a>
+  <a href="https://github.com/atOCEANO/probatum/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/probatum?label=release&color=2ea043" alt="Latest release" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88-orange.svg?logo=rust&logoColor=white" alt="Rust 1.88" /></a>
+  <a href="https://gymnasium.farama.org/"><img src="https://img.shields.io/badge/Gymnasium-1.2+-0081a5.svg" alt="Gymnasium 1.2+" /></a>
+  <a href="https://github.com/atOCEANO/probatum/releases"><img src="https://img.shields.io/badge/wheels-Linux%20%7C%20macOS%20%7C%20Windows-informational.svg" alt="Wheels for Linux, macOS and Windows" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
 </div>
 
 <sub>
   <a href="../README.md">Introduction</a> &nbsp;•&nbsp;
+  <a href="Research_Guide.md">Research Guide</a> &nbsp;•&nbsp;
+  <a href="RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
+  <a href="Charts.md">Charts</a> &nbsp;•&nbsp;
   <a href="Python_API.md">Python API</a> &nbsp;•&nbsp;
   <a href="Specification.md">Specification</a> &nbsp;•&nbsp;
-  <a href="RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
-  <a href="Plotting.md">Plotting</a> &nbsp;•&nbsp;
-  <a href="Architecture.md">Architecture</a> &nbsp;•&nbsp;
+  <a href="Venue_Notes.md">Venue Notes</a> &nbsp;•&nbsp;
+  <a href="Validation_Guide.md">Validation Guide</a> &nbsp;•&nbsp;
   <b>Decisions</b> &nbsp;•&nbsp;
-  <a href="Contributor_Guide.md">Contributor Guide</a> &nbsp;•&nbsp;
-  <a href="Validation_Guide.md">Validation Guide</a>
+  <a href="Architecture.md">Architecture</a> &nbsp;•&nbsp;
+  <a href="Contributor_Guide.md">Contributor Guide</a>
 </sub>
 
 <br>

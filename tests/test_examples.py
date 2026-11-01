@@ -1,4 +1,4 @@
-"""Run the plotting guide's examples instead of only reading them.
+"""Run the Charts page's examples instead of only reading them.
 
 ``test_docs.py`` parses every fenced block and checks that each keyword names a real
 parameter, and runs none of them, because most stand on bars and a strategy the page
@@ -30,8 +30,8 @@ from probatum.chart.marks import (
 # the gate stages copy the doc set to /docs, and a source checkout, which is what
 # CI runs from, has it beside tests
 _CANDIDATES = (
-    pathlib.Path("/docs/Plotting.md"),
-    pathlib.Path(__file__).resolve().parent.parent / ".Documentation" / "Plotting.md",
+    pathlib.Path("/docs/Charts.md"),
+    pathlib.Path(__file__).resolve().parent.parent / ".Documentation" / "Charts.md",
 )
 PAGE = next((path for path in _CANDIDATES if path.is_file()), None)
 
@@ -194,7 +194,7 @@ def test_every_example_that_stands_on_the_prelude_actually_runs():
             namespace = prelude()
 
             try:
-                exec(compile(code, f"Plotting.md block {number}", "exec"), namespace)
+                exec(compile(code, f"Charts.md block {number}", "exec"), namespace)
             except Exception as exc:
                 failures.append(
                     f"\n--- block {number}: {type(exc).__name__}: {exc}\n{source}"

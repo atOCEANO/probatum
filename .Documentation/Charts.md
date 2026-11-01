@@ -1,23 +1,27 @@
-<h1>OCEΛNO <small><code>embeddable-market-simulation-library</code></small></h1>
+<h1>OCEΛNO <small><code>probatum</code></small></h1>
 
 
 <div style="padding-top: 0px;">
-  <a href="https://github.com/atOCEANO/embeddable-market-simulation-library/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/embeddable-market-simulation-library?label=release&color=2ea043" alt="Latest release" /></a>
+  <a href="https://github.com/atOCEANO/probatum/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/probatum?label=release&color=2ea043" alt="Latest release" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88-orange.svg?logo=rust&logoColor=white" alt="Rust 1.88" /></a>
+  <a href="https://gymnasium.farama.org/"><img src="https://img.shields.io/badge/Gymnasium-1.2+-0081a5.svg" alt="Gymnasium 1.2+" /></a>
+  <a href="https://github.com/atOCEANO/probatum/releases"><img src="https://img.shields.io/badge/wheels-Linux%20%7C%20macOS%20%7C%20Windows-informational.svg" alt="Wheels for Linux, macOS and Windows" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
 </div>
 
 <sub>
   <a href="../README.md">Introduction</a> &nbsp;•&nbsp;
+  <a href="Research_Guide.md">Research Guide</a> &nbsp;•&nbsp;
+  <a href="RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
+  <b>Charts</b> &nbsp;•&nbsp;
   <a href="Python_API.md">Python API</a> &nbsp;•&nbsp;
   <a href="Specification.md">Specification</a> &nbsp;•&nbsp;
-  <a href="RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
-  <b>Plotting</b> &nbsp;•&nbsp;
-  <a href="Architecture.md">Architecture</a> &nbsp;•&nbsp;
+  <a href="Venue_Notes.md">Venue Notes</a> &nbsp;•&nbsp;
+  <a href="Validation_Guide.md">Validation Guide</a> &nbsp;•&nbsp;
   <a href="Decisions.md">Decisions</a> &nbsp;•&nbsp;
-  <a href="Contributor_Guide.md">Contributor Guide</a> &nbsp;•&nbsp;
-  <a href="Validation_Guide.md">Validation Guide</a>
+  <a href="Architecture.md">Architecture</a> &nbsp;•&nbsp;
+  <a href="Contributor_Guide.md">Contributor Guide</a>
 </sub>
 
 <br>
@@ -25,7 +29,7 @@
 <br>
 <br>
 
-## Plotting
+## Charts
 
 `result.chart()` draws a run and `data.chart()` draws bars, each with any arrays of your own beside them. The chart computes nothing: every number on it is the Data's, the Result's, or what `probatum.stats` reads of the Result ([ADR 0042](Decisions.md)).
 
@@ -68,7 +72,7 @@ result.chart(
 ).show()
 ```
 
-`result.policy` is the copy of the strategy the run decided with, so the two lines are the arrays the fills were decided on. The README's channel breakout, drawn the same way:
+`result.policy` is the copy of the strategy the run decided with, so the two lines are the arrays the fills were decided on. A channel breakout over a year of hourly candles, drawn the same way:
 
 <div align="center">
   <img src="imgs/charts/chart-backtest.png" alt="A backtest drawn" width="100%" />

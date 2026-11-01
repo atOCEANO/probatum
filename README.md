@@ -1,23 +1,27 @@
-<h1>OCEΛNO <small><code>embeddable-market-simulation-library</code></small></h1>
+<h1>OCEΛNO <small><code>probatum</code></small></h1>
 
 
 <div style="padding-top: 0px;">
-  <a href="https://github.com/atOCEANO/embeddable-market-simulation-library/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/embeddable-market-simulation-library?label=release&color=2ea043" alt="Latest release" /></a>
+  <a href="https://github.com/atOCEANO/probatum/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/probatum?label=release&color=2ea043" alt="Latest release" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88-orange.svg?logo=rust&logoColor=white" alt="Rust 1.88" /></a>
+  <a href="https://gymnasium.farama.org/"><img src="https://img.shields.io/badge/Gymnasium-1.2+-0081a5.svg" alt="Gymnasium 1.2+" /></a>
+  <a href="https://github.com/atOCEANO/probatum/releases"><img src="https://img.shields.io/badge/wheels-Linux%20%7C%20macOS%20%7C%20Windows-informational.svg" alt="Wheels for Linux, macOS and Windows" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
 </div>
 
 <sub>
   <b>Introduction</b> &nbsp;•&nbsp;
+  <a href=".Documentation/Research_Guide.md">Research Guide</a> &nbsp;•&nbsp;
+  <a href=".Documentation/RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
+  <a href=".Documentation/Charts.md">Charts</a> &nbsp;•&nbsp;
   <a href=".Documentation/Python_API.md">Python API</a> &nbsp;•&nbsp;
   <a href=".Documentation/Specification.md">Specification</a> &nbsp;•&nbsp;
-  <a href=".Documentation/RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
-  <a href=".Documentation/Plotting.md">Plotting</a> &nbsp;•&nbsp;
-  <a href=".Documentation/Architecture.md">Architecture</a> &nbsp;•&nbsp;
+  <a href=".Documentation/Venue_Notes.md">Venue Notes</a> &nbsp;•&nbsp;
+  <a href=".Documentation/Validation_Guide.md">Validation Guide</a> &nbsp;•&nbsp;
   <a href=".Documentation/Decisions.md">Decisions</a> &nbsp;•&nbsp;
-  <a href=".Documentation/Contributor_Guide.md">Contributor Guide</a> &nbsp;•&nbsp;
-  <a href=".Documentation/Validation_Guide.md">Validation Guide</a>
+  <a href=".Documentation/Architecture.md">Architecture</a> &nbsp;•&nbsp;
+  <a href=".Documentation/Contributor_Guide.md">Contributor Guide</a>
 </sub>
 
 <br>
@@ -288,7 +292,7 @@ result.chart().save("reports/run.html")
 
 It computes nothing and knows no indicator names: pass the strategy's own arrays and the line on screen cannot drift from the line that made the decision.
 
-The [Plotting](.Documentation/Plotting.md) guide shows every one of those marks with the picture it draws, the length contract that keeps a series on the bar it belongs to, and what cannot be charted.
+The [Charts](.Documentation/Charts.md) page shows every one of those marks with the picture it draws, the length contract that keeps a series on the bar it belongs to, and what cannot be charted.
 
 <br>
 <br>
