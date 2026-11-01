@@ -53,7 +53,7 @@ The whole engine is one small loop: load candles, place an order if you want to,
 
 It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, a spread, slippage and market impact read off the bars before each fill, a liquidity budget per bar), a small Python API, and a chart layer that draws a run and your own arrays into one self-contained HTML file.
 
-It **does not**: model the full order book (L2), latency, or queue position, and it places no live orders. This is the bar-level, approximate member of a planned family; a future sibling is a tick and L2 engine at higher resolution. At bar granularity the fill model cannot see the intrabar path, so it can be slightly more generous than a live book would be; the costs it charges are the real ones. The bar-level resolution limits are recorded in [ADR 0012](.Documentation/Decisions.md).
+It **does not**: model the full order book (L2), latency, or queue position, and it places no live orders. This is the bar-level, approximate member of a planned family; a future sibling is a tick and L2 engine at higher resolution. At bar granularity the fill model cannot see the intrabar path, so it can be slightly more generous than a live book would be; the costs it charges are the real ones. The bar-level resolution limits are recorded in [0012](.Documentation/Decisions.md).
 
 **Who it is for.** Quant and machine-learning researchers. Not market makers or high-frequency desks, who run C++ and FPGA next to the exchange and need the order book this tier does not model. One decision per candle is the resolution most research works at.
 
@@ -104,7 +104,7 @@ print(engine.equity, engine.position)          # account value and position at t
 
 ## Ways to drive it
 
-`probatum.backtest(policy, data, venue)` runs a policy on a Data at a venue and returns its `Result`: an array of weights or quantities, run whole in Rust in one call, a `Strategy` deciding at each close, or a trained agent. `probatum.Engine` is the same account in a loop you own, as above, and `probatum.env` steps many of them together for an agent. The venue is an argument of each, a preset's name or a `probatum.Venue`, so a cost has one place to be given and cannot arrive twice ([ADR 0002](.Documentation/Decisions.md)).
+`probatum.backtest(policy, data, venue)` runs a policy on a Data at a venue and returns its `Result`: an array of weights or quantities, run whole in Rust in one call, a `Strategy` deciding at each close, or a trained agent. `probatum.Engine` is the same account in a loop you own, as above, and `probatum.env` steps many of them together for an agent. The venue is an argument of each, a preset's name or a `probatum.Venue`, so a cost has one place to be given and cannot arrive twice ([0002](.Documentation/Decisions.md)).
 
 ### Backtest
 
@@ -207,9 +207,9 @@ held = study.evaluate_holdout()                   # the one run on bars no trial
 print(held.stats["sharpe"])
 ```
 
-**Read the second number, not the first.** `best_score` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `holdout=0.3` runs every trial on the first 70% of the rows and keeps the last 30% for one run of the winner, which `evaluate_holdout()` counts as a look. The gap between the two is what the search invented. Leave `holdout` out and every score is in-sample, which the search warns of ([ADR 0032](.Documentation/Decisions.md)).
+**Read the second number, not the first.** `best_score` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `holdout=0.3` runs every trial on the first 70% of the rows and keeps the last 30% for one run of the winner, which `evaluate_holdout()` counts as a look. The gap between the two is what the search invented. Leave `holdout` out and every score is in-sample, which the search warns of ([0032](.Documentation/Decisions.md)).
 
-A Study also judges the search across its trials: `study.summary(null=null)`, given a random search of the same ground, deflates the winner's Sharpe for every trial asked and prints the probability the search overfit, and `study.reality_check()` asks whether any trial beats cash at all ([ADR 0033](.Documentation/Decisions.md)).
+A Study also judges the search across its trials: `study.summary(null=null)`, given a random search of the same ground, deflates the winner's Sharpe for every trial asked and prints the probability the search overfit, and `study.reality_check()` asks whether any trial beats cash at all ([0033](.Documentation/Decisions.md)).
 
 A random or grid search of a policy that returns weights runs its trials together in Rust, many to a call; a `Strategy` subclass, built for each trial from its parameters, runs them one at a time, across worker processes with `n_jobs=-1`. `objective` takes any statistic's name, and `direction="minimize"` ranks a cost. The default sampler, `"tpe"`, needs optuna, and the workers need cloudpickle, which the `search` extra installs ([Install](#install)); the [Python API](.Documentation/Python_API.md#search) covers the policy, the space, the samplers and the Study in full.
 
@@ -229,7 +229,7 @@ probatum.compare({"cheap": a, "dear": b})       # several runs, side by side
 
 `decompose` splits the change in equity into the price pnl and each cost, which make up the whole of it: the costs are positive amounts paid away, so they subtract.
 
-How much friction a policy survives is a run of its own. `probatum.cost_curve(policy, data, venue)` runs it again with every cost the venue charges for trading, its fees, spread, slippage and impact, multiplied together by 0, 0.5, 1, 2 and 4, and `probatum.breakeven_bps(policy, data, venue)` finds the round-trip cost at which it stops making money, so "this dies at 8 basis points a round trip and you pay 6" is a number you read rather than guess, worth more in the first week than any probability. `probatum.capacity(policy, data, venue, balances=[...])` runs it at several balances, to show where its own size starts to cost it ([ADR 0045](.Documentation/Decisions.md)).
+How much friction a policy survives is a run of its own. `probatum.cost_curve(policy, data, venue)` runs it again with every cost the venue charges for trading, its fees, spread, slippage and impact, multiplied together by 0, 0.5, 1, 2 and 4, and `probatum.breakeven_bps(policy, data, venue)` finds the round-trip cost at which it stops making money, so "this dies at 8 basis points a round trip and you pay 6" is a number you read rather than guess, worth more in the first week than any probability. `probatum.capacity(policy, data, venue, balances=[...])` runs it at several balances, to show where its own size starts to cost it ([0045](.Documentation/Decisions.md)).
 
 Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `result.summary()` shows the win rate beside the profit factor and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
 

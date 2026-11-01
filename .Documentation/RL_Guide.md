@@ -31,13 +31,13 @@
 
 ## RL Guide
 
-`probatum.env` steps `num_envs` accounts at a venue on a Data's bars together in Rust, as a Gymnasium vector environment, `probatum.rl.VectorEnv`. Each account is a backtest's: a step takes each environment's action at the close of its bar, decides from it at that close, and returns the observation and the reward at the next, through the same fills, costs, funding, caps and liquidation a backtest runs. Each environment draws its episodes from a stream of its own, so an episode is found again from its environment and its number whatever `num_envs` is, and runs again as a backtest from its start ([Specification](Specification.md#the-environment), [ADR 0038](Decisions.md)).
+`probatum.env` steps `num_envs` accounts at a venue on a Data's bars together in Rust, as a Gymnasium vector environment, `probatum.rl.VectorEnv`. Each account is a backtest's: a step takes each environment's action at the close of its bar, decides from it at that close, and returns the observation and the reward at the next, through the same fills, costs, funding, caps and liquidation a backtest runs. Each environment draws its episodes from a stream of its own, so an episode is found again from its environment and its number whatever `num_envs` is, and runs again as a backtest from its start ([Specification](Specification.md#the-environment), [0038](Decisions.md)).
 
 <br>
 
 <div align="center">
   <img src="imgs/205318.png" alt="The RL step and autoreset cycle" width="100%" />
-  <p style="margin: 0;"><i>The vectorized loop: observe, act, step every environment at once with the GIL released, read the reward; an episode that ends resets as autoreset says, on the next step by default (ADR 0038).</i></p>
+  <p style="margin: 0;"><i>The vectorized loop: observe, act, step every environment at once with the GIL released, read the reward; an episode that ends resets as autoreset says, on the next step by default (<a href="Decisions.md">0038</a>).</i></p>
 </div>
 
 <br>
@@ -134,7 +134,7 @@ Under the default next-step autoreset the step after an episode ends resets that
 
 ## Tensors and the GPU
 
-`probatum.torch.TensorEnv` hands the environment's observation, rewards and flags out as torch tensors on a device, each the numpy path's to the bit, and keeps the environment's spaces ([Specification](Specification.md#tensors-on-a-device), [ADR 0040](Decisions.md)). It needs torch, which you install for your own device:
+`probatum.torch.TensorEnv` hands the environment's observation, rewards and flags out as torch tensors on a device, each the numpy path's to the bit, and keeps the environment's spaces ([Specification](Specification.md#tensors-on-a-device), [0040](Decisions.md)). It needs torch, which you install for your own device:
 
 ```python
 import probatum.torch
@@ -155,7 +155,7 @@ On a CUDA device each step's observation, rewards and flags are written into pin
 
 ## Clones and transitions
 
-`env.clone()` copies the environments as they stand, their accounts, their episodes, every stream they draw from and what they recorded, sharing the Data, so the copy steps on as the original would to the bit ([Specification](Specification.md#clones-and-pickles), [ADR 0040](Decisions.md)). `env.clone(env=i, n=k)` forks environment `i` into `k` copies of it, for planning or a counterfactual:
+`env.clone()` copies the environments as they stand, their accounts, their episodes, every stream they draw from and what they recorded, sharing the Data, so the copy steps on as the original would to the bit ([Specification](Specification.md#clones-and-pickles), [0040](Decisions.md)). `env.clone(env=i, n=k)` forks environment `i` into `k` copies of it, for planning or a counterfactual:
 
 ```python
 fork = env.clone(env=0, n=len(plans))           # a copy of environment 0 for each plan
@@ -280,7 +280,7 @@ The mode is declared in `metadata["autoreset_mode"]` and as `autoreset_mode`, th
 
 ## The agent spec
 
-An agent is judged fairly only if a backtest shows it what it saw in training and reads its outputs as they were read, so every environment records `env.agent_spec`, a JSON document of its inputs, its observation, its outputs, its venue and the span it trained on ([Specification](Specification.md#the-agent-spec), [ADR 0039](Decisions.md)):
+An agent is judged fairly only if a backtest shows it what it saw in training and reads its outputs as they were read, so every environment records `env.agent_spec`, a JSON document of its inputs, its observation, its outputs, its venue and the span it trained on ([Specification](Specification.md#the-agent-spec), [0039](Decisions.md)):
 
 ```json
 {
@@ -317,7 +317,7 @@ A custom function is never pickled. A feature function is recorded by its name, 
 
 ## Backtesting an agent
 
-`probatum.backtest` runs a trained agent as it runs a rule, and returns the same `Result` ([Specification](Specification.md#an-agent-in-a-backtest), [ADR 0039](Decisions.md)). The agent is an SB3 model or policy, asked for its deterministic prediction, a recurrent policy's state carried from one close to the next; a torch module, called on the observation as a tensor on its device, in eval mode with no gradient; or any other function of the observation, the first element of a tuple a module or a function returns being its action. It runs as one environment of its spec over the Data from its first bar, recording as a run does. The window reads the bars before a slice, so with the candles or a function of features an agent decides at the slice's first close, and with an array of features over the slice alone once a window of them is full; each observation is the one training showed it, normalised as it was. Once the account holds nothing the agent is no longer asked.
+`probatum.backtest` runs a trained agent as it runs a rule, and returns the same `Result` ([Specification](Specification.md#an-agent-in-a-backtest), [0039](Decisions.md)). The agent is an SB3 model or policy, asked for its deterministic prediction, a recurrent policy's state carried from one close to the next; a torch module, called on the observation as a tensor on its device, in eval mode with no gradient; or any other function of the observation, the first element of a tuple a module or a function returns being its action. It runs as one environment of its spec over the Data from its first bar, recording as a run does. The window reads the bars before a slice, so with the candles or a function of features an agent decides at the slice's first close, and with an array of features over the slice alone once a window of them is full; each observation is the one training showed it, normalised as it was. Once the account holds nothing the agent is no longer asked.
 
 ```python
 agent = stable_baselines3.PPO.load("agent")

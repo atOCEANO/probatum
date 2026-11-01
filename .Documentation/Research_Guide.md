@@ -87,7 +87,7 @@ held = study.evaluate_holdout()                   # the one run on bars no trial
 print(held.stats["sharpe"], study.looks)
 ```
 
-`best_score` is the largest of 200 noisy scores on the bars the search could see, so it is biased upward, and by more the harder the search looks. `holdout=0.3` runs every trial on the first 70% of the rows and keeps the last 30% for one run of the winner, which `evaluate_holdout()` counts as a look. Leave `holdout` out and every score is in-sample, which the search warns of ([ADR 0032](Decisions.md)).
+`best_score` is the largest of 200 noisy scores on the bars the search could see, so it is biased upward, and by more the harder the search looks. `holdout=0.3` runs every trial on the first 70% of the rows and keeps the last 30% for one run of the winner, which `evaluate_holdout()` counts as a look. Leave `holdout` out and every score is in-sample, which the search warns of ([0032](Decisions.md)).
 
 Before it trusts a trial, the search runs the policy again on the bars cut short at the points its decisions change, and refuses one whose decisions there move once the later bars are gone, which is a policy reading bars that had not closed ([Specification](Specification.md#the-causality-check)).
 
@@ -109,13 +109,13 @@ print(paths.summary())                            # the paths, their median, the
 print(paths.windows.to_pandas()[["path", "fit", "first", "last", "score"]])
 ```
 
-Each path is one run of the engine through its windows. At a seam the orders not yet filled are cancelled and the next window decides from the account it inherits, so a position carried across a seam pays what it would have paid ([ADR 0034](Decisions.md)). `WalkForward` trains each window on the bars before it. `PurgedKFold` and `CombinatorialPurged` train on both sides of a test span, leaving out every training row whose label reaches it and embargoing the bars after it ([ADR 0035](Decisions.md)). `CombinatorialPurged` also recombines its splits into several paths, so a median and a spread replace a single number.
+Each path is one run of the engine through its windows. At a seam the orders not yet filled are cancelled and the next window decides from the account it inherits, so a position carried across a seam pays what it would have paid ([0034](Decisions.md)). `WalkForward` trains each window on the bars before it. `PurgedKFold` and `CombinatorialPurged` train on both sides of a test span, leaving out every training row whose label reaches it and embargoing the bars after it ([0035](Decisions.md)). `CombinatorialPurged` also recombines its splits into several paths, so a median and a spread replace a single number.
 
 <br>
 
 ## Labels and a model
 
-`probatum.labels` gives each row what one trade decided at its close makes through the same fill model, its exit by a barrier or a horizon, the bar that ended it, and its uniqueness among the trades that overlap it ([ADR 0036](Decisions.md)). The splitters purge by that end:
+`probatum.labels` gives each row what one trade decided at its close makes through the same fill model, its exit by a barrier or a horizon, the bar that ended it, and its uniqueness among the trades that overlap it ([0036](Decisions.md)). The splitters purge by that end:
 
 ```python
 labels   = probatum.labels(data, venue=venue, horizon=24, notional=10_000.0,
@@ -138,7 +138,7 @@ print(stats.period_returns(result, by="month"))   # or the hour, day, week, quar
 
 `decompose` splits the change in equity into the price pnl and each cost, which make up the whole of it, so a return carried by funding, or lost to fees, shows here before any ratio is read. `trade_stats` holds the payoff beside the wins and the losses, and `period_returns` each period's return, which compound to the run's.
 
-`probatum.stats` gives each statistic its interval, named for its method ([ADR 0031](Decisions.md)). The Sharpe's comes from the delta method over a long-run variance that autocorrelation widens and never narrows, beside the probability that it beats a benchmark and the track record that would show it. The other intervals resample, either the returns in stationary blocks or the round trips. A bootstrap of the returns needs at least 500 returns in 100 blocks, and one of the round trips at least 60 of them; below those an interval is refused rather than given.
+`probatum.stats` gives each statistic its interval, named for its method ([0031](Decisions.md)). The Sharpe's comes from the delta method over a long-run variance that autocorrelation widens and never narrows, beside the probability that it beats a benchmark and the track record that would show it. The other intervals resample, either the returns in stationary blocks or the round trips. A bootstrap of the returns needs at least 500 returns in 100 blocks, and one of the round trips at least 60 of them; below those an interval is refused rather than given.
 
 ```python
 print(stats.sharpe_interval(result))
@@ -179,13 +179,13 @@ print(study.importance())                         # each parameter's share of th
 - **The plateau** is the share of the winner's neighbours in the space that also scored past a level, so a winner alone on a spike reads as one.
 - **Parameter importance** is the share of the scores' variation each parameter explains on its own, beside what chance gives.
 
-A search that adapts, as TPE does, draws its trials from what it has seen, so these read it as descriptive and say so ([ADR 0033](Decisions.md)).
+A search that adapts, as TPE does, draws its trials from what it has seen, so these read it as descriptive and say so ([0033](Decisions.md)).
 
 <br>
 
 ## Costs and capacity
 
-A result holds at the costs it was run at. These run the same policy again where only its costs or its size differ ([ADR 0045](Decisions.md)):
+A result holds at the costs it was run at. These run the same policy again where only its costs or its size differ ([0045](Decisions.md)):
 
 ```python
 best = crossing(data, **study.best_params)

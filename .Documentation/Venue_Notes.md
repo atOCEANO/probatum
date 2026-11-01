@@ -31,7 +31,7 @@
 
 ## Venue Notes
 
-Each preset is a TOML file in `python/probatum/venues/`, read as a `probatum.Venue` the first time it is asked for. `dev/venues/build.py` writes every preset but `frictionless`. It takes the instruments, and each one's price rule, lot and margin tiers, from the venue's public endpoints, and the fee rates, the forced close and Hyperliquid's price rule as the venue documents them. Every file the script writes records the day it ran as `taken`, the day its tables describe ([ADR 0028](Decisions.md)).
+Each preset is a TOML file in `python/probatum/venues/`, read as a `probatum.Venue` the first time it is asked for. `dev/venues/build.py` writes every preset but `frictionless`. It takes the instruments, and each one's price rule, lot and margin tiers, from the venue's public endpoints, and the fee rates, the forced close and Hyperliquid's price rule as the venue documents them. Every file the script writes records the day it ran as `taken`, the day its tables describe ([0028](Decisions.md)).
 
 ```python
 import probatum
@@ -74,7 +74,7 @@ On a preset of one kind, `replace(fees={"maker": ..., "taker": ...})` sets an ac
 
 ### Margin tiers
 
-A perpetual's `tiers` are the venue's rows of maximum leverage and maintenance as a position grows ([ADR 0015](Decisions.md)):
+A perpetual's `tiers` are the venue's rows of maximum leverage and maintenance as a position grows ([0015](Decisions.md)):
 * `up_to`, the size a row reaches;
 * `leverage`, the most a position there may be levered;
 * `rate`, its maintenance rate;
@@ -88,11 +88,11 @@ Every perpetual preset charges `funding = "data"`: the funding events the Data c
 
 ### The forced close
 
-Binance, Bybit and OKX take an account over where its margin runs out and book what is left as the liquidation charge. Hyperliquid sells every leg on the book from its trigger and leaves the trader the rest, falling back to the takeover where the sale would leave less than two thirds of the maintenance requirement ([ADR 0019](Decisions.md), [Specification](Specification.md#liquidation)).
+Binance, Bybit and OKX take an account over where its margin runs out and book what is left as the liquidation charge. Hyperliquid sells every leg on the book from its trigger and leaves the trader the rest, falling back to the takeover where the sale would leave less than two thirds of the maintenance requirement ([0019](Decisions.md), [Specification](Specification.md#liquidation)).
 
 ### The fill model
 
-Every preset but `frictionless` fills through the same starting calibration, the realistic option in each row of the fill model ([ADR 0013](Decisions.md)):
+Every preset but `frictionless` fills through the same starting calibration, the realistic option in each row of the fill model ([0013](Decisions.md)):
 
 | Setting | Value | What it does |
 | :--- | :--- | :--- |

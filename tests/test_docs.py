@@ -240,10 +240,13 @@ def test_the_decisions_are_numbered_without_a_gap_or_a_repeat():
 def test_every_decision_a_page_cites_is_one_that_exists():
     declared = set(declared_decisions(decisions_page()))
     text     = "\n".join(page.read_text(encoding="utf-8") for page in pages())
-    cited    = set()
 
-    for run in re.findall(r"ADRs?\s+((?:\d{4})(?:(?:,|\s+and)\s+\d{4})*)", text):
-        cited.update(int(number) for number in re.findall(r"\d{4}", run))
+    # a record is cited by its number linked to the record, and in an HTML caption,
+    # where markdown does not render, by an anchor
+    cited = set()
+    for linked, anchored in re.findall(r'\[(\d{4})\]\(Decisions\.md\)'
+                                       r'|<a href="Decisions\.md">(\d{4})</a>', text):
+        cited.add(int(linked or anchored))
 
     assert cited, "no decisions were cited anywhere, which cannot be right"
 

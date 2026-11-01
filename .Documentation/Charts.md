@@ -31,7 +31,7 @@
 
 ## Charts
 
-`result.chart()` draws a run and `data.chart()` draws bars, each with any arrays of your own beside them. The chart computes nothing: every number on it is the Data's, the Result's, or what `probatum.stats` reads of the Result ([ADR 0042](Decisions.md)).
+`result.chart()` draws a run and `data.chart()` draws bars, each with any arrays of your own beside them. The chart computes nothing: every number on it is the Data's, the Result's, or what `probatum.stats` reads of the Result ([0042](Decisions.md)).
 
 **`show()` draws it in the notebook cell**, zoomable and pannable in place, with no server and no viewer to launch.
 
@@ -270,7 +270,7 @@ A chart over bars is the wrong instrument for a feature against its forward retu
 
 ## The one rule
 
-The chart computes nothing and knows no indicator names ([ADR 0042](Decisions.md)). There is no `sma` here and no registry: you bring arrays, from `probatum.ta` or anywhere, and it draws them. Everything is computed once in Python before a pixel is drawn, which is also why a chart keeps working once the kernel is gone ([ADR 0042](Decisions.md)).
+The chart computes nothing and knows no indicator names ([0042](Decisions.md)). There is no `sma` here and no registry: you bring arrays, from `probatum.ta` or anywhere, and it draws them. Everything is computed once in Python before a pixel is drawn, which is also why a chart keeps working once the kernel is gone ([0042](Decisions.md)).
 
 <br>
 
@@ -330,7 +330,7 @@ result.chart(
 
 ### The length contract
 
-Two lengths are accepted, and they mean different things ([ADR 0042](Decisions.md)).
+Two lengths are accepted, and they mean different things ([0042](Decisions.md)).
 
 | Length | Drawn from |
 | :--- | :--- |
@@ -384,7 +384,7 @@ result.chart(Line(placed, "buy and hold", panel="equity")).show()
 
 ### A NaN is a gap
 
-A value that does not exist stops the line ([ADR 0042](Decisions.md)). It is never dropped, since dropping it would make its two neighbours adjacent: a trailing stop on bars 0 to 40 and again on bars 900 to 940 would draw a line through the 860 bars it was not there. The renderer joins across a missing value on its own, so a gapped series is drawn as one renderer series per run of values: each hole costs one, and a leading run of NaN costs nothing, since it is carried as an offset. Infinities are gaps too.
+A value that does not exist stops the line ([0042](Decisions.md)). It is never dropped, since dropping it would make its two neighbours adjacent: a trailing stop on bars 0 to 40 and again on bars 900 to 940 would draw a line through the 860 bars it was not there. The renderer joins across a missing value on its own, so a gapped series is drawn as one renderer series per run of values: each hole costs one, and a leading run of NaN costs nothing, since it is carried as an offset. Infinities are gaps too.
 
 <br>
 
@@ -442,7 +442,7 @@ result.chart(strategy.marks(), candle_color=numpy.where(held, "#4d9fff", None)).
 
 `"price"` always exists, comes first and carries the candles. `"volume"` appears where the volume is not dead, `"equity"` on a run's chart, and any other name the first time a mark's `panel=` gives it. The drawdown is shaded onto the equity panel rather than given a panel, unless `drawdown="panel"` asks for one.
 
-**A bare array overlays the candles unless that costs them more than half the price panel** ([ADR 0042](Decisions.md)); otherwise it gets a panel of its own. The rule is about the picture, never your intent, and it cannot flatten the candles. `panel=` overrides it, `panel="price"` included.
+**A bare array overlays the candles unless that costs them more than half the price panel** ([0042](Decisions.md)); otherwise it gets a panel of its own. The rule is about the picture, never your intent, and it cannot flatten the candles. `panel=` overrides it, `panel="price"` included.
 
 `panels=` **configures** panels, and never creates or removes one, so a name it does not know configures nothing. Listing panels fixes their order relative to each other, and never moves them relative to the panels left out.
 
@@ -724,7 +724,7 @@ result.chart(theme="auto", palette={"light": {"s1": "#00695c"}}).save("report.ht
 
 `theme="auto"`, the default, opens on the notebook's own theme where the chart can see the page around it, as in JupyterLab and VS Code, and otherwise on whichever the reader's system asks for, which the author of a chart cannot know.
 
-The renderer's notice and a link to TradingView, which its licence asks the page to give, sit in the footer beside the fit, trade log and theme buttons ([ADR 0042](Decisions.md)), and nothing is painted over the plot. The buttons are Lucide's icons, whose licence travels in every document's stylesheet.
+The renderer's notice and a link to TradingView, which its licence asks the page to give, sit in the footer beside the fit, trade log and theme buttons ([0042](Decisions.md)), and nothing is painted over the plot. The buttons are Lucide's icons, whose licence travels in every document's stylesheet.
 
 <br>
 
