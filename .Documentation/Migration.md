@@ -32,7 +32,33 @@
 
 ## Migration
 
-One hop: emsl 1.3.2 to probatum 2.0.0. probatum is emsl's repository renamed and released as 2.0.0, and it does not stay compatible with emsl ([0001](Decisions.md)): a compatibility mode that kept emsl's numbers would be a second engine to test, and a way to reach a flattering number by accident. Names move, the inputs change shape, and where emsl simulated something no venue does, a result moves. This page says what changed and why, then gives every public emsl name and every emsl record number its place in probatum.
+Two hops: probatum 2.0.0 to 2.1.0, which rebuilds the venue presets, and emsl 1.3.2 to probatum 2.0.0. probatum is emsl's repository renamed and released as 2.0.0, and it does not stay compatible with emsl ([0001](Decisions.md)): a compatibility mode that kept emsl's numbers would be a second engine to test, and a way to reach a flattering number by accident. Names move, the inputs change shape, and where emsl simulated something no venue does, a result moves. This page says what changed and why, then gives every public emsl name and every emsl record number its place in probatum.
+
+<br>
+
+## probatum 2.0.0 to 2.1.0
+
+**The presets are built from exchange-router and list every instrument it lists.** Every preset but `frictionless` is written from the instruments, ticks, lots and tiers exchange-router 3.2.0 serves, and Binance's tiers from the table behind Binance's website ([0048](Decisions.md)). Each lists every instrument the router lists as trading, where 2.0.0's left out the ones below:
+
+| Preset | Now lists as well |
+| :--- | :--- |
+| `binance_perp` | the TradFi perpetuals, such as `AAPLUSDT` |
+| `bybit_perp` | the stock, ETF, commodity and forex perpetuals, such as `AAPLUSDT` |
+| `bybit_spot` | the xStocks pairs, such as `AAPLXUSDT` |
+| `okx_perp` | the stock and commodity swaps, the pre-market ones among them, such as `OPENAIUSDT` |
+| `okx_spot` | the stock and commodity pairs, such as `XAAPLUSDT` and `PAXGUSDT` |
+| `hyperliquid_perp` | the perpetuals of the builder-deployed dexes, such as `XYZTSLAUSDC` |
+
+**Every preset but `frictionless` is taken again.** A listing, a tick or a tier a venue changed since 2.0.0's tables were taken moves with it, as on any rebuild, and an instrument a venue delisted since then is gone. Each preset's `taken` gives the day its tables describe. An agent's spec records that day, so a backtest of an agent trained on a 2.0.0 preset warns that it judges the agent at a venue it did not learn, until the agent trains again on 2.1.0's.
+
+**A perpetual in Bybit's Innovation Zone pays the base rates.** 2.0.0's `bybit_perp` charged one the zone's own rates, 0.04% maker and 0.11% taker. 2.1.0's charges it the preset's, 0.02% and 0.055%, since the router tells no zone apart, so a run on one pays less than it did. Bybit's instrument list marks the zone's perpetuals with the symbol type `innovation`, and `replace` gives each its rates again ([Venue Notes](Venue_Notes.md#fees)):
+
+```python
+zone  = {"fees": {"maker": 0.0004, "taker": 0.0011}}
+venue = probatum.venues.bybit_perp.replace(instruments={"1000TAGUSDT": zone})
+```
+
+**A Bybit spot pair brings its minimum order value.** This one follows exchange-router's version rather than probatum's: exchange-router 3.1.0 reads a Bybit spot pair's minimum order value from spot's own field, where earlier versions read a field spot does not have and gave none. With exchange-router 3.1.0 or later, `Data.from_router` gives each Bybit spot pair its minimum notional, so a run refuses an order below it, as it does wherever the router gives one, and the Data's fingerprint differs from one fetched with an earlier router.
 
 <br>
 
@@ -92,7 +118,7 @@ result = probatum.backtest(Cross(), data=data, venue=venue)
 
 **The environment follows Gymnasium.** `probatum.env` is a Gymnasium vector environment over the Rust batch, with all three of Gymnasium's autoreset modes and Gymnasium's own default, `NEXT_STEP`, as its default, where emsl had `SAME_STEP` alone; the Stable-Baselines3 adapter switches to `SAME_STEP`, which SB3 expects. Order actions are decoded in Rust, which ends emsl's market-order-only batch, the reward is floored so a liquidation is a large finite penalty, and costs can be drawn per environment ([0038](Decisions.md)). A single environment fills the same output buffer, which replaces emsl's read-only view onto the candle buffer, since an observation now carries the account beside the bars ([0040](Decisions.md)).
 
-**The record starts again at 0001.** emsl's record, in the repository's history at its 1.3.2 tag, grew to 113 entries numbered to 0115 by recording behaviours one at a time. probatum keeps exchange-router's measure, one decision a record, in 47 records, and each emsl entry is absorbed into one of them, carried as it stood, amended, or replaced where emsl was wrong. A comment or a commit that cites an emsl number is followed through [Record numbers](#record-numbers).
+**The record starts again at 0001.** emsl's record, in the repository's history at its 1.3.2 tag, grew to 113 entries numbered to 0115 by recording behaviours one at a time. probatum 2.0.0 keeps exchange-router's measure, one decision a record, in 47 records, and each emsl entry is absorbed into one of them, carried as it stood, amended, or replaced where emsl was wrong. A comment or a commit that cites an emsl number is followed through [Record numbers](#record-numbers).
 
 <br>
 

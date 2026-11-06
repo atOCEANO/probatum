@@ -281,7 +281,7 @@ The [Specification](.Documentation/Specification.md) states every rule a run app
 
 ## Supported Venues
 
-Each preset but `frictionless` holds what its venue listed as trading on the day its tables were taken, which the preset records as `taken`: every instrument with its tick or price rule, its lot and, for a perpetual, its margin tiers, and the venue's base fees. Volume tiers, rebates and the stock, commodity and pre-market contracts that [Venue Notes](.Documentation/Venue_Notes.md#instruments) lists are left out. Each preset is a `probatum.Venue`, reached as `probatum.venues.NAME` or by its name, and [Venue Notes](.Documentation/Venue_Notes.md) gives each one's rates and says where every number came from.
+Each preset but `frictionless` holds what exchange-router listed as trading for its venue on the day its tables were taken, which the preset records as `taken`: every instrument with its tick or price rule, its lot and, for a perpetual, its margin tiers, and the venue's base fees. Volume tiers, rebates and the rates a venue charges a group of its instruments, such as Bybit's Innovation Zone, are left out ([Venue Notes](.Documentation/Venue_Notes.md#fees)). Each preset is a `probatum.Venue`, reached as `probatum.venues.NAME` or by its name, and [Venue Notes](.Documentation/Venue_Notes.md) gives each one's rates and says where every number came from.
 
 | Venue | Spot | Linear perpetuals | Inverse perpetuals | Spot and linear, one account |
 | :--- | :--- | :--- | :--- | :--- |
@@ -338,7 +338,7 @@ The names a user meets, each documented in full on the [Python API](.Documentati
 | [Venue Notes](.Documentation/Venue_Notes.md) | choosing or changing a preset |
 | [Validation Guide](.Documentation/Validation_Guide.md) | checking how the engine and the statistics are tested |
 | [Decisions](.Documentation/Decisions.md) | asking why a rule is the way it is, and what it costs |
-| [Migration](.Documentation/Migration.md) | moving code from emsl 1.3.2 |
+| [Migration](.Documentation/Migration.md) | moving code from an earlier probatum or from emsl 1.3.2 |
 | [Architecture](.Documentation/Architecture.md) | reading the code, or asking what a release may change |
 | [Contributor Guide](.Documentation/Contributor_Guide.md) | changing the code |
 

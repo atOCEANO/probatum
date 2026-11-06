@@ -325,7 +325,7 @@ A backtest of an agent has to show it what it saw in training and read its outpu
   "decode": {"builtin": "box"},
   "reward": {"builtin": "log", "floor": 0.01},
   "tolerance": 0.0,
-  "venue": {"name": "binance_perp", "taken": "2026-10-16", "changed": {"funding": "none"}},
+  "venue": {"name": "binance_perp", "taken": "2026-11-06", "changed": {"funding": "none"}},
   "training": {"fingerprint": "b2:5f0c2a91e3d84b17a6c09e2d4f81b3c5", "interval": "1h",
                "bars": 8760, "start": "2024-01-01T00:00:00Z",
                "end": "2024-12-31T23:00:00Z"},

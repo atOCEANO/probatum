@@ -293,13 +293,17 @@ def test_the_documented_install_names_the_version_that_is_installed():
     # that predates everything the page around it describes. The wheel is built
     # from Cargo.toml, so this holds the README to that number without reading it. A
     # tag spells a pre-release as Cargo does, v2.0.0-rc.1, and the wheel as Python
-    # does, 2.0.0rc1, so the two are compared as versions
+    # does, 2.0.0rc1, so the two are compared as versions. A URL into another of
+    # atOCEANO's repositories, such as the exchange-router release the venue builder
+    # installs, carries that repository's version and is left out
     want  = Version(probatum.__version__)
     wrong = []
 
     for page in pages():
+        text = re.sub(r"https://github\.com/atOCEANO/(?!probatum\b)\S+", "",
+                      page.read_text(encoding="utf-8"))
         for found in re.findall(r"\bv(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)",
-                                page.read_text(encoding="utf-8")):
+                                text):
             try:
                 same = Version(found) == want
             except InvalidVersion:
