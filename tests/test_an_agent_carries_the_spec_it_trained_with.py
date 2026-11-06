@@ -123,7 +123,7 @@ def test_the_venue_is_its_preset_the_day_it_was_taken_and_each_setting_changed()
     random = VENUE.replace(intrabar="random", leverage=5.0)
     spec   = probatum.env(universe(), random, window=8, seed=1).agent_spec
 
-    assert spec["venue"] == {"name": "binance_perp", "taken": "2026-10-16",
+    assert spec["venue"] == {"name": "binance_perp", "taken": VENUE.taken,
                              "changed": {"leverage": 5.0, "intrabar": "random",
                                          "funding": "none"}}
 
@@ -149,7 +149,7 @@ def test_the_venue_is_its_preset_the_day_it_was_taken_and_each_setting_changed()
 
     assert held == {
         "name":    "binance_perp",
-        "taken":   "2026-10-16",
+        "taken":   VENUE.taken,
         "changed": {"leverage": 5.0, "funding": "none", "name": "desk"},
     }
 

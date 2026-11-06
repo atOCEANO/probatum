@@ -316,22 +316,22 @@ def test_through_with_no_price_rule_fills_on_touch():
 
 
 def test_the_fees_row_names_the_instruments_that_pay_their_own():
-    bybit = probatum.venues.bybit_perp
-    own   = bybit.to_dict()["instruments"]
+    zone  = {"fees": {"maker": 0.0004, "taker": 0.0011}}
+    own   = ("1000TAGUSDT", "4STOCKUSDT", "4USDT", "ACUUSDT")
+    bybit = probatum.venues.bybit_perp.replace(instruments={name: zone for name in own})
     venue = bybit.replace(funding="none")
     rows  = read(framed(venue, ("BTCUSDT", "1000TAGUSDT")).assumptions)
     taken = f"bybit_perp, taken {bybit.taken}"
 
     assert rows["fees"][:3] == ("maker 0.02%, taker 0.055%; 1000TAGUSDT maker 0.04%, "
-                                "taker 0.11%", taken, "venue")
+                                "taker 0.11%", f"{taken}; 1000TAGUSDT set by the user",
+                                "venue")
     assert read(framed(venue, ("1000TAGUSDT",)).assumptions)["fees"][0] == (
         "maker 0.04%, taker 0.11%")
 
-    departing = sum("fees" in table for table in own.values())
-    assert departing > 100
     assert read(bybit.describe())["fees"][:2] == (
-        f"maker 0.02%, taker 0.055%; {departing:,} instruments maker 0.04%, taker 0.11%",
-        taken)
+        f"maker 0.02%, taker 0.055%; {len(own)} instruments maker 0.04%, taker 0.11%",
+        f"{taken}; {len(own)} instruments set by the user")
 
     legs = probatum.Data(bars(), symbol="BTCUSDT", market="spot").join(
         probatum.Data(bars(), symbol="BTCUSDT", market="linear"))
@@ -412,7 +412,14 @@ def test_a_row_is_sourced_from_the_input_that_decided_each_instrument_s_value():
     rows = read(framed(split, ("BTCUSDT", "1000TAGUSDT")).assumptions)
 
     assert rows["fees"][1] == (f"bybit_perp, taken {bybit.taken}; BTCUSDT taker and "
-                               f"1000TAGUSDT maker set by the user")
+                               f"1000TAGUSDT set by the user")
+
+    alone = bybit.replace(funding="none",
+                          instruments={"1000TAGUSDT": {"fees": {"maker": 0.0005}}})
+    rows  = read(framed(alone, ("BTCUSDT", "1000TAGUSDT")).assumptions)
+
+    assert rows["fees"][1] == (f"bybit_perp, taken {bybit.taken}; 1000TAGUSDT maker set "
+                               f"by the user")
 
     lacking = PERP.replace(funding="none", fills={"sizes": "off"})
     rows    = read(framed(lacking, ("XYZUSDT",)).assumptions)

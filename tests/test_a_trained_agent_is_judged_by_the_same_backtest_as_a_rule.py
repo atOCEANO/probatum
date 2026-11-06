@@ -579,11 +579,11 @@ def test_bars_that_overlap_the_training_span_another_venue_or_interval_warn():
     assert inside.provenance["overlap"] == ["2023-11-14T22:13:20Z", "2023-11-21T03:13:20Z"]
 
     other = VENUE.replace(intrabar="optimistic")
-    with pytest.warns(ProbatumWarning, match="^venue: binance_perp taken 2026-10-16 with "
-                                             "intrabar, funding changed, and the agent "
-                                             "trained at binance_perp taken 2026-10-16 "
-                                             "with funding changed; the run judges it at "
-                                             "a venue it did not learn$"):
+    with pytest.warns(ProbatumWarning, match=f"^venue: binance_perp taken {VENUE.taken} "
+                                             "with intrabar, funding changed, and the "
+                                             "agent trained at binance_perp taken "
+                                             f"{VENUE.taken} with funding changed; the run "
+                                             "judges it at a venue it did not learn$"):
         moved = probatum.backtest(Agent(env.single_action_space), data[150:], other,
                                   spec=env)
 

@@ -411,7 +411,9 @@ def test_a_price_the_bar_held_and_one_the_margin_bound_lifted_say_so():
 
 
 def test_a_fee_reads_its_own_rate_and_a_price_below_one_its_five_figures():
-    venue  = probatum.venues.bybit_perp.replace(funding="none")
+    own    = {"fees": {"maker": 0.0004, "taker": 0.0011}}
+    venue  = probatum.venues.bybit_perp.replace(funding="none",
+                                                instruments={"1000TAGUSDT": own})
     cheap  = [(0.05, 0.051, 0.049, 0.05)] * 4
     result = probatum.backtest(np.array([1_000.0, 0.0, np.nan, np.nan]),
                                data(cheap, "1000TAGUSDT"), venue, sizing="quantity")

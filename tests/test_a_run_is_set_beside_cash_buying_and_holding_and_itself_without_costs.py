@@ -167,8 +167,10 @@ def test_the_run_without_costs_is_the_run_less_its_costs_where_its_fills_are_its
     # in the first tiers, a budget that holds one fill back a bar and funding every 4
     # bars: nothing the costs change moves a fill, so the gap is the costs; the spread
     # is fixed, as these bars' range estimates none
+    own   = {"fees": {"maker": 0.0004, "taker": 0.0011}}
     venue = probatum.venues.bybit_perp.replace(funding={"every_bars": 4, "rate": 0.0001},
-                                               fills={"spread": {"fixed": 2.0}})
+                                               fills={"spread": {"fixed": 2.0}},
+                                               instruments={"1000TAGUSDT": own})
     data = probatum.Data({
         "BTCUSDT":     bars().assign(volume=200.0),
         "1000TAGUSDT": bars().assign(volume=200.0),

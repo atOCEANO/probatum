@@ -2,7 +2,7 @@
 
 [venue]
 name = "binance_spot"
-taken = "2026-10-16"
+taken = "2026-11-06"
 kind = "spot"
 
 [defaults]
@@ -99,10 +99,6 @@ lot = 0.001
 
 [instruments.AAPLBUSDT]
 tick = 0.01
-lot = 0.001
-
-[instruments.AAVEBTC]
-tick = 1e-06
 lot = 0.001
 
 [instruments.AAVEETH]
@@ -362,15 +358,15 @@ tick = 0.01
 lot = 0.001
 
 [instruments.ANIMETRY]
-tick = 0.001
+tick = 0.0001
 lot = 0.1
 
 [instruments.ANIMEUSDC]
-tick = 1e-05
+tick = 1e-06
 lot = 0.1
 
 [instruments.ANIMEUSDT]
-tick = 1e-05
+tick = 1e-06
 lot = 0.1
 
 [instruments.ANKRTRY]
@@ -404,6 +400,10 @@ lot = 0.01
 [instruments.API3USDT]
 tick = 0.0001
 lot = 0.01
+
+[instruments.APPBUSDT]
+tick = 0.01
+lot = 0.001
 
 [instruments.APTEUR]
 tick = 0.0001
@@ -559,10 +559,6 @@ lot = 0.1
 
 [instruments.ATMUSDT]
 tick = 0.001
-lot = 0.01
-
-[instruments.ATOMBTC]
-tick = 1e-07
 lot = 0.01
 
 [instruments.ATOMEUR]
@@ -1017,10 +1013,6 @@ lot = 1.0
 tick = 1e-07
 lot = 1.0
 
-[instruments.BONKFDUSD]
-tick = 1e-08
-lot = 1.0
-
 [instruments.BONKTRY]
 tick = 1e-07
 lot = 1.0
@@ -1033,6 +1025,10 @@ lot = 1.0
 tick = 1e-08
 lot = 1.0
 
+[instruments.BOTBUSDT]
+tick = 0.01
+lot = 0.01
+
 [instruments.BREVTRY]
 tick = 0.01
 lot = 0.1
@@ -1041,6 +1037,10 @@ lot = 0.1
 tick = 0.0001
 lot = 0.1
 
+[instruments.BRKBBUSDT]
+tick = 0.01
+lot = 0.001
+
 [instruments.BROCCOLI714USDC]
 tick = 1e-05
 lot = 1.0
@@ -1048,6 +1048,10 @@ lot = 1.0
 [instruments.BROCCOLI714USDT]
 tick = 1e-05
 lot = 1.0
+
+[instruments.BSPBUSDT]
+tick = 0.01
+lot = 0.01
 
 [instruments.BTCARS]
 tick = 1.0
@@ -1076,6 +1080,10 @@ lot = 1e-06
 [instruments.BTCMXN]
 tick = 1.0
 lot = 1e-06
+
+[instruments.BTCTHB]
+tick = 1.0
+lot = 1e-05
 
 [instruments.BTCTRY]
 tick = 1.0
@@ -1115,10 +1123,6 @@ lot = 0.1
 
 [instruments.CAKEBNB]
 tick = 1e-06
-lot = 0.01
-
-[instruments.CAKEBTC]
-tick = 1e-08
 lot = 0.01
 
 [instruments.CAKETRY]
@@ -1384,10 +1388,6 @@ lot = 0.01
 [instruments.CYPHBUSDT]
 tick = 0.01
 lot = 0.1
-
-[instruments.DASHBTC]
-tick = 1e-07
-lot = 0.001
 
 [instruments.DASHTRY]
 tick = 1.0
@@ -1669,14 +1669,6 @@ lot = 0.01
 tick = 0.01
 lot = 0.01
 
-[instruments.EPICUSDC]
-tick = 0.0001
-lot = 0.1
-
-[instruments.EPICUSDT]
-tick = 0.0001
-lot = 0.1
-
 [instruments.ERAFDUSD]
 tick = 0.0001
 lot = 0.1
@@ -1704,10 +1696,6 @@ lot = 1.0
 [instruments.ESPUSDT]
 tick = 1e-05
 lot = 1.0
-
-[instruments.ETCBTC]
-tick = 1e-07
-lot = 0.01
 
 [instruments.ETCFDUSD]
 tick = 0.01
@@ -2025,6 +2013,10 @@ lot = 0.1
 tick = 0.0001
 lot = 0.1
 
+[instruments.GEVBUSDT]
+tick = 0.01
+lot = 0.001
+
 [instruments.GIGGLEJPY]
 tick = 1.0
 lot = 0.0001
@@ -2158,15 +2150,15 @@ tick = 0.001
 lot = 1.0
 
 [instruments.GUNTRY]
-tick = 0.001
+tick = 0.0001
 lot = 1.0
 
 [instruments.GUNUSDC]
-tick = 1e-05
+tick = 1e-06
 lot = 1.0
 
 [instruments.GUNUSDT]
-tick = 1e-05
+tick = 1e-06
 lot = 1.0
 
 [instruments.GUSDT]
@@ -2333,10 +2325,6 @@ lot = 0.001
 tick = 0.01
 lot = 0.001
 
-[instruments.ICPBTC]
-tick = 1e-07
-lot = 0.01
-
 [instruments.ICPEUR]
 tick = 0.001
 lot = 0.01
@@ -2489,10 +2477,6 @@ lot = 0.1
 tick = 0.0001
 lot = 0.1
 
-[instruments.JUPFDUSD]
-tick = 0.0001
-lot = 0.1
-
 [instruments.JUPTRY]
 tick = 0.01
 lot = 0.1
@@ -2609,6 +2593,10 @@ lot = 0.001
 tick = 0.01
 lot = 0.001
 
+[instruments.KSTRBUSDT]
+tick = 0.01
+lot = 0.01
+
 [instruments.LATRY]
 tick = 0.01
 lot = 0.1
@@ -2635,10 +2623,6 @@ lot = 0.01
 
 [instruments.LAZIOUSDT]
 tick = 0.001
-lot = 0.01
-
-[instruments.LDOFDUSD]
-tick = 0.0001
 lot = 0.01
 
 [instruments.LDOTRY]
@@ -3449,10 +3433,6 @@ lot = 0.0001
 tick = 0.01
 lot = 0.01
 
-[instruments.PENDLEBTC]
-tick = 1e-08
-lot = 0.1
-
 [instruments.PENDLETRY]
 tick = 0.1
 lot = 0.1
@@ -3622,11 +3602,11 @@ tick = 1e-05
 lot = 0.1
 
 [instruments.POLYXTRY]
-tick = 0.01
+tick = 0.001
 lot = 0.1
 
 [instruments.POLYXUSDT]
-tick = 0.0001
+tick = 1e-05
 lot = 0.1
 
 [instruments.PORTALTRY]
@@ -3741,10 +3721,6 @@ lot = 0.1
 tick = 0.001
 lot = 0.1
 
-[instruments.QUICKUSDT]
-tick = 1e-05
-lot = 1.0
-
 [instruments.RADTRY]
 tick = 0.01
 lot = 0.1
@@ -3795,10 +3771,6 @@ lot = 0.1
 
 [instruments.RENDERBRL]
 tick = 0.01
-lot = 0.01
-
-[instruments.RENDERBTC]
-tick = 1e-08
 lot = 0.01
 
 [instruments.RENDEREUR]
@@ -3946,7 +3918,7 @@ tick = 0.001
 lot = 0.1
 
 [instruments.RVNTRY]
-tick = 0.0001
+tick = 1e-05
 lot = 0.01
 
 [instruments.RVNUSDT]
@@ -4006,11 +3978,11 @@ tick = 0.001
 lot = 0.1
 
 [instruments.SAPIENUSDC]
-tick = 0.0001
+tick = 1e-05
 lot = 0.1
 
 [instruments.SAPIENUSDT]
-tick = 0.0001
+tick = 1e-05
 lot = 0.1
 
 [instruments.SCRIDR]
@@ -4125,6 +4097,10 @@ lot = 1.0
 tick = 1e-05
 lot = 1.0
 
+[instruments.SKDDBUSDT]
+tick = 0.01
+lot = 0.01
+
 [instruments.SKHYBUSDT]
 tick = 0.01
 lot = 0.001
@@ -4136,6 +4112,10 @@ lot = 1.0
 [instruments.SKLUSDT]
 tick = 1e-05
 lot = 1.0
+
+[instruments.SKUUBUSDT]
+tick = 0.01
+lot = 0.01
 
 [instruments.SKYTRY]
 tick = 0.001
@@ -4250,15 +4230,15 @@ tick = 0.01
 lot = 0.001
 
 [instruments.SOLVTRY]
-tick = 0.001
+tick = 0.0001
 lot = 1.0
 
 [instruments.SOLVUSDC]
-tick = 1e-05
+tick = 1e-06
 lot = 1.0
 
 [instruments.SOLVUSDT]
-tick = 1e-05
+tick = 1e-06
 lot = 1.0
 
 [instruments.SOMITRY]
@@ -4497,10 +4477,6 @@ lot = 0.1
 tick = 0.0001
 lot = 0.1
 
-[instruments.TAOBTC]
-tick = 1e-06
-lot = 0.0001
-
 [instruments.TAOFDUSD]
 tick = 0.1
 lot = 0.0001
@@ -4536,10 +4512,6 @@ lot = 0.0001
 [instruments.TFUELUSDT]
 tick = 1e-05
 lot = 1.0
-
-[instruments.THETABTC]
-tick = 1e-08
-lot = 0.1
 
 [instruments.THETATRY]
 tick = 0.001
@@ -4597,6 +4569,10 @@ lot = 1.0
 tick = 1e-06
 lot = 1.0
 
+[instruments.TMFBUSDT]
+tick = 0.01
+lot = 0.01
+
 [instruments.TNSRTRY]
 tick = 0.01
 lot = 0.1
@@ -4606,7 +4582,7 @@ tick = 0.0001
 lot = 0.1
 
 [instruments.TOWNSTRY]
-tick = 0.0001
+tick = 1e-05
 lot = 1.0
 
 [instruments.TOWNSUSDC]
@@ -4921,6 +4897,10 @@ lot = 0.0001
 tick = 0.001
 lot = 1.0
 
+[instruments.USDTTHB]
+tick = 0.01
+lot = 1.0
+
 [instruments.USDTTRY]
 tick = 0.01
 lot = 1.0
@@ -4981,10 +4961,6 @@ lot = 0.01
 tick = 0.001
 lot = 0.01
 
-[instruments.VELODROMEUSDT]
-tick = 1e-05
-lot = 0.1
-
 [instruments.VETEUR]
 tick = 1e-06
 lot = 0.01
@@ -5017,13 +4993,13 @@ lot = 0.1
 tick = 0.0001
 lot = 0.1
 
+[instruments.VSTBUSDT]
+tick = 0.01
+lot = 0.001
+
 [instruments.VTHOUSDT]
 tick = 1e-06
 lot = 1.0
-
-[instruments.WALBNB]
-tick = 1e-08
-lot = 0.1
 
 [instruments.WALTRY]
 tick = 0.001
@@ -5181,10 +5157,6 @@ lot = 0.1
 tick = 1e-05
 lot = 0.1
 
-[instruments.XAUTBTC]
-tick = 1e-05
-lot = 0.0001
-
 [instruments.XAUTTRY]
 tick = 1.0
 lot = 0.0001
@@ -5323,10 +5295,6 @@ lot = 0.1
 
 [instruments.XRPUSDT]
 tick = 0.0001
-lot = 0.1
-
-[instruments.XTZBTC]
-tick = 1e-08
 lot = 0.1
 
 [instruments.XTZTRY]
