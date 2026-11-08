@@ -269,7 +269,7 @@ def _charged(venue, data):
     raise VenueError(f"venue: {named} charges no fee, spread, slippage or impact on "
                      f"{', '.join(data.names)}, so no multiple of its costs moves one; "
                      f"give a venue that charges some, such as probatum.venues."
-                     f"binance_perp")
+                     f"bybit_perp")
 
 
 def _listed(name, given, read, fix):

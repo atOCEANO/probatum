@@ -39,7 +39,7 @@ Everything the package exports, and where each piece is documented in full:
 | `probatum.Data` | N instruments over T bars on one clock, read from any frame or array. [Below](#data). |
 | `probatum.Instrument` | One instrument of a Data: its symbol, market and venue, its assets, an inverse contract's size and the venue's limits on an order. [Below](#data). |
 | `probatum.Venue` | A venue's rules for a run, in one immutable object. [Below](#venue). |
-| `probatum.venues` | The presets, each a Venue: `binance_perp`, `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
+| `probatum.venues` | The presets, each a Venue: `bybit_perp`, `okx_perp`, `hyperliquid_perp`, the spot, inverse and combined ones, and `frictionless`. [Below](#venue). |
 | `probatum.Engine` | An account at a venue on a Data, for a loop the caller owns. [Below](#engine). |
 | `probatum.Batch` | Many independent accounts over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `probatum.backtest` | Run a policy on a Data at a venue: an array or a table of weights or quantities, a Strategy, or a trained agent. [Below](#backtesting). |
@@ -117,7 +117,7 @@ btc = probatum.Data(pandas.read_parquet(path="btc.parquet"), symbol="BTCUSDT",
 pair = probatum.Data({"BTCUSDT": btc_frame, "ETHUSDT": eth_frame})
 bars = probatum.Data(ohlcv, time=times, symbol="BTCUSDT")
 
-universe = probatum.Data.from_router(router, exchange="binance", market="linear",
+universe = probatum.Data.from_router(router, exchange="bybit", market="linear",
                                      interval="1h", symbols=["BTCUSDT", "ETHUSDT"],
                                      start="2023-01-01", funding=True)
 ```
@@ -253,11 +253,11 @@ A `probatum.Venue` holds a venue's rules for a run in one object, so a setting h
 ```python
 import probatum
 
-perp = probatum.venues.binance_perp
+perp = probatum.venues.bybit_perp
 cheaper = perp.replace(fees={"taker": 0.0004}, max_open_orders=16)
 print(cheaper.to_dict()["fees"])            # {'maker': 0.0002, 'taker': 0.0004}
 
-both = probatum.venues.binance.replace(balance={"spot": 5_000.0, "margin": 5_000.0})
+both = probatum.venues.bybit.replace(balance={"spot": 5_000.0, "margin": 5_000.0})
 
 mine = probatum.Venue(fees={"maker": 0.0, "taker": 0.0005},
                       funding={"every_bars": 8, "rate": 0.0001})
@@ -283,7 +283,7 @@ Only an instrument's own table gives its `delist`, the time the venue delisted i
 
 ### A Venue does not change
 
-A Venue is hashable, and equal to any venue with the same settings, however their numbers were written. `to_dict()` gives every setting as the constructor takes it, so `probatum.Venue(**venue.to_dict())` is the same venue, and its repr is the code that builds it, such as `probatum.venues.binance_perp.replace(max_open_orders=16)` or `probatum.Venue(fees=...)`.
+A Venue is hashable, and equal to any venue with the same settings, however their numbers were written. `to_dict()` gives every setting as the constructor takes it, so `probatum.Venue(**venue.to_dict())` is the same venue, and its repr is the code that builds it, such as `probatum.venues.bybit_perp.replace(max_open_orders=16)` or `probatum.Venue(fees=...)`.
 
 `replace(**changes)` gives a variant. `fees` and `fills` merge into the venue's own. A table in `kinds` or `instruments` merges into the one it names key by key, its fees side by side, and a table given `None` is dropped, which the venue must hold. `liquidation="takeover"` drops a backstop the venue held, and every other setting is replaced whole. A change that every kind's table overrides, such as `fees` on a combined preset, would reach no instrument and is refused.
 
@@ -310,7 +310,7 @@ Each instrument takes the venue's tables by its symbol, or as `kind:SYMBOL` on a
 `probatum.Engine(data, venue, seed=None)` is an account at `venue`, a Venue or a preset's name, on `data`, a Data or anything one is built from, for a loop the caller owns. It is the fourth depth beside an array, a Strategy and an agent, and records the same Result ([0002](Decisions.md)).
 
 ```python
-engine = probatum.Engine(data, venue="binance_perp")
+engine = probatum.Engine(data, venue="bybit_perp")
 
 bar = engine.reset()
 while not engine.done():
@@ -412,7 +412,7 @@ weights = numpy.full(shape=len(btc), fill_value=numpy.nan)    # NaN holds the po
 weights[probatum.ta.crossover(fast, other=slow)] = 1.0        # enter long
 weights[probatum.ta.crossunder(fast, other=slow)] = 0.0       # flatten
 
-venue = probatum.venues.binance_perp.replace(funding="none")  # btc holds no funding
+venue = probatum.venues.bybit_perp.replace(funding="none")    # btc holds no funding
 result = probatum.backtest(weights, data=btc, venue=venue, stop=0.04, take_profit=0.08)
 ```
 
@@ -531,8 +531,8 @@ A trained agent runs as one environment of the spec it trained with, on the Data
 The window reads the bars before a slice, so with the candles or a function of features an agent decides at the slice's first close; with an array of features over the slice alone it decides once a window of them is full. Once the account holds nothing, the agent is no longer asked.
 
 ```python
-result = probatum.backtest(agent, data=test, venue="binance_perp", features=features)
-again = probatum.backtest(result.policy, data=test, venue="binance_perp")  # the same equity
+result = probatum.backtest(agent, data=test, venue="bybit_perp", features=features)
+again = probatum.backtest(result.policy, data=test, venue="bybit_perp")  # the same equity
 ```
 
 `spec` is the agent spec: a path to its JSON, a directory holding `spec.json`, or the environment the agent trained in, and an SB3 agent's own where it is left out. A feature function or a decode the agent trained with is passed again as `features` or `decode` and held to its probe, so a changed function is refused as a `probatum.SpecError`. So is a Data of other instruments, unless `instruments` names the slots in the agent's order, and a slot on another market than the agent trained on. An array of features is over the Data given.
@@ -544,7 +544,7 @@ again = probatum.backtest(result.policy, data=test, venue="binance_perp")  # the
 ```python
 probatum.save(policy, path="agents/ppo-1", spec=env)           # weights.pt and spec.json
 policy.load_state_dict(torch.load(f="agents/ppo-1/weights.pt"))
-result = probatum.backtest(policy, data=test, venue="binance_perp", spec="agents/ppo-1")
+result = probatum.backtest(policy, data=test, venue="bybit_perp", spec="agents/ppo-1")
 ```
 
 ### The compiled engine
@@ -972,10 +972,10 @@ The book's ledger and its baselines are its own, a row per row of its clock, the
 Accounts kept in different dollar assets, such as USDT and USDC, add only where `settlement` names the dollar asset the book is kept in, counted at par. An account kept in any other asset adds only to accounts kept in it, and an inverse contract's only to others of its coin. Accounts on different intervals, off one interval's steps or at different risk-free rates do not add at all.
 
 ```python
-binance = probatum.backtest(Hundred(), data=data,
-                            venue=probatum.venues.binance_perp.replace(funding="none"))
+bybit = probatum.backtest(Hundred(), data=data,
+                          venue=probatum.venues.bybit_perp.replace(funding="none"))
 
-book = probatum.combine([result, binance])      # named frictionless and binance_perp
+book = probatum.combine([result, bybit])        # named frictionless and bybit_perp
 
 print(book)
 print(book.fills.to_pandas()[["venue", "bar", "instrument", "price"]])
@@ -1021,16 +1021,16 @@ Its price lines add up to its price, each to the decimals its reference sets, tw
 An array plays again with its rows, sizing, tolerance and barriers, and a Strategy on a second copy `backtest` takes at the call, played once. A loop the caller stepped has no policy to play, so its `frictionless` is missing, as it is, with a warning, where the play raises. The baselines are computed when first read, an agent's as its backtest runs, since an agent cannot be copied to be played later. `save` reads them first, while pickling plays no policy and carries them only once they are computed. A book's are its accounts' summed as its equity is, each at its opening balance before its first row and at its last value after its end.
 
 ```python
-print(binance.costs)                            # what trading on binance_perp cost
-print(binance["BTCUSDT"].pnl[-1], binance.pnl[-1])
-print(book["binance_perp", "BTCUSDT"].weight[-5:])
+print(bybit.costs)                              # what trading on bybit_perp cost
+print(bybit["BTCUSDT"].pnl[-1], bybit.pnl[-1])
+print(book["bybit_perp", "BTCUSDT"].weight[-5:])
 
-print(binance.assumptions)                      # every choice the run made, graded
-print(probatum.venues.binance_perp.describe())
+print(bybit.assumptions)                        # every choice the run made, graded
+print(probatum.venues.bybit_perp.describe())
 print(data.describe())
 
-print(binance.explain(binance.fills[0]))        # its reference, each cost, its fee
-print(binance.explain(binance.orders[0]))       # that order's events
+print(bybit.explain(bybit.fills[0]))            # its reference, each cost, its fee
+print(bybit.explain(bybit.orders[0]))           # that order's events
 
 print(book.baselines.to_pandas().tail())        # cash, buying and holding, no costs
 ```

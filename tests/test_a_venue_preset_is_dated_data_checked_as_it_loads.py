@@ -277,26 +277,26 @@ def test_a_preset_it_does_not_hold_is_refused_naming_those_it_does():
 
 
 def test_a_combined_preset_holds_its_parts_each_at_its_own_rates():
-    binance = venues._preset("binance")
+    bybit = venues._preset("bybit")
 
-    assert binance["combines"] == ["binance_spot", "binance_perp"]
+    assert bybit["combines"] == ["bybit_spot", "bybit_perp"]
 
-    parts = {kind: venues._preset(f"binance_{name}")["instruments"]
+    parts = {kind: venues._preset(f"bybit_{name}")["instruments"]
              for kind, name in (("spot", "spot"), ("linear", "perp"))}
 
-    assert binance["instruments"] == {f"{kind}:{key}": table
+    assert bybit["instruments"] == {f"{kind}:{key}": table
                                       for kind, tables in parts.items()
                                       for key, table in tables.items()}
 
-    settings = venues._settings(binance, ["spot:BTCUSDT", "linear:BTCUSDT"])
+    settings = venues._settings(bybit, ["spot:BTCUSDT", "linear:BTCUSDT"])
     spot, perp = settings["instruments"]
 
     assert (spot["market"], spot["fee_maker"], spot["fee_taker"]) == (
         "spot", 0.001, 0.001)
     assert spot["tick"] > 0.0 and spot["lot"] > 0.0
     assert (perp["market"], perp["fee_maker"], perp["fee_taker"]) == (
-        "perp", 0.0002, 0.0005)
-    assert perp["reduce_only_exempt"] and perp["tiers"]
+        "perp", 0.0002, 0.00055)
+    assert perp["tiers"]
 
 
 @pytest.mark.parametrize("parts, says", [

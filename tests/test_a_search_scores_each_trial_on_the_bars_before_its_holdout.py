@@ -112,7 +112,7 @@ def test_a_perpetual_first_funded_after_the_cut_runs_as_it_runs_in_that_slice():
     with pytest.warns(ProbatumWarning, match="ETHUSDT's bars begin at 2024-01-02 08:00"):
         data = fetch(router, ("BTCUSDT", "ETHUSDT"), funding=True)
 
-    venue = probatum.venues.binance_perp
+    venue = probatum.venues.bybit_perp
 
     def pair_of(data, size):
         return np.full((len(data), 2), size)

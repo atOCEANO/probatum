@@ -14,7 +14,7 @@ import pytest
 import probatum
 
 HOUR  = 3_600_000_000_000
-VENUE = probatum.venues.binance_perp.replace(funding="none")
+VENUE = probatum.venues.bybit_perp.replace(funding="none")
 
 
 def walked(price, rows, rng):

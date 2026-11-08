@@ -55,7 +55,7 @@ class Venue:
 
     A Venue does not change, and every setting passes the checks a preset's pass as it
     is built, so a variant made with `replace` is checked as well. The presets are
-    Venues, ``probatum.venues.binance_perp`` among them."""
+    Venues, ``probatum.venues.bybit_perp`` among them."""
 
     __slots__ = ("_preset", "_balance", "_intrabar", "_source", "_key")
 
@@ -462,7 +462,7 @@ def _venue_of(venue):
         return venues._venue(venue)
 
     raise ProbatumTypeError(f"venue: {venue!r}; pass a Venue, or a preset's name such "
-                            f"as \"binance_perp\"")
+                            f"as \"bybit_perp\"")
 
 
 def _market(instrument, name, venue, origin):

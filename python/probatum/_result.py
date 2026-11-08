@@ -987,7 +987,7 @@ class Result:
         elif isinstance(key, str):
             venue, name = None, key
         else:
-            fix = ('its venue and its name, as result["binance", "BTCUSDT"]' if book
+            fix = ('its venue and its name, as result["bybit", "BTCUSDT"]' if book
                    else 'its name, as result["BTCUSDT"]')
             raise ProbatumTypeError(f"result[{key!r}]: an instrument is named by a "
                                     f"string; give {fix}")

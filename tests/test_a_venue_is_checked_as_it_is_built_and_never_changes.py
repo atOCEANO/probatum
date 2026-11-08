@@ -48,18 +48,18 @@ def test_a_venue_built_by_hand_starts_from_the_plain_option_in_each_row():
 
 
 def test_the_presets_are_venues_named_and_dated():
-    perp = probatum.venues.binance_perp
+    perp = probatum.venues.bybit_perp
 
-    assert isinstance(perp, Venue) and perp is probatum.venues.binance_perp
-    assert (perp.name, perp.kind) == ("binance_perp", "linear")
+    assert isinstance(perp, Venue) and perp is probatum.venues.bybit_perp
+    assert (perp.name, perp.kind) == ("bybit_perp", "linear")
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", perp.taken)
-    assert perp.to_dict()["fees"] == {"maker": 0.0002, "taker": 0.0005}
+    assert perp.to_dict()["fees"] == {"maker": 0.0002, "taker": 0.00055}
     assert perp.to_dict()["instruments"]["BTCUSDT"]["tiers"]
 
-    both = probatum.venues.binance
+    both = probatum.venues.bybit
 
     assert both.kind is None and "spot:BTCUSDT" in both.to_dict()["instruments"]
-    assert {"binance_perp", "frictionless", "okx"} <= set(dir(probatum.venues))
+    assert {"bybit_perp", "frictionless", "okx"} <= set(dir(probatum.venues))
 
     with pytest.raises(ProbatumAttributeError, match="has no attribute "
                                                      "'binance_futures'"):
@@ -113,7 +113,7 @@ def test_settings_equal_in_value_make_one_venue_however_they_were_written():
     assert Venue(taken=datetime.date(2026, 10, 16)).taken == "2026-10-16"
 
 
-@pytest.mark.parametrize("name", ["binance", "hyperliquid_perp", "okx_inverse"])
+@pytest.mark.parametrize("name", ["bybit", "hyperliquid_perp", "okx_inverse"])
 def test_a_preset_s_settings_build_the_same_venue(name):
     preset = getattr(probatum.venues, name)
 
@@ -122,7 +122,7 @@ def test_a_preset_s_settings_build_the_same_venue(name):
 
 
 def test_a_variant_merges_its_tables_and_replaces_every_other_setting():
-    perp    = probatum.venues.binance_perp
+    perp    = probatum.venues.bybit_perp
     tables  = {"BTCUSDT": {"tick": 0.5, "fees": {"maker": 0.0}}, "ETHUSDT": None}
     variant = perp.replace(fees={"taker": 0.0004}, fills={"sizes": "off"},
                            max_open_orders=16, intrabar="random", instruments=tables)
@@ -138,7 +138,7 @@ def test_a_variant_merges_its_tables_and_replaces_every_other_setting():
     assert btc["tick"] == 0.5 and btc["fees"] == {"maker": 0.0}
     assert btc["tiers"] == perp.to_dict()["instruments"]["BTCUSDT"]["tiers"]
     assert "ETHUSDT" not in settings["instruments"]
-    assert variant.name == "binance_perp" and variant != perp
+    assert variant.name == "bybit_perp" and variant != perp
     assert perp.to_dict()["max_open_orders"] == 8
 
     dropped = variant.replace(instruments={"BTCUSDT": {"tick": None}}, fees=None)
@@ -149,7 +149,7 @@ def test_a_variant_merges_its_tables_and_replaces_every_other_setting():
     taken_over = probatum.venues.hyperliquid_perp.replace(liquidation="takeover")
 
     assert taken_over.to_dict()["backstop"] is None
-    assert probatum.venues.binance.replace(max_open_orders=600).to_dict()[
+    assert probatum.venues.bybit.replace(max_open_orders=600).to_dict()[
         "max_open_orders"] == 600
 
     with pytest.raises(ProbatumTypeError, match=re.escape(
@@ -161,14 +161,14 @@ def test_a_variant_that_drops_a_table_the_venue_does_not_hold_is_refused():
     with pytest.raises(VenueError, match=re.escape(
             "instruments: 'BTCUSDTT': None for a table the venue does not hold; name "
             "one of its instruments")):
-        probatum.venues.binance_perp.replace(instruments={"BTCUSDTT": None})
+        probatum.venues.bybit_perp.replace(instruments={"BTCUSDTT": None})
 
 
 def test_a_change_no_instrument_of_a_combined_preset_takes_is_refused():
-    both = probatum.venues.binance
+    both = probatum.venues.bybit
 
     with pytest.raises(VenueError, match=re.escape(
-            "fees: {'taker': 0.0}, which no instrument of binance takes, as each of "
+            "fees: {'taker': 0.0}, which no instrument of bybit takes, as each of "
             "its kinds gives its own; give it in a kind's table, replace(kinds="
             "{'spot': {'fees': ...}})")):
         both.replace(fees={"taker": 0.0})
@@ -182,15 +182,15 @@ def test_a_change_no_instrument_of_a_combined_preset_takes_is_refused():
 
 
 def test_a_venue_shows_itself_as_the_code_that_builds_it():
-    perp = probatum.venues.binance_perp
+    perp = probatum.venues.bybit_perp
 
-    assert repr(perp) == "probatum.venues.binance_perp"
+    assert repr(perp) == "probatum.venues.bybit_perp"
     assert (repr(perp.replace(max_open_orders=16))
-            == "probatum.venues.binance_perp.replace(max_open_orders=16)")
+            == "probatum.venues.bybit_perp.replace(max_open_orders=16)")
 
     shown = repr(perp.replace(instruments={"BTCUSDT": {"tick": 0.5}}))
 
-    assert shown.startswith("probatum.venues.binance_perp.replace(instruments="
+    assert shown.startswith("probatum.venues.bybit_perp.replace(instruments="
                             "{'BTCUSDT': ")
 
     for variant in (perp.replace(instruments={"BTCUSDT": {"tick": 0.5}}),
@@ -200,7 +200,7 @@ def test_a_venue_shows_itself_as_the_code_that_builds_it():
     assert repr(Venue()) == "probatum.Venue()"
     assert (repr(Venue(fees={"maker": 0.0, "taker": 0.0005}, kind="spot"))
             == "probatum.Venue(fees={'maker': 0.0, 'taker': 0.0005}, kind='spot')")
-    assert repr(Venue(name="binance_perp")) == "probatum.Venue(name='binance_perp')"
+    assert repr(Venue(name="bybit_perp")) == "probatum.Venue(name='bybit_perp')"
 
 
 @pytest.mark.parametrize("settings, says", [

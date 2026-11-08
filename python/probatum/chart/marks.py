@@ -632,7 +632,7 @@ class Recorder:
             def next(self, bar, account):
                 self.log.at_bar(bar, leverage=account.leverage)
 
-        result = probatum.backtest(Carry(), data, "binance_perp")
+        result = probatum.backtest(Carry(), data, "bybit_perp")
         result.chart(Line(result.policy.log["leverage"], "leverage")).show()
 
     The run decides with a copy of the strategy, so the values are on

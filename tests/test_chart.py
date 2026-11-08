@@ -93,7 +93,7 @@ def crashed():
     close = 100.0 * np.concatenate([np.full(10, 1.0), np.linspace(1.0, 0.6, 20),
                                     np.full(30, 0.6)])
     data  = bars(rows, open=close, high=close * 1.001, low=close * 0.999, close=close)
-    venue = probatum.venues.binance_perp.replace(funding="none")
+    venue = probatum.venues.bybit_perp.replace(funding="none")
     return data, probatum.backtest(np.full(rows, 500.0), data, venue, sizing="quantity")
 
 

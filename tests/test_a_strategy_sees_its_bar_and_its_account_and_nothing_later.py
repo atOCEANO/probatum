@@ -291,12 +291,12 @@ def test_a_bar_s_funding_rate_is_the_last_one_known_at_its_end():
     rates = data.funding_rate
     assert np.isnan(rates[0]).all() and not np.isnan(rates[-1]).any()
 
-    for bar in probatum.backtest(Seen(), data, "binance_perp").policy.bars:
+    for bar in probatum.backtest(Seen(), data, "bybit_perp").policy.bars:
         np.testing.assert_array_equal(bar.funding_rates, rates[bar.i])
         np.testing.assert_array_equal(bar["ETHUSDT"].funding_rate, rates[bar.i, 1])
 
     lone = data.select(["BTCUSDT"])
-    for bar in probatum.backtest(Seen(), lone, "binance_perp").policy.bars:
+    for bar in probatum.backtest(Seen(), lone, "bybit_perp").policy.bars:
         np.testing.assert_array_equal(bar.funding_rate, rates[bar.i, 0])
 
 

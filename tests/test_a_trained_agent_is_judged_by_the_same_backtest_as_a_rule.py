@@ -458,12 +458,12 @@ def test_a_sampled_agent_s_features_are_worked_over_the_universe_as_in_training(
 
 
 def test_an_agent_trades_each_slot_on_the_market_it_trained_on():
-    venue = probatum.venues.binance.replace(funding="none")
+    venue = probatum.venues.bybit.replace(funding="none")
     perps = paired()
     env   = probatum.env(perps[:150], venue, window=8, seed=1)
     spots = paired(market="spot")
 
-    with pytest.raises(SpecError, match="^data: BTCUSDT is spot at binance, and the agent "
+    with pytest.raises(SpecError, match="^data: BTCUSDT is spot at bybit, and the agent "
                                         "trained on it as linear; give it the market it "
                                         "trained on$"):
         probatum.backtest(Agent(env.single_action_space), spots[150:], venue, spec=env)
@@ -491,7 +491,7 @@ def test_an_agent_trades_each_slot_on_the_market_it_trained_on():
 
 
 def test_a_sweep_of_an_agent_opens_and_measures_the_account_of_its_slots():
-    venue = probatum.venues.binance.replace(funding="none")
+    venue = probatum.venues.bybit.replace(funding="none")
     perps = paired()
     env   = probatum.env(perps[:150], venue, window=8, seed=1)
 
@@ -579,11 +579,11 @@ def test_bars_that_overlap_the_training_span_another_venue_or_interval_warn():
     assert inside.provenance["overlap"] == ["2023-11-14T22:13:20Z", "2023-11-21T03:13:20Z"]
 
     other = VENUE.replace(intrabar="optimistic")
-    with pytest.warns(ProbatumWarning, match="^venue: binance_perp taken 2026-10-16 with "
-                                             "intrabar, funding changed, and the agent "
-                                             "trained at binance_perp taken 2026-10-16 "
-                                             "with funding changed; the run judges it at "
-                                             "a venue it did not learn$"):
+    with pytest.warns(ProbatumWarning, match=f"^venue: bybit_perp taken {VENUE.taken} "
+                                             "with intrabar, funding changed, and the "
+                                             "agent trained at bybit_perp taken "
+                                             f"{VENUE.taken} with funding changed; the run "
+                                             "judges it at a venue it did not learn$"):
         moved = probatum.backtest(Agent(env.single_action_space), data[150:], other,
                                   spec=env)
 

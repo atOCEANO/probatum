@@ -2,7 +2,7 @@
 
 [venue]
 name = "bybit_spot"
-taken = "2026-10-16"
+taken = "2026-11-08"
 kind = "spot"
 
 [defaults]
@@ -36,6 +36,10 @@ lot = 0.1
 [instruments.A8USDT]
 tick = 1e-06
 lot = 0.1
+
+[instruments.AAPLXUSDT]
+tick = 0.01
+lot = 0.001
 
 [instruments.AAVEUSDC]
 tick = 0.01
@@ -112,6 +116,10 @@ lot = 0.1
 [instruments.ALTUSDT]
 tick = 1e-06
 lot = 0.1
+
+[instruments.AMZNXUSDT]
+tick = 0.01
+lot = 0.001
 
 [instruments.ANIMEUSDT]
 tick = 1e-06
@@ -365,10 +373,6 @@ lot = 0.1
 tick = 0.1
 lot = 1e-06
 
-[instruments.BTCBRL]
-tick = 1.0
-lot = 1e-06
-
 [instruments.BTCEUR]
 tick = 0.1
 lot = 1e-06
@@ -379,10 +383,6 @@ lot = 1e-06
 
 [instruments.BTCRLUSD]
 tick = 0.1
-lot = 1e-06
-
-[instruments.BTCTRY]
-tick = 1.0
 lot = 1e-06
 
 [instruments.BTCUSD]
@@ -489,6 +489,10 @@ lot = 0.01
 tick = 1e-05
 lot = 0.01
 
+[instruments.COINXUSDT]
+tick = 0.01
+lot = 0.001
+
 [instruments.COMPUSDT]
 tick = 0.01
 lot = 0.001
@@ -512,6 +516,10 @@ lot = 0.1
 [instruments.CPOOLUSDT]
 tick = 1e-05
 lot = 0.01
+
+[instruments.CRCLXUSDT]
+tick = 0.01
+lot = 0.001
 
 [instruments.CRVUSDC]
 tick = 0.0001
@@ -669,10 +677,6 @@ lot = 0.001
 tick = 0.01
 lot = 1e-05
 
-[instruments.ETHBRL]
-tick = 0.01
-lot = 1e-05
-
 [instruments.ETHBTC]
 tick = 1e-06
 lot = 1e-05
@@ -691,10 +695,6 @@ lot = 1e-05
 
 [instruments.ETHRLUSD]
 tick = 0.01
-lot = 1e-05
-
-[instruments.ETHTRY]
-tick = 1.0
 lot = 1e-05
 
 [instruments.ETHUSD]
@@ -825,6 +825,10 @@ lot = 0.01
 tick = 1e-05
 lot = 1.0
 
+[instruments.GOOGLXUSDT]
+tick = 0.01
+lot = 0.001
+
 [instruments.GPSUSDT]
 tick = 1e-06
 lot = 0.1
@@ -873,10 +877,6 @@ lot = 0.1
 tick = 1e-05
 lot = 0.1
 
-[instruments.HFTUSDT]
-tick = 1e-06
-lot = 0.01
-
 [instruments.HMSTRUSDC]
 tick = 1e-07
 lot = 0.1
@@ -896,6 +896,10 @@ lot = 0.1
 [instruments.HOMEUSDT]
 tick = 1e-06
 lot = 0.1
+
+[instruments.HOODXUSDT]
+tick = 0.01
+lot = 0.001
 
 [instruments.HTXUSDT]
 tick = 1e-09
@@ -1013,6 +1017,10 @@ lot = 0.1
 tick = 1e-05
 lot = 0.01
 
+[instruments.KORUSDT]
+tick = 1e-06
+lot = 0.1
+
 [instruments.KSMUSDT]
 tick = 0.001
 lot = 0.001
@@ -1129,6 +1137,10 @@ lot = 0.01
 tick = 1e-05
 lot = 0.01
 
+[instruments.MCDXUSDT]
+tick = 0.01
+lot = 0.001
+
 [instruments.MCRTUSDT]
 tick = 1e-08
 lot = 0.1
@@ -1148,6 +1160,10 @@ lot = 0.1
 [instruments.MERLUSDT]
 tick = 1e-05
 lot = 0.01
+
+[instruments.METAXUSDT]
+tick = 0.01
+lot = 0.001
 
 [instruments.METHETH]
 tick = 0.0001
@@ -1284,6 +1300,10 @@ lot = 1.0
 [instruments.NSUSDT]
 tick = 1e-05
 lot = 1.0
+
+[instruments.NVDAXUSDT]
+tick = 0.01
+lot = 0.001
 
 [instruments.NXPCUSDT]
 tick = 0.0001
@@ -1573,10 +1593,6 @@ lot = 0.01
 tick = 0.01
 lot = 0.001
 
-[instruments.SOLBRL]
-tick = 0.1
-lot = 0.0001
-
 [instruments.SOLBTC]
 tick = 1e-07
 lot = 0.0001
@@ -1611,6 +1627,10 @@ lot = 0.1
 
 [instruments.SOSOUSDT]
 tick = 0.0001
+lot = 0.01
+
+[instruments.SPCXXUSDT]
+tick = 0.01
 lot = 0.01
 
 [instruments.SPKUSDT]
@@ -1761,6 +1781,10 @@ lot = 0.01
 tick = 0.0001
 lot = 0.01
 
+[instruments.TSLAXUSDT]
+tick = 0.01
+lot = 0.001
+
 [instruments.TWTUSDT]
 tick = 0.0001
 lot = 0.01
@@ -1831,10 +1855,6 @@ lot = 0.01
 
 [instruments.USDTPLN]
 tick = 0.001
-lot = 0.1
-
-[instruments.USDTTRY]
-tick = 0.01
 lot = 0.1
 
 [instruments.USDTUSD]

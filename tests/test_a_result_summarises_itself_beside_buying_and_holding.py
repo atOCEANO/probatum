@@ -18,7 +18,7 @@ from probatum import MissingDependency, stats
 from probatum._result import HOLDING, SUMMARY, Summary, _money
 
 HOUR  = 3_600_000_000_000
-VENUE = probatum.venues.binance_perp.replace(funding="none")
+VENUE = probatum.venues.bybit_perp.replace(funding="none")
 FREE  = probatum.Venue(balance=10_000.0, fees={"maker": 0.0, "taker": 0.0})
 LEANS = ("order limits, fills in the bar, an instrument with no bar, auto-deleveraging, a "
          "flip held back, universe")
@@ -94,7 +94,7 @@ def test_a_run_s_summary_is_its_record_beside_buying_and_holding(traded):
 
 def test_its_context_is_what_ran_its_bars_its_balance_and_its_assumptions(traded):
     assert list(traded.summary().context.items()) == [
-        ("policy", "a (1000, 1) array of weights"), ("venue", "binance_perp"),
+        ("policy", "a (1000, 1) array of weights"), ("venue", "bybit_perp"),
         ("data", "BTCUSDT 1h"), ("first", "1970-01-01"), ("last", "1970-02-11"),
         ("rows", 1_000), ("balance", "10,000"), ("assumptions", 37),
         ("graded optimistic", "funding"), ("lean optimistic", LEANS)]

@@ -577,12 +577,12 @@ def test_the_provenance_names_the_venue_its_markets_settlement_and_seed():
     frame.attrs.update(exchange="binance", market_type="linear", symbol="BTCUSDT",
                        interval="1h", quote="USDT", warnings=[])
     data  = probatum.Data(frame)
-    venue = probatum.venues.binance_perp.replace(funding="none")
+    venue = probatum.venues.bybit_perp.replace(funding="none")
 
     given = probatum.backtest(np.full(40, 0.5), data, venue).provenance
 
     assert (given["venue_name"], given["markets"], given["settlement"]) == (
-        "binance_perp", ["linear"], "USDT")
+        "bybit_perp", ["linear"], "USDT")
     assert (given["seed"], given["streams"]) == (None, {})
     assert given["python"] == platform.python_version()
 

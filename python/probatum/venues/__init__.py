@@ -1,5 +1,5 @@
 """The venue presets: each a TOML file in this package, dated, read and checked when it
-loads (ADR 0028), and reached as a `Venue`, ``probatum.venues.binance_perp``. A preset
+loads (ADR 0028), and reached as a `Venue`, ``probatum.venues.bybit_perp``. A preset
 holds the venue's defaults, each instrument's own tables, and each kind's settings
 where it mixes spot and perpetual markets, or names the presets it combines.
 """

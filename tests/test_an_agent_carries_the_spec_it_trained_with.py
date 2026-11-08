@@ -104,7 +104,7 @@ def test_the_spec_is_json_and_handed_out_as_a_copy():
 
 @pytest.mark.parametrize("venue", [
     # a fee side a kind's table drops, which a merge side by side would put back
-    probatum.venues.binance.replace(kinds={"linear": {"fees": {"taker": None}}}),
+    probatum.venues.bybit.replace(kinds={"linear": {"fees": {"taker": None}}}),
     # a table of an instrument whose tiers end at an infinite bound
     probatum.venues.hyperliquid_perp.replace(instruments={"AAVEUSDC": {"lot": 0.1}}),
 ])
@@ -123,7 +123,7 @@ def test_the_venue_is_its_preset_the_day_it_was_taken_and_each_setting_changed()
     random = VENUE.replace(intrabar="random", leverage=5.0)
     spec   = probatum.env(universe(), random, window=8, seed=1).agent_spec
 
-    assert spec["venue"] == {"name": "binance_perp", "taken": "2026-10-16",
+    assert spec["venue"] == {"name": "bybit_perp", "taken": VENUE.taken,
                              "changed": {"leverage": 5.0, "intrabar": "random",
                                          "funding": "none"}}
 
@@ -148,17 +148,17 @@ def test_the_venue_is_its_preset_the_day_it_was_taken_and_each_setting_changed()
     held    = probatum.env(universe(), renamed, window=8, seed=1).agent_spec["venue"]
 
     assert held == {
-        "name":    "binance_perp",
-        "taken":   "2026-10-16",
+        "name":    "bybit_perp",
+        "taken":   VENUE.taken,
         "changed": {"leverage": 5.0, "funding": "none", "name": "desk"},
     }
 
-    named = probatum.Venue(name="binance_perp", fees={"maker": 0.0, "taker": 0.0})
+    named = probatum.Venue(name="bybit_perp", fees={"maker": 0.0, "taker": 0.0})
     held  = probatum.env(one, named, window=8, seed=1).agent_spec["venue"]
 
     assert held == {"name": None, "taken": None,
                     "changed": {"fees": {"maker": 0.0, "taker": 0.0},
-                                "name": "binance_perp"}}
+                                "name": "bybit_perp"}}
 
     # and the spec builds each of them again
     for venue, data in ((random, universe()), (renamed, universe()), (plain, one),

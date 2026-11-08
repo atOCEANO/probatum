@@ -377,7 +377,7 @@ def test_a_validation_reads_its_windows_and_its_fits(validated):
 
 
 def test_an_even_count_of_paths_reads_the_lower_middle_one_and_its_costs():
-    done = probatum.validate(Flip, bars(), probatum.venues.binance_perp.replace(
+    done = probatum.validate(Flip, bars(), probatum.venues.bybit_perp.replace(
         funding="none"), probatum.cv.CombinatorialPurged(5, 2), space=SPACE,
         search=dict(trials=4, sampler="random"), holdout=0.2, seed=1)
 

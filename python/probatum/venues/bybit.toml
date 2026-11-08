@@ -2,5 +2,5 @@
 
 [venue]
 name = "bybit"
-taken = "2026-10-16"
+taken = "2026-11-08"
 combines = ["bybit_spot", "bybit_perp"]

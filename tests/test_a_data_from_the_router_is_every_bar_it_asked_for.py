@@ -78,15 +78,15 @@ class Router:
 
 
     def __init__(self, held, funding=None, cap=1_000, market="linear", silent=0,
-                 failing=(), window=None, unlisted=()):
+                 failing=(), window=None, unlisted=(), exchange="binance"):
         self.held, self.funding = held, funding or {}
         self.cap, self.market, self.window = cap, market, window
         self.silent, self.failing, self.calls = silent, failing, []
-        self.unlisted = unlisted
+        self.unlisted, self.exchange = unlisted, exchange
 
 
     def frame(self, symbol, times, values, columns, attrs):
-        meta = dict(exchange="binance", market_type=self.market, symbol=symbol,
+        meta = dict(exchange=self.exchange, market_type=self.market, symbol=symbol,
                     schema_version=3, warnings=[])
 
         if len(times):
@@ -96,7 +96,7 @@ class Router:
         else:
             # the router's own empty frame, with no index of times and no column types
             out = pd.DataFrame(columns=columns)
-            meta["warnings"] = [f"0 rows returned for binance/{self.market}/{symbol}"]
+            meta["warnings"] = [f"0 rows returned for {self.exchange}/{self.market}/{symbol}"]
 
         out.attrs.update(meta)
         return out
@@ -168,7 +168,7 @@ class Router:
 
 
 def fetch(router, symbols=("BTCUSDT",), **asked):
-    return probatum.Data.from_router(router, "binance", "linear", "1h", list(symbols),
+    return probatum.Data.from_router(router, router.exchange, "linear", "1h", list(symbols),
                                      **{**dict(start="2024-01-01",
                                                end="2024-01-02 23:00"), **asked})
 

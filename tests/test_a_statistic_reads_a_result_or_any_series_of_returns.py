@@ -560,7 +560,7 @@ def test_a_run_kept_at_the_account_level_counts_no_fills_and_no_turnover():
     )
 
     weights = np.where(np.arange(400) % 40 < 20, 1.0, 0.0)
-    venue   = probatum.venues.binance_perp.replace(funding="none")
+    venue   = probatum.venues.bybit_perp.replace(funding="none")
     full    = probatum.backtest(weights, data, venue)
     kept    = probatum.backtest(weights, data, venue, record="account")
 

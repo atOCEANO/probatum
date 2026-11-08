@@ -37,8 +37,8 @@ DATA_ROWS = ["bars", "gaps", "funding events", "history", "delisting", "universe
              "prices"]
 PRICED = ["fees", "liquidation fee", "funding", "spread", "slippage", "impact",
           "margin bound", "liquidation", "sizes"]
-PERP  = probatum.venues.binance_perp
-TAKEN = f"binance_perp, taken {PERP.taken}"
+PERP  = probatum.venues.bybit_perp
+TAKEN = f"bybit_perp, taken {PERP.taken}"
 # the rows only a perpetual has, and the engine's that act only on one
 PERPETUAL = ["leverage", "maintenance", "liquidation", "liquidation fee", "funding"]
 MARGINED  = ["margin", "liquidation trigger", "funding price", "margin bound",
@@ -64,7 +64,7 @@ def routed(venue=PERP, symbols=("BTCUSDT",), **asked):
     hourly router bars with funding every 8 hours."""
     held    = {symbol: served(48, close=100.0 * (k + 1)) for k, symbol in enumerate(symbols)}
     funding = {symbol: settlements() for symbol in symbols}
-    data    = fetch(Router(held, funding), symbols, funding=True, **asked)
+    data    = fetch(Router(held, funding, exchange="bybit"), symbols, funding=True, **asked)
 
     return probatum.backtest(np.full((48, len(symbols)), 0.5 / len(symbols)), data, venue)
 
@@ -107,7 +107,7 @@ def test_a_run_lists_every_row_the_specification_names_in_its_order(results):
 
 
 def test_a_preset_run_assumes_nothing_optimistic_until_moved_to_touch_and_no_spread():
-    # the Specification's example: binance_perp has no optimistic assumption, and moved
+    # the Specification's example: bybit_perp has no optimistic assumption, and moved
     # to limits that fill on touch and no spread it has two, each set by the user
     result = routed()
     table  = result.assumptions
@@ -131,7 +131,7 @@ def test_a_preset_run_reads_each_row_from_the_preset_it_ran():
     fetched = rows["bars"][1].removeprefix("the router, fetched ")
 
     assert rows["balance"][:3] == ("10,000 USDT", "plain", "venue")
-    assert rows["fees"][:4]    == ("maker 0.02%, taker 0.05%", TAKEN, "venue", None)
+    assert rows["fees"][:4]    == ("maker 0.02%, taker 0.055%", TAKEN, "venue", None)
     for name in ("leverage", "maintenance"):
         assert rows[name][:3] == ("each instrument's tier table", TAKEN, "venue")
     assert rows["liquidation"][:3] == ("by takeover", TAKEN, "venue")
@@ -143,7 +143,7 @@ def test_a_preset_run_reads_each_row_from_the_preset_it_ran():
                                        "simplified", "either")
     assert rows["window"][:3] == ("24 bars", "plain", "simplified")
 
-    calibrated = "binance_perp, a starting calibration"
+    calibrated = "bybit_perp, a starting calibration"
     assert rows["liquidity"][:2] == ("10% of the trailing volume a bar", calibrated)
     assert rows["spread"][:2] == ("estimated, which errs high on the most liquid "
                                   "perpetuals", TAKEN)
@@ -154,14 +154,14 @@ def test_a_preset_run_reads_each_row_from_the_preset_it_ran():
                                         f"the router, fetched {fetched}", "venue")
     assert rows["intrabar"][:4]      == ("pessimistic", "plain", "simplified", "pessimistic")
     assert rows["funding"][:3]       == ("from the data", TAKEN, "venue")
-    assert rows["bars"][0]           == "1h, 2024-01-01 00:00 to 2024-01-02 23:00, from binance"
+    assert rows["bars"][0]           == "1h, 2024-01-01 00:00 to 2024-01-02 23:00, from bybit"
     assert rows["funding events"][0] == "6"
     assert rows["universe"][:4] == ("the user's list of 1 instrument",
                                     f"the router, fetched {fetched}", "simplified",
                                     "optimistic")
 
 
-# each row's grade and direction on binance_perp's router bars of a perpetual, as the
+# each row's grade and direction on bybit_perp's router bars of a perpetual, as the
 # Specification's tables give them
 GRADED = {
     "balance":                             ("venue", None),
@@ -298,7 +298,7 @@ def test_an_instrument_the_venue_gives_no_tiers_is_capped_flat_and_keeps_no_main
     assert rows["liquidation fee"][:4] == (
         "unused, as maintenance is kept; XYZUSDT the taker rate", TAKEN, "simplified",
         "either")
-    assert rows["fees"][:2] == ("maker 0.02%, taker 0.05%", TAKEN)
+    assert rows["fees"][:2] == ("maker 0.02%, taker 0.055%", TAKEN)
 
     alone = graded(framed(venue, ("XYZUSDT",)).assumptions)
     assert alone["maintenance"]     == ("not kept", "optimistic", None)
@@ -316,31 +316,31 @@ def test_through_with_no_price_rule_fills_on_touch():
 
 
 def test_the_fees_row_names_the_instruments_that_pay_their_own():
-    bybit = probatum.venues.bybit_perp
-    own   = bybit.to_dict()["instruments"]
+    zone  = {"fees": {"maker": 0.0004, "taker": 0.0011}}
+    own   = ("1000TAGUSDT", "4STOCKUSDT", "4USDT", "ACUUSDT")
+    bybit = probatum.venues.bybit_perp.replace(instruments={name: zone for name in own})
     venue = bybit.replace(funding="none")
     rows  = read(framed(venue, ("BTCUSDT", "1000TAGUSDT")).assumptions)
     taken = f"bybit_perp, taken {bybit.taken}"
 
     assert rows["fees"][:3] == ("maker 0.02%, taker 0.055%; 1000TAGUSDT maker 0.04%, "
-                                "taker 0.11%", taken, "venue")
+                                "taker 0.11%", f"{taken}; 1000TAGUSDT set by the user",
+                                "venue")
     assert read(framed(venue, ("1000TAGUSDT",)).assumptions)["fees"][0] == (
         "maker 0.04%, taker 0.11%")
 
-    departing = sum("fees" in table for table in own.values())
-    assert departing > 100
     assert read(bybit.describe())["fees"][:2] == (
-        f"maker 0.02%, taker 0.055%; {departing:,} instruments maker 0.04%, taker 0.11%",
-        taken)
+        f"maker 0.02%, taker 0.055%; {len(own)} instruments maker 0.04%, taker 0.11%",
+        f"{taken}; {len(own)} instruments set by the user")
 
     legs = probatum.Data(bars(), symbol="BTCUSDT", market="spot").join(
         probatum.Data(bars(), symbol="BTCUSDT", market="linear"))
-    binance = probatum.venues.binance.replace(
+    bybit = probatum.venues.bybit.replace(
         balance={"spot": 5_000.0, "margin": 5_000.0}, funding="none")
-    rows = read(probatum.backtest(np.full((40, 2), 0.25), legs, binance).assumptions)
+    rows = read(probatum.backtest(np.full((40, 2), 0.25), legs, bybit).assumptions)
 
     assert rows["fees"][:2] == ("spot maker 0.1%, taker 0.1%; linear maker 0.02%, "
-                                "taker 0.05%", f"binance, taken {binance.taken}")
+                                "taker 0.055%", f"bybit, taken {bybit.taken}")
     assert rows["balance"][0]        == "5,000 spot and 5,000 margin"
     assert rows["spot borrowing"][0] == "not modelled, a spot buy held to the cash"
 
@@ -354,24 +354,24 @@ def test_the_fees_row_names_the_instruments_that_pay_their_own():
 def test_a_combined_preset_reads_its_perpetual_rows_over_the_perpetuals_alone():
     legs = probatum.Data(bars(), symbol="BTCUSDT", market="spot").join(
         probatum.Data(bars(), symbol="BTCUSDT", market="linear"))
-    binance = probatum.venues.binance.replace(
+    bybit = probatum.venues.bybit.replace(
         balance={"spot": 5_000.0, "margin": 5_000.0}, funding="none")
 
-    taken    = f"binance, taken {binance.taken}"
+    taken    = f"bybit, taken {bybit.taken}"
     expected = {"leverage": ("each instrument's tier table", taken, "venue", None),
                 "maintenance": ("each instrument's tier table", taken, "venue", None),
                 "liquidation fee": ("unused, as maintenance is kept", taken, "venue",
                                     None)}
 
-    for venue in (binance, binance.replace(leverage=0.0),
-                  binance.replace(liquidation_fee=0.0)):
+    for venue in (bybit, bybit.replace(leverage=0.0),
+                  bybit.replace(liquidation_fee=0.0)):
         rows = read(probatum.backtest(np.full((40, 2), 0.25), legs, venue).assumptions)
         assert {name: rows[name][:4] for name in expected} == expected, repr(venue)
 
-    described = read(probatum.venues.binance.describe())
+    described = read(probatum.venues.bybit.describe())
     assert {name: described[name][:4] for name in expected} == expected
     assert described["fees"][:2] == ("spot maker 0.1%, taker 0.1%; linear maker 0.02%, "
-                                     "taker 0.05%", taken)
+                                     "taker 0.055%", taken)
     assert described["spot borrowing"][0] == "not modelled, a spot buy held to the cash"
 
 
@@ -412,7 +412,14 @@ def test_a_row_is_sourced_from_the_input_that_decided_each_instrument_s_value():
     rows = read(framed(split, ("BTCUSDT", "1000TAGUSDT")).assumptions)
 
     assert rows["fees"][1] == (f"bybit_perp, taken {bybit.taken}; BTCUSDT taker and "
-                               f"1000TAGUSDT maker set by the user")
+                               f"1000TAGUSDT set by the user")
+
+    alone = bybit.replace(funding="none",
+                          instruments={"1000TAGUSDT": {"fees": {"maker": 0.0005}}})
+    rows  = read(framed(alone, ("BTCUSDT", "1000TAGUSDT")).assumptions)
+
+    assert rows["fees"][1] == (f"bybit_perp, taken {bybit.taken}; 1000TAGUSDT maker set "
+                               f"by the user")
 
     lacking = PERP.replace(funding="none", fills={"sizes": "off"})
     rows    = read(framed(lacking, ("XYZUSDT",)).assumptions)
@@ -735,7 +742,7 @@ def test_router_bars_are_the_venue_s_own_where_every_instrument_names_its_venue(
         monkeypatch):
     monkeypatch.setattr(probatum._data, "_now", lambda: START + 50 * HOUR)
     router = Router({"BTCUSDT": served(48), "ETHUSDT": served(48, close=10.0)},
-                    {"BTCUSDT": settlements(), "ETHUSDT": settlements()})
+                    {"BTCUSDT": settlements(), "ETHUSDT": settlements()}, exchange="bybit")
     data = fetch(router, ("BTCUSDT",), funding=True)
     rows = graded(probatum.backtest(np.full(48, 0.5), data, PERP).assumptions)
 
@@ -747,11 +754,11 @@ def test_router_bars_are_the_venue_s_own_where_every_instrument_names_its_venue(
 
     # another exchange's bars are not this venue's, while a venue built by hand, even
     # one named for a preset, keeps the grade the Data gives
-    bybit = probatum.venues.bybit_perp
-    assert graded(probatum.backtest(np.full(48, 0.5), data, bybit).assumptions)[
+    okx = probatum.venues.okx_perp
+    assert graded(probatum.backtest(np.full(48, 0.5), data, okx).assumptions)[
         "bars"][1:] == ("simplified", "either")
 
-    named = probatum.Venue(name="bybit_perp", funding="data")
+    named = probatum.Venue(name="okx_perp", funding="data")
     assert graded(probatum.backtest(np.full(48, 0.5), data, named).assumptions)[
         "bars"][1:] == ("venue", None)
 

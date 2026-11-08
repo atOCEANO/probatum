@@ -42,19 +42,18 @@ def routed(symbol, market="linear", quote="USDT", exchange="binance", **attrs):
 
 def test_a_universe_from_the_router_runs_on_a_preset_with_every_table_and_limit():
     data = fetch(Router(PAIR, FUNDING), PAIR, funding=True)
-    run  = _run("binance_perp", data)
+    run  = _run("bybit_perp", data)
     btc, eth = run.settings["instruments"]
-    table = probatum.venues.binance_perp.to_dict()["instruments"]["BTCUSDT"]
+    table = probatum.venues.bybit_perp.to_dict()["instruments"]["BTCUSDT"]
 
     assert (btc["market"], btc["tick"], btc["lot"]) == ("perp", table["tick"],
                                                        table["lot"])
     assert btc["tiers"][0][:3] == (table["tiers"][0]["up_to"],
                                    table["tiers"][0]["leverage"],
                                    table["tiers"][0]["rate"])
-    assert (btc["min_notional"], btc["max_qty"], btc["reduce_only_exempt"]) == (
-        5.0, 1_000.0, True)
+    assert (btc["min_notional"], btc["max_qty"]) == (5.0, 1_000.0)
     assert "fee_taker" not in btc
-    assert (run.settings["fee_maker"], run.settings["fee_taker"]) == (0.0002, 0.0005)
+    assert (run.settings["fee_maker"], run.settings["fee_taker"]) == (0.0002, 0.00055)
     assert run.candles.shape == (48, 2, 5) and run.start == 0
     np.testing.assert_array_equal(run.settings["times"], data.time)
     assert run.settings["funding_times"].tolist() == data.funding["time"].tolist()
@@ -74,7 +73,7 @@ def test_a_universe_from_the_router_runs_on_a_preset_with_every_table_and_limit(
 
 def test_the_venue_s_own_limit_stands_over_the_router_s():
     data  = fetch(Router(PAIR), PAIR)
-    venue = probatum.venues.binance_perp.replace(funding="none", min_notional=50.0)
+    venue = probatum.venues.bybit_perp.replace(funding="none", min_notional=50.0)
 
     for spec in _run(venue, data).settings["instruments"]:
         assert (spec["min_notional"], spec["max_qty"]) == (50.0, 1_000.0)
@@ -91,7 +90,7 @@ def test_a_selection_runs_on_the_rows_its_instruments_printed():
                      ["BTCUSDT", "ETHUSDT"])
 
     alone = data["ETHUSDT"]["2024-01-01 12:00":]
-    run   = _run(probatum.venues.binance_perp.replace(funding="none"), alone)
+    run   = _run(probatum.venues.bybit_perp.replace(funding="none"), alone)
 
     assert run.candles.shape == (41, 1, 5) and run.start == 6
 
@@ -103,7 +102,7 @@ def test_a_selection_runs_on_the_rows_its_instruments_printed():
 
 def test_an_instrument_s_own_table_keeps_its_limit_over_the_router_s():
     data  = fetch(Router(PAIR), PAIR)
-    venue = probatum.venues.binance_perp.replace(
+    venue = probatum.venues.bybit_perp.replace(
         funding="none", instruments={"BTCUSDT": {"min_notional": 50.0}})
 
     btc, eth = _run(venue, data).settings["instruments"]
@@ -115,7 +114,7 @@ def test_an_instrument_s_own_table_keeps_its_limit_over_the_router_s():
 def test_a_slice_brings_the_bars_before_it_and_only_its_own_funding():
     data = fetch(Router(PAIR, FUNDING), PAIR, funding=True)
     late = data["2024-01-02":]
-    run  = _run("binance_perp", late)
+    run  = _run("bybit_perp", late)
 
     assert run.start == 24 and run.candles.shape == (48, 2, 5)
     np.testing.assert_array_equal(run.candles[24:], late.bars)
@@ -175,7 +174,7 @@ def test_an_inverse_contract_runs_alone_on_its_own_bars_in_its_coin():
                                        start="2024-01-01", end="2024-01-02 23:00",
                                        funding=True)
 
-    run = _run(probatum.venues.binance_inverse.replace(balance=1.0), data)
+    run = _run(probatum.venues.bybit_inverse.replace(balance=1.0), data)
 
     assert run.candles.shape == (48, 5)
     assert (run.settings["market"], run.settings["contract"],
@@ -238,19 +237,19 @@ def test_an_instrument_the_venue_delisted_closes_there_at_its_last_close():
     (Venue(), two(routed("BTCUSDT", market="spot"), routed("BTCUSDT")), VenueError,
      "balance: 10000.0, one wallet's, and the data's spot and perpetual instruments "
      "use both; replace(balance={\"spot\": s, \"margin\": m})"),
-    ("binance_perp", two(routed("BTCUSDT")), DataError,
-     "funding: binance_perp charges the funding the data holds, and the data holds "
+    ("bybit_perp", two(routed("BTCUSDT")), DataError,
+     "funding: bybit_perp charges the funding the data holds, and the data holds "
      "none for BTCUSDT; fetch the bars with funding=True, or "
      "replace(funding=\"none\")"),
-    (probatum.venues.binance_perp.replace(funding="none"), two(routed("FOOUSDT")),
-     VenueError, "venue: binance_perp gives FOOUSDT no lot and no tick, and its sizes "
+    (probatum.venues.bybit_perp.replace(funding="none"), two(routed("FOOUSDT")),
+     VenueError, "venue: bybit_perp gives FOOUSDT no lot and no tick, and its sizes "
                  "hold every order to them"),
-    ("binance_perp", probatum.Data(frame(), market="linear"), DataError,
+    ("bybit_perp", probatum.Data(frame(), market="linear"), DataError,
      "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
-    (probatum.venues.binance_perp.replace(fills={"sizes": "off"}, funding="none"),
+    (probatum.venues.bybit_perp.replace(fills={"sizes": "off"}, funding="none"),
      probatum.Data(frame(), market="linear"), DataError,
      "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
-    ("binance_perp", probatum.Data(frame(), symbol="", market="linear"), DataError,
+    ("bybit_perp", probatum.Data(frame(), symbol="", market="linear"), DataError,
      "data: an unnamed instrument; pass probatum.Data(frame, symbol=...)"),
     (probatum.venues.hyperliquid_perp.replace(funding="none"), two(routed("FOOUSDC")),
      VenueError, "venue: hyperliquid_perp gives FOOUSDC significant figures and no "
@@ -260,13 +259,13 @@ def test_an_instrument_the_venue_delisted_closes_there_at_its_last_close():
      two(routed("FOOUSDC")), VenueError,
      "venue: hyperliquid_perp books then backstops, and gives FOOUSDC no tier table "
      "that keeps maintenance; give FOOUSDC its tiers in instruments"),
-    (probatum.venues.binance.replace(
+    (probatum.venues.bybit.replace(
         fills={"sizes": "off"}, balance={"spot": 1.0, "margin": 1.0}),
      two(routed("BTCUSD", market="inverse", quote="USD", volume_unit="contract",
                 contract_size=100.0)), VenueError,
-     "venue: binance lists spot and linear instruments, and BTCUSD is inverse"),
-    ("binance_perp", two(routed("BTCUSDT", market="spot")), VenueError,
-     "venue: binance_perp lists linear instruments, and BTCUSDT is spot; run it on a "
+     "venue: bybit lists spot and linear instruments, and BTCUSD is inverse"),
+    ("bybit_perp", two(routed("BTCUSDT", market="spot")), VenueError,
+     "venue: bybit_perp lists linear instruments, and BTCUSDT is spot; run it on a "
      "venue of its kind"),
     (Venue(), probatum.Data(frame(), symbol="BTCUSDT"), DataError,
      "data: BTCUSDT names no market, and venue is not of one kind; build the Data "

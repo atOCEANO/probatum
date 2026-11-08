@@ -423,7 +423,7 @@ def test_a_sweep_shows_a_row_a_level_and_a_run_that_trades_nothing_reads_nan():
     (lambda: probatum.cost_curve(POLICY, DATA, "frictionless"), VenueError,
      "venue: frictionless charges no fee, spread, slippage or impact on C0USDT, so no "
      "multiple of its costs moves one; give a venue that charges some, such as "
-     "probatum.venues.binance_perp"),
+     "probatum.venues.bybit_perp"),
     (lambda: probatum.breakeven_bps(POLICY, DATA, probatum.Venue(fees={"maker": 0.0,
                                                                        "taker": 0.0})),
      VenueError, "venue: the venue charges no fee, spread, slippage or impact"),

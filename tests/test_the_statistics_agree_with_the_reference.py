@@ -473,7 +473,7 @@ def test_the_order_of_trades_reads_each_trip_on_the_equity_before_it_opened():
     )
 
     run = probatum.backtest(np.where(np.arange(rows) % 4 < 2, 1.0, 0.0), data,
-                            probatum.venues.binance_perp.replace(funding="none"))
+                            probatum.venues.bybit_perp.replace(funding="none"))
 
     closed    = ~np.asarray(run.trades["open"])
     order     = np.argsort(np.asarray(run.trades["close_bar"])[closed], kind="stable")
@@ -701,7 +701,7 @@ def test_the_deflation_threshold_and_the_backtest_length_agree(trials):
         statistics.min_backtest_length(trials, 1.3), rel=1e-12)
 
 
-VENUE = probatum.venues.binance_perp.replace(funding="none")
+VENUE = probatum.venues.bybit_perp.replace(funding="none")
 NEAR  = dict(rel=1e-9, abs=1e-9)
 
 
@@ -1058,7 +1058,7 @@ def test_runs_set_side_by_side_hold_each_one_s_record():
     table    = probatum.compare({"one": one, "two": two})
 
     assert table["name"].tolist() == ["one", "two"]
-    assert table["venue"].tolist() == ["binance_perp"] * 2
+    assert table["venue"].tolist() == ["bybit_perp"] * 2
     assert table["data"].tolist() == [one.provenance["data"]["fingerprint"],
                                       two.provenance["data"]["fingerprint"]]
     assert table["rows"].tolist() == [len(one.time), len(two.time)]
@@ -1068,4 +1068,4 @@ def test_runs_set_side_by_side_hold_each_one_s_record():
 
     picked = probatum.compare([one, two], keys=["sharpe"])
     assert picked.columns == ("name", "sharpe", "venue", "policy", "data", "rows")
-    assert picked["name"].tolist() == ["binance_perp"] * 2
+    assert picked["name"].tolist() == ["bybit_perp"] * 2

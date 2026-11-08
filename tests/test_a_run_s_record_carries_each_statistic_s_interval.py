@@ -28,7 +28,7 @@ def run(held):
     )
 
     return probatum.backtest(np.where(held, 1.0, 0.0), data,
-                             probatum.venues.binance_perp.replace(funding="none"))
+                             probatum.venues.bybit_perp.replace(funding="none"))
 
 
 @pytest.fixture(scope="module")

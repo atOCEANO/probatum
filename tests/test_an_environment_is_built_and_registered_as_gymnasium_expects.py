@@ -27,7 +27,7 @@ from test_an_episode_runs_again_as_a_backtest_from_its_start import (HOUR, VENUE
                                                                      universe, walked)
 
 PLAIN = probatum.Venue(fees={"maker": 0.0, "taker": 0.0})
-MIXED = probatum.venues.binance.replace(balance={"spot": 5_000.0, "margin": 5_000.0},
+MIXED = probatum.venues.bybit.replace(balance={"spot": 5_000.0, "margin": 5_000.0},
                                         funding="none")
 
 
@@ -161,7 +161,7 @@ def test_an_environment_says_what_it_assumes_with_each_drawn_cost_s_range():
     plain = probatum.env(universe(), VENUE, window=8).describe()
 
     assert {row["name"]: row["value"] for row in plain}["fees"] == ("maker 0.02%, taker "
-                                                                   "0.05%")
+                                                                   "0.055%")
 
     # a maker rate drawn where the venue charges no taker is still a charge
     free  = probatum.env(universe(), PLAIN, window=8,
