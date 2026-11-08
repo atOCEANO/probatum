@@ -305,7 +305,7 @@ s2 = (v2 * e1 + v1 * e2) / (v1 + v2), or (e1 + e2) / 2 when v1 + v2 is not posit
 s  = sqrt(max(s2, 0))
 ```
 
-`[a]` is 1 when `a` holds and 0 otherwise. The estimate is undefined with fewer than three bars, with fewer than two pairs where `tau` is 1, or with `po` or `pc` at zero, and an undefined estimate is a spread of zero. So is a negative `s2`, where the authors' published code returns the root of its magnitude. A cost sweep multiplies the estimate by its scale ([Cost sweeps](#cost-sweeps)).
+`[a]` is 1 when `a` holds and 0 otherwise. The estimate is undefined with fewer than three bars, with fewer than two pairs where `tau` is 1, or with `po` or `pc` at zero, and an undefined estimate is a spread of zero. So is a negative `s2`, where the authors' published code returns the root of its magnitude. Where every bar of the window opens at the close of the bar before it, as Bybit's bars do, `r5` is zero on every pair, and so are `x2`, `e2` and `v2`: `s2` is then zero whenever `v1` is positive, and the estimate is a spread of zero. A cost sweep multiplies the estimate by its scale ([Cost sweeps](#cost-sweeps)).
 
 **Worked example.** Six bars:
 

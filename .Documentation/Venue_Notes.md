@@ -141,6 +141,8 @@ A pair's tick is its price filter's and its lot its lot-size filter's.
 
 A spot pair's lot is its base coin's precision. Bybit charges a perpetual in its Innovation Zone, which its instrument list marks with the symbol type `innovation`, 0.04% maker and 0.11% taker.
 
+Bybit opens every bar at the close of the bar before it, which leaves the spread estimate nothing to read: on Bybit's bars `"estimated"` is a spread of zero ([The spread estimate](Specification.md#the-spread-estimate)), so a run, a cost sweep, a label and the environment charge no spread there at any scale. `replace(fills={"spread": {"fixed": bps}})` sets one where a run needs it.
+
 <br>
 
 ## OKX
