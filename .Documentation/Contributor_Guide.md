@@ -124,13 +124,15 @@ docker run --rm --shm-size=1g \
 
 The sources are mounted, so a rerun draws what is on disk. The images are numbered, their names in their alt text: 205312 is the crate layering, 205314 the order of events within a step, 205316 no-lookahead and 205318 the RL loop. The renderer is pinned to a digest, and no diagram uses mermaid's stadium node, whose rounded outline renders a few pixels differently on every run; a rerun of an unchanged source then gives the same bytes. `puppeteer.json` points the renderer at the chromium the image ships, since its bundled headless shell does not start. The background is transparent, so an image reads on a light page and a dark one, and no width is set, so every wide diagram renders at the same size. `config.json` holds the palette, the cluster and edge-label colours among it, since mermaid derives whatever the palette leaves out. A source's `stage` class keeps the teal border, and its `entry` class, where it has one, gives what the caller invokes a blue one.
 
-`dev/venues/build.py` writes every venue preset in `python/probatum/venues/` but `frictionless`, from each venue's public endpoints and the rates it documents, as [Venue Notes](Venue_Notes.md) describes. It asks the venues themselves, so it runs by hand and never in the gate, and each preset records the day it ran as `taken`:
+`dev/venues/build.py` writes every venue preset in `python/probatum/venues/` but `frictionless`, from what exchange-router lists and the rates each venue documents, as [Venue Notes](Venue_Notes.md) describes. It asks the venues through the router, so it runs by hand and never in the gate, and each preset records the day it ran as `taken`:
 
 ```bash
-docker run --rm -v "${PWD}:/src" -w /src python:3.13-slim python dev/venues/build.py
+docker run --rm -v "${PWD}:/src" -w /src python:3.13-slim sh -c \
+  "pip install -q 'exchange-router @ https://github.com/atOCEANO/exchange-router/releases/download/v3.3.0/exchange_router-3.3.0-py3-none-any.whl' && \
+   python dev/venues/build.py"
 ```
 
-A rerun rewrites every preset but frictionless, so its diff is what the venues changed since the last one.
+A rerun rewrites every preset but frictionless, so its diff is what the venues changed since the last one. The router prints a warning where it served a list or a table short: a builder-deployed dex Hyperliquid did not answer for, or a perpetual with no tiers, which the builder leaves out. A run that printed one is run again before its diff is read, and a warning the second run repeats is the venue's own state.
 
 `dev/licences/` holds the settings and the template that cargo-about writes `THIRD-PARTY-LICENSES` from: the licence of every crate in `Cargo.lock` the extension is built from, in each crate's own text. The wheel and the source archive ship it beside probatum's `LICENSE` and the licences of the chart's renderer and icons. Run it in the same commit whenever `Cargo.lock` changes:
 
@@ -215,7 +217,7 @@ A rule reaches the engine last:
 
 ## Adding a preset
 
-A venue preset is a TOML file in `python/probatum/venues/`, named for the preset, and a new venue or a corrected table is a change to such a file and nothing else ([0028](Decisions.md)). It holds four tables:
+A venue preset is a TOML file in `python/probatum/venues/`, named for the preset, and a new venue or a corrected table is a change to such a file and nothing else ([0028](Decisions.md)), made by hand or, for a preset `dev/venues/build.py` writes, by the builder's next run. It holds four tables:
 
 - `[venue]`: its `name`; `taken`, the day its tables were taken, as `YYYY-MM-DD`; and `kind`, `spot`, `linear` or `inverse`, where every instrument it lists is of one kind, or `combines`, the presets of one kind each it puts in one account. A combining preset holds no other table. Each part's instruments come under their kind, as `kind:SYMBOL`, each part's own settings and rates become its kind's, and the account's settings are the same in every part that gives one, except `funding`, where a part's `"none"` yields to another's.
 - `[defaults]`: the venue's rates, `fees = { maker = r, taker = r }`; its `liquidation` and `backstop`; its `liquidation_fee`, which places the close point where no maintenance is kept; its `leverage`, the cap on a perpetual with no tier table; its `max_open_orders`; its `funding`, which is `"none"`, `"data"`, `{ every = hours, rate = r }` or `{ every_bars = n, rate = r }`; and any setting an instrument carries but its delisting time, for every instrument. `[defaults.fills]` holds its fill model: `limit`, `window`, `liquidity = { budget = f }`, `spread` (`"none"`, `"estimated"` or `{ fixed = bps }`), `slippage` (`"none"` or `{ fixed = bps }`), `impact` (`"none"`, `{ linear = k }` or `{ sqrt = k }`) and `sizes` (`"on"` or `"off"`).

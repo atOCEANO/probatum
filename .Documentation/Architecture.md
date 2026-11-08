@@ -166,4 +166,4 @@ Each depth spends its time in a different place, which decides what to reach for
 
 A backtest is a number somebody acts on, so the simulator's behaviour is part of the API ([0001](Decisions.md)). From 2.0.0 a public name, a keyword's meaning, a return type or a rule the [Specification](Specification.md) states changes only in a major release, with a record in [Decisions](Decisions.md) saying what was wrong. A minor release adds, and a keyword it adds has a default that keeps the old behaviour.
 
-Not promised: anything whose name starts with an underscore, the compiled binding `probatum._probatum` among them; the wording of an error or a warning; the chart's document; an indicator's last bit; and the Rust crates, which are workspace members rather than a published API.
+Not promised: anything whose name starts with an underscore, the compiled binding `probatum._probatum` among them; the wording of an error or a warning; the chart's document; an indicator's last bit; a preset's instruments and tables, which a release may take again ([0028](Decisions.md)); and the Rust crates, which are workspace members rather than a published API.

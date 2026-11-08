@@ -46,7 +46,7 @@
 ```python
 import probatum
 
-env = probatum.env(data, venue="binance_perp", window=64, num_envs=8, seed=0)
+env = probatum.env(data, venue="bybit_perp", window=64, num_envs=8, seed=0)
 
 print(env.single_observation_space)             # Box(-inf, inf, (328,), float32)
 print(env.single_action_space)                  # Box(-1.0, 1.0, (1,), float32)
@@ -58,7 +58,7 @@ for _ in range(1_000):
 env.close()
 ```
 
-`data` here is a Data of one perpetual's bars from `Data.from_router(..., funding=True)`, since `binance_perp` charges the funding events that come with the bars and refuses bars with none; `probatum.venues.binance_perp.replace(funding="none")` runs bars of your own. With no features the market block is the candles: 64 bars of five values, then four account values for the instrument and four for the account, 328 in all. An action is a target weight, scaled by `max_leverage`. A plain `import probatum` never loads Gymnasium, which the `rl` extra installs; `probatum.env` and `probatum.rl` load it when first reached.
+`data` here is a Data of one perpetual's bars from `Data.from_router(..., funding=True)`, since `bybit_perp` charges the funding events that come with the bars and refuses bars with none; `probatum.venues.bybit_perp.replace(funding="none")` runs bars of your own. With no features the market block is the candles: 64 bars of five values, then four account values for the instrument and four for the account, 328 in all. An action is a target weight, scaled by `max_leverage`. A plain `import probatum` never loads Gymnasium, which the `rl` extra installs; `probatum.env` and `probatum.rl` load it when first reached.
 
 <br>
 
@@ -75,7 +75,7 @@ train, test = data.split(when=int(len(data) * 0.8))
 ```python
 import stable_baselines3
 
-env = probatum.env(train, venue="binance_perp", window=32, num_envs=8, seed=0)
+env = probatum.env(train, venue="bybit_perp", window=32, num_envs=8, seed=0)
 
 agent = stable_baselines3.PPO(policy="MlpPolicy", env=probatum.sb3.wrap(env))
 
@@ -109,7 +109,7 @@ The environment is a plain Gymnasium vector environment, so a single-file policy
 import numpy
 import torch
 
-env = probatum.env(train, venue="binance_perp", window=32, actions="discrete",
+env = probatum.env(train, venue="bybit_perp", window=32, actions="discrete",
                    num_envs=512, seed=0)
 
 obs, _ = env.reset(seed=0)
@@ -161,7 +161,7 @@ import probatum.torch
 import torch
 
 env = probatum.torch.TensorEnv(
-    probatum.env(train, venue="binance_perp", window=64, num_envs=4096), device="cuda")
+    probatum.env(train, venue="bybit_perp", window=64, num_envs=4096), device="cuda")
 
 obs, info = env.reset(seed=0)                    # (4096, D) float32 on the card
 actions = policy(obs)                            # a tensor on the card
@@ -188,11 +188,11 @@ obs, reward, terminated, truncated, info = fork.step(plans)   # each copy tries 
 `record="transitions"` keeps a row for each step each environment takes, for offline reinforcement learning: its episode and step, the observation the environment wrote at the close, flat, the action as it was given, the reward, both flags, and the observation the step returned ([Specification](Specification.md#transitions)). A step that resets an environment under `next_step` takes no row, and under `same_step` the row of the step that ended an episode holds its last observation. `env.transitions` hands them out as numpy arrays, and `export` writes them as one Arrow IPC file, with the spaces, the reward and the agent spec on its schema:
 
 ```python
-env = probatum.env(train, venue="binance_perp", window=64, num_envs=8, record="transitions")
+env = probatum.env(train, venue="bybit_perp", window=64, num_envs=8, record="transitions")
 ...                                                        # the rollouts of any policy
 env.export(format="arrow", path="datasets/rollouts.arrow")
 
-result = probatum.backtest(policy, data=test, venue="binance_perp",
+result = probatum.backtest(policy, data=test, venue="bybit_perp",
                            spec=env, record="transitions")
 result.export(format="arrow", path="datasets/test.arrow")  # a row a close, to its episode's end
 ```
@@ -277,7 +277,7 @@ The decision at each close is a target of each shown slot's weight with `toleran
 def reward(state):
     return state.log_return - 0.5 * state.drawdown ** 2 - 0.0005 * state.turnover
 
-env = probatum.env(train, venue="binance_perp", window=48, reward=reward, num_envs=256)
+env = probatum.env(train, venue="bybit_perp", window=48, reward=reward, num_envs=256)
 ```
 
 <br>
@@ -325,7 +325,7 @@ A backtest of an agent has to show it what it saw in training and read its outpu
   "decode": {"builtin": "box"},
   "reward": {"builtin": "log", "floor": 0.01},
   "tolerance": 0.0,
-  "venue": {"name": "binance_perp", "taken": "2026-10-16", "changed": {"funding": "none"}},
+  "venue": {"name": "bybit_perp", "taken": "2026-11-08", "changed": {"funding": "none"}},
   "training": {"fingerprint": "b2:5f0c2a91e3d84b17a6c09e2d4f81b3c5", "interval": "1h",
                "bars": 8760, "start": "2024-01-01T00:00:00Z",
                "end": "2024-12-31T23:00:00Z"},
@@ -354,8 +354,8 @@ The first element of a tuple a module or a function returns is its action. The a
 
 ```python
 agent = stable_baselines3.PPO.load(path="agent")
-result = probatum.backtest(agent, data=test, venue="binance_perp")
-again = probatum.backtest(result.policy, data=test, venue="binance_perp")  # the same equity
+result = probatum.backtest(agent, data=test, venue="bybit_perp")
+again = probatum.backtest(result.policy, data=test, venue="bybit_perp")  # the same equity
 ```
 
 An SB3 model carries its spec; any other agent is given it as `spec=`, as the spec itself, a path to its JSON or to a directory holding `spec.json`, or the environment it trained in. `probatum.save` writes an agent beside its spec, a torch module as its state dict and an SB3 model as its own zip, and never pickles a module. The policy-gradient loop above trains a module whose output is the logits, so a function of the observation turns them into its action:
@@ -365,7 +365,7 @@ probatum.save(policy, path="agents/reinforce", spec=env)     # weights.pt and sp
 
 policy.load_state_dict(torch.load(f="agents/reinforce/weights.pt"))
 greedy = lambda obs: policy(torch.as_tensor(obs)).argmax(dim=1).numpy()
-result = probatum.backtest(greedy, data=test, venue="binance_perp", spec="agents/reinforce")
+result = probatum.backtest(greedy, data=test, venue="bybit_perp", spec="agents/reinforce")
 ```
 
 - **Functions it trained with.** A feature function or a decode is passed again as `features=` or `decode=`, never pickled, and held to its output on its probe, so a changed function is refused with both hashes. An array of features is over the Data given.
@@ -383,11 +383,11 @@ result = probatum.backtest(greedy, data=test, venue="binance_perp", spec="agents
 import gymnasium
 import probatum.rl
 
-single = gymnasium.make(id="probatum/Trading-v0", data=train, venue="binance_perp",
+single = gymnasium.make(id="probatum/Trading-v0", data=train, venue="bybit_perp",
                         window=64)
 
 vector = gymnasium.make_vec(id="probatum/Trading-v0", num_envs=512, data=train,
-                            venue="binance_perp", window=64)
+                            venue="bybit_perp", window=64)
 ```
 
 `make_vec` builds the same batch `probatum.env` returns. `probatum.rl.Batch` is the raw batch underneath, for a loop of your own ([Python API](Python_API.md#batch)).

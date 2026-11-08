@@ -466,14 +466,14 @@ Had the rate been 2%, the debit of 410.00 would leave equity of 90.00 under the 
 
 ### Maintenance
 
-- **Notional tiers** (Binance, Bybit, Hyperliquid): a position's requirement is `M_i = N_i * m_k - c_k` in the tier its notional falls in, and the account's is the sum. The cumulative amounts make it continuous across tier boundaries: `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`.
+- **Notional tiers** (Bybit, Hyperliquid): a position's requirement is `M_i = N_i * m_k - c_k` in the tier its notional falls in, and the account's is the sum. The cumulative amounts make it continuous across tier boundaries: `c_k = c_(k-1) + (m_k - m_(k-1)) * up_to_(k-1)`.
 - **Quantity tiers** (OKX): the tier is chosen by the position's size in contracts, and its rate applies to the whole position.
 - A size or a notional within a billionth of a tier's bound is at that bound, in the tier the bound closes, for the margin the cap asks of a position, its notional over its tier's leverage, and for a quantity table's maintenance, so lots that floating point sums a hair past a bound stay in its tier. A notional table's maintenance, continuous across its bounds, reads them exactly, so the liquidation path's segments meet them, and the cap reads the instrument a fill grows at its bounds exactly, so a fill it holds at a bound is held at the bound itself.
 - The loader refuses a notional table whose amounts break continuity or whose first amount is not zero, any rate not below one, any tier whose maintenance rate reaches its initial rate `1 / L_k`, a table whose bounds do not rise, whose leverage rises or whose maintenance rate falls from one tier to the next, a leverage of 0.0 standing for no cap, since both requirements have to grow with the position, and a value that is not finite, but for a last bound left open.
 
 **Worked example.** On a quantity table whose second tier runs to 200 contracts at 5x, fills of 107.1, 81.8 and 11.1 contracts of a lot of 0.1 hold 200, which floating point sums to 200.00000000000003: the position is in the second tier, at 5x, and a position of 200.1 is in the third.
 
-**Worked example.** BTCUSDT's first two Binance tiers: up to 300,000 at 0.4% with no amount, then up to 800,000 at 0.5% with an amount of 300. At 300,000 of notional the first asks `0.004 * 300,000 = 1,200` and the second `0.005 * 300,000 - 300 = 1,200`.
+**Worked example.** A notional table's first two tiers: up to 300,000 at 0.4% with no amount, then up to 800,000 at 0.5% with an amount of 300. At 300,000 of notional the first asks `0.004 * 300,000 = 1,200` and the second `0.005 * 300,000 - 300 = 1,200`.
 
 **Worked example.** Hyperliquid keeps half the initial rate at a tier's maximum leverage and leaves its last tier open: BTCUSDC's table runs to 150,000,000 at 40x, then on at 20x, so its rates are 1.25% and 2.5%, and the second tier's amount is `(0.025 - 0.0125) * 150,000,000 = 1,875,000`. A position of 200,000,000 keeps `0.025 * 200,000,000 - 1,875,000 = 3,125,000`, and no bound holds it.
 
@@ -532,7 +532,7 @@ For a short, `(1 - m)` becomes `(1 + m)` and `(1 - f)` becomes `(1 + f)`, with `
 
 ### The forced close
 
-- **Takeover** (Binance, Bybit, OKX and every hand-built venue): every leg closes at its price at the clip point, inside its raw bar or on the gap segment. With no maintenance each close pays the liquidation fee on its notional, which at the close point leaves exactly zero. With maintenance the close pays no fee of its own. Whatever the margin wallet still holds, positive or negative, is booked as the **liquidation charge**, and the wallet ends at zero.
+- **Takeover** (Bybit, OKX and every hand-built venue): every leg closes at its price at the clip point, inside its raw bar or on the gap segment. With no maintenance each close pays the liquidation fee on its notional, which at the close point leaves exactly zero. With maintenance the close pays no fee of its own. Whatever the margin wallet still holds, positive or negative, is booked as the **liquidation charge**, and the wallet ends at zero.
 - **Book then backstop** (Hyperliquid): every leg is sold as a taker from its trigger price, paying spread, slippage, impact and the taker fee, and the trader keeps what remains. The price is held as any taker's is, inside the raw bar, and for a sale before the bar opened, which is priced off its trigger on the gap, inside what traded from the last close through the bar. Each instrument's impact is sized on all it sells, and no sale is limited by the liquidity budget. Takeover applies instead if the margin wallet the sale would leave falls short of the backstop level, the venue's stated fraction of the requirement at the trigger, or if the path also reaches that level, equity at that fraction of the requirement, which `intrabar` decides, since the bar cannot show that the sale finished first ([What a bar cannot show](#what-a-bar-cannot-show)).
 - Under either model an instrument with a leg carried into the bar and one that joined during it is closed in a fill for each, the last taking what its position still holds.
 - A liquidation cancels every resting perpetual order of the account. An empty margin wallet takes no growing perpetual fill. The spot wallet is untouched.
@@ -755,11 +755,11 @@ The Data's rows follow, their source the Data's own: "the router, fetched" with 
 A Data's bars are the router's where every instrument names its venue, and they read as another venue's where the run's venue is a preset of a different exchange. The delisting row's source is the venue's for the delisting times it gives, read as a venue row's is, and the Data's for bars that end with none.
 
 A venue row's source is the input that decided each instrument's value, read key by key in the order a venue resolves an instrument's settings: its defaults, then its kind's table, then its own.
-* A value equal to the preset's reads as the preset and its date, "binance_perp, taken 2026-10-16".
+* A value equal to the preset's reads as the preset and its date, "bybit_perp, taken 2026-11-08".
 * One the preset leaves out that equals the plain venue's reads "plain".
 * Any other reads "set by the user".
 
-A venue built by hand is compared with the plain venue alone. Leverage and maintenance are sourced from an instrument's tiers where it has a table, and the liquidation fee from them where they keep maintenance. Order limits the router gave read "the router, fetched" with its time, and a preset's slippage, impact and liquidity read as the preset, "a starting calibration", where they depart from the plain venue's. A row with one source reads it; otherwise it reads the source of the form its value leads with, then each key or instrument another source decided, "binance_perp, taken 2026-10-16; taker set by the user".
+A venue built by hand is compared with the plain venue alone. Leverage and maintenance are sourced from an instrument's tiers where it has a table, and the liquidation fee from them where they keep maintenance. Order limits the router gave read "the router, fetched" with its time, and a preset's slippage, impact and liquidity read as the preset, "a starting calibration", where they depart from the plain venue's. A row with one source reads it; otherwise it reads the source of the form its value leads with, then each key or instrument another source decided, "bybit_perp, taken 2026-11-08; taker set by the user".
 
 A row's cost is read from the run's ledger and fill log, and nothing is run again; below the full level it is read from the ledger and the round trips alone ([Recording levels](#recording-levels)).
 * The fees row costs the fees column less the fees a takeover paid, and the liquidation fee row those fees.
@@ -770,7 +770,7 @@ A row's cost is read from the run's ledger and fill log, and nothing is run agai
 
 At the full level the rows with a cost sum to the costs' total within rounding. A row's cost is its column's share as stated, which can hold another row's part: a sale on the book pays fees, spread, slippage and impact into their columns. The intrabar row is priced by running again with the other setting, which the user does.
 
-**Worked example.** A run on binance_perp has no optimistic assumption. Moved to limits that fill on touch and no spread, it has two, "limit fills on touch" and "spread not modelled", each sourced "set by the user". In the one-instrument example without maintenance ([Worked for one instrument](#worked-for-one-instrument)), the liquidation fee row costs 10.005, the fee the close paid, and in the margin bound's example the margin bound row costs -0.45 and the liquidation row nothing.
+**Worked example.** A run on bybit_perp has no optimistic assumption. Moved to limits that fill on touch and no spread, it has two, "limit fills on touch" and "spread not modelled", each sourced "set by the user". In the one-instrument example without maintenance ([Worked for one instrument](#worked-for-one-instrument)), the liquidation fee row costs 10.005, the fee the close paid, and in the margin bound's example the margin bound row costs -0.45 and the liquidation row nothing.
 
 ### Baselines
 

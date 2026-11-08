@@ -32,12 +32,12 @@
 
 ## Venue Notes
 
-Each preset is a TOML file in `python/probatum/venues/`, read as a `probatum.Venue` the first time it is asked for. `dev/venues/build.py` writes every preset but `frictionless`. It takes the instruments, and each one's price rule, lot and margin tiers, from the venue's public endpoints, and the fee rates, the forced close and Hyperliquid's price rule as the venue documents them. Every file the script writes records the day it ran as `taken`, the day its tables describe ([0028](Decisions.md)).
+Each preset is a TOML file in `python/probatum/venues/`, read as a `probatum.Venue` the first time it is asked for. `dev/venues/build.py` writes every preset but `frictionless`. It takes the instruments, and each one's price rule, lot and margin tiers, from exchange-router ([0048](Decisions.md)), and the fee rates, the forced close and Hyperliquid's price and maintenance rules as the venue documents them. Every file the script writes records the day it ran as `taken`, the day its tables describe ([0028](Decisions.md)).
 
 ```python
 import probatum
 
-perp = probatum.venues.binance_perp
+perp = probatum.venues.bybit_perp
 
 print(perp.name, perp.taken, perp.kind)  # its name, the day its tables were taken, its kind
 print(perp.describe())                   # what a run here assumes, graded
@@ -53,25 +53,25 @@ A preset is data, so it ages: a venue lists and delists instruments, moves its t
 ### Symbols
 
 Every instrument is keyed by the name exchange-router gives it, so a Data from `Data.from_router` finds its tables with no mapping:
-* Binance's and Bybit's own symbols, with Binance's `_PERP` suffix dropped from an inverse contract (`BTCUSD`);
+* Binance's and Bybit's own symbols, but for a Bybit USDC perpetual, which is named by its base and quote (`BTCPERP` is `BTCUSDC`);
 * OKX's instrument id without its dashes and its `-SWAP` (`BTC-USDT-SWAP` is `BTCUSDT`);
-* and Hyperliquid's coin upper-cased with its quote, `USDC` (`kPEPE` is `KPEPEUSDC`).
+* and Hyperliquid's coin upper-cased with its quote, `USDC` (`kPEPE` is `KPEPEUSDC`), led on a builder-deployed dex by the dex's name (`xyz:TSLA` is `XYZTSLAUSDC`).
 
 In a preset that combines a venue's markets, each key carries its kind, `spot:BTCUSDT` and `linear:BTCUSDT`.
 
 ### Instruments
 
-A preset lists the instruments the venue had trading on the day it was taken, each with its tick or price rule and its lot, and a perpetual with its margin tiers. A symbol it does not list has no lot or price rule, so with the preset's sizes on, a run refuses it by name; `replace(instruments={...})` gives it its own, or `replace(fills={"sizes": "off"})` runs it without. What each venue's presets hold:
-* Bybit's and OKX's presets leave out stock, commodity and pre-market contracts.
-* Binance's perpetual presets hold its perpetual contracts alone.
-* `binance_spot` lists every pair Binance trades, its tokenized stocks among them.
+A preset lists the instruments exchange-router lists as trading on the day it was taken, each with its tick or price rule and its lot, and a perpetual with its margin tiers. A symbol it does not list has no lot, price rule or tiers, so with the preset's sizes on, a run refuses it by name; `replace(instruments={...})` gives it its own, or `replace(fills={"sizes": "off"})` runs it without, a perpetual then capped at the venue's `leverage` and keeping no maintenance. `hyperliquid_perp` refuses an unlisted perpetual whatever its sizes, since its price rule needs the instrument's decimals and its forced close the instrument's tiers, and `replace(instruments={...})` gives it both. What each venue's presets hold:
+* Every instrument the router lists, whatever its asset: Binance's tokenized stock pairs, Bybit's stock, ETF, commodity and forex perpetuals and its xStocks pairs, OKX's stock and commodity swaps and pairs, its pre-market swaps among them, and the perpetuals of Hyperliquid's builder-deployed dexes.
 * No preset holds a dated future.
 
 ### Fees
 
 `fees` holds the venue's base maker and taker rates, each a share of a fill's notional, as charged with no trading volume behind the account and no discount for holding the venue's token. Every instrument pays them except where its own table says otherwise. No preset holds the venue's volume tiers or a maker rebate, since the rate an account earns depends on its volume across the whole venue.
 
-On a preset of one kind, `replace(fees={"maker": ..., "taker": ...})` sets an account's own rates. On `binance`, `bybit` and `okx` each kind's table holds its part's rates, so the rates go there, `replace(kinds={"spot": {"fees": ...}, "linear": {"fees": ...}})`, and an instrument with rates of its own keeps them.
+No preset holds the rates a venue charges a group of its instruments on a schedule of their own either. Each venue's section below names its groups, and every instrument in one pays the preset's base rates until `replace(instruments={...})` gives it its own.
+
+On a preset of one kind, `replace(fees={"maker": ..., "taker": ...})` sets an account's own rates. On `bybit` and `okx` each kind's table holds its part's rates, so the rates go there, `replace(kinds={"spot": {"fees": ...}, "linear": {"fees": ...}})`, and an instrument with rates of its own keeps them.
 
 ### Margin tiers
 
@@ -89,7 +89,7 @@ Every perpetual preset charges `funding = "data"`: the funding events the Data c
 
 ### The forced close
 
-Binance, Bybit and OKX take an account over where its margin runs out and book what is left as the liquidation charge. Hyperliquid sells every leg on the book from its trigger and leaves the trader the rest, falling back to the takeover where the sale would leave less than two thirds of the maintenance requirement ([0019](Decisions.md), [Specification](Specification.md#liquidation)).
+Bybit and OKX take an account over where its margin runs out and book what is left as the liquidation charge. Hyperliquid sells every leg on the book from its trigger and leaves the trader the rest, falling back to the takeover where the sale would leave less than two thirds of the maintenance requirement ([0019](Decisions.md), [Specification](Specification.md#liquidation)).
 
 ### The fill model
 
@@ -111,7 +111,7 @@ These are a starting point rather than a measurement of anyone's costs. `probatu
 
 * **The router's order limits.** An instrument's minimum notional and its largest order come with its bars from `Data.from_router`, as of the fetch, where no table of the preset gives one.
 * **Delisting times.** A preset lists what was trading when it was taken. An instrument's `delist`, which closes its position at its last close and refuses every order on it from then on, is given by hand in `instruments`.
-* **Volume tiers, rebates and token discounts.** See [Fees](#fees).
+* **Volume tiers, rebates, token discounts and a group's own rates.** See [Fees](#fees).
 * **Isolated margin, price bands and auto-deleveraging.** The account is margined across its perpetuals, and a forced close is the venue's own model above.
 
 <br>
@@ -119,21 +119,19 @@ These are a starting point rather than a measurement of anyone's costs. `probatu
 
 ## Binance
 
-`binance_spot`, `binance_perp` and `binance_inverse` hold every pair or perpetual the venue's exchange information lists as trading, the perpetuals with their leverage brackets. `binance` combines the spot and linear presets in one account of two wallets.
+`binance_spot` holds every pair exchange-router lists for Binance. Binance's perpetuals have no preset: Binance's API gives their leverage brackets only to a signed-in account, so exchange-router serves none ([0048](Decisions.md)).
 
 | Preset | Maker | Taker | Tiers from |
 | :--- | :--- | :--- | :--- |
 | `binance_spot` | 0.10% | 0.10% | |
-| `binance_perp` | 0.02% | 0.05% | each symbol's leverage brackets, by notional in the quote currency |
-| `binance_inverse` | 0.02% | 0.05% | each symbol's leverage brackets, by notional in the coin |
 
-An instrument's tick is its price filter's and its lot its lot-size filter's, in the coin on a linear perpetual and in contracts on an inverse one. `binance_perp` spares a reduce-only order the minimum notional.
+A pair's tick is its price filter's and its lot its lot-size filter's.
 
 <br>
 
 ## Bybit
 
-`bybit_spot`, `bybit_perp` and `bybit_inverse` hold every crypto pair or perpetual the venue's instruments endpoint lists as trading, the perpetuals with their risk limits. `bybit` combines the spot and linear presets in one account.
+`bybit_spot`, `bybit_perp` and `bybit_inverse` hold every pair or perpetual exchange-router lists for Bybit, the perpetuals with their risk limits. `bybit` combines the spot and linear presets in one account.
 
 | Preset | Maker | Taker | Tiers from |
 | :--- | :--- | :--- | :--- |
@@ -141,13 +139,13 @@ An instrument's tick is its price filter's and its lot its lot-size filter's, in
 | `bybit_perp` | 0.02% | 0.055% | each symbol's risk limits, by notional in the quote currency, USDT or USDC |
 | `bybit_inverse` | 0.02% | 0.055% | each symbol's risk limits, by notional in the coin |
 
-A perpetual in Bybit's Innovation Zone carries its own rates, 0.04% maker and 0.11% taker. A spot pair's lot is its base coin's precision.
+A spot pair's lot is its base coin's precision. Bybit charges a perpetual in its Innovation Zone, which its instrument list marks with the symbol type `innovation`, 0.04% maker and 0.11% taker.
 
 <br>
 
 ## OKX
 
-`okx_spot`, `okx_perp` and `okx_inverse` hold every crypto pair or swap the venue lists as live and out of pre-market, the swaps with their cross-margin position tiers. `okx` combines the spot and linear presets in one account.
+`okx_spot`, `okx_perp` and `okx_inverse` hold every pair or swap exchange-router lists for OKX, the swaps with their cross-margin position tiers. `okx` combines the spot and linear presets in one account.
 
 | Preset | Maker | Taker | Tiers from |
 | :--- | :--- | :--- | :--- |
@@ -161,13 +159,13 @@ OKX's tiers are by position size and carry no deduction, so every row's `amount`
 
 ## Hyperliquid
 
-`hyperliquid_perp` holds every perpetual the venue's metadata lists and has not delisted.
+`hyperliquid_perp` holds every perpetual exchange-router lists for Hyperliquid, those of its builder-deployed dexes among them.
 
 | Preset | Maker | Taker | Tiers from |
 | :--- | :--- | :--- | :--- |
 | `hyperliquid_perp` | 0.015% | 0.045% | each asset's margin table, by notional in USDC |
 
-Hyperliquid's prices have no tick. A price is held to five significant figures, a whole number always allowed, and to at most six decimals less the asset's size decimals. A size is held to its size decimals, so an asset with two size decimals trades in lots of 0.01. Its margin tables give a maximum leverage for each tier, and maintenance is half the initial rate that leverage implies, each tier's deduction set by continuity and the last tier open; an asset whose table is a single leverage has one tier. The forced close sells on the book first, with the backstop at two thirds of the requirement, as [the forced close](#the-forced-close) says.
+Hyperliquid's prices have no tick. A price is held to five significant figures, a whole number always allowed, and to at most six decimals less the asset's size decimals. A size is held to its size decimals, so an asset with two size decimals trades in lots of 0.01. Its margin tables give a maximum leverage for each tier, and maintenance is half the initial rate that leverage implies, each tier's deduction set by continuity and the last tier open; an asset whose table is a single leverage has one tier. A market on a builder-deployed dex adds to the base rates the fee share its deployer sets for it, and a market in growth mode has the whole fee cut by 90% or more; the dex's metadata gives each market's `deployerFeeScale` and `growthMode`. The forced close sells on the book first, with the backstop at two thirds of the requirement, as [the forced close](#the-forced-close) says.
 
 <br>
 
