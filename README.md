@@ -87,22 +87,22 @@ probatum needs Python 3.13 or later and is not on PyPI. Each [release](https://g
 
 ```bash
 # Linux x86_64
-pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v2.0.0/probatum-2.0.0-cp313-abi3-manylinux_2_28_x86_64.whl"
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v3.0.0/probatum-3.0.0-cp313-abi3-manylinux_2_28_x86_64.whl"
 
 # Linux aarch64
-pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v2.0.0/probatum-2.0.0-cp313-abi3-manylinux_2_28_aarch64.whl"
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v3.0.0/probatum-3.0.0-cp313-abi3-manylinux_2_28_aarch64.whl"
 
 # macOS on Apple silicon
-pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v2.0.0/probatum-2.0.0-cp313-abi3-macosx_11_0_arm64.whl"
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v3.0.0/probatum-3.0.0-cp313-abi3-macosx_11_0_arm64.whl"
 
 # Windows x64
-pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v2.0.0/probatum-2.0.0-cp313-abi3-win_amd64.whl"
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v3.0.0/probatum-3.0.0-cp313-abi3-win_amd64.whl"
 ```
 
 The Linux wheels need glibc 2.28 or later. Any other machine builds the source archive, which needs the [Rust toolchain](https://rustup.rs):
 
 ```bash
-pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v2.0.0/probatum-2.0.0.tar.gz"
+pip install "probatum @ https://github.com/atOCEANO/probatum/releases/download/v3.0.0/probatum-3.0.0.tar.gz"
 ```
 
 The package itself needs only numpy. Extras go in brackets before the `@`, as in `"probatum[rl,search] @ <URL>"`:
