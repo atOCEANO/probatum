@@ -55,6 +55,7 @@ INTERVALS = {
     "1w":  7 * DAY,
 }
 MARKETS = ("spot", "linear", "inverse")
+SCHEMA  = 4
 # what an Arrow format a frame cannot give bars in holds, for a refusal to name
 ARROW = {
     "u":  "text",
@@ -249,13 +250,14 @@ class Data:
                     funding=False):
         """The bars of ``symbols`` on ``exchange``'s ``market`` at ``interval``, from
         the first bar at or after ``start`` to the last at or before ``end`` that has
-        closed, fetched through ``router``, an exchange-router ``Router``, and with
+        closed, fetched through ``router``, an exchange-router 4 ``Router``, and with
         ``funding`` the funding events that charge them. ``start`` and ``end`` are
         times or the text of one, a text end taking in the whole period it names.
         Each instrument takes the router's own name for its symbol, its base asset and
         its order limits from the router's symbol information, which a symbol the
         router does not list now goes without, as a warning names; two symbols the
-        router names as one are refused.
+        router names as one are refused, as is a Router of another schema than
+        exchange-router 4's, whose names differ.
 
         One router call walks back from its newest bar for at most a hundred requests
         to the venue, so the calls are chained back to ``start``. A call that brings
@@ -281,6 +283,12 @@ class Data:
         if getattr(router, "get_symbol_info", None) is None:
             raise ProbatumTypeError(f"router: {type(router).__name__}, which has no "
                                     f"get_symbol_info; pass an exchange-router Router")
+
+        schema = getattr(router, "schema_version", None)
+        if schema != SCHEMA:
+            raise ProbatumTypeError(f"router: {type(router).__name__} of schema "
+                                    f"{schema}, whose names from_router does not "
+                                    f"read; pass a Router of exchange-router 4.0.0")
 
         _chosen("market", market, MARKETS, f"use {', '.join(MARKETS)}", DataError)
         _chosen("interval", interval, INTERVALS, f"use one of {', '.join(INTERVALS)}",
@@ -329,7 +337,7 @@ class Data:
                       market, len(symbols), interval)
             batch = router.candles_many(exchange, market, symbols, interval=interval,
                                         limit=(last - first) // step + 1,
-                                        start=last // 1_000_000, verbose=False)
+                                        end=last // 1_000_000, verbose=False)
 
             if batch.failed:
                 symbol, error = next(iter(batch.failed.items()))
@@ -354,7 +362,7 @@ class Data:
                           market, symbol, interval, _when(upper))
                 return router.get_candles(exchange, market, symbol, interval=interval,
                                           limit=(upper - first) // step + 1,
-                                          start=upper // 1_000_000, verbose=False)
+                                          end=upper // 1_000_000, verbose=False)
 
             pieces, begun = _walk(call, first, last,
                                   lambda frame: _bars_of(frame, symbol, market))
@@ -1924,9 +1932,9 @@ def _listed(router, exchange, market, symbol):
         return None if value is None else float(value)
 
     return dict(symbol=info.get("symbol") or symbol,
-                base=info.get("base_asset") or None,
-                min_notional=None if market == "inverse" else number("min_notional"),
-                max_qty=number("max_qty")), None
+                base=info.get("base") or None,
+                min_notional=None if market == "inverse" else number("notional_min"),
+                max_qty=number("qty_max")), None
 
 
 def _rates_of(frame):
@@ -1945,12 +1953,12 @@ def _rates_of(frame):
 
     if columns is None:
         times, _ = _times(frame.index)
-        rates = frame["rate"].to_numpy(dtype=np.float64, na_value=np.nan)
+        rates = frame["funding_per_cycle"].to_numpy(dtype=np.float64, na_value=np.nan)
         return times, rates, told
 
     times = [values for _, kind, values, _ in columns if kind == "time"]
     rates = [values for name, kind, values, _ in columns
-             if name == "rate" and kind in ("float", "int")]
+             if name == "funding_per_cycle" and kind in ("float", "int")]
     if len(times) != 1 or not rates:
         raise DataError("data: a funding frame without one time column and a rate; "
                         "pass the router's own frame")
@@ -1980,7 +1988,7 @@ def _funding(router, exchange, market, root, step):
                       symbol, _when(upper))
             return router.get_funding_rate(exchange, market, symbol,
                                            limit=(upper - opened) // cycle + 1,
-                                           start=upper // 1_000_000, verbose=False)
+                                           end=upper // 1_000_000, verbose=False)
 
         pieces, _ = _walk(call, opened, ended + SECOND, _rates_of)
         notes += [w for piece in pieces for w in piece[2]]

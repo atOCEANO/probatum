@@ -27,8 +27,8 @@ from probatum import DataError, ProbatumTypeError, ProbatumWarning
 
 HOUR    = 3_600_000_000_000
 START   = 1_704_067_200_000_000_000    # 2024-01-01 00:00 UTC
-CANDLES = ["open", "high", "low", "close", "volume", "volume_usd"]
-FUNDING = ["rate", "funding_per_hour", "cycle_ms"]
+CANDLES = ["closed", "open", "high", "low", "close", "volume", "volume_notional"]
+FUNDING = ["funding_per_cycle", "funding_cycle_ms", "funding_per_hour"]
 
 
 def bars(n, start=START, step=HOUR, close=100.0):
@@ -64,30 +64,31 @@ class Answered(Exception):
     """An exchange-router error, which carries the status the service answered."""
 
 
-    def __init__(self, detail, status):
+    def __init__(self, detail, status, error):
         super().__init__(detail)
-        self.detail, self.status = detail, status
+        self.detail, self.status, self.error = detail, status, error
 
 
 class Router:
-    """A router serving frames shaped as exchange-router 3.0.0 builds them, walking
-    back from each call's start at most `cap` rows. Its funding walks back the same
+    """A router serving frames shaped as exchange-router 4.0.0 builds them, walking
+    back from each call's end at most `cap` rows. Its funding walks back the same
     way, or with `window`, the cycle it believes, answers as Binance does: with the
-    oldest `limit` events of the `limit` cycles before the start. It lists every
+    oldest `limit` events of the `limit` cycles before the end. It lists every
     symbol it holds but those `unlisted`, as for one delisted since its bars."""
 
 
     def __init__(self, held, funding=None, cap=1_000, market="linear", silent=0,
-                 failing=(), window=None, unlisted=(), exchange="binance"):
+                 failing=(), window=None, unlisted=(), exchange="binance", schema=4):
         self.held, self.funding = held, funding or {}
         self.cap, self.market, self.window = cap, market, window
         self.silent, self.failing, self.calls = silent, failing, []
         self.unlisted, self.exchange = unlisted, exchange
+        self.schema_version = schema
 
 
     def frame(self, symbol, times, values, columns, attrs):
         meta = dict(exchange=self.exchange, market_type=self.market, symbol=symbol,
-                    schema_version=3, warnings=[])
+                    schema_version=4, warnings=[])
 
         if len(times):
             index = pd.DatetimeIndex(pd.to_datetime(times, utc=True), name="datetime")
@@ -102,69 +103,78 @@ class Router:
         return out
 
 
-    def rows(self, times, limit, start):
-        upper = start * 1_000_000 if start is not None else times[-1]
+    def rows(self, times, limit, end):
+        upper = end * 1_000_000 if end is not None else times[-1]
         return np.flatnonzero(times <= upper)[-min(limit, self.cap):]
 
 
     def get_candles(self, exchange, market_type, symbol, interval="1h", limit=100,
-                    start=None, verbose=None):
-        self.calls.append((symbol, start, limit, verbose))
+                    end=None, verbose=None):
+        self.calls.append((symbol, end, limit, verbose))
 
         times, values = self.held[symbol]
-        rows = self.rows(times, limit, start)
+        rows = self.rows(times, limit, end)
         if self.silent:
             self.silent -= 1
             rows = rows[:0]
 
-        values = np.column_stack([values[rows], values[rows][:, 3] * 1_000.0])
-        attrs  = dict(quote="USDT", volume_unit="base")
+        values = np.column_stack([np.ones(len(rows)), values[rows],
+                                  values[rows][:, 3] * 1_000.0])
+        attrs  = dict(quote="USDT", volume_unit="base", notional_basis="row_price")
         if self.market == "inverse":
-            attrs = dict(quote="USD", volume_unit="contract", contract_size=100.0)
+            attrs = dict(quote="USD", volume_unit="contract", contract_size=100.0,
+                         notional_basis="contract_size")
         if symbol in self.unlisted:
             # the router writes an empty quote for a symbol it holds no information on
             attrs["quote"] = ""
 
-        return self.frame(symbol, times[rows], values, CANDLES,
-                          dict(attrs, interval=interval, warnings=[f"served {symbol}"]))
+        out = self.frame(symbol, times[rows], values, CANDLES,
+                         dict(attrs, interval=interval, warnings=[f"served {symbol}"]))
+        out["closed"] = out["closed"].astype(bool)
+        return out
 
 
     def get_symbol_info(self, exchange, market_type, symbol):
         if symbol in self.unlisted:
-            raise Answered(f"Symbol {symbol} not found on Binance {market_type}", 400)
+            raise Answered(f"{symbol} is not listed on {exchange} {market_type}; "
+                           f"/{exchange}/{market_type}/markets lists the symbols", 400,
+                           "Unknown Symbol")
 
         # its own name for the symbol however it was typed, an inverse contract's
         # minimum in dollars and its sizes in contracts
         inverse = market_type == "inverse"
-        return dict(symbol=symbol.upper(), base_asset=symbol[:3].upper(),
-                    quote_asset="USD" if inverse else "USDT",
-                    min_notional=100.0 if inverse else 5.0, max_qty=1_000.0,
+        return dict(symbol=symbol.upper(), market_type=market_type,
+                    base=symbol[:3].upper(), quote="USD" if inverse else "USDT",
                     qty_unit="contract" if inverse else "base",
-                    contract_size=100.0 if inverse else None)
+                    qty_contract_size=100.0 if inverse else None, qty_max=1_000.0,
+                    notional_min=100.0 if inverse else 5.0)
 
 
     def candles_many(self, exchange, market_type, symbols, interval="1h", limit=100,
-                     start=None, verbose=None, max_concurrent=8):
-        frames = {s: self.get_candles(exchange, market_type, s, interval, limit, start,
+                     end=None, verbose=None, max_concurrent=8):
+        frames = {s: self.get_candles(exchange, market_type, s, interval, limit, end,
                                       verbose)
                   for s in symbols if s not in self.failing}
         return Batch(frames, {s: RuntimeError("upstream 503") for s in self.failing})
 
 
-    def get_funding_rate(self, exchange, market_type, symbol, limit=100, start=None,
+    def get_funding_rate(self, exchange, market_type, symbol, limit=100, end=None,
                          verbose=None):
         times, rates = self.funding[symbol]
         if self.window is None:
-            rows = self.rows(times, limit, start)
+            rows = self.rows(times, limit, end)
         else:
-            count, upper = min(limit, 1_000), start * 1_000_000
+            count, upper = min(limit, 1_000), end * 1_000_000
             inside = (times >= upper - count * self.window) & (times <= upper)
             rows   = np.flatnonzero(inside)[:count]
 
-        values = np.column_stack([rates[rows], rates[rows] / 8.0,
-                                  np.full(len(rows), 8 * 3_600_000.0)])
-        return self.frame(symbol, times[rows], values, FUNDING,
-                          dict(warnings=[f"funded {symbol}"]))
+        values = np.column_stack([rates[rows], np.full(len(rows), 8 * 3_600_000.0),
+                                  rates[rows] / 8.0])
+        out = self.frame(symbol, times[rows], values, FUNDING,
+                         dict(quote="USDT", funding_kind="discrete",
+                              warnings=[f"funded {symbol}"]))
+        out["funding_cycle_ms"] = out["funding_cycle_ms"].astype("int64")
+        return out
 
 
 def fetch(router, symbols=("BTCUSDT",), **asked):
@@ -296,9 +306,10 @@ def test_a_symbol_the_router_no_longer_lists_keeps_its_bars_without_its_limits()
     held = {"BTCUSDT": bars(48), "LUNAUSDT": bars(48, close=10.0)}
 
     with pytest.warns(ProbatumWarning, match=re.escape(
-            "data: the router does not list LUNAUSDT now, saying 'Symbol LUNAUSDT not "
-            "found on Binance linear', as for a symbol delisted or paused, so its base "
-            "asset and order limits are unknown; see data.instruments")):
+            "data: the router does not list LUNAUSDT now, saying 'LUNAUSDT is not "
+            "listed on binance linear; /binance/linear/markets lists the symbols', as "
+            "for a symbol delisted or paused, so its base asset and order limits are "
+            "unknown; see data.instruments")):
         data = fetch(Router(held, unlisted=("LUNAUSDT",)), held)
 
     luna = data.instruments[1]
@@ -319,12 +330,13 @@ def test_an_instrument_takes_the_router_s_name_for_its_symbol_however_typed():
         fetch(Router(held), held)
 
 
-@pytest.mark.parametrize("status", [503, 404])
-def test_a_router_that_cannot_answer_for_a_symbol_raises_its_own_error(status):
+@pytest.mark.parametrize("status, title", [(503, "Upstream Unavailable"),
+                                           (404, "Not Found")])
+def test_a_router_that_cannot_answer_for_a_symbol_raises_its_own_error(status, title):
     class Down(Router):
 
         def get_symbol_info(self, exchange, market_type, symbol):
-            raise Answered(f"upstream {status}", status)
+            raise Answered(f"upstream {status}", status, title)
 
     with pytest.raises(Answered, match=f"upstream {status}"):
         fetch(Down({"BTCUSDT": bars(48)}))
@@ -465,7 +477,7 @@ def test_a_settlement_stamped_within_a_second_of_a_bar_s_end_is_charged_at_it():
 
 @pytest.mark.parametrize("every", [HOUR, 4 * HOUR, 8 * HOUR])
 def test_funding_from_a_venue_that_answers_a_window_of_cycles_is_whole(every):
-    # Binance reads the count as that many cycles before the start and answers with
+    # Binance reads the count as that many cycles before the end and answers with
     # the oldest events in them, so a count longer than the span's events would lose
     # the newest
     times, rates = settlements(START - 240 * HOUR, every=every)
@@ -555,6 +567,9 @@ class Candles:
      "router: an AsyncRouter, whose calls return coroutines"),
     (object(), {}, ProbatumTypeError, "router: object, which has no get_candles"),
     (Candles(), {}, ProbatumTypeError, "router: Candles, which has no get_symbol_info"),
+    (Router({}, schema=3), {}, ProbatumTypeError,
+     "router: Router of schema 3, whose names from_router does not read; pass a "
+     "Router of exchange-router 4.0.0"),
     (Router({}), dict(symbols="BTCUSDT"), ProbatumTypeError,
      "symbols: 'BTCUSDT'; give a list"),
     (Router({}), dict(symbols=5), ProbatumTypeError,
