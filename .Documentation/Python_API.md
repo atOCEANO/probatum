@@ -132,11 +132,11 @@ universe = probatum.Data.from_router(router, exchange="bybit", market="linear",
 
 ### From the router
 
-`Data.from_router(router, exchange, market, interval, symbols, start, end=None, funding=False)` fetches the bars through an exchange-router `Router`, from the first bar at or after `start` to the last at or before `end`. `start` and `end` are times or the text of one, and a text end takes in the whole period it names. The bar still open at the time of the fetch is never taken, since a venue serves it as though it were done.
+`Data.from_router(router, exchange, market, interval, symbols, start, end=None, funding=False)` fetches the bars through an exchange-router 4 `Router`, from the first bar at or after `start` to the last at or before `end`. `start` and `end` are times or the text of one, and a text end takes in the whole period it names. The bar still open at the time of the fetch is never taken, since a venue serves it as though it were done.
 
 * The router's calls are chained back to `start`. A call that brings nothing earlier is asked once more, and where it brings nothing again, the venue's history is taken to begin there, which `provenance["history"]` records and a warning names. Another warning names bars that end before `end`, and a gap in the bars is warned of too.
 * The router's own warnings are kept in `provenance["warnings"]` rather than printed, and `provenance["fetched"]` holds the time of the fetch.
-* A symbol the router fails on raises the router's own error, as a pull of that symbol alone does, rather than being left out. An `AsyncRouter` is refused.
+* A symbol the router fails on raises the router's own error, as a pull of that symbol alone does, rather than being left out. An `AsyncRouter` is refused, and so is a `Router` of an exchange-router other than 4, whose names differ.
 * Each instrument takes the router's own name for its symbol, however it was typed, and its base asset and the venue's limits on an order from the router's symbol information. Two symbols the router names as one are refused. A symbol the router no longer lists, such as one delisted or paused since its bars, keeps its bars where the router still serves them, and a warning names it.
 * With `funding=True` each instrument's funding events are fetched the same way. A series that misses part of its instrument's span is refused, naming the span: one that begins more than a cycle after the instrument's first bar or ends more than a cycle before its last bar ends, one with a stretch between two events more than half as long again as the spacing on either side, one with an event that has no rate, and one with no event over bars that span more than a day.
 

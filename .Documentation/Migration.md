@@ -32,7 +32,13 @@
 
 ## Migration
 
-Two hops: probatum 2.0.0 to 3.0.0, which rebuilds the venue presets and drops Binance's perpetual ones, and emsl 1.3.2 to probatum 2.0.0. probatum is emsl's repository renamed and released as 2.0.0, and it does not stay compatible with emsl ([0001](Decisions.md)): a compatibility mode that kept emsl's numbers would be a second engine to test, and a way to reach a flattering number by accident. Names move, the inputs change shape, and where emsl simulated something no venue does, a result moves. This page says what changed and why, then gives every public emsl name and every emsl record number its place in probatum.
+Three hops: probatum 3.0.0 to 4.0.0, which reads exchange-router 4, probatum 2.0.0 to 3.0.0, which rebuilds the venue presets and drops Binance's perpetual ones, and emsl 1.3.2 to probatum 2.0.0. probatum is emsl's repository renamed and released as 2.0.0, and it does not stay compatible with emsl ([0001](Decisions.md)): a compatibility mode that kept emsl's numbers would be a second engine to test, and a way to reach a flattering number by accident. Names move, the inputs change shape, and where emsl simulated something no venue does, a result moves. This page says what changed and why, then gives every public emsl name and every emsl record number its place in probatum.
+
+<br>
+
+## probatum 3.0.0 to 4.0.0
+
+**`Data.from_router` reads exchange-router 4.** exchange-router 4.0.0 renames what a symbol's information and a funding series carry, and `Data.from_router` reads the new names: an instrument's base asset from `base`, its order limits from `notional_min` and `qty_max`, and each funding event's rate from `funding_per_cycle`. A `Router` of exchange-router 3, which answers with the old names, is refused with the fix, where reading it would leave every instrument without its base asset and order limits. Install exchange-router 4.0.0 with probatum 4.0.0.
 
 <br>
 
