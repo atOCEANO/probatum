@@ -1,6 +1,6 @@
 """Write the venue presets in python/probatum/venues from exchange-router's instrument
 lists and margin tiers, read on the day it runs, which each file records as the day its
-tables were taken. It asks the venues through exchange-router 3.3.0, which the
+tables were taken. It asks the venues through exchange-router 4.0.0, which the
 Contributor Guide's run line installs, so it runs by hand and never in the gate.
 
 The instruments, each one's tick, lot and tier table, come from the router alone, which
@@ -45,7 +45,7 @@ def continuous(rows):
 def listed(router, exchange, market):
     """Every instrument the router lists for ``exchange`` on ``market``, by its symbol,
     with the full information the router gives for it."""
-    markets = router.get_markets(exchange=exchange, market_type=market)["markets"]
+    markets = router.get_markets(exchange=exchange, market_type=market)
     return {entry["symbol"]: router.get_symbol_info(exchange=exchange,
                                                     market_type=market,
                                                     symbol=entry["symbol"])
@@ -55,7 +55,7 @@ def listed(router, exchange, market):
 def grid(info):
     """An instrument's tick and lot as the router gives them, each left out where the
     router gives none, which the preset reads as no rule."""
-    steps = {"tick": info.tick_size, "lot": info.qty_step}
+    steps = {"tick": info.price_tick, "lot": info.qty_step}
     return {name: step for name, step in steps.items() if step is not None}
 
 
@@ -119,7 +119,7 @@ def hyperliquid(router):
         given = [(up_to, leverage, 0.5 / leverage) for up_to, leverage, _, _ in rows]
         out[symbol] = {
             "lot":      info.qty_step,
-            "decimals": info.price_precision,
+            "decimals": info.price_decimals,
             "tiers":    continuous(given),
         }
 

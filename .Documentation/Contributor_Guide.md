@@ -128,7 +128,7 @@ The sources are mounted, so a rerun draws what is on disk. The images are number
 
 ```bash
 docker run --rm -v "${PWD}:/src" -w /src python:3.13-slim sh -c \
-  "pip install -q 'exchange-router @ https://github.com/atOCEANO/exchange-router/releases/download/v3.3.0/exchange_router-3.3.0-py3-none-any.whl' && \
+  "pip install -q 'exchange-router @ https://github.com/atOCEANO/exchange-router/releases/download/v4.0.0/exchange_router-4.0.0-py3-none-any.whl' && \
    python dev/venues/build.py"
 ```
 
