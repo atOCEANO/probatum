@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "probatum-core"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "probatum-engine"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "criterion",
  "gungraun",
@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "probatum-py"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "libm",
  "numpy",
