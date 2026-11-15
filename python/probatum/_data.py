@@ -150,15 +150,24 @@ class _Root:
         # its own events, which end at the cut, can miss one; None on any other root
         self.funded = None
 
-        # the fingerprint a slice last took, beside its rows and instruments; one is
-        # kept, so that holding many slices, or their Results, holds no more
+        # the fingerprint a slice last took and the windows the last backtest of an
+        # array or a Strategy ran on, each beside the rows and instruments it was read
+        # from; one of each is kept, so that holding many slices, or their Results,
+        # holds no more
         self.digested = None
+        self.windows  = None
+
+
+    def __getstate__(self):
+        # an engine's windows do not pickle, so they are left out and read again
+        return {**self.__dict__, "windows": None}
 
 
     def __setstate__(self, state):
         # an array comes back from a pickle writable, and the bars must not be
         state.setdefault("funded", None)
         state.setdefault("digested", None)
+        state.setdefault("windows", None)
         self.__dict__.update(state)
 
         for name in ("time", "bars", "available", "funding", "rates"):

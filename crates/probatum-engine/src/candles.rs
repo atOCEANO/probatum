@@ -214,6 +214,24 @@ impl Candles {
         })
     }
 
+    /// The windows the series holds, none before an engine reads them.
+    pub fn windows(&self) -> Option<&Windows> {
+        self.windows.as_ref()
+    }
+
+    /// The same series holding `windows`, read before from the same bars, which an
+    /// engine built on it takes where they hold all it asks rather than reading its
+    /// own. Panics unless they hold one window for each bar.
+    pub fn with_windows(mut self, windows: Windows) -> Candles {
+        assert_eq!(
+            windows.volume.len(),
+            self.rows * self.width,
+            "one window for each bar"
+        );
+        self.windows = Some(windows);
+        self
+    }
+
     /// What the window before row `t` shows of instrument `i`, nothing where the
     /// series has read no window.
     #[inline]

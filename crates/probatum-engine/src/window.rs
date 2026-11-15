@@ -30,7 +30,7 @@ pub struct Trailing {
 /// row by row: the mean volume, and the deviation and the spread where a fill model
 /// reads them, none where no fill model does.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct Windows {
+pub struct Windows {
     pub(crate) bars: usize,
     pub(crate) volume: Arc<[f64]>,
     pub(crate) sigma: Option<Arc<[f64]>>,

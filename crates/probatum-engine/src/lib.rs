@@ -37,4 +37,4 @@ pub use sizes::{PriceRule, Sizes};
 pub use stats::Stats;
 pub use strategy::{run, run_from, Strategy};
 pub use sweep::{builtin_strategy, run_sweep, SmaCross, StrategyFactory};
-pub use window::Trailing;
+pub use window::{Trailing, Windows};

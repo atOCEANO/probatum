@@ -549,7 +549,7 @@ result = probatum.backtest(policy, data=test, venue="bybit_perp", spec="agents/p
 
 ### The compiled engine
 
-Every run steps the compiled engine, `probatum._probatum.Engine`, which is private and promised nothing ([Architecture](Architecture.md#versioning-policy)). It is built over a candle array with the engine's settings as keywords, then reset, given orders, stepped and read a bar at a time. The `Batch` and the RL environment take the same settings.
+Every run steps the compiled engine, `probatum._probatum.Engine`, which is private and promised nothing ([Architecture](Architecture.md#versioning-policy)). It is built over a candle array with the engine's settings as keywords, then reset, given orders, stepped and read a bar at a time. The `Batch` and the RL environment take the same settings, `windows` aside.
 
 ```python
 import probatum
@@ -595,6 +595,7 @@ eng = probatum._probatum.Engine(
     liquidation="takeover",  # or "book_then_backstop", which sells on the book first
     backstop=None,           # the share of the requirement book then backstop takes over at
     liquidation_fee=None,    # a takeover's rate with no maintenance; None = the taker rate
+    windows=None,            # another engine's eng.windows over the same candles
 )
 ```
 
@@ -615,6 +616,8 @@ On an inverse contract the lot and `max_qty` are in contracts, the tick in dolla
 **A venue that books then backstops sells a closed-out account on the book** ([Specification](Specification.md#the-forced-close), [0019](Decisions.md)). `liquidation="book_then_backstop"` takes `backstop=`, the share of the requirement at which the venue's backstop takes over, two thirds on Hyperliquid. It sells every leg as a taker from its trigger price, paying the taker fee and a taker's costs, and the trader keeps what the margin wallet then holds. The account is taken over instead where the sale would leave the wallet below the backstop level, or where the path also reaches that level and the bar cannot show that the sale finished first, which `intrabar` decides. The default `"takeover"` closes every leg where the margin ran out and books what the wallet still holds as the liquidation charge. Book then backstop needs a perp whose tier table keeps maintenance, since with none the backstop level is the trigger itself.
 
 **A venue's liquidation fee places the close point of an account with no maintenance** ([Specification](Specification.md#the-trigger-close-and-clip-points)). The close point is where equity would just pay the fee on closing every position, at `liquidation_fee` where it is given and each instrument's taker rate where it is not. An account with no maintenance whose path reaches its trigger leaves the market from the point where its equity stays at or below that level all the way to the trigger, and its takeover charges the fee on each close. The margin bound charges it on what a reducing fill leaves of the position and on the other perps, wherever the account the fill leaves keeps no maintenance. With maintenance the rate is not used: the account leaves at its trigger, its takeover pays no fee of its own, and the bound charges the taker rate. The fee is refused below 0 and from 1.
+
+**An engine takes the windows another read from the same candles.** `eng.windows` holds each row's window its fills read, its own or those it took ([Specification](Specification.md#the-window)), and an engine built on the same candles with `windows=eng.windows` takes them rather than reading them again. It reads its own where they were read in other units, for another number of rows times instruments or with another `window`, or where they lack the deviation or the spread its fills read; that they come from the same candles is the caller's to hold. A backtest of an array or a Strategy keeps the last ones read beside its Data's bars, and the next one on the same instruments, in the same order, up to the same last row takes them. They are up to three numbers a bar and instrument, from the Data's first row to the slice's last, and they stay until another backtest replaces them or the Data, its slices and their Results are freed.
 
 `eng.shape` is `(T, 5)` for one instrument.
 

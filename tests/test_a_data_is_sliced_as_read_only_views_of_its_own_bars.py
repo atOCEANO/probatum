@@ -17,6 +17,9 @@ from probatum import (DataError, ProbatumAttributeError, ProbatumKeyError,
                       ProbatumTypeError)
 
 HOUR = 3_600_000_000_000
+SIX  = [(100.0, 100.5, 99.8, 100.2), (100.3, 100.6, 100.0, 100.0),
+        (100.1, 100.6, 99.9, 100.4), (100.5, 100.8, 100.1, 100.1),
+        (100.2, 100.7, 100.0, 100.5), (100.6, 100.9, 100.3, 100.3)]
 
 
 def frame(n=48, start="2024-01-01", close=100.0, market=None, symbol=None):
@@ -38,6 +41,30 @@ def frame(n=48, start="2024-01-01", close=100.0, market=None, symbol=None):
 
 def universe():
     return probatum.Data({"BTCUSDT": frame(), "ETHUSDT": frame(close=10.0).iloc[5:]})
+
+
+def handing(monkeypatch):
+    """Each Engine a backtest builds, counted as it is handed windows or not."""
+    handed = []
+    built  = probatum._backtest.Engine
+
+    def counted(candles, windows=None, **settings):
+        handed.append(windows is not None)
+        return built(candles, windows=windows, **settings)
+
+    monkeypatch.setattr(probatum._backtest, "Engine", counted)
+    return handed
+
+
+def equity(view):
+    venue = probatum.Venue(
+        fees  = {"maker": 0.0, "taker": 0.0},
+        fills = {"spread": "estimated"},
+    )
+    weights = np.where(np.arange(len(view)) % 10 < 5, 0.5, -0.5) / len(view.names)
+    weights = np.tile(weights[:, None], (1, len(view.names)))
+    result  = probatum.backtest(weights, data=view, venue=venue, record="account")
+    return result.equity.tolist()
 
 
 def test_the_bars_are_copied_once_and_every_view_is_read_only():
@@ -86,6 +113,52 @@ def test_slices_of_the_same_rows_and_instruments_take_one_fingerprint(monkeypatc
 
     # one fingerprint is kept, so rows taken again after others are hashed again
     assert taken == [(5, 20), (5, 21), (5, 20), (5, 20)]
+
+
+def test_one_set_of_windows_is_kept_for_the_next_backtest_on_the_same_bars(monkeypatch):
+    values = np.array([[*bar, 1e6] for bar in SIX] * 20)
+    data   = probatum.Data(
+        values,
+        symbol   = "BTCUSDT",
+        market   = "linear",
+        time     = np.arange(len(values)) * HOUR,
+        interval = "1h",
+    )
+    handed = handing(monkeypatch)
+    first  = equity(data[40:])
+
+    assert data._root.windows[0] == (120, (0,))
+    assert equity(data[40:])     == first
+
+    again = pickle.loads(pickle.dumps(data[40:]))
+
+    assert again._root.windows is None and equity(again) == first
+
+    equity(data[40:100])
+
+    assert data._root.windows[0] == (100, (0,))
+    assert handed == [False, True, False, False]
+
+
+def test_a_selection_in_another_order_reads_windows_of_its_own(monkeypatch):
+    # the second instrument's bars are wider, so its window estimates another spread,
+    # and the first's windows would fill it at other prices
+    first  = np.array([[*bar, 1e6] for bar in SIX] * 20)
+    second = first * [1.0, 1.002, 0.998, 1.0, 1.0]
+    data   = probatum.Data(
+        np.stack([first, second], axis=1),
+        symbol   = ["BTCUSDT", "ETHUSDT"],
+        market   = "linear",
+        time     = np.arange(len(first)) * HOUR,
+        interval = "1h",
+    )
+    flipped = data.select(["ETHUSDT", "BTCUSDT"])[40:]
+    handed  = handing(monkeypatch)
+
+    equity(data[40:])
+
+    assert equity(flipped) == equity(pickle.loads(pickle.dumps(flipped)))
+    assert handed == [False, False, False]
 
 
 def test_one_instrument_reads_in_the_singular_and_several_in_the_plural():

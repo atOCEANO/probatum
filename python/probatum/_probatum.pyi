@@ -30,6 +30,8 @@ class State:
     def open_orders(self) -> list[dict[str, Any]]: ...
     def __getitem__(self, key: str) -> Any: ...
 
+class Windows: ...
+
 class Engine:
     def __init__(
         self,
@@ -73,7 +75,10 @@ class Engine:
         liquidation: str = ...,
         backstop: Optional[float] = ...,
         liquidation_fee: Optional[float] = ...,
+        windows: Optional[Windows] = ...,
     ) -> None: ...
+    @property
+    def windows(self) -> Optional[Windows]: ...
     @property
     def shape(self) -> tuple[int, ...]: ...
     @property

@@ -42,7 +42,7 @@ use probatum_engine::{
     labels, run_from, Action, Array, Barrier, BatchSnapshot, Candles, Clock, Engine as BarEngine,
     EngineConfig, EnvBatch, Exit, Impact, Instrument, Intrabar, Label, Limit, Liquidation,
     OrderRef, PriceRule, RoundTrip, Schedule, Script, Sizes, Sizing, Spread, Stats, TargetError,
-    Trade, Units,
+    Trade, Units, Windows,
 };
 
 /// The classes the binding raises, defined in `probatum._errors` beside the rest of the
@@ -1981,6 +1981,19 @@ fn universe_column<'py>(
     array
 }
 
+/// The windows an engine's fills read, which an engine built on the same candles can
+/// take as `windows` rather than reading them again, where they were read in its units
+/// with its window and hold what its fills read (Specification, The window).
+#[pyclass(frozen, name = "Windows")]
+struct PyWindows {
+    inner: Windows,
+    // the units and the number of bars they were read in, outside which an engine
+    // reads its own: an inverse contract's window reads the bars' reciprocals and
+    // counts their volume in the dollars its contracts are worth
+    units: Units,
+    cells: usize,
+}
+
 /// The market simulation engine, exposed to Python as `probatum.Engine`. It wraps one
 /// single-env bar engine, over one instrument or a universe; orders decided on a bar
 /// fill on the next.
@@ -2039,6 +2052,7 @@ impl Engine {
         liquidation = "takeover",
         backstop = None,
         liquidation_fee = None,
+        windows = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2082,6 +2096,7 @@ impl Engine {
         liquidation: &str,
         backstop: Option<f64>,
         liquidation_fee: Option<f64>,
+        windows: Option<Bound<'_, PyWindows>>,
     ) -> PyResult<Engine> {
         let (series, config, universe, units) = build_series(
             &candles,
@@ -2127,6 +2142,12 @@ impl Engine {
             backstop,
             liquidation_fee,
         )?;
+        let series = match windows.as_ref().map(Bound::get) {
+            Some(read) if read.units == units && read.cells == series.len() * series.width() => {
+                series.with_windows(read.inner.clone())
+            }
+            _ => series,
+        };
         Ok(Engine {
             inner: BarEngine::new(series, config).recording(parse_record(record, report)?),
             universe,
@@ -2191,6 +2212,19 @@ impl Engine {
     /// `times` (ADR 0004).
     fn periods_per_year(&self) -> Option<f64> {
         self.inner.periods_per_year()
+    }
+
+    /// The windows the engine's fills read, read from its candles or taken with them,
+    /// which an engine built on the same candles can take as `windows` rather than
+    /// reading them again.
+    #[getter]
+    fn windows(&self) -> Option<PyWindows> {
+        let cells = self.inner.num_bars() * self.inner.width();
+        self.inner.windows().map(|windows| PyWindows {
+            inner: windows.clone(),
+            units: self.units,
+            cells,
+        })
     }
 
     /// The shape of the loaded candles as `(T, 5)`, or `(T, N, 5)` over a universe,
@@ -5527,6 +5561,7 @@ fn _probatum(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Batch>()?;
     m.add_class::<Environment>()?;
     m.add_class::<PyState>()?;
+    m.add_class::<PyWindows>()?;
     m.add_class::<table::PyTable>()?;
     m.add_function(wrap_pyfunction!(periods_per_year, m)?)?;
     m.add_function(wrap_pyfunction!(ln, m)?)?;

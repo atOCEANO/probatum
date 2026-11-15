@@ -125,7 +125,7 @@ def _arrayed(rows, barriers, sizing, tolerance, data, held, risk_free, record, s
     run = _run(held, data, balance=balance, costs=costs)
     # what the run is played with, which its Result keeps to play again without costs
     played = _played(rows, barriers, sizing, tolerance, data, run)
-    engine = Engine(run.candles, report=True, record=record, **run.settings)
+    engine = _engine(run, data, record=record)
 
     run_array(engine, *played, start=run.start, seams=seams, flattens=flattens)
 
@@ -166,7 +166,7 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
     _rate(risk_free)
     held   = _repeatable(venue)
     run    = _run(held, data, balance=balance, costs=costs)
-    engine = Engine(run.candles, report=True, **run.settings)
+    engine = _engine(run, data)
     full   = record == "full"
 
     # the second copy, taken at the call as the first is, is the one the Result plays
@@ -188,6 +188,32 @@ def _decided(strategy, data, venue, sizing, stop, take_profit, tolerance, risk_f
 
     return Result._of(tables, stats, copied if full else None, engine.is_bust(),
                       provenance, _Record(held, data, run, played.token, policy=kept))
+
+
+def _engine(run, data, **given):
+    """The Engine of ``run`` on ``data``, built with ``given``: it takes the windows the
+    last backtest of an array or a Strategy left beside ``data``'s bars, where that one
+    ran on the same instruments, in the same order, up to the same last row, and they
+    were read with its window and hold what its fills read, rather than reading them
+    again; and it leaves the windows it ran on there for the next (Specification, The
+    window)."""
+    key  = (data._rows[1], data._cols)
+    kept = data._root.windows
+    if kept is not None and kept[0] != key:
+        # the windows of other bars are let go before the engine reads its own, rather
+        # than held beside them
+        data._root.windows = kept = None
+
+    engine = Engine(
+        run.candles,
+        report  = True,
+        windows = None if kept is None else kept[1],
+        **given,
+        **run.settings,
+    )
+    data._root.windows = (key, engine.windows)
+
+    return engine
 
 
 def _rows(policy, data):

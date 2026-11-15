@@ -59,6 +59,7 @@ use crate::execution::{FillModel, Impact, Limit, Spread};
 use crate::reporter::{BarCosts, LedgerRow, Leg, Record, Reporter, RoundTrip};
 use crate::stats::Stats;
 use crate::streams;
+use crate::window::Windows;
 
 /// A position moved toward zero by less than this counts as no close, mirroring
 /// the position's own dust epsilon so a non-representable fractional close does
@@ -741,6 +742,13 @@ impl Engine {
         self.candles.as_slice()
     }
 
+    /// The windows the engine's fills read, read from its bars or taken with them,
+    /// which an engine built again on the same bars can take rather than reading them
+    /// (Specification, The window).
+    pub fn windows(&self) -> Option<&Windows> {
+        self.candles.windows()
+    }
+
     /// The `lookback` bars ending at (and including) the current tick, as a
     /// zero-copy borrow into the shared series, for an engine on one instrument.
     /// Clamped to what exists, so early in the series it returns the available
@@ -1113,6 +1121,7 @@ mod tests {
     use probatum_core::TimeInForce::Ioc;
     use probatum_core::{Candle, Market, OrderType, Side, State};
     use proptest::prelude::*;
+    use std::sync::Arc;
 
     #[test]
     #[should_panic]
@@ -1168,6 +1177,30 @@ mod tests {
         assert_eq!(stats(&fresh), stats(&anew));
         let reporter = fresh.reporter().expect("reporting is on");
         assert!(reporter.ledger().is_empty());
+    }
+
+    #[test]
+    fn an_engine_on_windows_another_read_shares_them_and_runs_as_one_built_anew() {
+        // the deviation and the spread asked for, so the windows hold all three
+        let config = EngineConfig {
+            impact: 0.1,
+            spread: Spread::Estimated(1.0),
+            ..report_cfg()
+        };
+        let source = Engine::new(series(), config);
+        let read = source.windows().expect("an engine reads its windows");
+        let mut taken = Engine::new(series().with_windows(read.clone()), config);
+        let given = taken.windows().expect("the windows it was given");
+        assert!(Arc::ptr_eq(&given.volume, &read.volume));
+        let mut anew = Engine::new(series(), config);
+        for e in [&mut taken, &mut anew] {
+            e.reset();
+            e.market_buy(1.0);
+            e.step();
+            e.step();
+        }
+        let stats = |e: &Engine| format!("{:?}", e.stats(365.0, 0.0));
+        assert_eq!(stats(&taken), stats(&anew));
     }
 
     /// Thirty bars from 100, every other one reaching 20 either way, so a stop at 90

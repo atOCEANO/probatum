@@ -1,8 +1,10 @@
 """A fill reads the window before its bar: the budget a bar holds is a share of the
 trailing volume, shared by every order on it, and a taker pays half the spread the
 window shows and an impact scaled by its volatility. A limit fills at the price the
-market traded since the last close where it was placed through the market. The
-Specification's worked examples hold through the binding.
+market traded since the last close where it was placed through the market. An engine
+takes the windows it is handed where they were read in its units over as many bars,
+with its window, and hold what its fills read; that they come from the same candles is
+the caller's to hold. The Specification's worked examples hold through the binding.
 """
 
 import re
@@ -91,6 +93,58 @@ def test_the_six_bars_spread_moves_a_buy_from_100_40_up_by_0_05():
     [fill] = e.fills()
     assert fill["spread"] == pytest.approx(0.05, abs=0.005)
     assert fill["price"]  == pytest.approx(100.40 + fill["spread"], rel=1e-12)
+
+
+def test_an_inverse_engine_reads_its_own_windows_beside_a_linear_engine_s():
+    # an inverse contract's window counts the bar's 10 contracts as 1,000 dollars, a
+    # budget of 100 dollars at a tenth, so a buy of 5 contracts fills 1; the linear
+    # engine's window on the same bars reads 10, which would fill a hundredth
+    candles = bars(*[(100.0, 100.0, 100.0, 100.0, 10.0)] * 2)
+    linear  = probatum._probatum.Engine(candles, budget=0.1)
+
+    for windows in (None, linear.windows):
+        e = probatum._probatum.Engine(
+            candles,
+            market    = "inverse",
+            contract  = 100.0,
+            quote     = 1.0,
+            fee_taker = 0.0,
+            budget    = 0.1,
+            report    = True,
+            windows   = windows,
+        )
+
+        e.reset()
+        e.market_buy(5.0)
+        e.step()
+
+        assert [fill["size"] for fill in e.fills()] == [1.0]
+
+
+def test_an_engine_takes_the_windows_it_is_handed_whatever_bars_they_were_read_from():
+    # windows read over as many bars in the same units are taken as they are, so a
+    # tenth of the 500 they show fills a buy of 10 that the bars' own volume of 50
+    # would hold to 5
+    candles = bars(*[(100.0, 100.0, 100.0, 100.0, 50.0)] * 2)
+    other   = probatum._probatum.Engine(bars(*[(100.0, 100.0, 100.0, 100.0, 500.0)] * 2))
+    filled  = []
+
+    for windows in (None, other.windows):
+        e = probatum._probatum.Engine(
+            candles,
+            fee_taker = 0.0,
+            budget    = 0.1,
+            report    = True,
+            windows   = windows,
+        )
+
+        e.reset()
+        e.market_buy(10.0)
+        e.step()
+
+        filled.append([fill["size"] for fill in e.fills()])
+
+    assert filled == [[5.0], [10.0]]
 
 
 def test_a_limit_placed_through_the_market_fills_where_it_traded():
