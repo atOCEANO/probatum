@@ -150,10 +150,15 @@ class _Root:
         # its own events, which end at the cut, can miss one; None on any other root
         self.funded = None
 
+        # the fingerprint a slice last took, beside its rows and instruments; one is
+        # kept, so that holding many slices, or their Results, holds no more
+        self.digested = None
+
 
     def __setstate__(self, state):
         # an array comes back from a pickle writable, and the bars must not be
         state.setdefault("funded", None)
+        state.setdefault("digested", None)
         self.__dict__.update(state)
 
         for name in ("time", "bars", "available", "funding", "rates"):
@@ -608,9 +613,15 @@ class Data:
         ``"b2:"`` and 32 hex characters: the clock and its interval, the bars, which of
         them printed, the funding events and the instruments (ADR 0005). A slice's
         covers the bars before it as well, which its features and an agent's window
-        warm up on, and where it starts among them. It is taken once."""
+        warm up on, and where it starts among them. It is taken once, and the Data keeps
+        the last one taken, which a slice of the same rows and instruments, in the same
+        order, reads rather than hashing them again."""
         if self._fingerprint is None:
-            self._fingerprint = _digest(self)
+            key  = (self._rows, self._cols)
+            kept = self._root.digested
+            if kept is None or kept[0] != key:
+                kept = self._root.digested = (key, _digest(self))
+            self._fingerprint = kept[1]
 
         return self._fingerprint
 

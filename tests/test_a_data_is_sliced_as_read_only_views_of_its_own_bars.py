@@ -69,6 +69,25 @@ def test_a_copy_or_a_pickle_of_a_data_is_as_read_only_as_the_data():
             field[0] = 0
 
 
+def test_slices_of_the_same_rows_and_instruments_take_one_fingerprint(monkeypatch):
+    data   = universe()
+    taken  = []
+    digest = probatum._data._digest
+
+    def counted(view):
+        taken.append(view._rows)
+        return digest(view)
+
+    monkeypatch.setattr(probatum._data, "_digest", counted)
+
+    assert data[5:20].fingerprint == data[5:20].fingerprint
+    assert data[5:20].fingerprint != data[5:21].fingerprint
+    assert data[5:20].fingerprint != data["BTCUSDT"][5:20].fingerprint
+
+    # one fingerprint is kept, so rows taken again after others are hashed again
+    assert taken == [(5, 20), (5, 21), (5, 20), (5, 20)]
+
+
 def test_one_instrument_reads_in_the_singular_and_several_in_the_plural():
     data = universe()
 
