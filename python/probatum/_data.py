@@ -576,13 +576,13 @@ class Data:
         events = self._root.funding
         start, stop = self._rows
 
-        owners = _owners(self._root, events["time"])
-        kept   = (owners >= start) & (owners < stop) & np.isin(events["instrument"],
-                                                               self._cols)
+        place = np.full(len(self._root.instruments), -1)
+        place[list(self._cols)] = np.arange(len(self._cols))
 
-        out   = events[kept].copy()
-        place = {i: k for k, i in enumerate(self._cols)}
-        out["instrument"] = [place[i] for i in out["instrument"]]
+        owners = _owners(self._root, events["time"])
+        mine   = place[events["instrument"]] >= 0
+        out    = events[(owners >= start) & (owners < stop) & mine].copy()
+        out["instrument"] = place[out["instrument"]]
         return _frozen(out)
 
 
